@@ -2,11 +2,17 @@
 Acceso del huésped al itinerario mediante código QR.
 
 Cada habitación tiene UN código QR fijo que nunca cambia. El código apunta a una
-dirección que siempre muestra el itinerario de quien ocupa esa habitación hoy, de
-modo que al cambiar de huésped no hay que reimprimir nada.
+dirección de este mismo sistema que siempre muestra el itinerario de quien ocupa
+esa habitación hoy, de modo que al cambiar de huésped no hay que reimprimir nada.
+
+El itinerario que ve el huésped es SIEMPRE el actual: se arma en el momento de la
+consulta a partir de la base. No hay nada que publicar ni que quede desactualizado.
 """
 import io
+import os
+import json
 import datetime
+import secrets
 import html as _html
 
 import qrcode
@@ -19,6 +25,109 @@ from reportlab.pdfgen import canvas as canvas_mod
 from reportlab.lib.utils import ImageReader
 
 VERDE = colors.Color(0.1216, 0.2275, 0.1804)
+
+_DATA_DIR = (os.environ.get("HOTEL_DATA_DIR")
+             or os.path.join(os.path.dirname(__file__), "..", "data"))
+CONFIG_PATH = os.path.join(_DATA_DIR, "config_qr.json")
+# Nombre que usaba la versión con publicación a Netlify. Se lee una sola vez para
+# no perder la dirección y la lista de habitaciones ya configuradas.
+CONFIG_PATH_ANTIGUO = os.path.join(_DATA_DIR, "config_publicacion.json")
+
+CONFIG_POR_DEFECTO = {
+    "base_url": "",
+    "enlaces_con_codigo": False,
+    "habitaciones": [f"{i:02d}" for i in range(1, 31)],
+}
+
+
+# ---------------------------------------------------------------------------
+# Configuración
+# ---------------------------------------------------------------------------
+
+def cargar_config():
+    """Dirección base a la que apuntan los QR y lista de habitaciones del hotel."""
+    for ruta in (CONFIG_PATH, CONFIG_PATH_ANTIGUO):
+        if not os.path.exists(ruta):
+            continue
+        try:
+            with open(ruta, "r", encoding="utf-8") as f:
+                guardado = json.load(f)
+        except (ValueError, OSError):
+            continue
+        cfg = dict(CONFIG_POR_DEFECTO)
+        # Del archivo antiguo se toman solo estos campos: el site_id y el token de
+        # Netlify ya no se usan para nada.
+        for campo in ("base_url", "enlaces_con_codigo", "habitaciones"):
+            if campo in guardado:
+                cfg[campo] = guardado[campo]
+        return cfg
+    return dict(CONFIG_POR_DEFECTO)
+
+
+def guardar_config(cfg):
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+def esta_configurado():
+    return bool(cargar_config().get("base_url"))
+
+
+# ---------------------------------------------------------------------------
+# Enlaces fijos por habitación
+# ---------------------------------------------------------------------------
+
+def token_habitacion(conn, room_no):
+    """Devuelve el código fijo de la habitación, creándolo la primera vez.
+    Nunca se regenera: de eso depende que el QR impreso siga funcionando."""
+    fila = conn.execute("SELECT token FROM habitacion_qr WHERE room_no = ?", (room_no,)).fetchone()
+    if fila:
+        return fila["token"]
+    token = secrets.token_hex(4)   # 8 caracteres, suficiente para no ser adivinable
+    conn.execute("INSERT INTO habitacion_qr (room_no, token) VALUES (?, ?)", (room_no, token))
+    conn.commit()
+    return token
+
+
+def ruta_habitacion(conn, room_no):
+    """Parte final del enlace público de la habitación.
+
+    Por defecto es el enlace simple (`05`). Si se activa "enlaces_con_codigo", se le
+    agrega un código aleatorio fijo (`05-a1b2c3d4`) para que nadie pueda adivinar el
+    enlace de otra habitación; en ese caso los QR hay que reimprimirlos."""
+    if cargar_config().get("enlaces_con_codigo"):
+        return f"{room_no}-{token_habitacion(conn, room_no)}"
+    return str(room_no)
+
+
+def url_habitacion(conn, room_no, base_url=None):
+    base = (base_url if base_url is not None else cargar_config().get("base_url", "")).rstrip("/")
+    return f"{base}/i/{ruta_habitacion(conn, room_no)}"
+
+
+def resolver_habitacion(conn, ruta):
+    """Traduce lo que viene en la URL (`05` o `05-a1b2c3d4`) al número de habitación.
+
+    Devuelve None si el enlace no es válido. Cuando "enlaces_con_codigo" está activo
+    se EXIGE el código correcto: si no, bastaría con probar /i/01, /i/02… para ver el
+    itinerario de cualquier huésped, que es justo lo que esa opción evita.
+    """
+    ruta = (ruta or "").strip()
+    if not ruta:
+        return None
+    con_codigo = cargar_config().get("enlaces_con_codigo")
+    room_no, _, codigo = ruta.partition("-")
+    if not con_codigo:
+        # Sin códigos, un enlace con sufijo no corresponde a esta configuración.
+        return ruta if not codigo else None
+    if not codigo:
+        return None
+    fila = conn.execute("SELECT token FROM habitacion_qr WHERE room_no = ?", (room_no,)).fetchone()
+    if not fila or not secrets.compare_digest(fila["token"], codigo):
+        return None
+    return room_no
+
 
 def ocupante_actual(conn, room_no, fecha=None, dias_adelante=2):
     """Devuelve la reserva que ocupa la habitación en la fecha dada (hoy por defecto).

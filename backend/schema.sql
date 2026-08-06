@@ -196,25 +196,11 @@ CREATE TABLE IF NOT EXISTS habitacion_qr (
     creado_en TEXT DEFAULT (datetime('now'))
 );
 
--- Registro de publicaciones del sitio de itinerarios
-CREATE TABLE IF NOT EXISTS publicacion (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    estado TEXT NOT NULL,          -- 'PENDIENTE' | 'PUBLICADO' | 'ERROR'
-    detalle TEXT,
-    habitaciones INTEGER,
-    intentos INTEGER NOT NULL DEFAULT 0,
-    creado_en TEXT DEFAULT (datetime('now')),
-    publicado_en TEXT
-);
-
--- Qué se publicó de cada habitación, para saber si su contenido cambió desde la
--- última publicación (y así avisar cuáles quedan pendientes de publicar).
-CREATE TABLE IF NOT EXISTS publicacion_habitacion (
-    room_no TEXT PRIMARY KEY,
-    conf_no TEXT,                  -- huésped que estaba publicado
-    huella TEXT,                   -- huella del contenido publicado
-    publicado_en TEXT
-);
+-- Las tablas 'publicacion' y 'publicacion_habitacion' llevaban el registro de lo
+-- que se había subido a Netlify y de si el contenido de cada habitación cambiaba
+-- desde la última publicación. Ya no existen: el itinerario se arma en el momento
+-- en que el huésped escanea el QR, contra este mismo sistema, así que nunca queda
+-- desactualizado y no hay nada que publicar ni de qué llevar registro.
 
 -- Log de sincronización (para el modelo offline-first Sierpe/Drake)
 CREATE TABLE IF NOT EXISTS sync_log (

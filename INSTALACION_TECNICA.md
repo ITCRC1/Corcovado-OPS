@@ -201,12 +201,18 @@ desde otro dominio; nunca poner `*` en una instalación expuesta a internet.
 publica hacia internet, ponerlo detrás de un proxy inverso (nginx, Caddy) con TLS —
 Railway ya lo hace por su cuenta.
 
-**9. Salida a internet:** el sistema solo intenta salir si se configura la
-publicación de itinerarios (`api.netlify.com`) o la sincronización. Si no se usan, no
-hace ninguna conexión externa.
+**9. Salida a internet:** el sistema no hace ninguna conexión saliente, salvo que se
+configure la sincronización entre estaciones. No depende de ningún servicio externo.
 
 **10. Nada de la carpeta de datos se sube al repositorio** (`.gitignore`): contiene
-datos de huéspedes y el token de Netlify de la publicación de itinerarios.
+la base con los datos de huéspedes. Los reportes del PMS en PDF y las hojas de cálculo
+también quedan excluidos.
+
+**11. Enlaces de los itinerarios.** Por omisión son `/i/05`, adivinables por número de
+habitación. Solo muestran el itinerario del ocupante actual (nombre y actividades), sin
+datos de contacto ni de pago. Si se quiere cerrar eso, la pantalla *Itinerarios QR*
+tiene la opción **enlaces con código** (`/i/05-a1b2c3d4`): el sistema exige el código
+correcto y `/i/05` deja de funcionar. Al activarla hay que reimprimir los códigos QR.
 
 ---
 
@@ -267,7 +273,7 @@ Corcovado-OPS/
 │   ├── itinerario.py        Generación del itinerario del huésped
 │   ├── traducciones.py      Catálogo de idiomas
 │   ├── qr_huesped.py        Página pública por código QR
-│   ├── publicador.py        Publicación del sitio de itinerarios
+│   ├── qr_huesped.py        Página pública por QR y enlaces por habitación
 │   └── sync_engine.py       Sincronización Sierpe ↔ Drake
 ├── frontend/
 │   ├── index.html           Toda la interfaz

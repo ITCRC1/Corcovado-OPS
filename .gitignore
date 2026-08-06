@@ -9,6 +9,16 @@ config_qr.json
 sync_config.json
 cache_itinerarios/
 
+# Reportes del PMS y hojas de cálculo. Traen nombres, fechas y datos personales
+# de los huéspedes. Si uno de estos archivos se deja en la carpeta del proyecto,
+# sin esta regla se subiría a GitHub junto con el código.
+# (El repositorio no usa PDF ni Excel para nada propio, así que excluirlos todos
+# es seguro. Si algún día hace falta versionar uno, se agrega con "git add -f".)
+*.pdf
+*.xlsx
+*.xls
+*.csv
+
 # Python
 __pycache__/
 *.py[cod]

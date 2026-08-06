@@ -220,7 +220,11 @@
     <input type="password" id="login-pass" placeholder="Contraseña" autocomplete="current-password">
     <button onclick="doLogin()">Ingresar</button>
     <div class="login-error" id="login-error"></div>
-    <div class="login-hint">Usuarios de prueba: recepcion / gerencia / staff<br>(contraseña: [usuario]2026)</div>
+    <!-- Antes aquí se listaban los usuarios y contraseñas de demostración. En una
+         dirección pública de internet eso le regalaba a cualquier visitante los
+         nombres de cuenta reales para intentar adivinar la contraseña. Si necesita
+         las credenciales de prueba, están en el README. -->
+    <div class="login-hint">Acceso solo para personal del lodge</div>
   </div>
 </div>
 
@@ -253,7 +257,7 @@
       <button id="nav-importar" onclick="loadImportarPDF()">Importar PDF</button>
       <button id="nav-usuarios" onclick="loadUsuarios()">Usuarios</button>
       <button id="nav-catalogo" onclick="loadCatalogoAdmin()">Catálogo</button>
-      <button id="nav-publicacion" onclick="loadPublicacion()">Publicación</button>
+      <button id="nav-publicacion" onclick="loadPublicacion()">Itinerarios QR</button>
     </nav>
     <div id="app"></div>
   </div>
@@ -1928,7 +1932,6 @@ async function confirmarImportacion() {
   form.append("file", window._pdfFile);
   const res = await fetchAuth(`${API}/api/pdf/confirm`, { method: "POST", body: form });
   const data = await res.json();
-  const publicando = data.publicacion === "publicando en segundo plano";
   panel.innerHTML = `
     <div style="background:var(--ok-bg);color:var(--ok-text);border-radius:var(--r-sm);padding:14px 16px;margin-top:16px;">
       <p style="margin:0 0 4px;font-weight:600;">Importación completa</p>
@@ -1936,7 +1939,7 @@ async function confirmarImportacion() {
         ${data.reservas_cargadas} reserva${data.reservas_cargadas === 1 ? "" : "s"} cargada${data.reservas_cargadas === 1 ? "" : "s"} ·
         ${data.alertas_generadas} alerta${data.alertas_generadas === 1 ? "" : "s"} generada${data.alertas_generadas === 1 ? "" : "s"}
       </p>
-      ${publicando ? `<p style="margin:6px 0 0;font-size:12px;">Los itinerarios se están publicando en segundo plano; puedes seguir trabajando.</p>` : ""}
+      <p style="margin:6px 0 0;font-size:12px;">Los itinerarios de los huéspedes ya quedaron al día: se arman solos al escanear el QR.</p>
     </div>
     <div style="margin-top:12px;">
       <button class="btn" onclick="loadDashboard()">Ir al Dashboard</button>
@@ -2035,33 +2038,24 @@ async function cambiarPassword(id) {
 }
 
 // ---------- CATÁLOGO (guías, botes, tours) ----------
-// ---------- PUBLICACIÓN DE ITINERARIOS ----------
+// ---------- ITINERARIOS QR ----------
 async function loadPublicacion(fechaNueva, filtroNuevo) {
   setActive(11);
   const F = FILTROS.publicacion;
   if (fechaNueva) F.fecha = fechaNueva;
   if (filtroNuevo !== undefined) F.filtro = filtroNuevo;
-  const d = await (await fetchAuth(`${API}/api/publicacion/estado?fecha=${F.fecha}&filtro=${F.filtro}`)).json();
-  const ult = d.ultima;
+  const d = await (await fetchAuth(`${API}/api/qr/estado?fecha=${F.fecha}&filtro=${F.filtro}`)).json();
   const R = d.resumen || {};
-  const faltan = (R.con_cambios || 0) + (R.sin_publicar || 0);
 
-  const estadoTxt = !d.configurado ? "Sin configurar"
-        : (faltan ? `${faltan} sin publicar` : "Todo publicado");
-  const estadoColor = !d.configurado ? "badge-warn" : (faltan ? "badge-warn" : "badge-ok");
-
-  const badgeHab = (e) => {
-    if (e.estado === "PUBLICADO") return '<span class="badge badge-ok">Publicado</span>';
-    if (e.estado === "CAMBIO") return '<span class="badge badge-warn">Cambió</span>';
-    return '<span class="badge badge-warn">Sin publicar</span>';
-  };
+  const estadoTxt = d.configurado ? "Itinerarios al día" : "Falta la dirección";
+  const estadoColor = d.configurado ? "badge-ok" : "badge-warn";
   const movTxt = { ENTRA: "Entra", SALE: "Sale", EN_CASA: "En casa", PROXIMO: "Próximo ingreso" };
 
   document.getElementById("app").innerHTML = `
     <div class="card">
       <div class="header">
         <div>
-          <p class="title">Publicación de itinerarios</p>
+          <p class="title">Itinerarios QR</p>
           <p class="subtitle">Lo que ve el huésped al escanear el código QR de su habitación</p>
         </div>
         <span class="badge ${estadoColor}" style="font-size:12px;">${estadoTxt}</span>
@@ -2069,41 +2063,31 @@ async function loadPublicacion(fechaNueva, filtroNuevo) {
 
       ${!d.configurado ? `
       <div style="background:var(--warn-bg);border-radius:8px;padding:14px;margin-bottom:16px;font-size:13px;color:var(--warn-text);">
-        <p style="margin:0 0 8px;font-weight:600;">Falta configurar la publicación</p>
-        <p style="margin:0 0 6px;">Se necesita una cuenta gratuita en <strong>netlify.com</strong>. Pasos:</p>
-        <ol style="margin:0;padding-left:20px;line-height:1.7;">
-          <li>Entra a <strong>netlify.com</strong> y crea una cuenta.</li>
-          <li>Crea un sitio nuevo ("Add new project" → "Upload your project files") y arrastra cualquier carpeta.</li>
-          <li>Hazlo público y ponle nombre en <em>Project configuration → General</em>.</li>
-          <li>Copia de ahí el <strong>Site ID</strong>.</li>
-          <li>En <em>User settings → Applications</em> crea un token de acceso y cópialo.</li>
-        </ol>
-      </div>` : ""}
+        <p style="margin:0 0 6px;font-weight:600;">Falta indicar la dirección del sistema</p>
+        <p style="margin:0;">Es la dirección con la que entras a este sistema desde internet.
+        Se usa para armar los códigos QR de las habitaciones. Configúrala más abajo.</p>
+      </div>` : `
+      <div style="background:var(--ok-bg);border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--ok-text);">
+        No hay nada que publicar: el itinerario se arma en el momento en que el huésped
+        escanea su código, así que siempre muestra lo que hay ahora en el sistema.
+      </div>`}
 
       <div class="stats" style="grid-template-columns:repeat(3,1fr);">
         <div class="stat" style="cursor:pointer;" onclick="loadPublicacion(null,'todas')">
-          <p class="stat-label">Publicadas al día</p><p class="stat-value" style="color:var(--ok-text);">${R.publicadas || 0}</p></div>
-        <div class="stat" style="cursor:pointer;" onclick="loadPublicacion(null,'pendientes')">
-          <p class="stat-label">Con cambios</p><p class="stat-value" style="color:var(--warn-text);">${R.con_cambios || 0}</p></div>
-        <div class="stat" style="cursor:pointer;" onclick="loadPublicacion(null,'pendientes')">
-          <p class="stat-label">Nunca publicadas</p><p class="stat-value">${R.sin_publicar || 0}</p></div>
+          <p class="stat-label">Habitaciones</p><p class="stat-value">${R.total || 0}</p></div>
+        <div class="stat" style="cursor:pointer;" onclick="loadPublicacion(null,'todas')">
+          <p class="stat-label">Con huésped</p><p class="stat-value" style="color:var(--ok-text);">${R.con_huesped || 0}</p></div>
+        <div class="stat" style="cursor:pointer;" onclick="loadPublicacion(null,'sin_itinerario')">
+          <p class="stat-label">Sin ocupante</p><p class="stat-value">${R.sin_ocupante || 0}</p></div>
       </div>
 
       <div style="display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:14px;margin-top:6px;">
-        <button class="btn btn-primary" onclick="publicarAhora()" ${d.configurado ? "" : "disabled"}>
-          Publicar ahora${faltan ? ` (${faltan} pendiente${faltan>1?'s':''})` : ""}</button>
         <button class="btn" onclick="descargarHojaQR()" ${d.base_url ? "" : "disabled"}>⬇ Hoja de códigos QR</button>
       </div>
       <p style="font-size:11px;color:var(--muted);margin:8px 0 0;">
-        Cada publicación envía las 30 habitaciones completas: así el sitio siempre queda
-        consistente y ningún QR se queda sin página. Los contadores te dicen si hay algo nuevo por enviar.
+        Los códigos QR se imprimen una sola vez y sirven para siempre: el enlace de cada
+        habitación nunca cambia, solo cambia el huésped al que apunta.
       </p>
-      <div id="pb-resultado" style="margin-top:12px;"></div>
-
-      ${ult ? `<p style="font-size:12px;color:var(--muted);margin-top:12px;">
-        Última publicación: ${ult.estado} · ${ult.publicado_en || ult.creado_en} · ${ult.habitaciones || 0} habitaciones
-        ${ult.detalle && ult.estado !== 'PUBLICADO' ? `<br><span style="color:var(--danger-text);">${ult.detalle}</span>` : ""}
-      </p>` : ""}
     </div>
 
     <div class="card">
@@ -2116,21 +2100,20 @@ async function loadPublicacion(fechaNueva, filtroNuevo) {
           <select onchange="loadPublicacion(null, this.value)">
             <option value="todas" ${F.filtro==='todas'?'selected':''}>Todas las habitaciones</option>
             <option value="movimiento" ${F.filtro==='movimiento'?'selected':''}>Solo entradas y salidas</option>
-            <option value="pendientes" ${F.filtro==='pendientes'?'selected':''}>Solo pendientes de publicar</option>
+            <option value="sin_itinerario" ${F.filtro==='sin_itinerario'?'selected':''}>Solo sin ocupante</option>
           </select>
         </div>
       </div>
       <table>
-        <tr><th>Hab.</th><th>Movimiento</th><th>Huésped</th><th>Estadía</th><th>Publicación</th><th></th></tr>
+        <tr><th>Hab.</th><th>Movimiento</th><th>Huésped</th><th>Estadía</th><th></th></tr>
         ${(d.detalle||[]).map(h => `
           <tr class="${h.movimiento==='ENTRA'?'fila-entra':(h.movimiento==='SALE'?'fila-sale':(h.movimiento==='PROXIMO'?'fila-poringresar':(h.huesped?'':'fila-salio')))}">
             <td><strong>${h.room_no}</strong></td>
             <td style="font-size:12px;">${movTxt[h.movimiento] || '—'}</td>
             <td>${h.huesped || '<span style="color:var(--muted);">sin ocupante</span>'}</td>
             <td style="font-size:12px;">${h.arr_date ? `${h.arr_date} – ${h.dep_date}` : '—'}</td>
-            <td>${badgeHab(h)}${h.publicado_en ? `<br><span style="font-size:10px;color:var(--muted);">${h.publicado_en}</span>` : ''}</td>
-            <td><button class="btn" onclick="vistaPreviaHuesped('${h.room_no}')">Ver</button></td>
-          </tr>`).join("") || '<tr><td colspan="6" class="empty">No hay habitaciones con ese filtro.</td></tr>'}
+            <td><button class="btn" onclick="vistaPreviaHuesped('${h.url}')">Ver</button></td>
+          </tr>`).join("") || '<tr><td colspan="5" class="empty">No hay habitaciones con ese filtro.</td></tr>'}
       </table>
       <div class="leyenda">
         <span><i style="background:#FFF8DC;"></i>Entra ese día</span>
@@ -2145,28 +2128,33 @@ async function loadPublicacion(fechaNueva, filtroNuevo) {
         <span id="pb-flecha">${d.configurado ? "▸" : "▾"}</span>
         Configuración
         <span style="font-weight:400;font-size:12px;color:var(--muted);">
-          — conexión y habitaciones del hotel (se ajusta una sola vez)
+          — dirección y habitaciones del hotel (se ajusta una sola vez)
         </span>
       </p>
 
       <div id="pb-config" style="display:${d.configurado ? "none" : "block"};margin-top:14px;">
         <div style="display:grid;grid-template-columns:190px 1fr;gap:10px;align-items:center;font-size:13px;max-width:720px;">
-          <label>Dirección del sitio</label>
-          <input type="text" id="pb-url" value="${d.base_url || ""}" placeholder="https://mi-sitio.netlify.app">
-          <label>Site ID</label>
-          <input type="text" id="pb-site" placeholder="${d.configurado ? "(ya guardado, escribe para cambiarlo)" : "por ejemplo: 1a2b3c4d-..."}">
-          <label>Token de acceso</label>
-          <input type="password" id="pb-token" placeholder="${d.configurado ? "(ya guardado, escribe para cambiarlo)" : "pega aquí el token"}">
+          <label>Dirección del sistema</label>
+          <input type="text" id="pb-url" value="${d.base_url || ""}" placeholder="https://mi-sistema.up.railway.app">
           <label>Habitaciones del hotel</label>
           <input type="text" id="pb-habs" value="${(d.habitaciones||[]).join(', ')}" placeholder="01, 02, 03...">
+          <label>Enlaces con código</label>
+          <label style="font-weight:400;display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="pb-codigo" style="width:auto;" ${d.enlaces_con_codigo ? "checked" : ""}>
+            <span style="font-size:12px;color:var(--muted);">
+              Agrega un código secreto a cada enlace para que no se pueda adivinar el de otra habitación
+            </span>
+          </label>
         </div>
-        <p style="font-size:11px;color:var(--muted);margin:8px 0 0;">El Site ID y el token se guardan solo en esta computadora.</p>
         <div style="background:#FAF8F2;border-radius:8px;padding:11px 13px;margin-top:10px;font-size:12px;color:var(--muted);">
           <strong style="color:var(--text);">Sobre la lista de habitaciones:</strong>
-          define qué habitaciones existen en el hotel — no cuáles publicar cada vez.
-          Determina cuántas páginas y cuántos códigos QR hay.
-          <span style="color:var(--warn-text);">Si quitas una habitación, su página desaparece
-          del sitio y su código QR dejará de funcionar.</span>
+          define qué habitaciones existen en el hotel. Determina cuántos códigos QR se generan.
+          <span style="color:var(--warn-text);">Si quitas una habitación, su código QR deja de funcionar.</span>
+        </div>
+        <div style="background:var(--warn-bg);border-radius:8px;padding:11px 13px;margin-top:10px;font-size:12px;color:var(--warn-text);">
+          <strong>Cuidado con "enlaces con código":</strong> al activarlo o desactivarlo cambian
+          todos los enlaces, y hay que <strong>reimprimir los códigos QR</strong> de todas las
+          habitaciones. Los ya pegados en los cuartos dejan de funcionar.
         </div>
         <button class="btn btn-primary" style="margin-top:12px;" onclick="guardarConfigPublicacion()">Guardar datos</button>
         <span id="pb-msg" style="font-size:12px;margin-left:10px;"></span>
@@ -2184,42 +2172,24 @@ function alternarConfigPublicacion() {
 }
 
 async function guardarConfigPublicacion() {
-  const payload = { base_url: document.getElementById("pb-url").value.trim() };
-  const site = document.getElementById("pb-site").value.trim();
-  const token = document.getElementById("pb-token").value.trim();
-  if (site) payload.site_id = site;
-  if (token) payload.token = token;
+  const payload = {
+    base_url: document.getElementById("pb-url").value.trim(),
+    enlaces_con_codigo: document.getElementById("pb-codigo").checked,
+  };
   const habs = document.getElementById("pb-habs");
   if (habs) payload.habitaciones = habs.value.split(",").map(s => s.trim()).filter(Boolean);
-  const res = await fetchAuth(`${API}/api/publicacion/config`, {
+  const res = await fetchAuth(`${API}/api/qr/config`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
   });
   const d = await res.json();
   document.getElementById("pb-msg").innerHTML = d.configurado
-    ? '<span style="color:var(--ok-text);">Datos guardados. Ya puedes publicar.</span>'
-    : '<span style="color:var(--warn-text);">Guardado, pero aún falta algún dato.</span>';
+    ? '<span style="color:var(--ok-text);">Guardado. Ya puedes descargar la hoja de códigos QR.</span>'
+    : '<span style="color:var(--warn-text);">Guardado, pero falta la dirección del sistema.</span>';
   setTimeout(loadPublicacion, 1200);
 }
 
-async function publicarAhora() {
-  const panel = document.getElementById("pb-resultado");
-  panel.innerHTML = '<p class="empty">Publicando… puede tomar un momento.</p>';
-  const res = await fetchAuth(`${API}/api/publicacion/publicar`, { method: "POST" });
-  const d = await res.json();
-  if (d.estado === "PUBLICADO") {
-    panel.innerHTML = `<div style="background:var(--ok-bg);color:var(--ok-text);border-radius:8px;padding:10px 12px;font-size:13px;">
-      Publicado correctamente: ${d.habitaciones} habitaciones actualizadas.</div>`;
-  } else if (d.estado === "PENDIENTE") {
-    panel.innerHTML = `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:10px 12px;font-size:13px;">
-      ${d.mensaje}<br><span style="font-size:11px;">${d.detalle || ""}</span></div>`;
-  } else {
-    panel.innerHTML = `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:10px 12px;font-size:13px;">${d.mensaje || d.estado}</div>`;
-  }
-  setTimeout(loadPublicacion, 2500);
-}
-
 async function descargarHojaQR() {
-  const res = await fetchAuth(`${API}/api/publicacion/qr`);
+  const res = await fetchAuth(`${API}/api/qr/hoja`);
   if (!res.ok) { alert((await res.json()).detail); return; }
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
@@ -2229,8 +2199,10 @@ async function descargarHojaQR() {
   URL.revokeObjectURL(url);
 }
 
-function vistaPreviaHuesped(room) {
-  window.open(`${API}/i/${room}`, "_blank");
+function vistaPreviaHuesped(url) {
+  // Se abre exactamente el mismo enlace que lleva el código QR de la habitación, así
+  // que recepción ve lo mismo que verá el huésped, sin aproximaciones.
+  window.open(url, "_blank");
 }
 
 async function loadCatalogoAdmin() {

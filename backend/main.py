@@ -308,8 +308,8 @@ def ocupacion(desde: str, hasta: str, user: dict = Depends(current_user)):
     Útil para gerencia, y para ver de un vistazo los días fuertes del mes."""
     conn = get_connection()
     # Se importa aquí para no depender del orden de las importaciones del archivo
-    import publicador as _pub
-    total_habitaciones = len(_pub.cargar_config().get("habitaciones") or []) or 30
+    import qr_huesped as _qrh
+    total_habitaciones = len(_qrh.cargar_config().get("habitaciones") or []) or 30
 
     reservas = [dict(r) for r in conn.execute(
         """SELECT room_no, arr_date, dep_date, adl, chl FROM reserva
@@ -649,37 +649,10 @@ async def pdf_confirm(file: UploadFile = File(...), user: dict = Depends(current
     _load_batch(batch, fuente_pdf=file.filename)
     alertas = validar_todos_los_tours()
 
-    # La publicación del sitio de itinerarios se hace en segundo plano: genera 30
-    # páginas con sus PDF y sube unos 13 MB, y con el internet del lodge eso puede
-    # tardar minutos. No tiene por qué hacer esperar a recepción.
-    publicacion = _publicar_en_segundo_plano()
-
+    # Los itinerarios que ven los huéspedes no hay que publicarlos: se arman en el
+    # momento en que se escanea el QR, así que quedan al día apenas termina esto.
     return {"status": "ok", "reservas_cargadas": len(batch["reservas"]),
-            "alertas_generadas": len(alertas), "publicacion": publicacion}
-
-
-def _publicar_en_segundo_plano():
-    """Lanza la publicación en un hilo aparte y devuelve de inmediato."""
-    try:
-        import publicador as _pub
-        if not _pub.esta_configurado():
-            return "sin configurar"
-    except Exception:
-        return "no disponible"
-
-    import threading
-
-    def tarea():
-        try:
-            import publicador as p2
-            c2 = get_connection()
-            p2.publicar(c2)
-            c2.close()
-        except Exception:
-            pass
-
-    threading.Thread(target=tarea, daemon=True).start()
-    return "publicando en segundo plano"
+            "alertas_generadas": len(alertas)}
 
 
 @app.post("/api/tours/agenda/{tour_id}/asignar")
@@ -790,29 +763,6 @@ _startup_conn.close()
 # configurada; si no, era un bucle despertándose cada 30 s sin hacer nada.
 if _cfg.get("peer_url", "").strip():
     sync_engine.iniciar_sync_en_segundo_plano()
-
-
-def _reintentar_publicacion_en_segundo_plano(intervalo=300):
-    """Cada 5 minutos revisa si quedó alguna publicación pendiente por falta de
-    internet y la reintenta. Publica el sitio actualizado, no la versión vieja."""
-    import threading, time
-
-    def bucle():
-        while True:
-            try:
-                import publicador as _pub
-                if _pub.esta_configurado():
-                    c2 = get_connection()
-                    _pub.reintentar_pendientes(c2)
-                    c2.close()
-            except Exception:
-                pass
-            time.sleep(intervalo)
-
-    threading.Thread(target=bucle, daemon=True).start()
-
-
-_reintentar_publicacion_en_segundo_plano()
 
 
 @app.get("/api/sync/estado")
@@ -1675,12 +1625,15 @@ import qr_huesped as qrh
 from fastapi.responses import HTMLResponse
 
 
-@app.get("/i/{room_no}", response_class=HTMLResponse)
-def itinerario_publico(room_no: str):
-    """Página que ve el huésped al escanear el QR de su habitación.
-    NO requiere iniciar sesión: es la única parte pública del sistema, y solo
-    muestra el itinerario de quien ocupa esa habitación hoy — ningún otro dato."""
-    conn = get_connection()
+def _itinerario_de_habitacion(conn, ruta):
+    """Resuelve el enlace público y devuelve (reserva, filas, nombre, idioma).
+
+    Lanza 404 si el enlace no es válido. Lo comparten la página del huésped y la
+    descarga de su PDF, para que ambas muestren exactamente lo mismo.
+    """
+    room_no = qrh.resolver_habitacion(conn, ruta)
+    if room_no is None:
+        raise HTTPException(status_code=404, detail="Enlace no válido")
     reserva = qrh.ocupante_actual(conn, room_no)
     filas, nombre, idioma_pag = [], "", "en"
     if reserva:
@@ -1696,36 +1649,71 @@ def itinerario_publico(room_no: str):
             if datos:
                 filas, _ = itin.construir_itinerario(datos)
                 nombre = datos["nombre_bienvenida"]
-    conn.close()
+    return reserva, filas, nombre, idioma_pag
+
+
+@app.get("/i/{ruta}", response_class=HTMLResponse)
+def itinerario_publico(ruta: str):
+    """Página que ve el huésped al escanear el QR de su habitación.
+
+    NO requiere iniciar sesión: es la única parte pública del sistema, y solo
+    muestra el itinerario de quien ocupa esa habitación hoy — ningún otro dato.
+
+    `ruta` es el número de habitación (`05`), o `05-a1b2c3d4` si está activada la
+    opción de enlaces con código. El itinerario se arma en el momento, así que
+    siempre refleja lo que hay ahora mismo en el sistema.
+    """
+    conn = get_connection()
+    try:
+        reserva, filas, nombre, idioma_pag = _itinerario_de_habitacion(conn, ruta)
+    finally:
+        conn.close()
     import catalogo_itinerario as _cat
-    html = qrh.pagina_huesped_html(reserva, filas, nombre,
-                                   _cat.HORARIOS_LODGE, _cat.WHATSAPP_RECEPCION,
-                                   idioma=idioma_pag)
+    html = qrh.pagina_huesped_html(
+        reserva, filas, nombre, _cat.HORARIOS_LODGE, _cat.WHATSAPP_RECEPCION,
+        # El enlace es relativo a esta página, así que /i/05 y /i/05-a1b2c3d4
+        # llevan cada uno a su propio PDF sin tener que repetir la ruta.
+        enlace_pdf="itinerary.pdf" if (reserva and filas) else None,
+        idioma=idioma_pag)
     return HTMLResponse(content=html)
 
 
-import publicador as pub
+@app.get("/i/{ruta}/itinerary.pdf")
+def itinerario_publico_pdf(ruta: str):
+    """El itinerario del huésped en PDF, con el formato oficial del lodge.
+
+    Es el botón de descarga de la página anterior. Se genera en el momento, así que
+    siempre coincide con lo que muestra la página."""
+    conn = get_connection()
+    try:
+        reserva, filas, nombre, idioma_pag = _itinerario_de_habitacion(conn, ruta)
+    finally:
+        conn.close()
+    if not reserva or not filas:
+        raise HTTPException(status_code=404, detail="No hay itinerario para esta habitación")
+    buf = itin.generar_pdf_de_filas(nombre, filas, idioma_pag)
+    return Response(content=buf.getvalue(), media_type="application/pdf",
+                    headers={"Content-Disposition": 'inline; filename="itinerary.pdf"'})
 
 
-@app.get("/api/publicacion/estado")
-def publicacion_estado(fecha: str = None, filtro: str = "todas",
-                       user: dict = Depends(current_user)):
-    """Estado de la publicación. Permite revisar por fecha qué habitaciones entran,
-    salen o están ocupadas, y cuáles tienen cambios sin publicar.
+@app.get("/api/qr/estado")
+def qr_estado(fecha: str = None, filtro: str = "todas",
+              user: dict = Depends(current_user)):
+    """Qué vería hoy cada habitación al escanear su código QR.
 
-    filtro: 'todas' | 'movimiento' (entran o salen ese día) | 'pendientes'
+    Permite revisar por fecha qué habitaciones entran, salen o están ocupadas, y
+    detectar las que quedarían sin itinerario que mostrar.
+
+    filtro: 'todas' | 'movimiento' (entran o salen ese día) | 'sin_itinerario'
     """
     conn = get_connection()
-    estado = pub.estado_publicacion(conn)
+    cfg = qrh.cargar_config()
     hoy = fecha or datetime.date.today().isoformat()
     y, m, d = hoy.split("-")
     dd = f"{d}-{m}-{y[2:]}"
 
-    por_hab = {h["room_no"]: h for h in pub.estado_por_habitacion(conn)}
-
     detalle = []
-    for room in estado.get("habitaciones", []):
-        h = por_hab.get(room, {})
+    for room in cfg.get("habitaciones", []):
         r = qrh.ocupante_actual(conn, room, hoy)
         # Movimiento de esa habitación en la fecha consultada. Se distingue el caso
         # de una llegada futura: si la habitación está vacía ese día, el sistema
@@ -1742,77 +1730,68 @@ def publicacion_estado(fecha: str = None, filtro: str = "todas",
                 movimiento = "EN_CASA"
         detalle.append({
             "room_no": room,
-            "url": h.get("url", ""),
+            "url": qrh.url_habitacion(conn, room, cfg.get("base_url")),
             "huesped": r["nombre_principal"] if r else None,
             "conf_no": r["conf_no"] if r else None,
             "arr_date": r["arr_date"] if r else None,
             "dep_date": r["dep_date"] if r else None,
             "movimiento": movimiento,
-            "estado": h.get("estado", "SIN_PUBLICAR"),
-            "publicado_en": h.get("publicado_en"),
         })
-
-    if filtro == "movimiento":
-        detalle = [x for x in detalle if x["movimiento"] in ("ENTRA", "SALE")]
-    elif filtro == "pendientes":
-        detalle = [x for x in detalle if x["estado"] != "PUBLICADO"]
-
     conn.close()
-    estado["fecha"] = hoy
-    estado["filtro"] = filtro
-    estado["detalle"] = detalle
-    estado["resumen"] = {
-        "publicadas": sum(1 for x in por_hab.values() if x["estado"] == "PUBLICADO"),
-        "con_cambios": sum(1 for x in por_hab.values() if x["estado"] == "CAMBIO"),
-        "sin_publicar": sum(1 for x in por_hab.values() if x["estado"] == "SIN_PUBLICAR"),
+
+    con_huesped = [x for x in detalle if x["huesped"]]
+    if filtro == "movimiento":
+        mostrados = [x for x in detalle if x["movimiento"] in ("ENTRA", "SALE")]
+    elif filtro == "sin_itinerario":
+        mostrados = [x for x in detalle if not x["huesped"]]
+    else:
+        mostrados = detalle
+
+    return {
+        "configurado": qrh.esta_configurado(),
+        "base_url": cfg.get("base_url", ""),
+        "enlaces_con_codigo": bool(cfg.get("enlaces_con_codigo")),
+        "habitaciones": cfg.get("habitaciones", []),
+        "fecha": hoy,
+        "filtro": filtro,
+        "detalle": mostrados,
+        "resumen": {
+            "total": len(detalle),
+            "con_huesped": len(con_huesped),
+            "sin_ocupante": len(detalle) - len(con_huesped),
+        },
     }
-    return estado
 
 
-@app.post("/api/publicacion/config")
-async def publicacion_config(payload: dict, user: dict = Depends(current_user)):
+@app.post("/api/qr/config")
+async def qr_config(payload: dict, user: dict = Depends(current_user)):
     auth.requiere_escritura(user)
-    cfg = pub.cargar_config()
-    for campo in ("site_id", "token", "base_url"):
-        if campo in payload:
-            cfg[campo] = (payload[campo] or "").strip().rstrip("/")
+    cfg = qrh.cargar_config()
+    if "base_url" in payload:
+        cfg["base_url"] = (payload["base_url"] or "").strip().rstrip("/")
     if "enlaces_con_codigo" in payload:
         cfg["enlaces_con_codigo"] = bool(payload["enlaces_con_codigo"])
     if "habitaciones" in payload:
         cfg["habitaciones"] = [str(h).strip() for h in payload["habitaciones"] if str(h).strip()]
-    pub.guardar_config(cfg)
-    return {"status": "ok", "configurado": pub.esta_configurado()}
+    qrh.guardar_config(cfg)
+    return {"status": "ok", "configurado": qrh.esta_configurado(), **cfg}
 
 
-@app.post("/api/publicacion/publicar")
-def publicacion_publicar(user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
-    conn = get_connection()
-    resultado = pub.publicar(conn)
-    conn.close()
-    return resultado
-
-
-@app.get("/api/publicacion/qr")
-def publicacion_qr(user: dict = Depends(current_user)):
+@app.get("/api/qr/hoja")
+def qr_hoja(user: dict = Depends(current_user)):
     """Hoja imprimible con el QR de cada habitación. Se imprime una sola vez:
     el enlace de cada habitación no cambia nunca."""
-    conn = get_connection()
-    cfg = pub.cargar_config()
+    cfg = qrh.cargar_config()
     if not cfg.get("base_url"):
-        conn.close()
-        raise HTTPException(status_code=400, detail="Primero configura la dirección del sitio")
-    pares = [(room, pub.url_habitacion(conn, room)) for room in cfg.get("habitaciones", [])]
+        raise HTTPException(status_code=400,
+                            detail="Primero configura la dirección del sistema")
+    conn = get_connection()
+    pares = [(room, qrh.url_habitacion(conn, room, cfg.get("base_url")))
+             for room in cfg.get("habitaciones", [])]
     conn.close()
     buf = qrh.hoja_qr_pdf_urls(pares)
     return Response(content=buf.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": 'attachment; filename="Codigos_QR_habitaciones.pdf"'})
-
-
-@app.get("/api/publicacion/vista-previa/{room_no}", response_class=HTMLResponse)
-def publicacion_vista_previa(room_no: str, user: dict = Depends(current_user)):
-    """Permite a recepción ver exactamente lo que verá el huésped de esa habitación."""
-    return itinerario_publico(room_no)
 
 
 @app.get("/api/buscar")

@@ -198,7 +198,7 @@ Corcovado-OPS/
 │   ├── itinerario.py          Arma el itinerario del huésped
 │   ├── traducciones.py        Catálogo de idiomas
 │   ├── qr_huesped.py          Página pública del QR y hoja imprimible
-│   ├── publicador.py          Publica el sitio de itinerarios
+│   ├── qr_huesped.py          Página pública del QR, enlaces y hoja imprimible
 │   ├── sync_engine.py         Motor de sincronización Sierpe ↔ Drake
 │   ├── launcher.py            Punto de entrada (arranca todo)
 │   └── main.py                API (FastAPI)
