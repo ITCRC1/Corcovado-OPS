@@ -1,0 +1,2422 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Corcovado Wilderness Lodge — Sistema de Operación</title>
+<style>
+  /* Tipografías del lodge: las mismas que recibe el huésped en su itinerario.
+     Playfair para títulos, Archivo Narrow para datos (es condensada, así caben
+     más columnas en las tablas sin reducir el tamaño de letra). */
+  @font-face { font-family:'Display'; src:url('/assets/fonts/Playfair-Bold.ttf'); font-weight:700; font-display:swap; }
+  @font-face { font-family:'Display'; src:url('/assets/fonts/Playfair-Regular.ttf'); font-weight:400; font-display:swap; }
+  @font-face { font-family:'Datos'; src:url('/assets/fonts/ArchivoNarrow-Regular.ttf'); font-weight:400; font-display:swap; }
+  @font-face { font-family:'Datos'; src:url('/assets/fonts/ArchivoNarrow-SemiBold.ttf'); font-weight:600; font-display:swap; }
+
+  :root {
+    --forest: #2C4A3E; --forest-dark: #1D332A; --sand: #F5F1E8; --card: #FFFFFF;
+    /* Escala de texto: un solo sistema en vez de tamaños sueltos */
+    --t-xs: 11px; --t-sm: 12.5px; --t-md: 14px; --t-lg: 16px; --t-xl: 19px; --t-xxl: 25px;
+    /* Radios: tres valores para todo el sistema */
+    --r-sm: 6px; --r-md: 10px; --r-pill: 999px;
+    /* Escala general, ajustable por el usuario */
+    --escala: 1;
+    --border: #E3DFD3; --text: #24291F; --muted: #6E6A5C;
+    --warn-bg: #FFF4E5; --warn-text: #92400E;
+    --danger-bg: #FDECEC; --danger-text: #B91C1C;
+    --ok-bg: #E7F1EA; --ok-text: #1F6B45;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--sand); color: var(--text);
+    font-family: 'Datos', -apple-system, "Segoe UI", Arial, sans-serif;
+    font-size: calc(var(--t-sm) * var(--escala)); }
+  input, select, textarea, button { font-family: inherit; }
+  h1, h2, h3, h4, .title, .stat-value, .titulo-display {
+    font-family: 'Display', Georgia, serif; font-weight: 700; }
+  .container { max-width: 980px; margin: 0 auto; padding: 20px 16px 40px; }
+  .topbar { display:flex; align-items:center; justify-content:space-between;
+    background: var(--forest); padding: 12px 24px; position:relative; }
+  /* Franja fotográfica delgada: presencia de marca sin estorbar la lectura */
+  .topbar::after { content:""; position:absolute; left:0; right:0; bottom:0; height:3px;
+    background: url('/assets/itinerario/fondo.jpg') center 30%/cover no-repeat; opacity:.85; }
+  .topbar-left { display:flex; align-items:center; gap:14px; }
+  .topbar-left img { height: 30px; width: auto; }
+  .topbar img { height: 34px; filter: brightness(0) invert(1); }
+  .topbar-title { color: #F5F1E8; font-size: 14px; font-weight: 600; letter-spacing: 0.5px; }
+  .topbar-user { color: #DDE6DF; font-size: 13px; display:flex; align-items:center; gap:10px; }
+  .topbar-user button { background: transparent; border: 1px solid #4B6B5C; color: #F5F1E8; border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor:pointer; }
+  .topbar-buscar { flex:1; display:flex; justify-content:center; padding:0 16px; }
+  .topbar-buscar input { width:100%; max-width:380px; font-size:13px; padding:7px 12px;
+    border-radius:20px; border:1px solid #4B6B5C; background:#24413600; color:#F5F1E8; }
+  .topbar-buscar input::placeholder { color:#9FB6A8; }
+  .topbar-buscar input:focus { outline:none; background:#1D332A; border-color:#7FA98F; }
+
+  /* Resultados de búsqueda */
+  .buscar-panel { position:fixed; top:56px; left:50%; transform:translateX(-50%);
+    width:min(680px, 94vw); background:#fff; border:1px solid var(--border);
+    border-radius:12px; box-shadow:0 10px 34px rgba(0,0,0,.22); z-index:900;
+    max-height:70vh; overflow-y:auto; padding:8px; }
+  .buscar-item { padding:10px 12px; border-radius:8px; cursor:pointer; }
+  .buscar-item:hover, .buscar-item.activo { background:#EAF1EC; }
+  .buscar-item .linea1 { font-size:14px; font-weight:600; color:var(--forest-dark); }
+  .buscar-item .linea2 { font-size:12px; color:var(--muted); margin-top:2px; }
+
+  /* Aviso flotante de confirmación */
+  .aviso-flotante { position:fixed; bottom:26px; left:50%; transform:translateX(-50%);
+    background:var(--forest-dark); color:#fff; font-size:13px; padding:11px 20px;
+    border-radius:24px; box-shadow:0 6px 20px rgba(0,0,0,.28); z-index:1200;
+    opacity:0; transition:opacity .2s, bottom .2s; pointer-events:none; }
+  .aviso-flotante.visible { opacity:1; bottom:34px; }
+  .aviso-flotante.error { background:#B91C1C; }
+
+  /* Fila con cambios sin guardar */
+  tr.sin-guardar { background:#FFF8DC !important; box-shadow:inset 3px 0 0 #E5A93B; }
+
+  /* Línea del día: la jornada del lodge se organiza por horas de salida, así que
+     se dibuja el día completo de 5:45 a 20:30 con los tours en su hora real. */
+  .jornada { position:relative; margin:4px 0 2px; }
+  .jornada-eje { position:relative; height:20px; border-bottom:1px solid var(--border); }
+  .jornada-hora { position:absolute; top:0; transform:translateX(-50%); font-size:10px;
+    color:var(--muted); letter-spacing:.3px; }
+  .jornada-hora::after { content:""; position:absolute; left:50%; top:14px; width:1px;
+    height:6px; background:var(--border); }
+  .jornada-comidas { position:absolute; left:0; right:0; top:20px; bottom:0; }
+  .jornada-comida { position:absolute; top:0; bottom:0; background:#FAF6EC;
+    border-left:1px dashed #E3DFD3; border-right:1px dashed #E3DFD3; }
+  .jornada-comida span { position:absolute; top:-15px; left:2px; font-size:9px;
+    color:#A79E86; letter-spacing:.4px; text-transform:uppercase; white-space:nowrap; }
+  .jornada-comida:first-child span { left:0; }
+  .jornada-pistas { position:relative; padding-top:6px; }
+  .jornada-pista { position:relative; height:38px; margin-bottom:5px; }
+  .jornada-tour { position:absolute; top:0; height:38px; min-width:52px;
+    background:var(--forest); color:#fff; border-radius:6px; padding:5px 7px;
+    overflow:hidden; cursor:pointer; transition:transform .12s, box-shadow .12s; }
+  .jornada-tour:hover { transform:translateY(-1px); box-shadow:0 3px 10px rgba(0,0,0,.18); }
+  .jornada-tour.sin-asignar { background:#8B7B4E; }
+  .jornada-tour.conflicto { background:#9B2C2C; }
+  .jornada-tour b { display:block; font-size:11.5px; line-height:1.15; letter-spacing:.2px; }
+  .jornada-tour small { display:block; font-size:9.5px; opacity:.85; line-height:1.25;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .jornada-ahora { position:absolute; top:0; bottom:0; width:2px; background:#B91C1C; z-index:5; }
+  .jornada-ahora::before { content:""; position:absolute; top:-3px; left:-3px; width:8px;
+    height:8px; border-radius:50%; background:#B91C1C; }
+  .jornada-leyenda { display:flex; gap:14px; flex-wrap:wrap; font-size:11px;
+    color:var(--muted); margin-top:8px; }
+  .jornada-leyenda span { display:flex; align-items:center; gap:5px; }
+  .jornada-leyenda i { width:12px; height:12px; border-radius:3px; display:inline-block; }
+
+  /* Indicador de que el sistema está trabajando. Leer un PDF de 77 reservas toma
+     unos segundos y sin aviso la pantalla parece congelada. */
+  .trabajando { text-align:center; padding:34px 16px; }
+  .trabajando .giro { width:34px; height:34px; margin:0 auto 14px;
+    border:3px solid var(--border); border-top-color:var(--forest);
+    border-radius:50%; animation:girar .8s linear infinite; }
+  @keyframes girar { to { transform:rotate(360deg); } }
+  .trabajando p { margin:0; font-size:14px; color:var(--forest-dark); font-weight:600; }
+  .trabajando small { display:block; margin-top:5px; font-size:12px; color:var(--muted); }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-md); padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.03); }
+  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
+  .title { font-weight: 700; font-size: calc(var(--t-lg) * var(--escala)); margin: 0;
+    color: var(--forest-dark); letter-spacing: .2px; }
+  .subtitle { font-size: calc(var(--t-sm) * var(--escala)); color: var(--muted); margin: 2px 0 0; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+  .stat { background: #FAF8F2; border-radius: var(--r-sm); padding: 14px; cursor: pointer; border: 1px solid transparent; }
+  .stat:hover { border-color: var(--border); }
+  .stat.selected { border-color: var(--forest); background: #EAF1EC; }
+  .stat-label { font-size: calc(var(--t-xs) * var(--escala)); color: var(--muted); margin: 0 0 6px;
+    letter-spacing: .3px; text-transform: uppercase; }
+  .stat-value { font-size: calc(var(--t-xxl) * var(--escala)); font-weight: 700; margin: 0;
+    color: var(--forest-dark); line-height: 1.1; }
+  table { width: 100%; border-collapse: collapse; font-size: calc(var(--t-sm) * var(--escala)); }
+  th { text-align: left; color: var(--muted); font-weight: 600; padding: 9px 6px;
+    border-bottom: 1px solid var(--border); font-size: calc(var(--t-xs) * var(--escala));
+    letter-spacing: .4px; text-transform: uppercase;
+    /* El encabezado queda fijo al desplazar tablas largas */
+    position: sticky; top: 0; background: var(--card); z-index: 2; }
+  td { padding: 10px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tbody tr:hover, table tr:hover { background: #FCFBF7; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 6px; }
+  .badge-ok { background: var(--ok-bg); color: var(--ok-text); }
+  .badge-warn { background: var(--warn-bg); color: var(--warn-text); }
+  .badge-hoy { background: var(--forest); color: #fff; font-weight: 600; letter-spacing:.4px; }
+  .badge-tour { background: #EAF1EC; color: var(--forest-dark); margin-right:4px; display:inline-block; margin-bottom:2px; }
+  nav { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+  nav button { font-size: calc(var(--t-sm) * var(--escala)); padding: 8px 14px; border-radius: var(--r-sm); border: 1px solid var(--border); background: white; cursor: pointer; color: var(--text); }
+  nav button.active { background: var(--forest); color: white; border-color: var(--forest); }
+  .empty { color: var(--muted); font-size: calc(var(--t-sm) * var(--escala));
+    padding: 26px 12px; text-align: center; }
+  .empty::before { content:""; display:block; width:112px; height:76px; margin:0 auto 10px;
+    background: url('/assets/hoja.png') center/contain no-repeat; opacity:.35; }
+  .empty small { display:block; margin-top:5px; font-size: calc(var(--t-xs) * var(--escala));
+    color:#9C9683; }
+  td.empty::before { display:none; }
+  td.empty { padding: 20px 12px; }
+  .btn { font-size: calc(var(--t-sm) * var(--escala)); padding: 7px 13px; border-radius: var(--r-sm); border: 1px solid var(--border); background: white; cursor: pointer; margin-right: 6px; color: var(--text); transition: background .12s, color .12s, border-color .12s; }
+  /* Al tocar un botón se pinta de azul un instante, para confirmar que la acción se ejecutó */
+  .btn:active, .btn.pulsado { background: #2563EB; color: #fff; border-color: #2563EB; }
+  nav button { transition: background .12s, color .12s; }
+  nav button:active, nav button.pulsado { background: #2563EB; color: #fff; border-color: #2563EB; }
+  .stat { transition: background .12s, border-color .12s; }
+  .stat.pulsado { background: #E6EEFC; border-color: #2563EB; }
+  .pulsable { transition: background .12s; }
+  .pulsable.pulsado { background: #E6EEFC; }
+  .btn-primary { background: var(--forest); color: white; border-color: var(--forest); }
+  .filterbar { display: flex; align-items: center; gap: 8px; font-size: 13px; flex-wrap: wrap; }
+  .filterbar input, .filterbar select, select, input[type=date], input[type=text] { font-size: 13px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; }
+  .note-tag { display:inline-block; font-size:10px; padding:1px 6px; border-radius:4px; margin-right:6px; font-weight:600; }
+  .note-ingreso { background:#E6F1FB; color:#0C447C; }
+  .note-en_casa { background:#F1EFE8; color:#444441; }
+  .note-salida { background:#FAEEDA; color:#633806; }
+  .note-line { margin: 0 0 4px; }
+  .summary-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:16px; }
+  .dropzone { border: 2px dashed var(--border); border-radius: 10px; padding: 30px; text-align: center; color: var(--muted); }
+  .review-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+  .review-card.attn { border-color: #F2C777; background: var(--warn-bg); }
+  .cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  /* Colores pastel por estado de la reserva (relativo al día de hoy) */
+  .fila-entra   { background: #FFF8DC; }  /* amarillo pastel */
+  .fila-sale    { background: #FDE8E8; }  /* rojo pastel */
+  .fila-encasa  { background: #E6F0FA; }  /* azul pastel */
+  .fila-poringresar { background: #E8F5E9; } /* verde pastel */
+  .fila-salio   { background: #F2F2F0; color: var(--muted); } /* gris: ya salió */
+  .leyenda { display:flex; gap:14px; flex-wrap:wrap; font-size:11px; color:var(--muted); margin:10px 0 4px; }
+  .leyenda span { display:flex; align-items:center; gap:5px; }
+  .leyenda i { width:14px; height:14px; border-radius:3px; display:inline-block; border:1px solid rgba(0,0,0,0.08); }
+  .detail-panel { background: #FAF8F2; border-radius: 8px; padding: 12px; margin: 8px 0 16px; font-size: 13px; }
+
+  /* Cuadro de detalle de reserva */
+  .modal-fondo { position: fixed; inset: 0; background: rgba(29,51,42,0.55); display: flex; align-items: flex-start; justify-content: center; z-index: 1000; overflow-y: auto; padding: 30px 16px; }
+  .modal-caja { background: white; border-radius: 12px; max-width: 720px; width: 100%; padding: 24px; box-shadow: 0 12px 40px rgba(0,0,0,0.3); }
+  .modal-cerrar { float: right; background: transparent; border: none; font-size: 22px; cursor: pointer; color: var(--muted); line-height: 1; }
+  .modal-seccion { margin-top: 18px; }
+  .modal-seccion h4 { margin: 0 0 8px; font-size: 13px; color: var(--forest); text-transform: uppercase; letter-spacing: 0.5px; }
+  .modal-dato { font-size: 13px; margin: 0 0 4px; }
+  .modal-dato strong { color: var(--muted); font-weight: 400; }
+
+  /* Login */
+  /* La pantalla de ingreso es el umbral del sistema: aquí sí la naturaleza a
+     pantalla completa. Las pantallas de trabajo van con fondo plano para que el
+     color pueda significar urgencia sin competencia visual. */
+  .login-wrap { min-height: 100vh; display:flex; align-items:center; justify-content:center;
+    background: linear-gradient(rgba(29,51,42,.55), rgba(29,51,42,.72)),
+                url('/assets/itinerario/fondo.jpg') center/cover no-repeat var(--forest-dark); }
+  .login-card { background: rgba(255,255,255,.97); border-radius: var(--r-md);
+    padding: 40px 36px; width: 340px; text-align: center;
+    box-shadow: 0 14px 44px rgba(0,0,0,0.32); backdrop-filter: blur(2px); }
+  .login-card img { max-width: 220px; margin-bottom: 20px; }
+  .login-card input { width: 100%; margin-bottom: 12px; padding: 10px 12px; border-radius: 8px; }
+  .login-card button { width: 100%; padding: 10px; border-radius: 8px; background: var(--forest); color: white; border: none; font-size: 14px; cursor: pointer; margin-top: 6px; }
+  .login-error { color: var(--danger-text); font-size: 12px; margin-top: 8px; min-height: 14px; }
+  .login-hint { color: var(--muted); font-size: 11px; margin-top: 18px; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<div id="login-screen" class="login-wrap">
+  <div class="login-card">
+    <img src="/assets/logo.jpg" alt="Corcovado Wilderness Lodge">
+    <p style="font-weight:600;font-size:15px;margin:0 0 16px;color:#24291F;">Sistema de operación</p>
+    <input type="text" id="login-user" placeholder="Usuario" autocomplete="username">
+    <input type="password" id="login-pass" placeholder="Contraseña" autocomplete="current-password">
+    <button onclick="doLogin()">Ingresar</button>
+    <div class="login-error" id="login-error"></div>
+    <div class="login-hint">Usuarios de prueba: recepcion / gerencia / staff<br>(contraseña: [usuario]2026)</div>
+  </div>
+</div>
+
+<div id="app-screen" style="display:none;">
+  <div class="topbar">
+    <div class="topbar-left">
+      <img src="/assets/logo_blanco.png" alt="logo">
+      <span class="topbar-title">CORCOVADO WILDERNESS LODGE · OPERACIÓN</span>
+    </div>
+    <div class="topbar-buscar">
+      <input type="search" id="buscador" placeholder="Buscar huésped, habitación o reserva…"
+             autocomplete="off" oninput="buscarGlobal(this.value)">
+    </div>
+    <div class="topbar-user">
+      <button id="btn-escala" onclick="cambiarEscala()" title="Tamaño del texto">A+</button>
+      <span id="user-label"></span>
+      <button onclick="doLogout()">Cerrar sesión</button>
+    </div>
+  </div>
+  <div class="container">
+    <nav>
+      <button class="active" onclick="loadDashboard()">Dashboard</button>
+      <button onclick="loadReservas()">Reservas</button>
+      <button onclick="loadAgenda()">Agenda de tours</button>
+      <button onclick="loadTransporte()">Transporte</button>
+      <button onclick="loadEntradas()">Entradas SINAC</button>
+      <button onclick="loadAmenidades()">Amenidades</button>
+      <button onclick="loadAnalitica()">Analítica</button>
+      <button onclick="loadResumenOperacion()">Resumen operación</button>
+      <button id="nav-importar" onclick="loadImportarPDF()">Importar PDF</button>
+      <button id="nav-usuarios" onclick="loadUsuarios()">Usuarios</button>
+      <button id="nav-catalogo" onclick="loadCatalogoAdmin()">Catálogo</button>
+      <button id="nav-publicacion" onclick="loadPublicacion()">Publicación</button>
+    </nav>
+    <div id="app"></div>
+  </div>
+</div>
+
+<script>
+const API = "";
+let TOKEN = null;
+let CURRENT_USER = null;
+function hoyISO() { 
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function inicioMesISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
+}
+function finMesISO() {
+  const d = new Date(new Date().getFullYear(), new Date().getMonth()+1, 0);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function masDiasISO(n) {
+  const d = new Date(); d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function finMesSiguienteISO() {
+  const d = new Date(new Date().getFullYear(), new Date().getMonth()+2, 0);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+// Cada pantalla tiene su PROPIO filtro de fechas, independiente de las demás.
+// Si eliges una fecha en Reservas, no afecta a Transporte ni a Agenda. Cada filtro
+// se recuerda mientras dure la sesión, así puedes ir y volver sin perderlo.
+const FILTROS = {
+  dashboard:  { fecha: hoyISO() },
+  reservas:   { desde: inicioMesISO(), hasta: finMesISO() },
+  agenda:     { fecha: hoyISO(), desde: inicioMesISO(), hasta: finMesISO(), modo: "dia" },
+  transporte: { fecha: hoyISO(), desde: inicioMesISO(), hasta: finMesISO(), modo: "dia" },
+  sinac:      { desde: hoyISO(), hasta: masDiasISO(120) },
+  amenidades: { desde: inicioMesISO(), hasta: finMesISO() },
+  analitica:  { desde: inicioMesISO(), hasta: finMesISO() },
+  resumen:    { fecha: hoyISO() },
+  publicacion:{ fecha: hoyISO(), filtro: "todas" },
+};
+
+async function fetchAuth(url, options) {
+  options = options || {};
+  options.headers = Object.assign({}, options.headers, { "Authorization": "Bearer " + TOKEN });
+  const res = await fetch(url, options);
+  if (res.status === 401) { doLogout(); throw new Error("Sesión expirada"); }
+  return res;
+}
+
+async function doLogin() {
+  const username = document.getElementById("login-user").value.trim();
+  const password = document.getElementById("login-pass").value;
+  const errEl = document.getElementById("login-error");
+  errEl.textContent = "";
+  try {
+    const res = await fetch(`${API}/api/auth/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!res.ok) { errEl.textContent = "Usuario o contraseña incorrectos."; return; }
+    const data = await res.json();
+    TOKEN = data.token;
+    CURRENT_USER = data;
+    localStorage.setItem("hotel_token", TOKEN);
+    showApp();
+  } catch (e) {
+    errEl.textContent = "No se pudo conectar con el servidor.";
+  }
+}
+
+function doLogout() {
+  if (TOKEN) fetch(`${API}/api/auth/logout`, { method: "POST", headers: { "Authorization": "Bearer " + TOKEN } }).catch(() => {});
+  TOKEN = null; CURRENT_USER = null;
+  localStorage.removeItem("hotel_token");
+  document.getElementById("app-screen").style.display = "none";
+  document.getElementById("login-screen").style.display = "flex";
+  document.getElementById("login-pass").value = "";
+}
+
+function showApp() {
+  document.getElementById("login-screen").style.display = "none";
+  document.getElementById("app-screen").style.display = "block";
+  const rolLabel = { recepcion: "Recepción", gerencia: "Gerencia", staff: "Staff de campo" }[CURRENT_USER.rol] || CURRENT_USER.rol;
+  document.getElementById("user-label").textContent = `${CURRENT_USER.nombre_completo} · ${rolLabel}`;
+  document.getElementById("nav-importar").style.display = isRecepcion() ? "" : "none";
+  document.getElementById("nav-usuarios").style.display = isRecepcion() ? "" : "none";
+  document.getElementById("nav-catalogo").style.display = isRecepcion() ? "" : "none";
+  document.getElementById("nav-publicacion").style.display = isRecepcion() ? "" : "none";
+  loadDashboard();
+}
+
+// ---------- Aviso flotante de confirmación ----------
+let _avisoTimer = null;
+function avisar(texto, esError) {
+  let el = document.getElementById("aviso-flotante");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "aviso-flotante";
+    el.className = "aviso-flotante";
+    document.body.appendChild(el);
+  }
+  el.textContent = texto;
+  el.classList.toggle("error", !!esError);
+  el.classList.add("visible");
+  clearTimeout(_avisoTimer);
+  _avisoTimer = setTimeout(() => el.classList.remove("visible"), 2600);
+}
+
+// ---------- Búsqueda global ----------
+let _buscarTimer = null;
+function buscarGlobal(texto) {
+  clearTimeout(_buscarTimer);
+  if (!texto || texto.trim().length < 2) { cerrarBusqueda(); return; }
+  // Se espera un momento para no consultar en cada tecla
+  _buscarTimer = setTimeout(() => ejecutarBusqueda(texto.trim()), 280);
+}
+
+async function ejecutarBusqueda(texto) {
+  const res = await fetchAuth(`${API}/api/buscar?q=${encodeURIComponent(texto)}`);
+  const d = await res.json();
+  let panel = document.getElementById("buscar-panel");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "buscar-panel";
+    panel.className = "buscar-panel";
+    document.body.appendChild(panel);
+  }
+  const colorEstado = {
+    "Entra hoy": "badge-warn", "Sale hoy": "badge-warn", "En casa": "badge-ok",
+    "Por ingresar": "badge-tour", "Ya salió": "badge-tour", "Cancelada": "badge-warn",
+  };
+  if (!d.resultados || !d.resultados.length) {
+    panel.innerHTML = `<p class="empty" style="padding:14px;text-align:center;">Sin resultados para "${texto}".</p>`;
+    return;
+  }
+  panel.innerHTML = d.resultados.map((r, i) => `
+    <div class="buscar-item" data-i="${i}" onclick="abrirDesdeBusqueda('${r.conf_no}')">
+      <div class="linea1">Hab. ${r.room_no} · ${r.nombre_principal}
+        <span class="badge ${colorEstado[r.estado_estadia] || 'badge-tour'}" style="margin-left:6px;">${r.estado_estadia}</span>
+      </div>
+      <div class="linea2">Reserva ${r.conf_no} · ${r.arr_date} – ${r.dep_date} · ${r.pax} pax
+        · ${r.tours} tour${r.tours === 1 ? '' : 's'}
+        ${r.acompanantes.length ? '<br>' + r.acompanantes.join(" · ") : ""}
+      </div>
+    </div>`).join("");
+}
+
+function cerrarBusqueda() {
+  document.getElementById("buscar-panel")?.remove();
+}
+
+function abrirDesdeBusqueda(confNo) {
+  cerrarBusqueda();
+  document.getElementById("buscador").value = "";
+  verDetalleReserva(confNo);
+}
+
+// ---------- Tamaño del texto ----------
+// Útil en un lodge: pantallas compartidas, mucha luz natural.
+const ESCALAS = [1, 1.12, 1.25];
+function aplicarEscala(i) {
+  const paso = ESCALAS[i] || 1;
+  document.documentElement.style.setProperty("--escala", paso);
+  localStorage.setItem("hotel_escala", i);
+  const b = document.getElementById("btn-escala");
+  if (b) b.textContent = ["A", "A+", "A++"][i] || "A";
+}
+function cambiarEscala() {
+  const actual = parseInt(localStorage.getItem("hotel_escala") || "0");
+  aplicarEscala((actual + 1) % ESCALAS.length);
+}
+aplicarEscala(parseInt(localStorage.getItem("hotel_escala") || "0"));
+
+// Etiqueta que indica si la fecha mostrada es hoy, mañana o otro día
+function etiquetaFecha(fecha) {
+  if (fecha === hoyISO()) return '<span class="badge badge-hoy">Hoy</span>';
+  if (fecha === masDiasISO(1)) return '<span class="badge badge-tour">Mañana</span>';
+  if (fecha === masDiasISO(-1)) return '<span class="badge badge-tour">Ayer</span>';
+  if (fecha < hoyISO()) return '<span class="badge badge-tour" style="opacity:.75;">Día pasado</span>';
+  return "";
+}
+
+function isRecepcion() { return CURRENT_USER && (CURRENT_USER.rol === "recepcion" || CURRENT_USER.rol === "gerencia"); }
+
+async function tryAutoLogin() {
+  const saved = localStorage.getItem("hotel_token");
+  if (!saved) return;
+  TOKEN = saved;
+  try {
+    const res = await fetch(`${API}/api/auth/me`, { headers: { "Authorization": "Bearer " + TOKEN } });
+    if (res.ok) { CURRENT_USER = await res.json(); showApp(); }
+    else { TOKEN = null; localStorage.removeItem("hotel_token"); }
+  } catch (e) { TOKEN = null; }
+}
+
+function ddmmyyFromIso(iso) { const [y,m,d] = iso.split("-"); return `${d}-${m}-${y.slice(2)}`; }
+function shiftDate(iso, days) { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); }
+
+function notasHtml(r) {
+  let html = "";
+  if (r.nota_ingreso) html += `<p class="note-line"><span class="note-tag note-ingreso">Ingreso</span>${r.nota_ingreso}</p>`;
+  if (r.nota_en_casa) html += `<p class="note-line"><span class="note-tag note-en_casa">En casa</span>${r.nota_en_casa}</p>`;
+  if (r.nota_salida) html += `<p class="note-line"><span class="note-tag note-salida">Salida</span>${r.nota_salida}</p>`;
+  if (!html) html = `<p class="empty" style="padding:0;">Sin notas.</p>`;
+  return html;
+}
+
+function hayCambiosSinGuardar() {
+  return window._agendaSinGuardar && window._agendaSinGuardar.size > 0;
+}
+
+function setActive(i) {
+  const btns = document.querySelectorAll("nav button:not([style*='display: none'])");
+  document.querySelectorAll("nav button").forEach((b, idx) => b.classList.toggle("active", idx === i));
+}
+
+async function descargar(reporte, params, formato) {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v) qs.append(k, v); });
+  qs.append("formato", formato);
+  const res = await fetchAuth(`${API}/api/export/${reporte}?${qs.toString()}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${reporte}.${formato}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// ---------- DASHBOARD ----------
+async function loadDashboard(fecha) {
+  setActive(0);
+  if (fecha) FILTROS.dashboard.fecha = fecha;
+  const FECHA_DASH = FILTROS.dashboard.fecha;
+  window._dashAbierto = null;
+  const res = await fetchAuth(`${API}/api/dashboard/${FECHA_DASH}`);
+  const d = await res.json();
+  // Preparación del día siguiente: la asignación de guías y botes se hace la tarde
+  // anterior, así que se muestra aquí para no tener que ir a buscarla.
+  let conflictosHoy = [];
+  try {
+    conflictosHoy = (await (await fetchAuth(`${API}/api/agenda/conflictos?fecha=${FECHA_DASH}`)).json()).conflictos || [];
+  } catch (e) {}
+  let manana = null;
+  try {
+    manana = await (await fetchAuth(`${API}/api/pendientes-manana?fecha=${shiftDate(FECHA_DASH,1)}`)).json();
+  } catch (e) {}
+  const app = document.getElementById("app");
+  app.innerHTML = `
+    <div class="card">
+      <div class="header">
+        <div>
+          <p class="title">Dashboard diario</p>
+          <p class="subtitle">${d.fecha} ${etiquetaFecha(FECHA_DASH)}</p>
+        </div>
+        <div class="filterbar">
+          <button class="btn" onclick="loadDashboard(shiftDate('${FECHA_DASH}',-1))">‹</button>
+          <input type="date" value="${FECHA_DASH}" onchange="loadDashboard(this.value)">
+          <button class="btn" onclick="loadDashboard(shiftDate('${FECHA_DASH}',1))">›</button>
+          <button class="btn" onclick="loadDashboard(hoyISO())">Hoy</button>
+          <button class="btn" onclick="loadDashboard(masDiasISO(1))">Mañana</button>
+        </div>
+      </div>
+      <div class="stats">
+        <div class="stat" onclick="mostrarListaDash('entran_hoy')"><p class="stat-label">Entran hoy</p><p class="stat-value">${d.entran_hoy.length}</p></div>
+        <div class="stat" onclick="mostrarListaDash('salen_hoy')"><p class="stat-label">Salen hoy</p><p class="stat-value">${d.salen_hoy.length}</p></div>
+        <div class="stat" onclick="mostrarListaDash('en_casa')"><p class="stat-label">En casa</p><p class="stat-value">${d.en_casa.length}</p></div>
+        <div class="stat" onclick="mostrarListaDash('alertas')"><p class="stat-label">Alertas activas</p><p class="stat-value">${d.alertas.length}</p></div>
+      </div>
+      <div id="dash-detalle"></div>
+      ${(d.sinac_vencidas?.length || d.sinac_urgentes?.length) ? `
+        <div style="background:${d.sinac_vencidas?.length ? 'var(--danger-bg)' : 'var(--warn-bg)'};border-radius:8px;padding:12px 14px;margin-bottom:16px;">
+          <p style="font-weight:600;font-size:13px;margin:0 0 6px;color:${d.sinac_vencidas?.length ? 'var(--danger-text)' : 'var(--warn-text)'};">
+            ⚠ Entradas SINAC por comprar
+          </p>
+          ${d.sinac_vencidas?.length ? `<p style="font-size:12px;margin:0 0 4px;color:var(--danger-text);"><strong>${d.sinac_vencidas.length} con plazo VENCIDO:</strong> ${d.sinac_vencidas.slice(0,4).map(s=>`${s.tour} ${s.fecha}`).join(" · ")}${d.sinac_vencidas.length>4?" …":""}</p>` : ""}
+          ${d.sinac_urgentes?.length ? `<p style="font-size:12px;margin:0;color:var(--warn-text);"><strong>${d.sinac_urgentes.length} urgentes (≤7 días):</strong> ${d.sinac_urgentes.slice(0,4).map(s=>`${s.tour} ${s.fecha} (faltan ${s.dias}d)`).join(" · ")}${d.sinac_urgentes.length>4?" …":""}</p>` : ""}
+          <button class="btn" style="margin-top:8px;" onclick="loadEntradas()">Ver Entradas SINAC</button>
+        </div>` : ""}
+      ${(manana && manana.total_salidas) ? `
+        <div style="background:${(manana.sin_guia.length || manana.conflictos.length) ? 'var(--warn-bg)' : 'var(--ok-bg)'};border-radius:8px;padding:12px 14px;margin-bottom:16px;">
+          <p style="font-weight:600;font-size:13px;margin:0 0 6px;color:${(manana.sin_guia.length || manana.conflictos.length) ? 'var(--warn-text)' : 'var(--ok-text)'};">
+            Preparación de mañana (${manana.fecha}) — ${manana.total_salidas} salida${manana.total_salidas>1?'s':''}
+          </p>
+          ${manana.conflictos.length ? `<p style="margin:0 0 5px;font-size:12px;color:var(--danger-text);">
+            <strong>⚠ ${manana.conflictos.length} conflicto${manana.conflictos.length>1?'s':''} de horario:</strong>
+            ${manana.conflictos.slice(0,2).map(x=>x.mensaje).join(" ")}</p>` : ""}
+          ${manana.sin_guia.length ? `<p style="margin:0 0 4px;font-size:12px;">
+            <strong>Sin guía (${manana.sin_guia.length}):</strong>
+            ${manana.sin_guia.map(s=>`${s.tour_codigo}${s.grupo!=='A'?' '+s.grupo:''} ${s.horario||''} (${s.pax} pax)`).join(" · ")}</p>` : ""}
+          ${manana.sin_bote.length ? `<p style="margin:0 0 4px;font-size:12px;">
+            <strong>Sin bote (${manana.sin_bote.length}):</strong>
+            ${manana.sin_bote.map(s=>`${s.tour_codigo}${s.grupo!=='A'?' '+s.grupo:''}`).join(" · ")}</p>` : ""}
+          ${(!manana.sin_guia.length && !manana.sin_bote.length && !manana.conflictos.length) ?
+            `<p style="margin:0;font-size:12px;">Todo asignado para mañana.</p>` : ""}
+          <button class="btn" style="margin-top:8px;" onclick="loadAgenda(masDiasISO(1))">Ir a asignar</button>
+        </div>` : ""}
+      ${d.tours.length ? `
+        <p style="font-weight:600;font-size:14px;margin-bottom:2px;">La jornada</p>
+        <p style="font-size:11px;color:var(--muted);margin:0 0 6px;">Del desayuno a la cena · toca una salida para ir a la agenda</p>
+        ${lineaDelDia(d.tours, conflictosHoy, FECHA_DASH)}
+        <div style="height:14px;"></div>` : ""}
+      <p style="font-weight:600;font-size:14px;">Tours de hoy</p>
+      ${d.tours.length ? `
+      <table>
+        <tr><th>Hora</th><th>Tour</th><th>Huésped / Hab.</th><th>Guía</th><th>Bote</th><th>Pax</th></tr>
+        ${d.tours.map(t => `
+          <tr>
+            <td>${t.horario_inicio || "-"}</td>
+            <td>${t.tour_codigo}</td>
+            <td>${t.nombre_principal} · ${t.room_no}</td>
+            <td>${t.guia_nombre || "Sin asignar"}</td>
+            <td>${t.bote_nombre || (t.requiere_bote ? '<span style="color:var(--warn-text);">Sin asignar</span>' : '<span style="color:var(--muted);">no lleva bote</span>')}</td>
+            <td>${t.pax}</td>
+          </tr>`).join("")}
+      </table>` : `<p class="empty">No hay tours para esta fecha.<small>Se cargan al importar el PDF de reservas.</small></p>`}
+    </div>
+  `;
+  window._dashData = d;
+}
+
+// Dibuja el día como una línea de tiempo. Se usa el rango real de operación del
+// lodge: del desayuno (5:45) a la cena (20:30).
+function lineaDelDia(tours, conflictos, fecha) {
+  const INICIO = 5 * 60 + 45, FIN = 20 * 60 + 30;
+  const SPAN = FIN - INICIO;
+  const min = (h) => {
+    if (!h) return null;
+    const p = String(h).split(":");
+    return parseInt(p[0]) * 60 + parseInt(p[1] || 0);
+  };
+  const pos = (m) => Math.max(0, Math.min(100, ((m - INICIO) / SPAN) * 100));
+
+  // Se agrupan por salida: mismo tour y mismo grupo operativo van juntos
+  const salidas = {};
+  tours.forEach(t => {
+    const k = `${t.tour_codigo}|${t.grupo_operativo || 'A'}`;
+    if (!salidas[k]) salidas[k] = { ...t, pax: 0, habitaciones: [] };
+    salidas[k].pax += t.pax || 0;
+    salidas[k].habitaciones.push(t.room_no);
+  });
+  let lista = Object.values(salidas)
+    .map(t => ({ ...t, ini: min(t.horario_inicio), fin: min(t.horario_fin) }))
+    .filter(t => t.ini !== null)
+    .sort((a, b) => a.ini - b.ini);
+
+  if (!lista.length) return "";
+
+  const enConflicto = new Set();
+  (conflictos || []).forEach(cf => {
+    enConflicto.add(cf.salida_a.split(" ")[0]);
+    enConflicto.add(cf.salida_b.split(" ")[0]);
+  });
+
+  // Se reparten en pistas para que dos salidas simultáneas no se tapen
+  const pistas = [];
+  lista.forEach(t => {
+    const dur = Math.max((t.fin || t.ini + 120) - t.ini, 45);
+    const item = { ...t, dur };
+    let puesto = pistas.find(p => p.every(x => t.ini >= (x.ini + x.dur) || (t.ini + dur) <= x.ini));
+    if (puesto) puesto.push(item); else pistas.push([item]);
+  });
+
+  const horas = [];
+  for (let h = 6; h <= 20; h += 2) horas.push(h);
+
+  const comidas = [
+    { nombre: "Desayuno", ini: 5 * 60 + 45, fin: 9 * 60 },
+    { nombre: "Almuerzo", ini: 12 * 60, fin: 14 * 60 },
+    { nombre: "Cena", ini: 18 * 60, fin: 20 * 60 + 30 },
+  ];
+
+  // Marca de la hora actual, solo si se está viendo el día de hoy
+  const ahora = new Date();
+  const esHoy = fecha === hoyISO();
+  const minAhora = ahora.getHours() * 60 + ahora.getMinutes();
+  const mostrarAhora = esHoy && minAhora >= INICIO && minAhora <= FIN;
+
+  return `
+    <div class="jornada" style="padding-left:2px;">
+      <div class="jornada-eje" style="margin-top:18px;">
+        ${horas.map(h => `<div class="jornada-hora" style="left:${pos(h * 60)}%;">${h}:00</div>`).join("")}
+      </div>
+      <div style="position:relative;">
+        <div class="jornada-comidas">
+          ${comidas.map(m => `<div class="jornada-comida" style="left:${pos(m.ini)}%;width:${pos(m.fin) - pos(m.ini)}%;"><span>${m.nombre}</span></div>`).join("")}
+        </div>
+        ${mostrarAhora ? `<div class="jornada-ahora" style="left:${pos(minAhora)}%;" title="Ahora"></div>` : ""}
+        <div class="jornada-pistas">
+          ${pistas.map(p => `
+            <div class="jornada-pista">
+              ${p.map(t => {
+                // Solo se marca como incompleto si falta lo que ese tour realmente
+                // necesita: las caminatas y actividades en el lodge no llevan bote.
+                const faltaBote = t.requiere_bote && !t.bote_nombre;
+                const clase = enConflicto.has(t.tour_codigo) ? "conflicto"
+                            : ((!t.guia_nombre || faltaBote) ? "sin-asignar" : "");
+                const grupo = (t.grupo_operativo && t.grupo_operativo !== "A") ? ` ${t.grupo_operativo}` : "";
+                const quien = [t.guia_nombre, t.bote_nombre].filter(Boolean).join(" · ") || "sin asignar";
+                return `<div class="jornada-tour ${clase}"
+                    style="left:${pos(t.ini)}%;width:${Math.max(pos(t.ini + t.dur) - pos(t.ini), 6)}%;"
+                    title="${t.tour_codigo}${grupo} · ${t.horario_inicio}–${t.horario_fin || ''} · ${t.pax} pax · ${quien} · Hab. ${t.habitaciones.join(", ")}"
+                    onclick="loadAgenda('${fecha}')">
+                    <b>${t.tour_codigo}${grupo} <span style="font-weight:400;opacity:.8;">${t.pax}p</span></b>
+                    <small>${t.horario_inicio} · ${quien}</small>
+                  </div>`;
+              }).join("")}
+            </div>`).join("")}
+        </div>
+      </div>
+      <div class="jornada-leyenda">
+        <span><i style="background:var(--forest);"></i>Asignado</span>
+        <span><i style="background:#8B7B4E;"></i>Falta guía o bote</span>
+        <span><i style="background:#9B2C2C;"></i>Conflicto de horario</span>
+        ${mostrarAhora ? '<span><i style="background:#B91C1C;border-radius:50%;width:8px;height:8px;"></i>Ahora</span>' : ""}
+      </div>
+    </div>`;
+}
+
+function mostrarListaDash(campo) {
+  const panel = document.getElementById("dash-detalle");
+  // Si se vuelve a tocar la misma tarjeta, se cierra el detalle
+  if (window._dashAbierto === campo) {
+    window._dashAbierto = null;
+    panel.innerHTML = "";
+    document.querySelectorAll(".stat").forEach(s => s.classList.remove("selected"));
+    return;
+  }
+  window._dashAbierto = campo;
+  document.querySelectorAll(".stat").forEach(s => s.classList.remove("selected"));
+  if (event && event.currentTarget) event.currentTarget.classList.add("selected");
+  const d = window._dashData;
+  if (campo === "alertas") {
+    panel.innerHTML = `<div class="detail-panel">${d.alertas.length ? d.alertas.map(a => `<p class="note-line">⚠ ${a.mensaje}</p>`).join("") : "Sin alertas activas."}</div>`;
+    return;
+  }
+  const titulo = {entran_hoy:"Entran hoy", salen_hoy:"Salen hoy", en_casa:"En casa"}[campo];
+  const lista = d[campo];
+  panel.innerHTML = `
+    <div class="detail-panel">
+      <p style="font-weight:600;margin:0 0 8px;">${titulo} (${lista.length})</p>
+      ${lista.length ? lista.map(r => `
+        <div style="border-bottom:1px solid var(--border); padding:8px 0;">
+          <p style="margin:0;font-weight:600;">${r.nombre_principal} · Hab. ${r.room_no} <span style="font-weight:400;color:var(--muted);">(${r.adl+r.chl} pax)</span></p>
+          <p style="margin:2px 0 6px;color:var(--muted);">Ingreso: ${r.arr_date} · Salida: ${r.dep_date}</p>
+          <p style="margin:0;">${r.notas_libres ? r.notas_libres.slice(0,180) + (r.notas_libres.length>180 ? "…" : "") : "Sin notas."}</p>
+        </div>`).join("") : "<p class=\"empty\">Sin registros.</p>"}
+    </div>`;
+}
+
+// ---------- RESERVAS ----------
+async function loadReservas(desde, hasta) {
+  setActive(1);
+  if (desde) FILTROS.reservas.desde = desde;
+  if (hasta) FILTROS.reservas.hasta = hasta;
+  desde = FILTROS.reservas.desde; hasta = FILTROS.reservas.hasta;
+  const res = await fetchAuth(`${API}/api/reservas?desde=${desde}&hasta=${hasta}`);
+  const rows = await res.json();
+  // Estado del itinerario de cada reserva, para avisar si la reserva cambió
+  // después de que recepción lo editó a mano.
+  let estadosItin = {};
+  try { estadosItin = await (await fetchAuth(`${API}/api/itinerarios/estados`)).json(); } catch (e) {}
+  const app = document.getElementById("app");
+  app.innerHTML = `
+    <div class="card">
+      <div class="header">
+        <p class="title">Reservas</p>
+        <div class="filterbar">
+          Desde <input type="date" id="res-desde" value="${desde}">
+          Hasta <input type="date" id="res-hasta" value="${hasta}">
+          <button class="btn" onclick="loadReservas(document.getElementById('res-desde').value, document.getElementById('res-hasta').value)">Filtrar</button>
+          <button class="btn" onclick="descargar('reservas', {desde, hasta}, 'xlsx')">⬇ Excel</button>
+          <button class="btn" onclick="descargar('reservas', {desde, hasta}, 'pdf')">⬇ PDF</button>
+        </div>
+      </div>
+      <table>
+        <tr><th>N° Reserva</th><th>Hab.</th><th>Huésped</th><th>Fechas</th><th>Pax</th><th>Estatus</th><th>Grupo</th><th>Itinerario</th></tr>
+        ${rows.map(r => { const e = estadoReserva(r); return `
+          <tr class="${e.clase}">
+            <td><a href="#" onclick="verDetalleReserva('${r.conf_no}'); return false;" style="color:var(--forest);font-weight:600;text-decoration:underline;cursor:pointer;">${r.conf_no}</a></td>
+            <td>${r.room_no}</td>
+            <td>${r.nombre_principal}</td>
+            <td>${r.arr_date} – ${r.dep_date}</td>
+            <td>${r.adl + r.chl}</td>
+            <td><strong>${e.etiqueta}</strong><br><span style="font-size:11px;color:var(--muted);">${r.res_status}</span></td>
+            <td>${r.confianza ? `<span class="badge ${r.confianza === 'ALTA' ? 'badge-ok' : 'badge-warn'}">${r.confianza}${r.confirmado_por_recepcion ? '' : ' · sin confirmar'}</span>` : "—"}</td>
+            <td>${(() => {
+              const e = estadosItin[r.conf_no];
+              if (e && e.aviso_cambios) return `<button class="btn" style="background:var(--warn-bg);border-color:#E5C07B;color:var(--warn-text);font-weight:600;" onclick="abrirItinerario('${r.conf_no}')" title="La reserva cambió después de editar el itinerario">⚠ Revisar</button>`;
+              const idi = e && e.idioma && e.idioma !== "en" ? ` ${e.idioma.toUpperCase()}` : "";
+              if (e && e.editado) return `<button class="btn" onclick="abrirItinerario('${r.conf_no}')">Editado${idi}</button>`;
+              return `<button class="btn" onclick="abrirItinerario('${r.conf_no}')">Ver${idi}</button>`;
+            })()}</td>
+          </tr>`; }).join("")}
+      </table>
+      <div class="leyenda">
+        <span><i style="background:#FFF8DC;"></i>Entra hoy</span>
+        <span><i style="background:#FDE8E8;"></i>Sale hoy</span>
+        <span><i style="background:#E6F0FA;"></i>En casa</span>
+        <span><i style="background:#E8F5E9;"></i>Por ingresar</span>
+        <span><i style="background:#F2F2F0;"></i>Ya salió</span>
+      </div>
+      ${isRecepcion() ? `
+      <div style="margin-top:16px;">
+        ${rows.filter(r => r.grupo_id && !r.confirmado_por_recepcion).map(r => `
+          <div style="background:var(--warn-bg);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
+            <span style="color:var(--warn-text);">⚠ Grupo sugerido para ${r.nombre_principal} (hab. ${r.room_no})</span>
+            <button class="btn" style="margin-left:8px;" onclick="confirmarGrupo(${r.grupo_id}, true)">Confirmar grupo</button>
+            <button class="btn" onclick="confirmarGrupo(${r.grupo_id}, false)">No vincular</button>
+          </div>`).join("")}
+        ${rows.filter(r => r.guia_sugerido && !r.guia_confirmado).map(r => `
+          <div style="background:var(--warn-bg);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
+            <span style="color:var(--warn-text);">⚠ Guía sugerido para ${r.nombre_principal} (hab. ${r.room_no}): ${r.guia_sugerido}</span>
+            <button class="btn" style="margin-left:8px;" onclick="confirmarGuia('${r.conf_no}', null, true)">Confirmar guía</button>
+          </div>`).join("")}
+      </div>` : ""}
+    </div>
+  `;
+}
+
+async function confirmarGrupo(grupoId, confirmar) {
+  await fetchAuth(`${API}/api/grupos/${grupoId}/confirmar?confirmar=${confirmar}`, { method: "POST" });
+  avisar(confirmar ? "Grupo confirmado" : "Grupo desvinculado");
+  loadReservas();
+}
+
+async function confirmarGuia(confNo, guia, confirmar) {
+  const params = new URLSearchParams({ confirmar });
+  if (guia) params.append("guia", guia);
+  await fetchAuth(`${API}/api/reservas/${confNo}/guia?${params.toString()}`, { method: "POST" });
+  avisar("Guía confirmado");
+  loadReservas();
+}
+
+function estadoReserva(r) {
+  // Convierte 'DD-MM-YY' a 'YYYY-MM-DD' para comparar correctamente
+  const aIso = (f) => { if (!f) return null; const [d,m,y] = f.split("-"); return `20${y}-${m}-${d}`; };
+  const hoy = hoyISO();
+  const llega = aIso(r.arr_date), sale = aIso(r.dep_date);
+  if (sale && sale < hoy)  return { clase: "fila-salio",       etiqueta: "Ya salió" };
+  if (sale === hoy)        return { clase: "fila-sale",        etiqueta: "Sale hoy" };
+  if (llega === hoy)       return { clase: "fila-entra",       etiqueta: "Entra hoy" };
+  if (llega && llega > hoy) return { clase: "fila-poringresar", etiqueta: "Por ingresar" };
+  return { clase: "fila-encasa", etiqueta: "En casa" };
+}
+
+async function abrirItinerario(confNo) {
+  const d = await (await fetchAuth(`${API}/api/reservas/${confNo}/itinerario`)).json();
+  window._itin = d;
+  const modal = document.createElement("div");
+  modal.className = "modal-fondo";
+  modal.id = "modal-itin";
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+  const colorEstado = { LISTO: "badge-ok", REVISAR: "badge-warn", EDITADO: "badge-tour" };
+  modal.innerHTML = `
+    <div class="modal-caja" style="max-width:1000px;">
+      <button class="modal-cerrar" onclick="this.closest('.modal-fondo').remove()">×</button>
+      <p style="font-weight:600;font-size:18px;margin:0;color:var(--forest-dark);">Itinerario de bienvenida</p>
+      <p style="font-size:13px;color:var(--muted);margin:2px 0 12px;">
+        Reserva ${d.conf_no} · <span class="badge ${colorEstado[d.estado]}">${d.estado}</span>
+      </p>
+
+      <div class="modal-seccion" style="margin-top:8px;">
+        <h4>Idioma del documento</h4>
+        <div class="filterbar">
+          <select id="it-idioma" onchange="cambiarIdiomaItinerario('${d.conf_no}', this.value)" style="width:190px;">
+            ${Object.entries(d.idiomas || {}).map(([cod, nombre]) =>
+              `<option value="${cod}" ${d.idioma === cod ? "selected" : ""}>${nombre}</option>`).join("")}
+          </select>
+          <span style="font-size:11px;color:var(--muted);">
+            Se traducen los textos del catálogo. Lo que escribas a mano queda en el idioma en que lo escribas.
+          </span>
+        </div>
+      </div>
+
+      <div class="modal-seccion">
+        <h4>Nombres del huésped (título del documento)</h4>
+        <div class="filterbar">
+          <input type="text" id="it-nombre" value="${(d.nombre_bienvenida||"").replace(/"/g,'&quot;')}" style="width:320px;">
+        </div>
+      </div>
+
+      ${d.aviso_cambios ? `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:12px 14px;margin-top:12px;font-size:13px;">
+        <p style="margin:0 0 8px;font-weight:600;">⚠ La reserva cambió después de editar este itinerario</p>
+        <p style="margin:0 0 10px;">${d.aviso_cambios}</p>
+        <button class="btn btn-primary" onclick="incorporarCambios('${d.conf_no}')">Incorporar lo que falta</button>
+        <button class="btn" onclick="regenerarItinerario('${d.conf_no}')">Rehacer todo desde cero</button>
+        <p style="margin:8px 0 0;font-size:11px;">"Incorporar" agrega solo lo nuevo y conserva tus ediciones. "Rehacer" descarta las ediciones manuales.</p>
+      </div>` : ""}
+
+      ${d.avisos && d.avisos.length ? `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:10px 12px;margin-top:12px;font-size:12px;">
+        <strong>Falta completar:</strong><br>${d.avisos.join("<br>")}
+      </div>` : ""}
+
+      <div class="modal-seccion">
+        <h4>Itinerario — puedes editar cualquier campo</h4>
+        <table style="font-size:12px;" id="it-tabla">
+          <tr><th style="width:90px;">Día</th><th style="width:150px;">Actividad</th><th style="width:80px;">Duración</th><th>Horario</th><th>Detalles</th><th></th></tr>
+          ${d.filas.map((f, i) => filaItinerarioHTML(f, i)).join("")}
+        </table>
+        <button class="btn" style="margin-top:8px;" onclick="agregarFilaItinerario()">+ Agregar fila</button>
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--border);padding-top:12px;margin-top:16px;">
+        <button class="btn" onclick="regenerarItinerario('${d.conf_no}')">Rehacer automático</button>
+        <button class="btn" onclick="guardarItinerario('${d.conf_no}')">Guardar cambios</button>
+        <button class="btn btn-primary" onclick="descargarItinerario('${d.conf_no}')">⬇ Descargar PDF</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function filaItinerarioHTML(f, i) {
+  const ta = (campo, valor, filas) => `<textarea data-campo="${campo}" data-i="${i}" rows="${filas}" style="width:100%;font-size:12px;font-family:inherit;border:1px solid var(--border);border-radius:5px;padding:4px;resize:vertical;">${valor || ""}</textarea>`;
+  return `<tr data-fila="${i}" ${f.revisar ? 'style="background:var(--warn-bg);"' : ""}>
+    <td>${ta("dia", f.dia, 2)}</td>
+    <td>${ta("actividad", f.actividad, 3)}</td>
+    <td>${ta("duracion", f.duracion, 2)}</td>
+    <td>${ta("horario", f.horario, 3)}</td>
+    <td>${ta("detalles", f.detalles, 4)}</td>
+    <td><button class="btn" onclick="quitarFilaItinerario(${i})">Quitar</button></td>
+  </tr>`;
+}
+
+function leerFilasItinerario() {
+  const filas = [];
+  document.querySelectorAll("#it-tabla tr[data-fila]").forEach(tr => {
+    const f = {};
+    tr.querySelectorAll("textarea").forEach(t => { f[t.dataset.campo] = t.value; });
+    filas.push(f);
+  });
+  return filas;
+}
+
+function agregarFilaItinerario() {
+  const filas = leerFilasItinerario();
+  filas.push({ dia: "", actividad: "", duracion: "", horario: "", detalles: "" });
+  window._itin.filas = filas;
+  redibujarTablaItinerario(filas);
+}
+
+function quitarFilaItinerario(i) {
+  const filas = leerFilasItinerario();
+  filas.splice(i, 1);
+  window._itin.filas = filas;
+  redibujarTablaItinerario(filas);
+}
+
+function redibujarTablaItinerario(filas) {
+  document.getElementById("it-tabla").innerHTML =
+    `<tr><th style="width:90px;">Día</th><th style="width:150px;">Actividad</th><th style="width:80px;">Duración</th><th>Horario</th><th>Detalles</th><th></th></tr>`
+    + filas.map((f, i) => filaItinerarioHTML(f, i)).join("");
+}
+
+async function cambiarIdiomaItinerario(confNo, idioma) {
+  const payload = {
+    nombre_bienvenida: document.getElementById("it-nombre").value.trim(),
+    filas: leerFilasItinerario(),
+    idioma,
+  };
+  await fetchAuth(`${API}/api/reservas/${confNo}/itinerario`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  const nombres = { en: "inglés", es: "español", pt: "portugués", fr: "francés", ru: "ruso" };
+  avisar(`Itinerario en ${nombres[idioma] || idioma}`);
+  document.getElementById("modal-itin")?.remove();
+  abrirItinerario(confNo);
+}
+
+async function guardarItinerario(confNo) {
+  const payload = {
+    nombre_bienvenida: document.getElementById("it-nombre").value.trim(),
+    filas: leerFilasItinerario(),
+    idioma: document.getElementById("it-idioma")?.value || "en",
+  };
+  await fetchAuth(`${API}/api/reservas/${confNo}/itinerario`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  document.getElementById("modal-itin")?.remove();
+  abrirItinerario(confNo);
+}
+
+async function incorporarCambios(confNo) {
+  const res = await fetchAuth(`${API}/api/reservas/${confNo}/itinerario/incorporar`, { method: "POST" });
+  const d = await res.json();
+  avisar("Itinerario guardado");
+  document.getElementById("modal-itin")?.remove();
+  abrirItinerario(confNo);
+}
+
+async function regenerarItinerario(confNo) {
+  if (!confirm("Esto descarta las ediciones manuales y vuelve a armar el itinerario desde la reserva. ¿Continuar?")) return;
+  await fetchAuth(`${API}/api/reservas/${confNo}/itinerario/regenerar`, { method: "POST" });
+  document.getElementById("modal-itin")?.remove();
+  abrirItinerario(confNo);
+}
+
+async function descargarItinerario(confNo) {
+  const res = await fetchAuth(`${API}/api/reservas/${confNo}/itinerario/pdf`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `Itinerary_${confNo}.pdf`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function verDetalleReserva(confNo) {
+  const res = await fetchAuth(`${API}/api/reservas/${confNo}/detalle`);
+  const r = await res.json();
+
+  const notasHtmlDetalle = () => {
+    let h = "";
+    if (r.nota_ingreso) h += `<p class="note-line"><span class="note-tag note-ingreso">Ingreso</span>${r.nota_ingreso}</p>`;
+    if (r.nota_en_casa) h += `<p class="note-line"><span class="note-tag note-en_casa">En casa</span>${r.nota_en_casa}</p>`;
+    if (r.nota_salida) h += `<p class="note-line"><span class="note-tag note-salida">Salida</span>${r.nota_salida}</p>`;
+    if (!h) h = `<p class="modal-dato" style="color:var(--muted);">Sin notas registradas.</p>`;
+    return h;
+  };
+
+  const modal = document.createElement("div");
+  modal.className = "modal-fondo";
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+  modal.innerHTML = `
+    <div class="modal-caja">
+      <button class="modal-cerrar" onclick="this.closest('.modal-fondo').remove()">×</button>
+      <p style="font-weight:600;font-size:18px;margin:0;color:var(--forest-dark);">${r.nombre_principal}</p>
+      <p style="font-size:13px;color:var(--muted);margin:2px 0 0;">
+        Reserva ${r.conf_no} · Habitación ${r.room_no} · ${r.adl + r.chl} pax
+        · <span class="badge badge-ok">${r.res_status}</span>
+      </p>
+
+      <div class="modal-seccion">
+        <h4>Estadía</h4>
+        <p class="modal-dato"><strong>Ingreso:</strong> ${r.arr_date}${r.arr_time ? ` a las ${r.arr_time}` : ""} · <strong>Salida:</strong> ${r.dep_date}</p>
+        <p class="modal-dato"><strong>Transporte:</strong> entrada ${r.punto_entrada || "—"}${r.hora_vuelo_entrada ? ` (${r.hora_vuelo_entrada})` : ""} · salida ${r.punto_salida || "—"}${r.hora_vuelo_salida ? ` (${r.hora_vuelo_salida})` : ""}</p>
+        ${r.punto_entrada_sin_confirmar || r.punto_salida_sin_confirmar ? `
+          <p class="modal-dato" style="color:var(--warn-text);">⚠ Transporte pendiente de confirmar: ${r.punto_entrada_sin_confirmar || r.punto_salida_sin_confirmar}</p>` : ""}
+        ${r.company_travel_agent ? `<p class="modal-dato"><strong>Agencia:</strong> ${r.company_travel_agent}</p>` : ""}
+        ${r.confianza ? `<p class="modal-dato"><strong>Grupo:</strong> <span class="badge ${r.confianza==='ALTA'?'badge-ok':'badge-warn'}">${r.confianza}${r.confirmado_por_recepcion ? "" : " · sin confirmar"}</span></p>` : ""}
+      </div>
+
+      ${r.grupo_reservas.length ? `
+      <div class="modal-seccion">
+        <h4>Reservas vinculadas</h4>
+        ${r.grupo_reservas.map(g => `<p class="modal-dato">${g.nombre_principal} · Hab. ${g.room_no} <span style="color:var(--muted);">(${g.conf_no})</span></p>`).join("")}
+      </div>` : ""}
+
+      ${r.huespedes.length ? `
+      <div class="modal-seccion">
+        <h4>Huéspedes</h4>
+        ${r.huespedes.map(h => `<p class="modal-dato">${h.nombre_completo}${h.pasaporte ? ` <span style="color:var(--muted);">· ${h.pasaporte}</span>` : ""}</p>`).join("")}
+      </div>` : ""}
+
+      <div class="modal-seccion">
+        <h4>Tours de la estadía</h4>
+        ${r.tours.length ? `
+        <table style="font-size:12px;">
+          <tr><th>Fecha</th><th>Tour</th><th>Horario</th><th>Guía</th><th>Bote</th><th>Entrada SINAC</th></tr>
+          ${r.tours.map(t => `<tr>
+            <td>${t.fecha}</td><td>${t.tour_codigo}</td>
+            <td>${t.horario_inicio || "—"}${t.horario_fin ? ` – ${t.horario_fin}` : ""}</td>
+            <td>${t.guia_nombre || "Sin asignar"}</td><td>${t.bote_nombre || (t.requiere_bote ? '<span style="color:var(--warn-text);">Sin asignar</span>' : '<span style="color:var(--muted);">no lleva bote</span>')}</td>
+            <td>${t.conf_entrada_sinac || "—"}</td>
+          </tr>`).join("")}
+        </table>` : `<p class="modal-dato" style="color:var(--muted);">Sin tours registrados.</p>`}
+      </div>
+
+      <div class="modal-seccion">
+        <h4>Amenidades</h4>
+        ${r.amenidades.length ? r.amenidades.map(a => `
+          <p class="modal-dato">
+            <span class="badge badge-tour">${a.amenidad}</span>
+            <span style="color:var(--muted);">→ ${a.tarea} (${a.area_responsable})</span>
+            <span class="badge ${a.estado === 'HECHA' ? 'badge-ok' : 'badge-warn'}">${a.estado}</span>
+          </p>`).join("") : `<p class="modal-dato" style="color:var(--muted);">Sin amenidades especiales.</p>`}
+      </div>
+
+      <div class="modal-seccion">
+        <h4>Notas de la estadía</h4>
+        ${notasHtmlDetalle()}
+      </div>
+
+      ${r.notas_operacion ? `
+      <div class="modal-seccion">
+        <h4>Notas del itinerario</h4>
+        <p class="modal-dato" style="color:var(--warn-text);">${r.notas_operacion}</p>
+        <p style="font-size:11px;color:var(--muted);margin:4px 0 0;">Estas instrucciones venían escritas junto al itinerario en el PDF y pueden requerir coordinación manual.</p>
+      </div>` : ""}
+
+      ${r.notas_libres ? `
+      <div class="modal-seccion">
+        <h4>Notas completas del PDF</h4>
+        <p class="modal-dato" style="color:var(--muted);white-space:pre-wrap;">${r.notas_libres}</p>
+      </div>` : ""}
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+// ---------- AGENDA DE TOURS ----------
+let CATALOGO = null;
+async function getCatalogo() {
+  if (!CATALOGO) CATALOGO = await (await fetchAuth(`${API}/api/catalogo`)).json();
+  return CATALOGO;
+}
+
+async function loadAgenda(fecha, desde, hasta) {
+  setActive(2);
+  window._agendaSinGuardar = new Set();
+  const F = FILTROS.agenda;
+  if (fecha) { F.fecha = fecha; F.modo = "dia"; }
+  if (desde) F.desde = desde;
+  if (hasta) F.hasta = hasta;
+  if (fecha === null) F.modo = "rango";              // se pidió ver un rango
+  if (fecha === undefined) fecha = F.modo === "dia" ? F.fecha : null;
+  let url = fecha ? `${API}/api/tours/agenda?fecha=${fecha}` : `${API}/api/tours/agenda?desde=${F.desde}&hasta=${F.hasta}`;
+  const [rows, cat] = await Promise.all([fetchAuth(url).then(r => r.json()), getCatalogo()]);
+  // Conflictos de horario y quién está libre ese día
+  let conflictos = [], dispo = {};
+  if (fecha) {
+    try {
+      conflictos = (await (await fetchAuth(`${API}/api/agenda/conflictos?fecha=${fecha}`)).json()).conflictos || [];
+      const codigos = [...new Set(rows.flatMap(r => r.tours.map(t => t.tour_codigo)))];
+      for (const cod of codigos) {
+        dispo[cod] = await (await fetchAuth(`${API}/api/agenda/disponibilidad?fecha=${fecha}&tour_codigo=${cod}`)).json();
+      }
+    } catch (e) {}
+  }
+  // Los desplegables marcan quién ya está ocupado en ese horario
+  const opcionesGuia = (cod, actual) => {
+    const d = dispo[cod] || {};
+    const ocup = new Set(d.guias_ocupados || []);
+    return cat.guias.map(g => {
+      const marca = ocup.has(g.nombre) && g.nombre !== actual ? " (ocupado)" : "";
+      return `<option value="${g.nombre}"${g.nombre === actual ? " selected" : ""}>${g.nombre}${marca}</option>`;
+    }).join("");
+  };
+  const opcionesBote = (cod, actual) => {
+    const d = dispo[cod] || {};
+    const ocup = new Set(d.botes_ocupados || []);
+    return cat.botes.filter(b => b.gestionado_por_hotel).map(b => {
+      const marca = ocup.has(b.nombre) && b.nombre !== actual ? " (ocupado)" : "";
+      return `<option value="${b.nombre}"${b.nombre === actual ? " selected" : ""}>${b.nombre}${marca}</option>`;
+    }).join("");
+  };
+  const app = document.getElementById("app");
+  app.innerHTML = `
+    <div class="card">
+      <div class="header">
+        <p class="title">Agenda de tours ${fecha ? etiquetaFecha(fecha) : ''}</p>
+        <div class="filterbar">
+          <button class="btn" onclick="loadAgenda(shiftDate('${fecha || F.fecha}',-1))">‹ Día ant.</button>
+          <input type="date" value="${fecha || ""}" onchange="loadAgenda(this.value)">
+          <button class="btn" onclick="loadAgenda(shiftDate('${fecha || F.fecha}',1))">Día sig. ›</button>
+          <button class="btn" onclick="loadAgenda(hoyISO())">Hoy</button>
+          <button class="btn" onclick="loadAgenda(masDiasISO(1))">Mañana</button>
+          <span style="color:var(--muted);">o rango:</span>
+          <input type="date" id="ag-desde" value="${F.desde}">
+          <input type="date" id="ag-hasta" value="${F.hasta}">
+          <button class="btn" onclick="loadAgenda(null, document.getElementById('ag-desde').value, document.getElementById('ag-hasta').value)">Ver rango</button>
+          <button class="btn" onclick="descargar('agenda', {fecha: '${fecha||''}', desde: '${fecha?'':F.desde}', hasta: '${fecha?'':F.hasta}'}, 'xlsx')">⬇ Excel</button>
+          <button class="btn" onclick="descargar('agenda', {fecha: '${fecha||''}', desde: '${fecha?'':F.desde}', hasta: '${fecha?'':F.hasta}'}, 'pdf')">⬇ PDF</button>
+        </div>
+      </div>
+      <div id="ag-alertas"></div>
+      ${conflictos.length ? `
+        <div style="background:var(--danger-bg);color:var(--danger-text);border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:13px;">
+          <p style="margin:0 0 6px;font-weight:600;">⚠ ${conflictos.length} conflicto${conflictos.length>1?'s':''} de asignación</p>
+          ${conflictos.map(x => `<p style="margin:0 0 3px;">${x.mensaje}</p>`).join("")}
+        </div>` : ""}
+      ${rows.length ? `
+      <table>
+        <tr><th>Huésped / Hab.</th><th>Tour</th><th>Fecha del tour</th><th>Grupo</th><th>Guía</th><th>Bote</th><th>Pax</th>${isRecepcion() ? "<th></th>" : ""}</tr>
+        ${rows.map(r => r.tours.map((t, i) => `
+          <tr>
+            ${i === 0 ? `<td rowspan="${r.tours.length}">${r.nombre_principal} · ${r.room_no}</td>` : ''}
+            <td>${t.tour_codigo}</td>
+            <td>${isRecepcion()
+              ? `<input type="date" value="${t.fecha || r.fecha}" style="font-size:11.5px;padding:3px 5px;width:130px;"
+                   onchange="cambiarFechaTour(${t.id}, this.value, '${t.fecha || r.fecha}')">`
+              : (t.fecha || r.fecha)}</td>
+            <td>${isRecepcion() ? `<select id="gr-${t.id}" onchange="cambiarGrupo(${t.id}, this.value)" style="width:60px;">
+                ${["A","B","C","D"].map(g => `<option value="${g}" ${(t.grupo_operativo||"A")===g?"selected":""}>${g}</option>`).join("")}
+              </select>` : (t.grupo_operativo || "A")}</td>
+            <td>${isRecepcion() ? `<select id="g-${t.id}" onchange="marcarSinGuardar(${t.id})">${'<option value="">Sin asignar</option>' + opcionesGuia(t.tour_codigo, t.guia_nombre)}</select>` : (t.guia_nombre || "Sin asignar")}</td>
+            <td>${isRecepcion() ? `<select id="b-${t.id}" onchange="marcarSinGuardar(${t.id})">${'<option value="">Sin asignar</option>' + opcionesBote(t.tour_codigo, t.bote_nombre)}</select>` : (t.bote_nombre || "Sin asignar")}</td>
+            ${i === 0 ? `<td rowspan="${r.tours.length}">${r.pax}</td>` : ''}
+            ${isRecepcion() ? `<td><button class="btn" onclick="guardarAsignacion(${t.id})">Guardar</button></td>` : ''}
+          </tr>`).join("")).join("")}
+      </table>
+      <p style="font-size:11px;color:var(--muted);margin-top:8px;">
+        <strong>Grupo:</strong> si un tour excede la capacidad de un guía, cambia algunas reservas al grupo B, C o D — cada grupo lleva su propio guía.
+        Pueden compartir el mismo bote (si cabe) o usar botes distintos: el sistema valida el guía por grupo, y el bote sumando todos los grupos que lo comparten.
+      </p>` : `<p class="empty">No hay tours para esta fecha.<small>Si esperabas alguno, revisa que el PDF de reservas esté importado y que la fecha sea la correcta.</small></p>`}
+    </div>
+  `;
+}
+
+async function cambiarFechaTour(tourId, fecha, fechaAnterior) {
+  if (!fecha) { avisar("Fecha vacía", true); return; }
+  const res = await fetchAuth(`${API}/api/tours/agenda/${tourId}/fecha?fecha=${fecha}`, { method: "POST" });
+  if (!res.ok) {
+    const e = await res.json();
+    avisar(e.detail || "No se pudo cambiar la fecha", true);
+    loadAgenda();
+    return;
+  }
+  const d = await res.json();
+  if (d.sin_cambios) return;
+
+  let msg = `Tour movido al ${d.a}`;
+  if (d.entrada_sinac_movida) msg += " · entrada SINAC actualizada";
+  if (d.itinerario === "actualizado" || d.itinerario === "regenerado") msg += " · itinerario actualizado";
+  avisar(msg);
+
+  const panel = document.getElementById("ag-alertas");
+  let avisos = [];
+  if (d.itinerario === "requiere revisión manual") {
+    avisos.push("El itinerario de esta reserva fue editado a mano y no se pudo ajustar solo. Revísalo antes de enviarlo.");
+  }
+  avisos = avisos.concat(d.alertas || []);
+  if (panel) {
+    panel.innerHTML = avisos.length
+      ? `<div style="background:var(--warn-bg);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--warn-text);">${avisos.map(a => `⚠ ${a}`).join("<br>")}</div>`
+      : `<div style="background:var(--ok-bg);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--ok-text);">Tour movido del ${d.de} al ${d.a}. Todo lo relacionado quedó actualizado.</div>`;
+  }
+  loadAgenda();
+}
+
+async function cambiarGrupo(tourId, grupo) {
+  const res = await fetchAuth(`${API}/api/tours/agenda/${tourId}/grupo?grupo=${grupo}`, { method: "POST" });
+  const data = await res.json();
+  const panel = document.getElementById("ag-alertas");
+  if (data.alertas && data.alertas.length) {
+    panel.innerHTML = `<div style="background:var(--warn-bg);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--warn-text);">${data.alertas.map(a => `⚠ ${a}`).join("<br>")}</div>`;
+  } else {
+    panel.innerHTML = `<div style="background:var(--ok-bg);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--ok-text);">Movido al grupo ${data.grupo}. Asigna su guía y bote.</div>`;
+  }
+  loadAgenda();
+}
+
+// Marca visualmente la fila cuando se cambia un guía o bote y aún no se ha guardado
+function marcarSinGuardar(tourId) {
+  const fila = document.getElementById(`g-${tourId}`)?.closest("tr");
+  if (fila) fila.classList.add("sin-guardar");
+  window._agendaSinGuardar = window._agendaSinGuardar || new Set();
+  window._agendaSinGuardar.add(tourId);
+  const btn = document.querySelector(`button[onclick="guardarAsignacion(${tourId})"]`);
+  if (btn) { btn.textContent = "Guardar *"; btn.classList.add("btn-primary"); }
+}
+
+async function guardarAsignacion(tourId) {
+  const guia = document.getElementById(`g-${tourId}`).value;
+  const bote = document.getElementById(`b-${tourId}`).value;
+  const params = new URLSearchParams();
+  if (guia) params.append("guia", guia);
+  if (bote) params.append("bote", bote);
+  const res = await fetchAuth(`${API}/api/tours/agenda/${tourId}/asignar?${params.toString()}`, { method: "POST" });
+  const data = await res.json();
+  // La fila deja de estar marcada como pendiente de guardar
+  const fila = document.getElementById(`g-${tourId}`)?.closest("tr");
+  if (fila) fila.classList.remove("sin-guardar");
+  window._agendaSinGuardar?.delete(tourId);
+  const btn = document.querySelector(`button[onclick="guardarAsignacion(${tourId})"]`);
+  if (btn) { btn.textContent = "Guardar"; btn.classList.remove("btn-primary"); }
+  avisar(data.alertas && data.alertas.length ? "Guardado, revisa el aviso de capacidad" : "Asignación guardada");
+  const panel = document.getElementById("ag-alertas");
+  if (data.alertas && data.alertas.length) {
+    panel.innerHTML = `<div style="background:var(--warn-bg);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--warn-text);">${data.alertas.map(a => `⚠ ${a}`).join("<br>")}</div>`;
+  } else {
+    panel.innerHTML = `<div style="background:var(--ok-bg);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--ok-text);">Asignación guardada, sin conflictos de capacidad.</div>`;
+  }
+}
+
+// ---------- TRANSPORTE ----------
+async function loadTransporte(fecha, desde, hasta) {
+  setActive(3);
+  const T = FILTROS.transporte;
+  if (fecha) { T.fecha = fecha; T.modo = "dia"; }
+  if (desde) T.desde = desde;
+  if (hasta) T.hasta = hasta;
+  if (fecha === null) T.modo = "rango";
+  if (fecha === undefined) fecha = T.modo === "dia" ? T.fecha : null;
+  let url = fecha ? `${API}/api/transporte?fecha=${fecha}` : `${API}/api/transporte?desde=${T.desde}&hasta=${T.hasta}`;
+  const res = await fetchAuth(url);
+  const d = await res.json();
+  const pendientes = await (await fetchAuth(`${API}/api/transporte/pendientes`)).json();
+  const app = document.getElementById("app");
+  const filaE = r => `<tr><td>${r.arr_date}</td><td>${r.room_no}</td><td>${r.nombre_principal}</td><td>${r.punto_entrada||"-"}</td><td>${r.punto_entrada==='Drake' ? (r.hora_vuelo_entrada||r.arr_time||"-") : r.arr_time||"-"}</td><td>${r.adl+r.chl}</td></tr>`;
+  const filaS = r => `<tr><td>${r.dep_date}</td><td>${r.room_no}</td><td>${r.nombre_principal}</td><td>${r.punto_salida||"-"}</td><td>${r.punto_salida==='Drake' ? (r.hora_vuelo_salida||"-") : "-"}</td><td>${r.adl+r.chl}</td></tr>`;
+  app.innerHTML = `
+    <div class="card">
+      <div class="header">
+        <p class="title">Transporte ${fecha ? etiquetaFecha(fecha) : ''}</p>
+        <div class="filterbar">
+          <button class="btn" onclick="loadTransporte(shiftDate('${fecha || T.fecha}',-1))">‹ Día ant.</button>
+          <input type="date" value="${fecha||""}" onchange="loadTransporte(this.value)">
+          <button class="btn" onclick="loadTransporte(shiftDate('${fecha || T.fecha}',1))">Día sig. ›</button>
+          <button class="btn" onclick="loadTransporte(hoyISO())">Hoy</button>
+          <button class="btn" onclick="loadTransporte(masDiasISO(1))">Mañana</button>
+          <span style="color:var(--muted);">o rango:</span>
+          <input type="date" id="tr-desde" value="${T.desde}">
+          <input type="date" id="tr-hasta" value="${T.hasta}">
+          <button class="btn" onclick="loadTransporte(null, document.getElementById('tr-desde').value, document.getElementById('tr-hasta').value)">Ver rango</button>
+          <button class="btn" onclick="descargar('transporte', {fecha: '${fecha||''}', desde: '${fecha?'':T.desde}', hasta: '${fecha?'':T.hasta}'}, 'xlsx')">⬇ Excel</button>
+          <button class="btn" onclick="descargar('transporte', {fecha: '${fecha||''}', desde: '${fecha?'':T.desde}', hasta: '${fecha?'':T.hasta}'}, 'pdf')">⬇ PDF</button>
+        </div>
+      </div>
+      <p style="font-weight:600;font-size:14px;">Entradas</p>
+      ${d.entradas.length ? `<table><tr><th>Fecha</th><th>Hab.</th><th>Huésped</th><th>Punto</th><th>Hora</th><th>Pax</th></tr>${d.entradas.map(filaE).join("")}</table>` : `<p class="empty">Nadie ingresa este día.<small>Cambia la fecha con las flechas para revisar otro día.</small></p>`}
+      <p style="font-weight:600;font-size:14px;margin-top:16px;">Salidas</p>
+      ${d.salidas.length ? `<table><tr><th>Fecha</th><th>Hab.</th><th>Huésped</th><th>Punto</th><th>Hora</th><th>Pax</th></tr>${d.salidas.map(filaS).join("")}</table>` : `<p class="empty">Nadie sale este día.</p>`}
+      ${pendientes.length && isRecepcion() ? `
+        <p style="font-weight:600;font-size:14px;margin-top:20px;color:var(--warn-text);">⚠ Pendientes de confirmar (${pendientes.length})</p>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 8px;">El PDF menciona un ingreso o salida, pero no indica claramente si es por Sierpe o Drake.</p>
+        ${pendientes.map(p => `
+          ${p.punto_entrada_sin_confirmar ? `
+            <div style="background:var(--warn-bg);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
+              <span style="color:var(--warn-text);"><strong>Entrada</strong> · ${p.nombre_principal} (hab. ${p.room_no}, ${p.arr_date}): "${p.punto_entrada_sin_confirmar}"</span>
+              <button class="btn" style="margin-left:8px;" onclick="confirmarTransporte('${p.conf_no}','entrada','Sierpe')">Es Sierpe</button>
+              <button class="btn" onclick="confirmarTransporte('${p.conf_no}','entrada','Drake')">Es Drake</button>
+            </div>` : ""}
+          ${p.punto_salida_sin_confirmar ? `
+            <div style="background:var(--warn-bg);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
+              <span style="color:var(--warn-text);"><strong>Salida</strong> · ${p.nombre_principal} (hab. ${p.room_no}, ${p.dep_date}): "${p.punto_salida_sin_confirmar}"</span>
+              <button class="btn" style="margin-left:8px;" onclick="confirmarTransporte('${p.conf_no}','salida','Sierpe')">Es Sierpe</button>
+              <button class="btn" onclick="confirmarTransporte('${p.conf_no}','salida','Drake')">Es Drake</button>
+            </div>` : ""}
+        `).join("")}` : ""}
+    </div>
+  `;
+}
+
+async function confirmarTransporte(confNo, tipo, punto) {
+  await fetchAuth(`${API}/api/reservas/${confNo}/transporte?tipo=${tipo}&punto=${punto}`, { method: "POST" });
+  avisar(`Confirmado: ${tipo} por ${punto}`);
+  loadTransporte();
+}
+
+// ---------- ENTRADAS SINAC ----------
+async function loadEntradas(desde, hasta) {
+  setActive(4);
+  // Esta pantalla mantiene su propio rango, mirando hacia adelante: lo útil es ver
+  // qué falta comprar en los próximos meses, no lo que ya pasó.
+  if (desde) FILTROS.sinac.desde = desde;
+  if (hasta) FILTROS.sinac.hasta = hasta;
+  desde = FILTROS.sinac.desde; hasta = FILTROS.sinac.hasta;
+  const res = await fetchAuth(`${API}/api/entradas-sinac?desde=${desde}&hasta=${hasta}`);
+  const rows = await res.json();
+  const vencidas = rows.filter(e => e.urgencia === "VENCIDA").length;
+  const urgentes = rows.filter(e => e.urgencia === "URGENTE").length;
+  const aTiempo  = rows.filter(e => e.urgencia === "A_TIEMPO").length;
+  const compradas = rows.filter(e => e.estado === "COMPRADA").length;
+  window._sinacRows = rows;
+  const colorUrg = { VENCIDA:"fila-sale", URGENTE:"fila-entra", A_TIEMPO:"", OK:"", PASADA:"fila-salio", SIN_FECHA:"" };
+  const textoUrg = (e) => {
+    if (e.estado === "COMPRADA") return "—";
+    if (e.urgencia === "PASADA") return "Tour ya pasó";
+    if (e.dias_para_limite === null) return "—";
+    if (e.dias_para_limite < 0) return `VENCIÓ hace ${Math.abs(e.dias_para_limite)} d`;
+    if (e.dias_para_limite === 0) return "Vence HOY";
+    return `Faltan ${e.dias_para_limite} d`;
+  };
+  const app = document.getElementById("app");
+  app.innerHTML = `
+    <div class="card">
+      <div class="header">
+        <p class="title">Entradas SINAC</p>
+        <div class="filterbar">
+          Desde <input type="date" id="ent-desde" value="${desde}">
+          Hasta <input type="date" id="ent-hasta" value="${hasta}">
+          <button class="btn" onclick="loadEntradas(document.getElementById('ent-desde').value, document.getElementById('ent-hasta').value)">Filtrar</button>
+          <button class="btn" onclick="descargar('entradas-sinac', {desde, hasta}, 'xlsx')">⬇ Excel</button>
+          <button class="btn" onclick="descargar('entradas-sinac', {desde, hasta}, 'pdf')">⬇ PDF</button>
+        </div>
+      </div>
+      <p class="subtitle" style="margin-bottom:10px;">Compra requerida 15 días antes del tour · mostrando ${desde} a ${hasta}</p>
+      <div class="stats" style="grid-template-columns:repeat(4,1fr);">
+        <div class="stat" onclick="detalleSinac('VENCIDA')"><p class="stat-label">Plazo vencido</p><p class="stat-value" style="color:var(--danger-text);">${vencidas}</p></div>
+        <div class="stat" onclick="detalleSinac('URGENTE')"><p class="stat-label">Urgentes (≤7 días)</p><p class="stat-value" style="color:var(--warn-text);">${urgentes}</p></div>
+        <div class="stat" onclick="detalleSinac('A_TIEMPO')"><p class="stat-label">A tiempo</p><p class="stat-value">${aTiempo}</p></div>
+        <div class="stat" onclick="detalleSinac('OK')"><p class="stat-label">Ya compradas</p><p class="stat-value" style="color:var(--ok-text);">${compradas}</p></div>
+      </div>
+      <div id="sinac-detalle"></div>
+      <table>
+        <tr><th>Fecha tour</th><th>Actividad</th><th>Reservas</th><th>Pax + guía</th><th>Comprar antes de</th><th>Plazo</th><th>Conf.</th><th>Estado</th>${isRecepcion() ? "<th></th>" : ""}</tr>
+        ${rows.map(e => `
+          <tr class="${colorUrg[e.urgencia] || ''}">
+            <td>${e.fecha}</td><td>${e.tour_codigo}</td>
+            <td style="font-size:12px;">${(e.reservas && e.reservas.length) ? e.reservas.map(x => `Hab.${x.room_no} ${x.nombre_principal.split(",")[0]}`).join("<br>") : "—"}</td>
+            <td><strong>${e.pax_total_grupo}</strong><br><span style="font-size:11px;color:var(--muted);">${e.pax_huespedes || 0} pax + guía</span></td>
+            <td>${e.fecha_limite_compra || "—"}</td>
+            <td><strong>${textoUrg(e)}</strong></td>
+            <td>${e.conf_entrada || "-"}</td>
+            <td><span class="badge ${e.estado === "COMPRADA" ? "badge-ok" : "badge-warn"}">${e.estado.replace("_"," ")}</span></td>
+            ${isRecepcion() ? `<td>${e.estado !== "COMPRADA" ? `<button class="btn" onclick="marcarEntrada(${e.id})">Marcar comprada</button>` : ""}</td>` : ""}
+          </tr>`).join("") || `<tr><td colspan="9" class="empty">Sin entradas SINAC en estas fechas. Amplía el rango para ver las de los próximos meses.</td></tr>`}
+      </table>
+      <div class="leyenda">
+        <span><i style="background:#FDE8E8;"></i>Plazo de compra vencido</span>
+        <span><i style="background:#FFF8DC;"></i>Urgente (7 días o menos)</span>
+        <span><i style="background:#F2F2F0;"></i>Tour ya pasó</span>
+      </div>
+    </div>
+  `;
+}
+
+function detalleSinac(urgencia) {
+  const panel = document.getElementById("sinac-detalle");
+  if (window._sinacAbierto === urgencia) {
+    window._sinacAbierto = null;
+    panel.innerHTML = "";
+    document.querySelectorAll("#app .stat").forEach(s => s.classList.remove("selected"));
+    return;
+  }
+  window._sinacAbierto = urgencia;
+  document.querySelectorAll("#app .stat").forEach(s => s.classList.remove("selected"));
+  if (event && event.currentTarget) event.currentTarget.classList.add("selected");
+  const titulos = {
+    VENCIDA: "Plazo de compra vencido",
+    URGENTE: "Urgentes — quedan 7 días o menos",
+    A_TIEMPO: "A tiempo",
+    OK: "Ya compradas",
+  };
+  const lista = (window._sinacRows || []).filter(e => e.urgencia === urgencia);
+  if (!lista.length) {
+    panel.innerHTML = `<div class="detail-panel">No hay entradas en esta categoría.</div>`;
+    return;
+  }
+  // Se agrupa por reserva para ver, huésped por huésped, qué entradas le corresponden
+  const porReserva = {};
+  lista.forEach(e => (e.reservas || []).forEach(r => {
+    const k = r.conf_no;
+    if (!porReserva[k]) porReserva[k] = { ...r, entradas: [] };
+    porReserva[k].entradas.push(e);
+  }));
+  const reservas = Object.values(porReserva);
+  const totalEntradas = lista.reduce((s, e) => s + (e.pax_total_grupo || 0), 0);
+
+  panel.innerHTML = `
+    <div class="detail-panel">
+      <p style="font-weight:600;margin:0 0 4px;">${titulos[urgencia]} — ${lista.length} salidas · ${totalEntradas} entradas en total</p>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">Toca el número de reserva para ver toda su información.</p>
+      ${reservas.length ? reservas.map(r => `
+        <div style="border-bottom:1px solid var(--border);padding:8px 0;">
+          <p style="margin:0;font-weight:600;">
+            <a href="#" onclick="verDetalleReserva('${r.conf_no}'); return false;" style="color:var(--forest);text-decoration:underline;">${r.conf_no}</a>
+            · Hab. ${r.room_no} · ${r.nombre_principal}
+            <span style="font-weight:400;color:var(--muted);">(${r.adl + r.chl} pax)</span>
+          </p>
+          ${r.entradas.map(e => `<p style="margin:3px 0 0;font-size:12px;">
+              <span class="badge badge-tour">${e.tour_codigo}</span> ${e.fecha}
+              · comprar antes de <strong>${e.fecha_limite_compra || "—"}</strong>
+              ${e.dias_para_limite !== null && e.estado !== "COMPRADA"
+                ? (e.dias_para_limite < 0 ? ` · <span style="color:var(--danger-text);">venció hace ${Math.abs(e.dias_para_limite)} d</span>`
+                                          : ` · faltan ${e.dias_para_limite} d`)
+                : ""}
+              ${e.conf_entrada ? ` · conf. ${e.conf_entrada}` : ""}
+            </p>`).join("")}
+        </div>`).join("")
+      : `<p style="font-size:13px;color:var(--muted);">Estas entradas no tienen reservas asociadas visibles.</p>`}
+    </div>`;
+}
+
+async function marcarEntrada(id) {
+  await fetchAuth(`${API}/api/entradas-sinac/${id}/marcar?estado=COMPRADA`, { method: "POST" });
+  avisar("Entrada marcada como comprada");
+  loadEntradas();
+}
+
+// ---------- ANALITICA ----------
+// ---------- AMENIDADES / TAREAS ----------
+async function loadAmenidades(desdeNuevo, hastaNuevo, estadoNuevo) {
+  setActive(5);
+  if (desdeNuevo) FILTROS.amenidades.desde = desdeNuevo;
+  if (hastaNuevo) FILTROS.amenidades.hasta = hastaNuevo;
+  const desde = FILTROS.amenidades.desde, hasta = FILTROS.amenidades.hasta;
+  const estado = estadoNuevo !== undefined ? estadoNuevo : (window._amenEstado || "");
+  window._amenEstado = estado;
+
+  const qs = new URLSearchParams({ desde, hasta });
+  if (estado) qs.append("estado", estado);
+  const rows = await (await fetchAuth(`${API}/api/amenidades?${qs}`)).json();
+  const pend = rows.filter(a => a.estado === "PENDIENTE").length;
+  const hechas = rows.filter(a => a.estado === "HECHA").length;
+
+  // Agrupar por área responsable, que es como trabaja el staff
+  const porArea = {};
+  rows.forEach(a => { (porArea[a.area_responsable] = porArea[a.area_responsable] || []).push(a); });
+
+  document.getElementById("app").innerHTML = `
+    <div class="card">
+      <div class="header">
+        <p class="title">Amenidades y tareas</p>
+        <div class="filterbar">
+          Desde <input type="date" id="am-desde" value="${desde}">
+          Hasta <input type="date" id="am-hasta" value="${hasta}">
+          <select id="am-estado" onchange="loadAmenidades(null,null,this.value)">
+            <option value="" ${estado===""?"selected":""}>Todas</option>
+            <option value="PENDIENTE" ${estado==="PENDIENTE"?"selected":""}>Solo pendientes</option>
+            <option value="HECHA" ${estado==="HECHA"?"selected":""}>Solo hechas</option>
+          </select>
+          <button class="btn" onclick="loadAmenidades(document.getElementById('am-desde').value, document.getElementById('am-hasta').value)">Filtrar</button>
+          <button class="btn" onclick="descargar('amenidades', {desde:'${desde}', hasta:'${hasta}'}, 'xlsx')">⬇ Excel</button>
+          <button class="btn" onclick="descargar('amenidades', {desde:'${desde}', hasta:'${hasta}'}, 'pdf')">⬇ PDF</button>
+          ${isRecepcion() ? `<button class="btn btn-primary" onclick="mostrarFormAmenidad()">+ Agregar requerimiento</button>` : ""}
+        </div>
+      </div>
+      <div id="form-amenidad"></div>
+      <div class="stats" style="grid-template-columns:repeat(3,1fr);">
+        <div class="stat" style="cursor:default;"><p class="stat-label">Total</p><p class="stat-value">${rows.length}</p></div>
+        <div class="stat" style="cursor:default;"><p class="stat-label">Pendientes</p><p class="stat-value" style="color:var(--warn-text);">${pend}</p></div>
+        <div class="stat" style="cursor:default;"><p class="stat-label">Hechas</p><p class="stat-value" style="color:var(--ok-text);">${hechas}</p></div>
+      </div>
+      <p class="subtitle" style="margin-bottom:12px;">Se muestran según la fecha de llegada del huésped, que es cuando deben estar listas.</p>
+      ${rows.length ? Object.entries(porArea).map(([area, lista]) => `
+        <p style="font-weight:600;font-size:14px;margin:16px 0 6px;color:var(--forest);">${area} (${lista.length})</p>
+        <table>
+          <tr><th>Llegada</th><th>Hab.</th><th>Huésped</th><th>Amenidad</th><th>Tarea</th><th>Estado</th>${isRecepcion()?"<th></th>":""}</tr>
+          ${lista.map(a => `
+            <tr class="${a.estado === 'HECHA' ? 'fila-salio' : ''}">
+              <td>${a.arr_date}</td>
+              <td>${a.room_no}</td>
+              <td>${a.nombre_principal}</td>
+              <td><span class="badge badge-tour">${a.amenidad}</span>${a.origen === 'MANUAL' ? ' <span style="font-size:10px;color:var(--muted);">(manual)</span>' : ''}</td>
+              <td style="font-size:12px;color:var(--muted);">${a.detalle ? `<strong style="color:var(--text);">${a.detalle}</strong><br>` : ''}${a.tarea}</td>
+              <td><span class="badge ${a.estado === 'HECHA' ? 'badge-ok' : 'badge-warn'}">${a.estado}</span></td>
+              ${isRecepcion() ? `<td><button class="btn" onclick="marcarAmenidad(${a.id}, '${a.estado === 'HECHA' ? 'PENDIENTE' : 'HECHA'}')">${a.estado === 'HECHA' ? 'Reabrir' : 'Marcar hecha'}</button>${a.origen === 'MANUAL' ? `<button class="btn" onclick="eliminarAmenidad(${a.id})">Eliminar</button>` : ''}</td>` : ""}
+            </tr>`).join("")}
+        </table>`).join("") : `<p class="empty">No hay amenidades en estas fechas.<small>Se detectan al importar el PDF, y puedes agregar requerimientos a mano con el botón de arriba.</small></p>`}
+    </div>
+  `;
+}
+
+function mostrarFormAmenidad() {
+  document.getElementById("form-amenidad").innerHTML = `
+    <div style="background:var(--warn-bg);border-radius:8px;padding:14px;margin-bottom:16px;">
+      <p style="font-weight:600;font-size:13px;margin:0 0 10px;">Agregar requerimiento del huésped</p>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">Para alergias reportadas por teléfono, preferencias, cenas privadas o cualquier petición especial que no venga en el PDF.</p>
+      <div class="filterbar" style="flex-wrap:wrap;">
+        <input type="text" id="na-conf" placeholder="N° de reserva" style="width:140px;">
+        <select id="na-tipo" style="width:190px;">
+          <option>Restricción alimentaria / alergia</option>
+          <option>Cena privada</option>
+          <option>Preferencia del huésped</option>
+          <option>Decoración por cumpleaños</option>
+          <option>Luna de miel / cliente VIP</option>
+          <option>Cuna / bebé</option>
+          <option>Requerimiento de movilidad / accesibilidad</option>
+          <option>Otro requerimiento</option>
+        </select>
+        <input type="text" id="na-detalle" placeholder="Detalle (ej: alérgico a mariscos)" style="width:260px;">
+        <select id="na-area" style="width:150px;">
+          <option>Cocina</option><option>Housekeeping</option><option>Recepción</option>
+          <option>Bar/Bodega</option><option>Gerencia/Recepción</option><option>Recepción/Operaciones</option>
+        </select>
+        <button class="btn btn-primary" onclick="crearAmenidad()">Guardar</button>
+        <button class="btn" onclick="document.getElementById('form-amenidad').innerHTML=''">Cancelar</button>
+      </div>
+      <div id="na-error" style="color:var(--danger-text);font-size:12px;margin-top:6px;"></div>
+    </div>`;
+}
+
+async function crearAmenidad() {
+  const payload = {
+    conf_no: document.getElementById("na-conf").value.trim(),
+    amenidad: document.getElementById("na-tipo").value,
+    detalle: document.getElementById("na-detalle").value.trim(),
+    area_responsable: document.getElementById("na-area").value,
+  };
+  if (!payload.conf_no) { document.getElementById("na-error").textContent = "Indica el número de reserva."; return; }
+  payload.tarea = payload.detalle || payload.amenidad;
+  const res = await fetchAuth(`${API}/api/amenidades`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  if (!res.ok) { document.getElementById("na-error").textContent = (await res.json()).detail; return; }
+  loadAmenidades();
+}
+
+async function eliminarAmenidad(id) {
+  if (!confirm("¿Eliminar este requerimiento?")) return;
+  await fetchAuth(`${API}/api/amenidades/${id}`, { method: "DELETE" });
+  avisar("Requerimiento eliminado");
+  loadAmenidades();
+}
+
+async function marcarAmenidad(id, estado) {
+  await fetchAuth(`${API}/api/amenidades/${id}/estado?estado=${estado}`, { method: "POST" });
+  avisar(estado === "HECHA" ? "Marcada como hecha" : "Reabierta");
+  loadAmenidades();
+}
+
+async function loadAnalitica(desdeNuevo, hastaNuevo) {
+  setActive(6);
+  if (desdeNuevo) FILTROS.analitica.desde = desdeNuevo;
+  if (hastaNuevo) FILTROS.analitica.hasta = hastaNuevo;
+  const desde = FILTROS.analitica.desde, hasta = FILTROS.analitica.hasta;
+  window._boteAbierto = null; window._guiaAbierto = null;
+  const res = await fetchAuth(`${API}/api/analitica?desde=${desde}&hasta=${hasta}`);
+  const d = await res.json();
+  let ocu = null;
+  try { ocu = await (await fetchAuth(`${API}/api/ocupacion?desde=${desde}&hasta=${hasta}`)).json(); } catch (e) {}
+  const app = document.getElementById("app");
+  const maxBote = Math.max(...d.uso_botes.map(b => b.tours), 1);
+  app.innerHTML = `
+    <div class="card">
+      <div class="header">
+        <p class="title">Analítica operativa</p>
+        <div class="filterbar">
+          Desde <input type="date" id="an-desde" value="${desde}">
+          Hasta <input type="date" id="an-hasta" value="${hasta}">
+          <button class="btn" onclick="loadAnalitica(document.getElementById('an-desde').value, document.getElementById('an-hasta').value)">Filtrar</button>
+          <button class="btn" onclick="descargar('analitica', {desde:'${desde}', hasta:'${hasta}'}, 'xlsx')">⬇ Excel</button>
+          <button class="btn" onclick="descargar('analitica', {desde:'${desde}', hasta:'${hasta}'}, 'pdf')">⬇ PDF</button>
+        </div>
+      </div>
+      <p class="subtitle">${desde} a ${hasta}</p>
+      <p style="font-weight:600;font-size:14px;margin-top:14px;">Uso de botes por actividad <span style="font-weight:400;color:var(--muted);font-size:12px;">(toca un bote)</span></p>
+      ${d.uso_botes.map(b => `
+        <div class="bar-row pulsable" style="display:flex;align-items:center;gap:10px;margin-bottom:6px;cursor:pointer;border-radius:5px;padding:2px 4px;" onclick="mostrarDetalleBote('${b.bote_nombre}','${desde}','${hasta}')">
+          <span style="width:80px;font-size:12px;color:var(--muted);">${b.bote_nombre}</span>
+          <div style="flex:1;background:#FAF8F2;border-radius:4px;height:16px;"><div style="width:${(b.tours / maxBote) * 100}%;background:var(--forest);height:100%;border-radius:4px;"></div></div>
+          <span style="width:28px;font-size:12px;text-align:right;">${b.tours}</span>
+        </div>`).join("")}
+      <div id="detalle-bote"></div>
+
+      <div class="cols2" style="margin-top:16px;">
+        <div>
+          <p style="font-weight:600;font-size:14px;">Actividades por guía <span style="font-weight:400;color:var(--muted);font-size:12px;">(toca un nombre)</span></p>
+          <table>
+            ${d.actividades_por_guia.map(g => `
+              <tr class="pulsable" style="cursor:pointer;" onclick="mostrarDetalleGuia('${g.guia_nombre}','${desde}','${hasta}')">
+                <td>${g.guia_nombre}</td><td style="text-align:right;">${g.tours} tours</td>
+              </tr>`).join("")}
+          </table>
+          <div id="detalle-guia"></div>
+        </div>
+        <div>
+          <p style="font-weight:600;font-size:14px;">Movimiento por punto de entrada <span style="font-weight:400;color:var(--muted);font-size:12px;">(pax)</span></p>
+          ${d.movimiento_por_punto.map(m => `
+            <div class="stat" style="display:inline-block;width:45%;margin-right:8px;cursor:default;">
+              <p class="stat-label">${m.punto}</p><p class="stat-value">${m.pax} pax</p>
+            </div>`).join("")}
+        </div>
+      </div>
+    </div>
+
+    ${ocu ? `
+    <div class="card">
+      <div class="header">
+        <div>
+          <p class="title">Ocupación del periodo</p>
+          <p class="subtitle">${ocu.desde} a ${ocu.hasta} · sobre ${ocu.total_habitaciones} habitaciones</p>
+        </div>
+      </div>
+      <div class="stats" style="grid-template-columns:repeat(4,1fr);">
+        <div class="stat" style="cursor:default;"><p class="stat-label">Ocupación promedio</p>
+          <p class="stat-value">${ocu.resumen.ocupacion_promedio}%</p></div>
+        <div class="stat" style="cursor:default;"><p class="stat-label">Noches-habitación</p>
+          <p class="stat-value">${ocu.resumen.noches_habitacion}</p></div>
+        <div class="stat" style="cursor:default;"><p class="stat-label">Día más alto</p>
+          <p class="stat-value" style="font-size:18px;">${ocu.resumen.dia_mas_alto ? ocu.resumen.dia_mas_alto.habitaciones + ' hab' : '—'}</p>
+          <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${ocu.resumen.dia_mas_alto ? ocu.resumen.dia_mas_alto.fecha : ''}</p></div>
+        <div class="stat" style="cursor:default;"><p class="stat-label">Pax promedio por noche</p>
+          <p class="stat-value">${ocu.resumen.pax_promedio}</p></div>
+      </div>
+
+      <p style="font-weight:600;font-size:14px;margin:16px 0 8px;">Ocupación día por día
+        <span style="font-weight:400;font-size:12px;color:var(--muted);">(toca un día para ver ese resumen)</span></p>
+      <div style="overflow-x:auto;">
+        <table style="font-size:12px;">
+          <tr><th>Fecha</th><th>Día</th><th style="width:44%;">Habitaciones ocupadas</th><th>%</th><th>Pax</th><th>Entran</th><th>Salen</th></tr>
+          ${ocu.dias.map(x => `
+            <tr class="pulsable" style="cursor:pointer;" onclick="loadResumenOperacion('${x.fecha}')">
+              <td>${x.fecha.slice(8)}/${x.fecha.slice(5,7)}</td>
+              <td style="color:var(--muted);">${x.dia_semana}</td>
+              <td>
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <div style="flex:1;background:#FAF8F2;border-radius:4px;height:14px;min-width:80px;">
+                    <div style="width:${x.porcentaje}%;background:${x.porcentaje >= 70 ? '#1F6B45' : (x.porcentaje >= 35 ? 'var(--forest)' : '#8FAF9C')};height:100%;border-radius:4px;"></div>
+                  </div>
+                  <span style="width:26px;text-align:right;">${x.habitaciones}</span>
+                </div>
+              </td>
+              <td>${x.porcentaje}%</td>
+              <td>${x.pax}</td>
+              <td>${x.entran ? '+' + x.entran : '—'}</td>
+              <td>${x.salen ? '−' + x.salen : '—'}</td>
+            </tr>`).join("")}
+        </table>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:8px;">
+        Se cuenta ocupada la noche que el huésped duerme en el hotel: desde su llegada hasta el día antes de su salida.
+      </p>
+    </div>` : ""}
+  `;
+}
+
+async function mostrarDetalleBote(nombre, desde, hasta) {
+  // Volver a tocar el mismo bote cierra su detalle
+  if (window._boteAbierto === nombre) {
+    window._boteAbierto = null;
+    document.getElementById("detalle-bote").innerHTML = "";
+    return;
+  }
+  window._boteAbierto = nombre;
+  const res = await fetchAuth(`${API}/api/analitica/bote/${nombre}?desde=${desde}&hasta=${hasta}`);
+  const rows = await res.json();
+  document.getElementById("detalle-bote").innerHTML = `
+    <div class="detail-panel">
+      <p style="font-weight:600;margin:0 0 8px;">Detalle: ${nombre}</p>
+      <table>
+        <tr><th>Fecha</th><th>Tour</th><th>Huésped</th><th>Hab.</th><th>Guía</th><th>Pax</th></tr>
+        ${rows.map(r => `<tr><td>${r.fecha}</td><td>${r.tour_codigo}</td><td>${r.nombre_principal}</td><td>${r.room_no}</td><td>${r.guia_nombre||"-"}</td><td>${r.pax}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">Sin registros.</td></tr>`}
+      </table>
+    </div>`;
+}
+
+async function mostrarDetalleGuia(nombre, desde, hasta) {
+  if (window._guiaAbierto === nombre) {
+    window._guiaAbierto = null;
+    document.getElementById("detalle-guia").innerHTML = "";
+    return;
+  }
+  window._guiaAbierto = nombre;
+  const res = await fetchAuth(`${API}/api/analitica/guia/${nombre}?desde=${desde}&hasta=${hasta}`);
+  const rows = await res.json();
+  document.getElementById("detalle-guia").innerHTML = `
+    <div class="detail-panel">
+      <p style="font-weight:600;margin:0 0 8px;">Detalle: ${nombre}</p>
+      <table>
+        <tr><th>Fecha</th><th>Tour</th><th>Huésped</th><th>Hab.</th><th>Bote</th><th>Pax</th></tr>
+        ${rows.map(r => `<tr><td>${r.fecha}</td><td>${r.tour_codigo}</td><td>${r.nombre_principal}</td><td>${r.room_no}</td><td>${r.bote_nombre||"-"}</td><td>${r.pax}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">Sin registros.</td></tr>`}
+      </table>
+    </div>`;
+}
+
+// ---------- RESUMEN OPERACION ----------
+async function loadResumenOperacion(fecha) {
+  setActive(7);
+  if (fecha) FILTROS.resumen.fecha = fecha;
+  fecha = FILTROS.resumen.fecha;
+  window._resAbierto = null;
+  const d = await (await fetchAuth(`${API}/api/resumen-operacion?fecha=${fecha}`)).json();
+  window._resData = d;
+
+  const tarjeta = (campo, etiqueta, valor, pax, color) => `
+    <div class="stat" onclick="detalleResumen('${campo}')">
+      <p class="stat-label">${etiqueta}</p>
+      <p class="stat-value" ${color ? `style="color:${color};"` : ""}>${valor}</p>
+      ${pax !== undefined ? `<p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${pax} pax</p>` : ""}
+    </div>`;
+
+  document.getElementById("app").innerHTML = `
+    <div class="card">
+      <div class="header">
+        <div>
+          <p class="title">Resumen de operación</p>
+          <p class="subtitle">${fecha} ${etiquetaFecha(fecha)} · toca cualquier bloque para ver el detalle</p>
+        </div>
+        <div class="filterbar">
+          <button class="btn" onclick="loadResumenOperacion(shiftDate('${fecha}',-1))">‹</button>
+          <input type="date" value="${fecha}" onchange="loadResumenOperacion(this.value)">
+          <button class="btn" onclick="loadResumenOperacion(shiftDate('${fecha}',1))">›</button>
+          <button class="btn" onclick="loadResumenOperacion(hoyISO())">Hoy</button>
+          <button class="btn" onclick="loadResumenOperacion(masDiasISO(1))">Mañana</button>
+          <button class="btn" onclick="descargar('resumen-operacion', {fecha:'${fecha}'}, 'xlsx')">⬇ Excel</button>
+          <button class="btn" onclick="descargar('resumen-operacion', {fecha:'${fecha}'}, 'pdf')">⬇ PDF</button>
+        </div>
+      </div>
+
+      <div class="summary-grid">
+        ${tarjeta('ingresos', 'Total ingresos', d.total_ingresos, d.pax_ingresos)}
+        ${tarjeta('salidas', 'Total salidas', d.total_salidas, d.pax_salidas)}
+        ${tarjeta('desayunos', 'Total desayunos', d.total_desayunos, d.pax_desayunos)}
+        ${tarjeta('en_casa', 'Total en casa', d.total_en_casa, d.pax_en_casa)}
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:-8px;">Desayunos = salen + en casa (sin ingresos) · En casa = ingresos + en casa (sin salidas)</p>
+      <div id="res-detalle"></div>
+    </div>
+
+    <div class="card">
+      <p class="title">Movimiento por punto de embarque</p>
+      <p class="subtitle" style="margin-bottom:12px;">Para transporte y coordinación de botes</p>
+      ${d.puntos.length ? `
+      <div class="stats" style="grid-template-columns:repeat(${Math.min(d.puntos.length,3)},1fr);">
+        ${d.puntos.map(p => `
+          <div class="stat" onclick="detalleResumen('punto:${p.punto}')">
+            <p class="stat-label">${p.punto}</p>
+            <p class="stat-value">${p.entradas + p.salidas}</p>
+            <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">
+              ${p.entradas} entran (${p.pax_entradas} pax) · ${p.salidas} salen (${p.pax_salidas} pax)
+            </p>
+          </div>`).join("")}
+      </div>
+      <div id="res-punto"></div>` : `<p class="empty">Sin entradas ni salidas este día.<small>Usa los botones Hoy o Mañana para ir al día que necesitas.</small></p>`}
+    </div>
+
+    <div class="card">
+      <p class="title">Tours del día</p>
+      <p class="subtitle" style="margin-bottom:12px;">Para guías y operación</p>
+      ${d.tours.length ? `
+      <table>
+        <tr><th>Hora</th><th>Tour</th><th>Habitaciones</th><th>Guía</th><th>Bote</th><th>Pax</th></tr>
+        ${d.tours.map(t => `<tr>
+          <td>${t.horario_inicio || '—'}</td>
+          <td>${t.tour_codigo}${t.grupo_operativo !== 'A' ? ` <span class="badge badge-tour">grupo ${t.grupo_operativo}</span>` : ''}</td>
+          <td style="font-size:12px;">${(t.habitaciones || '').split(',').join(' · ')}</td>
+          <td>${t.guia_nombre || '<span style="color:var(--warn-text);">sin asignar</span>'}</td>
+          <td>${t.bote_nombre || '<span style="color:var(--warn-text);">sin asignar</span>'}</td>
+          <td><strong>${t.pax_total}</strong></td>
+        </tr>`).join("")}
+      </table>` : `<p class="empty">No hay tours para esta fecha.<small>Se cargan al importar el PDF de reservas.</small></p>`}
+    </div>
+
+    ${d.restricciones_cocina.length ? `
+    <div class="card">
+      <p class="title">Cocina — restricciones y alergias</p>
+      <p class="subtitle" style="margin-bottom:12px;">De los huéspedes que están en el hotel hoy</p>
+      <table>
+        <tr><th>Hab.</th><th>Huésped</th><th>Detalle</th></tr>
+        ${d.restricciones_cocina.map(x => `<tr class="fila-sale">
+          <td><strong>${x.room_no}</strong></td><td>${x.nombre_principal}</td>
+          <td><strong>${x.detalle || x.amenidad}</strong>${x.detalle ? `<br><span style="font-size:11px;color:var(--muted);">${x.tarea}</span>` : ''}</td>
+        </tr>`).join("")}
+      </table>
+    </div>` : ""}
+
+    ${d.amenidades.length ? `
+    <div class="card">
+      <p class="title">Housekeeping y recepción — a preparar hoy</p>
+      <p class="subtitle" style="margin-bottom:12px;">Amenidades de los huéspedes que ingresan</p>
+      <table>
+        <tr><th>Hab.</th><th>Huésped</th><th>Amenidad</th><th>Tarea</th><th>Área</th></tr>
+        ${d.amenidades.map(x => `<tr>
+          <td><strong>${x.room_no}</strong></td><td>${x.nombre_principal}</td>
+          <td><span class="badge badge-tour">${x.amenidad}</span></td>
+          <td style="font-size:12px;">${x.detalle || x.tarea}</td>
+          <td style="font-size:12px;">${x.area_responsable}</td>
+        </tr>`).join("")}
+      </table>
+    </div>` : ""}
+  `;
+}
+
+function detalleResumen(campo) {
+  const d = window._resData;
+  const esPunto = campo.startsWith("punto:");
+  const panel = document.getElementById(esPunto ? "res-punto" : "res-detalle");
+  // Segundo toque en el mismo bloque: se cierra
+  if (window._resAbierto === campo) {
+    window._resAbierto = null;
+    panel.innerHTML = "";
+    document.querySelectorAll("#app .stat").forEach(s => s.classList.remove("selected"));
+    return;
+  }
+  window._resAbierto = campo;
+  document.querySelectorAll("#app .stat").forEach(s => s.classList.remove("selected"));
+  if (event && event.currentTarget) event.currentTarget.classList.add("selected");
+
+  if (esPunto) {
+    const nombre = campo.slice(6);
+    const p = (d.puntos || []).find(x => x.punto === nombre);
+    panel.innerHTML = `<div class="detail-panel">
+      <p style="font-weight:600;margin:0 0 8px;">${nombre} — ${p.detalle.length} movimiento(s)</p>
+      <table><tr><th>Tipo</th><th>Hab.</th><th>Huésped</th><th>Pax</th><th>Vuelo</th><th>Hora</th></tr>
+      ${p.detalle.map(x => `<tr class="${x.tipo === 'Entrada' ? 'fila-entra' : 'fila-sale'}">
+        <td>${x.tipo}</td><td>${x.room_no}</td><td>${x.nombre}</td>
+        <td>${x.pax}</td><td>${x.vuelo || '—'}</td><td>${x.hora || '—'}</td></tr>`).join("")}
+      </table></div>`;
+    return;
+  }
+
+  const titulos = { ingresos: "Ingresos del día", salidas: "Salidas del día",
+                    desayunos: "Desayunos", en_casa: "En casa" };
+  const lista = d[campo] || [];
+  if (!lista.length) {
+    panel.innerHTML = `<div class="detail-panel">Sin registros.</div>`;
+    return;
+  }
+  const esIngreso = campo === "ingresos", esSalida = campo === "salidas";
+  panel.innerHTML = `<div class="detail-panel">
+    <p style="font-weight:600;margin:0 0 8px;">${titulos[campo]} — ${lista.length} habitación(es)</p>
+    <table>
+      <tr><th>Hab.</th><th>Huésped</th><th>Pax</th>
+        ${esIngreso || esSalida ? "<th>Punto</th><th>Vuelo</th><th>Hora</th>" : ""}
+        ${campo === "en_casa" ? "<th>Sale</th>" : ""}
+      </tr>
+      ${lista.map(x => `<tr>
+        <td><strong>${x.room_no}</strong></td><td>${x.nombre_principal}</td>
+        <td>${(x.adl||0)+(x.chl||0)}</td>
+        ${esIngreso ? `<td>${x.punto_entrada || '—'}</td><td>${x.vuelo_entrada || '—'}</td><td>${x.hora_vuelo_entrada || x.arr_time || '—'}</td>` : ""}
+        ${esSalida ? `<td>${x.punto_salida || '—'}</td><td>${x.vuelo_salida || '—'}</td><td>${x.hora_vuelo_salida || '—'}</td>` : ""}
+        ${campo === "en_casa" ? `<td>${x.dep_date || '—'}</td>` : ""}
+      </tr>`).join("")}
+    </table></div>`;
+}
+
+// ---------- IMPORTAR PDF ----------
+function loadImportarPDF() {
+  setActive(8);
+  const app = document.getElementById("app");
+  app.innerHTML = `
+    <div class="card">
+      <p class="title">Importar PDF de reservas</p>
+      <div class="dropzone">
+        <p>Selecciona el archivo "Arrivals: Detailed" (PDF)</p>
+        <input type="file" id="pdf-input" accept="application/pdf">
+      </div>
+      <div id="pdf-preview"></div>
+    </div>
+  `;
+  document.getElementById("pdf-input").addEventListener("change", handlePdfUpload);
+}
+
+async function handlePdfUpload(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  document.getElementById("pdf-preview").innerHTML = `
+    <div class="trabajando">
+      <div class="giro"></div>
+      <p>Leyendo el PDF…</p>
+      <small>Toma unos segundos según la cantidad de reservas. No cierres esta pantalla.</small>
+    </div>`;
+  const res = await fetchAuth(`${API}/api/pdf/preview`, { method: "POST", body: form });
+  const data = await res.json();
+  window._pdfFile = file;
+  const app = document.getElementById("pdf-preview");
+  app.innerHTML = `
+    <p style="font-weight:600;font-size:14px;margin-top:16px;">${data.reservas.length} reservas encontradas</p>
+    ${data.reservas.map(r => `
+      <div class="review-card ${r.needs_review ? "attn" : ""}">
+        <p style="font-weight:600;margin:0 0 4px;">Hab. ${r.room_no} · ${r.nombre} <span style="font-weight:400;color:var(--muted);font-size:12px;">(conf. ${r.conf_no})</span></p>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 6px;">${r.arr_date} – ${r.dep_date} · ${r.adl + r.chl} pax · Entrada ${r.punto_entrada || "-"} / Salida ${r.punto_salida || "-"}</p>
+        ${r.tours_detectados.length ? `<p style="font-size:12px;margin:0 0 6px;">Tours: ${r.tours_detectados.join(", ")}</p>` : ""}
+        ${r.amenidades_detectadas && r.amenidades_detectadas.length ? `<p style="font-size:12px;margin:0 0 6px;">Amenidades: ${r.amenidades_detectadas.join(", ")}</p>` : ""}
+        ${r.grupo_link ? `<p style="font-size:12px;margin:0 0 6px;">⚠ Grupo sugerido (${r.grupo_link.tipo}): ${r.grupo_link.texto}</p>` : ""}
+        ${r.guia_sugerido ? `<p style="font-size:12px;margin:0 0 6px;">⚠ Guía sugerido: ${r.guia_sugerido}</p>` : ""}
+        ${r.agenda.some(a => a.contradiccion) ? `<p style="font-size:12px;color:#B45309;margin:0;">⚠ Contradicción detectada en notas — revisar antes de confirmar</p>` : ""}
+      </div>`).join("")}
+    <p style="font-weight:600;font-size:14px;margin-top:16px;">${data.entradas_sinac.length} entradas SINAC detectadas</p>
+    <table>
+      <tr><th>Tour</th><th>Fecha</th><th>Pax + guía</th><th>Estado</th></tr>
+      ${data.entradas_sinac.map(e => `
+        <tr><td>${e.tour}</td><td>${e.fecha}</td><td>${e.pax_total_grupo}</td>
+        <td><span class="badge ${e.estado === "COMPRADA" ? "badge-ok" : "badge-warn"}">${e.estado.replace("_", " ")}</span></td></tr>`).join("")}
+    </table>
+    <div style="margin-top:16px;text-align:right;">
+      <button class="btn btn-primary" onclick="confirmarImportacion()">Confirmar e importar todo</button>
+    </div>
+  `;
+}
+
+async function confirmarImportacion() {
+  const panel = document.getElementById("pdf-preview");
+  panel.innerHTML = `
+    <div class="trabajando">
+      <div class="giro"></div>
+      <p>Guardando las reservas…</p>
+    </div>`;
+  const form = new FormData();
+  form.append("file", window._pdfFile);
+  const res = await fetchAuth(`${API}/api/pdf/confirm`, { method: "POST", body: form });
+  const data = await res.json();
+  const publicando = data.publicacion === "publicando en segundo plano";
+  panel.innerHTML = `
+    <div style="background:var(--ok-bg);color:var(--ok-text);border-radius:var(--r-sm);padding:14px 16px;margin-top:16px;">
+      <p style="margin:0 0 4px;font-weight:600;">Importación completa</p>
+      <p style="margin:0;font-size:13px;">
+        ${data.reservas_cargadas} reserva${data.reservas_cargadas === 1 ? "" : "s"} cargada${data.reservas_cargadas === 1 ? "" : "s"} ·
+        ${data.alertas_generadas} alerta${data.alertas_generadas === 1 ? "" : "s"} generada${data.alertas_generadas === 1 ? "" : "s"}
+      </p>
+      ${publicando ? `<p style="margin:6px 0 0;font-size:12px;">Los itinerarios se están publicando en segundo plano; puedes seguir trabajando.</p>` : ""}
+    </div>
+    <div style="margin-top:12px;">
+      <button class="btn" onclick="loadDashboard()">Ir al Dashboard</button>
+      <button class="btn" onclick="loadReservas()">Ver las reservas</button>
+    </div>`;
+  avisar(`${data.reservas_cargadas} reservas importadas`);
+}
+
+// ---------- USUARIOS ----------
+async function loadUsuarios() {
+  setActive(9);
+  const res = await fetchAuth(`${API}/api/usuarios`);
+  const rows = await res.json();
+  const app = document.getElementById("app");
+  app.innerHTML = `
+    <div class="card">
+      <div class="header">
+        <p class="title">Usuarios</p>
+        <button class="btn btn-primary" onclick="mostrarFormNuevoUsuario()">+ Nuevo usuario</button>
+      </div>
+      <div id="usuarios-form"></div>
+      <table>
+        <tr><th>Usuario</th><th>Nombre</th><th>Rol</th><th>Estado</th><th></th></tr>
+        ${rows.map(u => `
+          <tr>
+            <td>${u.username}</td>
+            <td>${u.nombre_completo}</td>
+            <td><span class="badge badge-tour">${ {recepcion:"Recepción",gerencia:"Gerencia",staff:"Staff de campo"}[u.rol] || u.rol }</span></td>
+            <td><span class="badge ${u.activo ? 'badge-ok' : 'badge-warn'}">${u.activo ? 'Activo' : 'Inactivo'}</span></td>
+            <td>
+              <button class="btn" onclick="cambiarPassword(${u.id})">Cambiar contraseña</button>
+              <button class="btn" onclick="cambiarEstado(${u.id}, ${u.activo ? 'false' : 'true'})">${u.activo ? 'Desactivar' : 'Activar'}</button>
+            </td>
+          </tr>`).join("")}
+      </table>
+    </div>
+  `;
+}
+
+function mostrarFormNuevoUsuario() {
+  document.getElementById("usuarios-form").innerHTML = `
+    <div style="background:var(--warn-bg);border-radius:8px;padding:14px;margin-bottom:16px;">
+      <p style="font-weight:600;font-size:13px;margin:0 0 10px;">Nuevo usuario</p>
+      <div class="filterbar" style="flex-wrap:wrap;">
+        <input type="text" id="nu-username" placeholder="usuario (sin espacios)">
+        <input type="text" id="nu-nombre" placeholder="Nombre completo">
+        <input type="password" id="nu-password" placeholder="Contraseña">
+        <select id="nu-rol">
+          <option value="recepcion">Recepción (lectura/escritura)</option>
+          <option value="gerencia">Gerencia (solo lectura)</option>
+          <option value="staff">Staff de campo (solo lectura)</option>
+        </select>
+        <button class="btn btn-primary" onclick="crearUsuario()">Crear</button>
+      </div>
+      <div id="nu-error" style="color:var(--danger-text);font-size:12px;margin-top:8px;"></div>
+    </div>
+  `;
+}
+
+async function crearUsuario() {
+  const payload = {
+    username: document.getElementById("nu-username").value.trim(),
+    nombre_completo: document.getElementById("nu-nombre").value.trim(),
+    password: document.getElementById("nu-password").value,
+    rol: document.getElementById("nu-rol").value,
+  };
+  const errEl = document.getElementById("nu-error");
+  if (!payload.username || !payload.nombre_completo || !payload.password) {
+    errEl.textContent = "Completa todos los campos.";
+    return;
+  }
+  const res = await fetchAuth(`${API}/api/usuarios`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    errEl.textContent = err.detail || "No se pudo crear el usuario.";
+    return;
+  }
+  loadUsuarios();
+}
+
+async function cambiarEstado(id, activo) {
+  await fetchAuth(`${API}/api/usuarios/${id}/estado?activo=${activo}`, { method: "POST" });
+  avisar(activo === true || activo === "true" ? "Usuario activado" : "Usuario desactivado");
+  loadUsuarios();
+}
+
+async function cambiarPassword(id) {
+  const nueva = prompt("Nueva contraseña para este usuario:");
+  if (!nueva) return;
+  await fetchAuth(`${API}/api/usuarios/${id}/password`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: nueva }),
+  });
+  avisar("Contraseña actualizada");
+}
+
+// ---------- CATÁLOGO (guías, botes, tours) ----------
+// ---------- PUBLICACIÓN DE ITINERARIOS ----------
+async function loadPublicacion(fechaNueva, filtroNuevo) {
+  setActive(11);
+  const F = FILTROS.publicacion;
+  if (fechaNueva) F.fecha = fechaNueva;
+  if (filtroNuevo !== undefined) F.filtro = filtroNuevo;
+  const d = await (await fetchAuth(`${API}/api/publicacion/estado?fecha=${F.fecha}&filtro=${F.filtro}`)).json();
+  const ult = d.ultima;
+  const R = d.resumen || {};
+  const faltan = (R.con_cambios || 0) + (R.sin_publicar || 0);
+
+  const estadoTxt = !d.configurado ? "Sin configurar"
+        : (faltan ? `${faltan} sin publicar` : "Todo publicado");
+  const estadoColor = !d.configurado ? "badge-warn" : (faltan ? "badge-warn" : "badge-ok");
+
+  const badgeHab = (e) => {
+    if (e.estado === "PUBLICADO") return '<span class="badge badge-ok">Publicado</span>';
+    if (e.estado === "CAMBIO") return '<span class="badge badge-warn">Cambió</span>';
+    return '<span class="badge badge-warn">Sin publicar</span>';
+  };
+  const movTxt = { ENTRA: "Entra", SALE: "Sale", EN_CASA: "En casa", PROXIMO: "Próximo ingreso" };
+
+  document.getElementById("app").innerHTML = `
+    <div class="card">
+      <div class="header">
+        <div>
+          <p class="title">Publicación de itinerarios</p>
+          <p class="subtitle">Lo que ve el huésped al escanear el código QR de su habitación</p>
+        </div>
+        <span class="badge ${estadoColor}" style="font-size:12px;">${estadoTxt}</span>
+      </div>
+
+      ${!d.configurado ? `
+      <div style="background:var(--warn-bg);border-radius:8px;padding:14px;margin-bottom:16px;font-size:13px;color:var(--warn-text);">
+        <p style="margin:0 0 8px;font-weight:600;">Falta configurar la publicación</p>
+        <p style="margin:0 0 6px;">Se necesita una cuenta gratuita en <strong>netlify.com</strong>. Pasos:</p>
+        <ol style="margin:0;padding-left:20px;line-height:1.7;">
+          <li>Entra a <strong>netlify.com</strong> y crea una cuenta.</li>
+          <li>Crea un sitio nuevo ("Add new project" → "Upload your project files") y arrastra cualquier carpeta.</li>
+          <li>Hazlo público y ponle nombre en <em>Project configuration → General</em>.</li>
+          <li>Copia de ahí el <strong>Site ID</strong>.</li>
+          <li>En <em>User settings → Applications</em> crea un token de acceso y cópialo.</li>
+        </ol>
+      </div>` : ""}
+
+      <div class="stats" style="grid-template-columns:repeat(3,1fr);">
+        <div class="stat" style="cursor:pointer;" onclick="loadPublicacion(null,'todas')">
+          <p class="stat-label">Publicadas al día</p><p class="stat-value" style="color:var(--ok-text);">${R.publicadas || 0}</p></div>
+        <div class="stat" style="cursor:pointer;" onclick="loadPublicacion(null,'pendientes')">
+          <p class="stat-label">Con cambios</p><p class="stat-value" style="color:var(--warn-text);">${R.con_cambios || 0}</p></div>
+        <div class="stat" style="cursor:pointer;" onclick="loadPublicacion(null,'pendientes')">
+          <p class="stat-label">Nunca publicadas</p><p class="stat-value">${R.sin_publicar || 0}</p></div>
+      </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:14px;margin-top:6px;">
+        <button class="btn btn-primary" onclick="publicarAhora()" ${d.configurado ? "" : "disabled"}>
+          Publicar ahora${faltan ? ` (${faltan} pendiente${faltan>1?'s':''})` : ""}</button>
+        <button class="btn" onclick="descargarHojaQR()" ${d.base_url ? "" : "disabled"}>⬇ Hoja de códigos QR</button>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin:8px 0 0;">
+        Cada publicación envía las 30 habitaciones completas: así el sitio siempre queda
+        consistente y ningún QR se queda sin página. Los contadores te dicen si hay algo nuevo por enviar.
+      </p>
+      <div id="pb-resultado" style="margin-top:12px;"></div>
+
+      ${ult ? `<p style="font-size:12px;color:var(--muted);margin-top:12px;">
+        Última publicación: ${ult.estado} · ${ult.publicado_en || ult.creado_en} · ${ult.habitaciones || 0} habitaciones
+        ${ult.detalle && ult.estado !== 'PUBLICADO' ? `<br><span style="color:var(--danger-text);">${ult.detalle}</span>` : ""}
+      </p>` : ""}
+    </div>
+
+    <div class="card">
+      <div class="header">
+        <p class="title">Revisión por fecha</p>
+        <div class="filterbar">
+          <button class="btn" onclick="loadPublicacion(shiftDate('${F.fecha}',-1))">‹</button>
+          <input type="date" value="${F.fecha}" onchange="loadPublicacion(this.value)">
+          <button class="btn" onclick="loadPublicacion(shiftDate('${F.fecha}',1))">›</button>
+          <select onchange="loadPublicacion(null, this.value)">
+            <option value="todas" ${F.filtro==='todas'?'selected':''}>Todas las habitaciones</option>
+            <option value="movimiento" ${F.filtro==='movimiento'?'selected':''}>Solo entradas y salidas</option>
+            <option value="pendientes" ${F.filtro==='pendientes'?'selected':''}>Solo pendientes de publicar</option>
+          </select>
+        </div>
+      </div>
+      <table>
+        <tr><th>Hab.</th><th>Movimiento</th><th>Huésped</th><th>Estadía</th><th>Publicación</th><th></th></tr>
+        ${(d.detalle||[]).map(h => `
+          <tr class="${h.movimiento==='ENTRA'?'fila-entra':(h.movimiento==='SALE'?'fila-sale':(h.movimiento==='PROXIMO'?'fila-poringresar':(h.huesped?'':'fila-salio')))}">
+            <td><strong>${h.room_no}</strong></td>
+            <td style="font-size:12px;">${movTxt[h.movimiento] || '—'}</td>
+            <td>${h.huesped || '<span style="color:var(--muted);">sin ocupante</span>'}</td>
+            <td style="font-size:12px;">${h.arr_date ? `${h.arr_date} – ${h.dep_date}` : '—'}</td>
+            <td>${badgeHab(h)}${h.publicado_en ? `<br><span style="font-size:10px;color:var(--muted);">${h.publicado_en}</span>` : ''}</td>
+            <td><button class="btn" onclick="vistaPreviaHuesped('${h.room_no}')">Ver</button></td>
+          </tr>`).join("") || '<tr><td colspan="6" class="empty">No hay habitaciones con ese filtro.</td></tr>'}
+      </table>
+      <div class="leyenda">
+        <span><i style="background:#FFF8DC;"></i>Entra ese día</span>
+        <span><i style="background:#FDE8E8;"></i>Sale ese día</span>
+        <span><i style="background:#F2F2F0;"></i>Sin ocupante</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <p class="title" style="cursor:pointer;user-select:none;margin:0;"
+         onclick="alternarConfigPublicacion()">
+        <span id="pb-flecha">${d.configurado ? "▸" : "▾"}</span>
+        Configuración
+        <span style="font-weight:400;font-size:12px;color:var(--muted);">
+          — conexión y habitaciones del hotel (se ajusta una sola vez)
+        </span>
+      </p>
+
+      <div id="pb-config" style="display:${d.configurado ? "none" : "block"};margin-top:14px;">
+        <div style="display:grid;grid-template-columns:190px 1fr;gap:10px;align-items:center;font-size:13px;max-width:720px;">
+          <label>Dirección del sitio</label>
+          <input type="text" id="pb-url" value="${d.base_url || ""}" placeholder="https://mi-sitio.netlify.app">
+          <label>Site ID</label>
+          <input type="text" id="pb-site" placeholder="${d.configurado ? "(ya guardado, escribe para cambiarlo)" : "por ejemplo: 1a2b3c4d-..."}">
+          <label>Token de acceso</label>
+          <input type="password" id="pb-token" placeholder="${d.configurado ? "(ya guardado, escribe para cambiarlo)" : "pega aquí el token"}">
+          <label>Habitaciones del hotel</label>
+          <input type="text" id="pb-habs" value="${(d.habitaciones||[]).join(', ')}" placeholder="01, 02, 03...">
+        </div>
+        <p style="font-size:11px;color:var(--muted);margin:8px 0 0;">El Site ID y el token se guardan solo en esta computadora.</p>
+        <div style="background:#FAF8F2;border-radius:8px;padding:11px 13px;margin-top:10px;font-size:12px;color:var(--muted);">
+          <strong style="color:var(--text);">Sobre la lista de habitaciones:</strong>
+          define qué habitaciones existen en el hotel — no cuáles publicar cada vez.
+          Determina cuántas páginas y cuántos códigos QR hay.
+          <span style="color:var(--warn-text);">Si quitas una habitación, su página desaparece
+          del sitio y su código QR dejará de funcionar.</span>
+        </div>
+        <button class="btn btn-primary" style="margin-top:12px;" onclick="guardarConfigPublicacion()">Guardar datos</button>
+        <span id="pb-msg" style="font-size:12px;margin-left:10px;"></span>
+      </div>
+    </div>
+  `;
+}
+
+function alternarConfigPublicacion() {
+  const caja = document.getElementById("pb-config");
+  const flecha = document.getElementById("pb-flecha");
+  const abierto = caja.style.display !== "none";
+  caja.style.display = abierto ? "none" : "block";
+  flecha.textContent = abierto ? "▸" : "▾";
+}
+
+async function guardarConfigPublicacion() {
+  const payload = { base_url: document.getElementById("pb-url").value.trim() };
+  const site = document.getElementById("pb-site").value.trim();
+  const token = document.getElementById("pb-token").value.trim();
+  if (site) payload.site_id = site;
+  if (token) payload.token = token;
+  const habs = document.getElementById("pb-habs");
+  if (habs) payload.habitaciones = habs.value.split(",").map(s => s.trim()).filter(Boolean);
+  const res = await fetchAuth(`${API}/api/publicacion/config`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  const d = await res.json();
+  document.getElementById("pb-msg").innerHTML = d.configurado
+    ? '<span style="color:var(--ok-text);">Datos guardados. Ya puedes publicar.</span>'
+    : '<span style="color:var(--warn-text);">Guardado, pero aún falta algún dato.</span>';
+  setTimeout(loadPublicacion, 1200);
+}
+
+async function publicarAhora() {
+  const panel = document.getElementById("pb-resultado");
+  panel.innerHTML = '<p class="empty">Publicando… puede tomar un momento.</p>';
+  const res = await fetchAuth(`${API}/api/publicacion/publicar`, { method: "POST" });
+  const d = await res.json();
+  if (d.estado === "PUBLICADO") {
+    panel.innerHTML = `<div style="background:var(--ok-bg);color:var(--ok-text);border-radius:8px;padding:10px 12px;font-size:13px;">
+      Publicado correctamente: ${d.habitaciones} habitaciones actualizadas.</div>`;
+  } else if (d.estado === "PENDIENTE") {
+    panel.innerHTML = `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:10px 12px;font-size:13px;">
+      ${d.mensaje}<br><span style="font-size:11px;">${d.detalle || ""}</span></div>`;
+  } else {
+    panel.innerHTML = `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:10px 12px;font-size:13px;">${d.mensaje || d.estado}</div>`;
+  }
+  setTimeout(loadPublicacion, 2500);
+}
+
+async function descargarHojaQR() {
+  const res = await fetchAuth(`${API}/api/publicacion/qr`);
+  if (!res.ok) { alert((await res.json()).detail); return; }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "Codigos_QR_habitaciones.pdf";
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function vistaPreviaHuesped(room) {
+  window.open(`${API}/i/${room}`, "_blank");
+}
+
+async function loadCatalogoAdmin() {
+  setActive(10);
+  const cat = await (await fetchAuth(`${API}/api/catalogo?todos=true`)).json();
+  const app = document.getElementById("app");
+  app.innerHTML = `
+    <div class="card">
+      <div class="header"><p class="title">Catálogo — Guías</p><button class="btn btn-primary" onclick="mostrarFormGuia()">+ Nuevo guía</button></div>
+      <div id="form-guia"></div>
+      <table>
+        <tr><th>Nombre</th><th>Externo</th><th>Estado</th><th></th></tr>
+        ${cat.guias.map(g => `
+          <tr>
+            <td>${g.nombre}</td>
+            <td>${g.es_externo ? "Sí" : "No"}</td>
+            <td><span class="badge ${g.activo ? 'badge-ok' : 'badge-warn'}">${g.activo ? 'Activo' : 'Inactivo'}</span></td>
+            <td><button class="btn" onclick="toggleCatalogo('guia','${g.nombre}',${g.activo ? 'false' : 'true'})">${g.activo ? 'Desactivar' : 'Activar'}</button></td>
+          </tr>`).join("")}
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="header"><p class="title">Catálogo — Botes</p><button class="btn btn-primary" onclick="mostrarFormBote()">+ Nuevo bote</button></div>
+      <div id="form-bote"></div>
+      <table>
+        <tr><th>Nombre</th><th>Capacidad máx.</th><th>Gestionado por el hotel</th><th>Estado</th><th></th></tr>
+        ${cat.botes.map(b => `
+          <tr>
+            <td>${b.nombre}</td>
+            <td>${b.capacidad_max ?? "—"}</td>
+            <td>${b.gestionado_por_hotel ? "Sí" : "No"}</td>
+            <td><span class="badge ${b.activo ? 'badge-ok' : 'badge-warn'}">${b.activo ? 'Activo' : 'Inactivo'}</span></td>
+            <td><button class="btn" onclick="toggleCatalogo('bote','${b.nombre}',${b.activo ? 'false' : 'true'})">${b.activo ? 'Desactivar' : 'Activar'}</button></td>
+          </tr>`).join("")}
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="header"><p class="title">Catálogo — Tours</p><button class="btn btn-primary" onclick="mostrarFormTour()">+ Nuevo tour</button></div>
+      <div id="form-tour"></div>
+      <table>
+        <tr><th>Código</th><th>Nombre</th><th>Horario</th><th>Máx. pax/guía</th><th>Entrada SINAC</th><th>Estado</th><th></th></tr>
+        ${cat.tours.map(t => `
+          <tr>
+            <td>${t.codigo}</td>
+            <td>${t.nombre}</td>
+            <td>${t.horario_inicio || "-"} – ${t.horario_fin || "-"}</td>
+            <td>${t.max_pax_guia}</td>
+            <td>${t.requiere_entrada_sinac ? "Sí" : "No"}</td>
+            <td><span class="badge ${t.activo ? 'badge-ok' : 'badge-warn'}">${t.activo ? 'Activo' : 'Inactivo'}</span></td>
+            <td><button class="btn" onclick="toggleCatalogo('tour','${t.codigo}',${t.activo ? 'false' : 'true'})">${t.activo ? 'Desactivar' : 'Activar'}</button></td>
+          </tr>`).join("")}
+      </table>
+    </div>
+  `;
+}
+
+function mostrarFormGuia() {
+  document.getElementById("form-guia").innerHTML = `
+    <div style="background:var(--warn-bg);border-radius:8px;padding:12px;margin-bottom:14px;">
+      <div class="filterbar" style="flex-wrap:wrap;">
+        <input type="text" id="ng-nombre" placeholder="Nombre del guía">
+        <label style="font-size:12px;"><input type="checkbox" id="ng-externo"> Es externo</label>
+        <button class="btn btn-primary" onclick="crearGuia()">Crear</button>
+      </div>
+      <div id="ng-error" style="color:var(--danger-text);font-size:12px;margin-top:6px;"></div>
+    </div>`;
+}
+async function crearGuia() {
+  const nombre = document.getElementById("ng-nombre").value.trim().toUpperCase();
+  const es_externo = document.getElementById("ng-externo").checked;
+  if (!nombre) return;
+  const res = await fetchAuth(`${API}/api/catalogo/guia`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nombre, es_externo }) });
+  if (!res.ok) { document.getElementById("ng-error").textContent = (await res.json()).detail; return; }
+  CATALOGO = null;
+  loadCatalogoAdmin();
+}
+
+function mostrarFormBote() {
+  document.getElementById("form-bote").innerHTML = `
+    <div style="background:var(--warn-bg);border-radius:8px;padding:12px;margin-bottom:14px;">
+      <div class="filterbar" style="flex-wrap:wrap;">
+        <input type="text" id="nb-nombre" placeholder="Nombre del bote">
+        <input type="text" id="nb-capacidad" placeholder="Capacidad máxima (pax)" style="width:180px;">
+        <label style="font-size:12px;"><input type="checkbox" id="nb-gestionado" checked> Gestionado por el hotel</label>
+        <button class="btn btn-primary" onclick="crearBote()">Crear</button>
+      </div>
+      <div id="nb-error" style="color:var(--danger-text);font-size:12px;margin-top:6px;"></div>
+    </div>`;
+}
+async function crearBote() {
+  const nombre = document.getElementById("nb-nombre").value.trim().toUpperCase();
+  const capRaw = document.getElementById("nb-capacidad").value.trim();
+  const gestionado_por_hotel = document.getElementById("nb-gestionado").checked;
+  if (!nombre) return;
+  const res = await fetchAuth(`${API}/api/catalogo/bote`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nombre, capacidad_max: capRaw ? parseInt(capRaw) : null, gestionado_por_hotel }),
+  });
+  if (!res.ok) { document.getElementById("nb-error").textContent = (await res.json()).detail; return; }
+  CATALOGO = null;
+  loadCatalogoAdmin();
+}
+
+function mostrarFormTour() {
+  document.getElementById("form-tour").innerHTML = `
+    <div style="background:var(--warn-bg);border-radius:8px;padding:12px;margin-bottom:14px;">
+      <div class="filterbar" style="flex-wrap:wrap;">
+        <input type="text" id="nt-codigo" placeholder="Código (ej. KAYAK)" style="width:140px;">
+        <input type="text" id="nt-nombre" placeholder="Nombre del tour">
+        <input type="text" id="nt-inicio" placeholder="Hora inicio (07:00)" style="width:150px;">
+        <input type="text" id="nt-fin" placeholder="Hora fin (10:00)" style="width:140px;">
+        <input type="text" id="nt-maxpax" placeholder="Máx. pax/guía" style="width:120px;">
+        <label style="font-size:12px;"><input type="checkbox" id="nt-entrada"> Requiere entrada SINAC</label>
+        <button class="btn btn-primary" onclick="crearTour()">Crear</button>
+      </div>
+      <div id="nt-error" style="color:var(--danger-text);font-size:12px;margin-top:6px;"></div>
+    </div>`;
+}
+async function crearTour() {
+  const codigo = document.getElementById("nt-codigo").value.trim().toUpperCase();
+  const nombre = document.getElementById("nt-nombre").value.trim();
+  const horario_inicio = document.getElementById("nt-inicio").value.trim();
+  const horario_fin = document.getElementById("nt-fin").value.trim();
+  const maxPax = document.getElementById("nt-maxpax").value.trim();
+  const requiere_entrada_sinac = document.getElementById("nt-entrada").checked;
+  if (!codigo || !nombre || !maxPax) { document.getElementById("nt-error").textContent = "Completa al menos código, nombre y máx. pax."; return; }
+  const res = await fetchAuth(`${API}/api/catalogo/tour`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ codigo, nombre, horario_inicio, horario_fin, max_pax_guia: parseInt(maxPax), requiere_entrada_sinac }),
+  });
+  if (!res.ok) { document.getElementById("nt-error").textContent = (await res.json()).detail; return; }
+  CATALOGO = null;
+  avisar("Agregado al catálogo");
+  loadCatalogoAdmin();
+}
+
+async function toggleCatalogo(tipo, id, activo) {
+  await fetchAuth(`${API}/api/catalogo/${tipo}/${id}/estado?activo=${activo}`, { method: "POST" });
+  CATALOGO = null;
+  avisar(activo === "true" || activo === true ? "Activado" : "Desactivado");
+  loadCatalogoAdmin();
+}
+
+// Confirmación visual: cualquier botón tocado se pinta de azul brevemente, así
+// recepción sabe que el toque se registró aunque la acción tarde en responder.
+document.addEventListener("click", (e) => {
+  // Cerrar los resultados de búsqueda al tocar fuera
+  if (!e.target.closest("#buscar-panel") && !e.target.closest("#buscador")) cerrarBusqueda();
+  const b = e.target.closest("button, .stat, .pulsable");
+  if (!b) return;
+  b.classList.add("pulsado");
+  setTimeout(() => b.classList.remove("pulsado"), 320);
+}, true);
+
+// ---------- Atajos de teclado ----------
+// Ctrl+K buscar · flechas ← → cambiar de día · Esc cerrar
+document.addEventListener("keydown", (e) => {
+  const escribiendo = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    document.getElementById("buscador")?.focus();
+    return;
+  }
+  if (e.key === "Escape") {
+    cerrarBusqueda();
+    document.querySelector(".modal-fondo")?.remove();
+    if (document.activeElement === document.getElementById("buscador")) {
+      document.getElementById("buscador").blur();
+    }
+    return;
+  }
+  // Las flechas solo cambian el día si no se está escribiendo en un campo
+  if (!escribiendo && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    const campo = document.querySelector("#app input[type=date]");
+    if (!campo) return;
+    e.preventDefault();
+    campo.value = shiftDate(campo.value, e.key === "ArrowRight" ? 1 : -1);
+    campo.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+});
+
+document.getElementById("login-pass").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+tryAutoLogin();
+</script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+# Datos y configuración: NUNCA deben subirse al repositorio.
+# Contienen datos de huéspedes y el token de publicación de Netlify.
+data/
+*.db
+*.db-wal
+*.db-shm
+config_publicacion.json
+config_qr.json
+sync_config.json
+cache_itinerarios/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Sistema operativo / editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.env
+.env.*

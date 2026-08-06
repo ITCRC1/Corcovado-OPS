@@ -1,0 +1,7 @@
+# Los scripts que corren dentro del contenedor Linux DEBEN tener finales de línea
+# LF. Si Git los convierte a CRLF al pasar por Windows, el contenedor falla al
+# arrancar con un error engañoso ("no such file or directory") aunque el archivo
+# exista.
+*.sh text eol=lf
+Dockerfile text eol=lf
+docker-entrypoint.sh text eol=lf

@@ -1,0 +1,13 @@
+# Nada de esto hace falta dentro de la imagen: reduce el tamaño y evita que datos
+# de huéspedes o credenciales acaben dentro del contenedor.
+.git
+.gitignore
+.gitattributes
+data
+**/__pycache__
+**/*.pyc
+*.md
+iniciar.bat
+Dockerfile
+.dockerignore
+railway.json

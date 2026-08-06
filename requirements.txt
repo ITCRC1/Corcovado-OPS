@@ -1,0 +1,11 @@
+fastapi==0.115.0
+uvicorn==0.32.0
+pdfplumber==0.11.4
+python-multipart==0.0.12
+openpyxl==3.1.5
+reportlab==4.2.5
+qrcode==8.0
+# Pillow la usan qrcode (para generar el PNG del código) y pdfplumber. Llegaba
+# de forma indirecta; se declara explícita para que una versión futura de esas
+# librerías no deje al sistema sin poder arrancar.
+pillow==11.0.0
