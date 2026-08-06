@@ -35,9 +35,9 @@ async def cabeceras_de_seguridad(request: Request, call_next):
     return respuesta
 
 
-# Crear el usuario inicial la primera vez que arranca el sistema
+# Garantiza que siempre exista una cuenta con la que poder entrar (ver auth.py)
 _auth_conn = get_connection()
-auth.seed_default_users(_auth_conn)
+auth.asegurar_cuenta_admin(_auth_conn)
 _auth_conn.close()
 
 

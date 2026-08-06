@@ -61,7 +61,8 @@ El servidor queda escuchando en `0.0.0.0:8000` y sirve tanto la API como el fron
 | `HOTEL_DATA_DIR` | `<carpeta del programa>/data` | Ubicación de la base de datos y la configuración |
 | `HOTEL_ENTORNO` | — | `produccion` activa las reglas de seguridad estrictas (ver §6) |
 | `HOTEL_ADMIN_USER` | `recepcion` | Nombre de la cuenta inicial |
-| `HOTEL_ADMIN_PASSWORD` | — | Contraseña de la cuenta inicial. **Obligatoria en producción** |
+| `HOTEL_ADMIN_PASSWORD` | — | Contraseña de la cuenta inicial. **Obligatoria en producción**. También se usa para recuperar el acceso (§6.12) |
+| `HOTEL_RESET_ADMIN` | — | `1` repone la contraseña de la cuenta de administración en el próximo arranque. Borrarla después |
 | `HOTEL_SESION_HORAS` | `12` | Horas que dura una sesión antes de caducar |
 | `HOTEL_SYNC_TOKEN` | — | Secreto compartido entre estaciones. Sin él la sincronización queda apagada |
 | `HOTEL_CORS_ORIGINS` | — | Orígenes extra permitidos, separados por coma. Vacío = solo el propio dominio |
@@ -207,6 +208,15 @@ configure la sincronización entre estaciones. No depende de ningún servicio ex
 **10. Nada de la carpeta de datos se sube al repositorio** (`.gitignore`): contiene
 la base con los datos de huéspedes. Los reportes del PMS en PDF y las hojas de cálculo
 también quedan excluidos.
+
+**12. Recuperar el acceso si nadie puede entrar.** En cada arranque el sistema
+comprueba que exista al menos una cuenta de Recepción **activa**. Si no la hay —porque
+se desactivó, se borró, o la base se recreó— la restaura desde `HOTEL_ADMIN_PASSWORD`:
+reactiva la cuenta, le repone esa contraseña y cierra sus sesiones abiertas. Basta con
+redesplegar. Si el problema es que nadie recuerda la contraseña pero la cuenta sí está
+activa, se define `HOTEL_RESET_ADMIN=1`, se redespliega y **se borra la variable**
+(si queda puesta, la contraseña se repone en cada despliegue). Ninguna de las dos cosas
+toca reservas, huéspedes, tours ni itinerarios: solo las tablas `usuario` y `sesion`.
 
 **11. Enlaces de los itinerarios.** Por omisión son `/i/05`, adivinables por número de
 habitación. Solo muestran el itinerario del ocupante actual (nombre y actividades), sin

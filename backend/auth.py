@@ -62,52 +62,105 @@ DEMO_USERS = [
 ]
 
 
-def seed_default_users(conn):
-    """Crea el primer usuario la primera vez que arranca el sistema.
+def _quiere_reset():
+    return (os.environ.get("HOTEL_RESET_ADMIN") or "").strip().lower() in (
+        "1", "true", "si", "sí", "yes")
 
-    En producción NO se crean los usuarios de demostración: sus contraseñas están
-    publicadas en la documentación y cualquiera podría entrar. Ahí se exige definir
-    HOTEL_ADMIN_PASSWORD, y con eso se crea una sola cuenta de recepción.
+
+def asegurar_cuenta_admin(conn):
+    """Garantiza que SIEMPRE haya una forma de entrar al sistema.
+
+    Corre en cada arranque, no solo la primera vez. Antes solo creaba usuarios con la
+    tabla completamente vacía, y eso dejaba dos formas de quedar encerrado para
+    siempre: desactivar la última cuenta de recepción (el usuario seguía existiendo,
+    así que nunca se recreaba) u olvidar la contraseña.
+
+    Reglas:
+    - Sin ningún usuario: se crea la cuenta inicial desde HOTEL_ADMIN_PASSWORD. En
+      producción esa variable es obligatoria, porque las contraseñas de los usuarios
+      de demostración son públicas.
+    - Sin ninguna cuenta de recepción ACTIVA: se restaura la cuenta de administración
+      desde HOTEL_ADMIN_PASSWORD (se reactiva y se le repone la contraseña).
+    - Con HOTEL_RESET_ADMIN=1: se repone la contraseña aunque todo esté bien. Sirve
+      para cuando nadie la recuerda.
     """
-    existentes = conn.execute("SELECT COUNT(*) c FROM usuario").fetchone()["c"]
-    if existentes > 0:
-        return
-
     admin_user = (os.environ.get("HOTEL_ADMIN_USER") or "recepcion").strip() or "recepcion"
     admin_pass = os.environ.get("HOTEL_ADMIN_PASSWORD") or ""
-
-    if admin_pass:
-        if len(admin_pass) < LARGO_MINIMO_PASSWORD:
-            raise RuntimeError(
-                f"HOTEL_ADMIN_PASSWORD debe tener al menos {LARGO_MINIMO_PASSWORD} caracteres."
-            )
-        h, salt = hash_password(admin_pass)
-        conn.execute(
-            "INSERT INTO usuario (username, password_hash, salt, nombre_completo, rol) VALUES (?,?,?,?,?)",
-            (admin_user, h, salt, "Recepción", "recepcion"),
+    if admin_pass and len(admin_pass) < LARGO_MINIMO_PASSWORD:
+        raise RuntimeError(
+            f"HOTEL_ADMIN_PASSWORD debe tener al menos {LARGO_MINIMO_PASSWORD} caracteres."
         )
+
+    total = conn.execute("SELECT COUNT(*) c FROM usuario").fetchone()["c"]
+    recepcion_activa = conn.execute(
+        "SELECT COUNT(*) c FROM usuario WHERE rol = 'recepcion' AND activo = 1"
+    ).fetchone()["c"]
+
+    # --- Primer arranque: no hay absolutamente nada ---
+    if total == 0 and not admin_pass:
+        if es_produccion():
+            raise RuntimeError(
+                "No hay usuarios en la base y el sistema está en producción.\n"
+                "Define la variable de entorno HOTEL_ADMIN_PASSWORD (y opcionalmente\n"
+                "HOTEL_ADMIN_USER) para crear la primera cuenta de recepción.\n"
+                "Los usuarios de demostración no se crean en producción porque sus\n"
+                "contraseñas son públicas."
+            )
+        for username, password, nombre, rol in DEMO_USERS:
+            h, salt = hash_password(password)
+            conn.execute(
+                "INSERT INTO usuario (username, password_hash, salt, nombre_completo, rol) "
+                "VALUES (?,?,?,?,?)",
+                (username, h, salt, nombre, rol),
+            )
         conn.commit()
-        print(f"Usuario inicial creado: '{admin_user}' (rol recepción).")
+        print("AVISO: se crearon los usuarios de DEMOSTRACIÓN (recepcion/gerencia/staff).")
+        print("       Cámbiales la contraseña antes de usar el sistema con datos reales.")
         return
 
-    if es_produccion():
-        raise RuntimeError(
-            "No hay usuarios en la base y el sistema está en producción.\n"
-            "Define la variable de entorno HOTEL_ADMIN_PASSWORD (y opcionalmente\n"
-            "HOTEL_ADMIN_USER) para crear la primera cuenta de recepción.\n"
-            "Los usuarios de demostración no se crean en producción porque sus\n"
-            "contraseñas son públicas."
-        )
+    if not admin_pass:
+        if recepcion_activa == 0:
+            print("=" * 62)
+            print(" ATENCION: no hay ninguna cuenta de Recepcion activa.")
+            print(" Nadie puede administrar el sistema.")
+            print(" Define HOTEL_ADMIN_PASSWORD y vuelve a desplegar para recuperarlo.")
+            print("=" * 62)
+        return
 
-    for username, password, nombre, rol in DEMO_USERS:
-        h, salt = hash_password(password)
+    forzar = _quiere_reset()
+    if recepcion_activa > 0 and not forzar:
+        return
+
+    # --- Recuperación ---
+    h, salt = hash_password(admin_pass)
+    fila = conn.execute("SELECT id FROM usuario WHERE username = ?", (admin_user,)).fetchone()
+    if fila:
         conn.execute(
-            "INSERT INTO usuario (username, password_hash, salt, nombre_completo, rol) VALUES (?,?,?,?,?)",
-            (username, h, salt, nombre, rol),
+            "UPDATE usuario SET password_hash = ?, salt = ?, activo = 1, rol = 'recepcion' "
+            "WHERE id = ?",
+            (h, salt, fila["id"]),
         )
+        # Se cierran las sesiones viejas de esa cuenta, como en cualquier cambio de
+        # contraseña: si alguien tenía una abierta, deja de servirle.
+        conn.execute("DELETE FROM sesion WHERE usuario_id = ?", (fila["id"],))
+        accion = "restaurada"
+    else:
+        conn.execute(
+            "INSERT INTO usuario (username, password_hash, salt, nombre_completo, rol) "
+            "VALUES (?,?,?,?,?)",
+            (admin_user, h, salt, "Recepción", "recepcion"),
+        )
+        accion = "creada"
     conn.commit()
-    print("AVISO: se crearon los usuarios de DEMOSTRACIÓN (recepcion/gerencia/staff).")
-    print("       Cámbiales la contraseña antes de usar el sistema con datos reales.")
+
+    print("=" * 62)
+    print(f" Cuenta de administracion {accion}: '{admin_user}' (rol recepcion).")
+    print(" Entra con la contrasena de HOTEL_ADMIN_PASSWORD y cambiala desde")
+    print(" la pantalla Usuarios.")
+    if forzar:
+        print(" HOTEL_RESET_ADMIN esta activa: BORRALA de las variables, o la")
+        print(" contrasena volvera a reponerse en cada despliegue.")
+    print("=" * 62)
 
 
 # --------------------------------------------------------------------------
