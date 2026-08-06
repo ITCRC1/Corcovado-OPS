@@ -321,7 +321,15 @@ async function doLogin() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
     });
-    if (!res.ok) { errEl.textContent = "Usuario o contraseña incorrectos."; return; }
+    if (!res.ok) {
+      // Se muestra el motivo real que manda el servidor. Antes decía siempre
+      // "contraseña incorrecta", y eso ocultaba el bloqueo por intentos fallidos:
+      // uno seguía probando la contraseña correcta sin entender por qué no entraba.
+      let motivo = "Usuario o contraseña incorrectos.";
+      try { motivo = (await res.json()).detail || motivo; } catch (e) {}
+      errEl.textContent = motivo;
+      return;
+    }
     const data = await res.json();
     TOKEN = data.token;
     CURRENT_USER = data;
@@ -2023,18 +2031,40 @@ async function crearUsuario() {
 }
 
 async function cambiarEstado(id, activo) {
-  await fetchAuth(`${API}/api/usuarios/${id}/estado?activo=${activo}`, { method: "POST" });
+  const res = await fetchAuth(`${API}/api/usuarios/${id}/estado?activo=${activo}`, { method: "POST" });
+  if (!res.ok) {
+    // El servidor impide desactivar la última cuenta de Recepción activa: sin
+    // mirar la respuesta, el sistema decía "Usuario desactivado" y no era cierto.
+    let motivo = "No se pudo cambiar el estado del usuario.";
+    try { motivo = (await res.json()).detail || motivo; } catch (e) {}
+    avisar(motivo, true);
+    loadUsuarios();
+    return;
+  }
   avisar(activo === true || activo === "true" ? "Usuario activado" : "Usuario desactivado");
   loadUsuarios();
 }
 
 async function cambiarPassword(id) {
-  const nueva = prompt("Nueva contraseña para este usuario:");
+  const nueva = prompt("Nueva contraseña para este usuario (mínimo 10 caracteres):");
   if (!nueva) return;
-  await fetchAuth(`${API}/api/usuarios/${id}/password`, {
+  if (nueva.length < 10) {
+    avisar("La contraseña debe tener al menos 10 caracteres. No se cambió.", true);
+    return;
+  }
+  const res = await fetchAuth(`${API}/api/usuarios/${id}/password`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: nueva }),
   });
-  avisar("Contraseña actualizada");
+  // Antes se avisaba "Contraseña actualizada" sin mirar la respuesta. Si el
+  // servidor la rechazaba, la contraseña seguía siendo la anterior y nadie se
+  // enteraba hasta quedarse afuera del sistema.
+  if (!res.ok) {
+    let motivo = "No se pudo cambiar la contraseña.";
+    try { motivo = (await res.json()).detail || motivo; } catch (e) {}
+    avisar(motivo, true);
+    return;
+  }
+  avisar("Contraseña actualizada. Se cerraron las sesiones abiertas de esa cuenta.");
 }
 
 // ---------- CATÁLOGO (guías, botes, tours) ----------
