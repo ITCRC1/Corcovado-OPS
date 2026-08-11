@@ -501,3 +501,57 @@ def _fecha_en_idioma(texto_dia, idioma):
         return texto_dia
     nombre_mes = tr.MESES.get(idioma, tr.MESES["en"])[mes - 1]
     return tr.FORMATO_FECHA.get(idioma, tr.FORMATO_FECHA["en"]).format(dia=dia, mes=nombre_mes)
+
+
+# ---------------------------------------------------------------------------
+# Reconciliación del itinerario cuando la reserva cambia de fechas
+# ---------------------------------------------------------------------------
+
+def _normalizar_actividad(texto):
+    """Deja el nombre de la actividad comparable, ignorando el texto que recepción
+    haya agregado (ej. 'Scuba Diving — SALIDA ESPECIAL' -> 'scuba diving')."""
+    t = " ".join((texto or "").split()).lower()
+    for corte in ("—", " - ", "(", "·"):
+        if corte in t:
+            t = t.split(corte)[0].strip()
+    return t
+
+
+def reconciliar_itinerario(filas_guardadas, filas_nuevas):
+    """Ajusta un itinerario editado a mano cuando la reserva cambió de fechas.
+
+    El problema que resuelve: si recepción editó el itinerario y después el PDF trae
+    la estadía corrida (o el tour movido), las filas guardadas quedaban con la fecha
+    vieja y el huésped recibía datos incorrectos. Antes se avisaba tratándolas como
+    "faltantes", lo que al incorporarlas producía filas duplicadas.
+
+    Ahora cada fila guardada se empareja con su equivalente en los datos nuevos por
+    el nombre de la actividad, y solo se le actualiza la fecha: se conserva todo el
+    texto que recepción haya escrito.
+
+    Devuelve (filas_resultantes, movidas, faltantes).
+    """
+    # Se agrupan las filas nuevas por actividad, en orden de fecha
+    pendientes = {}
+    for f in filas_nuevas:
+        pendientes.setdefault(_normalizar_actividad(f.get("actividad")), []).append(f)
+    for lista in pendientes.values():
+        lista.sort(key=_clave_orden)
+
+    resultado, movidas = [], []
+    for guardada in sorted(filas_guardadas, key=_clave_orden):
+        clave = _normalizar_actividad(guardada.get("actividad"))
+        candidatas = pendientes.get(clave)
+        nueva = candidatas.pop(0) if candidatas else None
+        if nueva and nueva.get("dia") != guardada.get("dia"):
+            movidas.append({
+                "actividad": " ".join((guardada.get("actividad") or "").split()),
+                "de": guardada.get("dia"), "a": nueva.get("dia"),
+            })
+            guardada = {**guardada, "dia": nueva.get("dia")}
+        resultado.append(guardada)
+
+    # Lo que quedó sin emparejar en los datos nuevos es realmente nuevo
+    faltantes = [f for lista in pendientes.values() for f in lista]
+    resultado = incorporar_faltantes(resultado, [])   # reordena por fecha
+    return resultado, movidas, faltantes

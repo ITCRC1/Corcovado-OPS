@@ -8,6 +8,7 @@ config_publicacion.json
 config_qr.json
 sync_config.json
 cache_itinerarios/
+opera_muestras/
 
 # Reportes del PMS y hojas de cálculo. Traen nombres, fechas y datos personales
 # de los huéspedes. Si uno de estos archivos se deja en la carpeta del proyecto,

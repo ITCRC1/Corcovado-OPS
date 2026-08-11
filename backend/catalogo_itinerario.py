@@ -143,6 +143,13 @@ TOURS_ITINERARIO = {
         "horario": "Be at the guide house at 6:50 a.m.\nLunch will be around 12:30 p.m.",
         "detalles": f"{VESTIR_COMODO}\n{LLEVAR_COMODO}",
     },
+    "CLARO": {
+        "nombre": "Claro del Bosque\nExperience",
+        "duracion": "",
+        "horario": "Be at the guide house at ___",
+        "detalles": f"{VESTIR_COMODO}\n{LLEVAR_COMODO}",
+        "hora_manual": True,
+    },
     "COOKING": {
         "nombre": "Cooking Class",
         "duracion": "",

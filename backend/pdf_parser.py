@@ -91,6 +91,11 @@ VUELO_RE = re.compile(r"\b(?:RZ|SANSA)\s?(\d{3,4})\b", re.IGNORECASE)
 HORA_RE = re.compile(r"(\d{1,2}):(\d{2})\s*([ap])\.?\s?m\.?", re.IGNORECASE)
 HORA_SIMPLE_RE = re.compile(r"\b(\d{1,2}):(\d{2})\b")
 
+# Documento de identidad del huésped. Aparece en muchos formatos y no siempre al
+# final de la línea, así que se busca en cualquier posición:
+#   555591746 · A13343206 · GD0011047 · PAMO75815 · C1VW6C3JF · 1-0745-0194
+DOC_RE = re.compile(r"(?P<doc>\b(?:[A-Z]{1,5}\d[\dA-Z]{3,}|\d[\d-]{6,})\b)")
+
 
 def normalizar_hora(texto):
     """Devuelve la hora en formato '3:00 p.m.'. Si viene en formato 24h la convierte."""
@@ -122,6 +127,7 @@ def normalizar_vuelo(match):
 
 
 TOUR_CODES = [
+    "CLARO", "SPA",
     "PNC", "SIRENA", "BUCEO", "ISLA", "SNORKEL", "PAJAREO", "MANGLAR",
     "BALLENAS", "CABALGATA", "TREENET", "GTT", "NW", "PESCA",
 ]
@@ -147,6 +153,11 @@ TOUR_ALIASES = {
     "NIGHT WALK": "NW",
     "BIRD WATCHING": "PAJAREO",
     "BIRDWATCHING": "PAJAREO",
+    "EARLY BIRD TOUR": "PAJAREO",
+    "EARLY BIRD": "PAJAREO",
+    "EBT": "PAJAREO",
+    "EBW": "PAJAREO",
+    "BW": "PAJAREO",
     "MANGROVE": "MANGLAR",
     "DIVING": "BUCEO",
     "SCUBA": "BUCEO",
@@ -155,6 +166,11 @@ TOUR_ALIASES = {
     "SAN PEDRILLO": "PNC",
     "CANO ISLAND": "ISLA",
     "CAÑO ISLAND": "ISLA",
+    "CLARO DEL BOSQUE": "CLARO",
+    "CB": "CLARO",
+    "MASAJES": "SPA",
+    "MASAJE": "SPA",
+    "SPA TREATMENT": "SPA",
 }
 
 
@@ -326,42 +342,54 @@ def parse_reservations(pdf_path):
             current["vinculo_texto"] = line.strip()
 
         if section == "rooming":
-            # El PDF escribe la lista de huéspedes de formas distintas:
-            #   "Ms. Charlotte Nicola Breen Pasaporte N. 159295223"
-            #   "Philip James Stein 566785524"
-            #   "Stacey Rodgers Stein A13343206"
-            #   "Thomas Tchekerul kouch 24HD91542"
-            # Se extrae el nombre y, si existe, el número de documento (que puede
-            # incluir letras). Se ignoran líneas que son solo encabezado o separador.
+            # El PDF escribe la lista de huéspedes de muchas formas, y con frecuencia
+            # agrega texto DESPUÉS del documento: la edad, restricciones alimentarias,
+            # el tour que hará, la fecha de nacimiento. Antes se exigía que el documento
+            # fuera lo último de la línea y se perdían 9 de cada 12 huéspedes.
+            #   "SYLVIA ROSEMARIE PARSONAGE 310720286 55 YRS OLD"
+            #   "Brittany McGinnis Okimura 641734480 Dietary Restrictions: No Pork BUCEO"
+            #   "Alexandra Eloise Bradford A49668023 15años Buceo"
+            #   "Jordan Coutts: US passport # A91576900"
+            #   "Mark Steven Landsberkg – A31222424 Buceo"
             texto = line.strip()
-            if texto and not re.match(r"^-+$", texto) and not texto.upper().startswith("ROOMING"):
-                m_doc = re.search(
-                    # El documento puede ser numérico o alfanumérico con varias letras
-                    # al inicio (555591746, A13343206, GD0011047, PAMO75815, PAW338266).
-                    r"^(?P<nombre>.+?)\s+(?:Pasaporte\s*N\.?\s*|Ced\.?\s*|C[ÉE]DULA\s*:?\s*)?(?P<doc>[A-Z]{0,5}\d[\dA-Z]{3,})\s*$",
-                    texto, re.IGNORECASE,
-                )
+            if (texto and not re.match(r"^-+$", texto)
+                    and not texto.upper().startswith("ROOMING")):
+                m_doc = DOC_RE.search(texto)
                 if m_doc:
-                    nombre = m_doc.group("nombre").strip(" .,-")
-                    # Quitar prefijos de cortesía al inicio del nombre
-                    nombre = re.sub(r"^(Mr|Mrs|Ms|Sr|Sra|Srta)\.?\s+", "", nombre, flags=re.IGNORECASE)
-                    if nombre and any(c.isalpha() for c in nombre):
-                        current["rooming"].append({"nombre": nombre, "pasaporte": m_doc.group("doc")})
+                    nombre = texto[:m_doc.start()]
+                    # Se limpian etiquetas, nacionalidad y separadores del nombre.
+                    # Ej. "Jordan Coutts: US passport # A915..." -> "Jordan Coutts"
+                    nombre = re.sub(
+                        r"[:,]?\s*(?:[A-Z]{2,3}\s+)?(?:Pasaporte\s*N\.?|Passport\s*number|"
+                        r"passport\s*#?|Ced\.?|C[ÉE]DULA)\s*[:#]?\s*$",
+                        "", nombre, flags=re.IGNORECASE)
+                    nombre = re.sub(r"^(?:Mr|Mrs|Ms|Sr|Sra|Srta)\.?\s+", "", nombre.strip(" .,:#–-"),
+                                    flags=re.IGNORECASE)
+                    nombre = nombre.strip(" .,:#–-")
+                    if nombre and sum(ch.isalpha() for ch in nombre) >= 3:
+                        current["rooming"].append({"nombre": nombre,
+                                                  "pasaporte": m_doc.group("doc")})
                 else:
                     # Línea con solo el nombre, sin documento
-                    solo_nombre = re.sub(r"^(Mr|Mrs|Ms|Sr|Sra|Srta)\.?\s+", "", texto, flags=re.IGNORECASE)
-                    solo_nombre = solo_nombre.strip(" .,-")
-                    # Debe parecer un nombre (al menos 2 palabras, sin dos puntos)
-                    if (len(solo_nombre.split()) >= 2 and ":" not in solo_nombre
-                            and not re.search(r"\d", solo_nombre)
-                            and all(c.isalpha() or c in " .,'-" for c in solo_nombre)):
-                        current["rooming"].append({"nombre": solo_nombre, "pasaporte": None})
+                    solo = re.sub(r"^(?:Mr|Mrs|Ms|Sr|Sra|Srta)\.?\s+", "", texto,
+                                  flags=re.IGNORECASE).strip(" .,:#–-")
+                    if (len(solo.split()) >= 2 and ":" not in solo
+                            and not re.search(r"\d", solo)
+                            and all(ch.isalpha() or ch in " .,'-áéíóúñÁÉÍÓÚÑüÜöÖäÄ" for ch in solo)):
+                        current["rooming"].append({"nombre": solo, "pasaporte": None})
 
         if section == "operacion":
-            m_op = re.match(r"(\d+):\s*(In|Out|Ingreso|Salida|Check ?In|Check ?Out)\s*$", line, re.IGNORECASE)
+            m_op = re.match(
+                r"(\d{1,2}):?\s*(Check ?In|Check ?Out|Ingreso|Salida|In|Out)\b\s*(.*)$",
+                line, re.IGNORECASE)
             if m_op:
-                current["operacion"].append({"dia": m_op.group(1), "evento": m_op.group(2).upper()})
-            else:
+                current["operacion"].append({"dia": m_op.group(1),
+                                             "evento": m_op.group(2).upper()})
+            # Si además de el evento la línea trae algo más (ej. "07: In + NW"), se
+            # sigue analizando para no perder ese tour.
+            if not m_op or (m_op.group(3) or "").strip(" +/-·,"):
+                if m_op:
+                    line = f"{m_op.group(1)}: {m_op.group(3)}"
                 # El itinerario real viene como "NN: TOUR" o a veces "NN TOUR" (sin los
                 # dos puntos). Después del itinerario suelen aparecer notas en texto libre
                 # que también mencionan fechas y tours, pero escritas como fecha completa
@@ -402,17 +430,21 @@ def parse_reservations(pdf_path):
                     # solo puntuación/espacios, es una actividad que no está en el catálogo
                     # (ej. una actividad realmente nueva) y se guarda para revisión, en vez de
                     # perderse silenciosamente — aunque la línea también tuviera un tour reconocido.
-                    resto_sin_tours = re.sub(
-                        "|".join(rf"\b{code}\b" for code in TOUR_CODES)
-                        + r"|" + "|".join(rf"\b{re.escape(a)}\b" for a in TOUR_ALIASES)
-                        + r"|\bPRIV(ADO)?\b",
-                        "", resto, flags=re.IGNORECASE,
-                    )
-                    sobra = re.sub(r"[\d:\+\-/,\.\s]+", " ", resto_sin_tours).strip()
-                    if sobra:
-                        current.setdefault("actividades_no_reconocidas", []).append(
-                            {"dia": dia, "texto": resto.strip()}
-                        )
+                    # Se avisa solo cuando el sistema NO logró identificar ninguna
+                    # actividad en la línea. Si reconoció al menos una, el texto que
+                    # sobra es contexto (quién coordina, la hora, una nota) y avisarlo
+                    # sería un falso positivo: los avisos falsos enseñan a ignorar los
+                    # avisos de verdad. El texto completo queda igual en las notas.
+                    if not encontrados:
+                        resto_limpio = re.sub(r"\([^)]*\)", " ", resto)
+                        resto_limpio = re.sub(
+                            r"\b(?:Check\s?In|Check\s?Out|In|Out|Ingreso|Salida|"
+                            r"x\d+|\d+x|am|pm|hrs?)\b", " ", resto_limpio, flags=re.IGNORECASE)
+                        sobra = re.sub(r"[\d:\+\-/,\.\s&]+", " ", resto_limpio).strip()
+                        if sobra and len(sobra) > 2:
+                            current.setdefault("actividades_no_reconocidas", []).append(
+                                {"dia": dia, "texto": resto.strip()}
+                            )
 
         if section == "notas" and not line.upper().startswith("NOTAS"):
             current["notas"] += (" " + line)

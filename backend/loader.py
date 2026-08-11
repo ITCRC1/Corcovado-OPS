@@ -2,6 +2,32 @@
 from init_db import get_connection
 
 
+def _filas_fuera_de_estadia(filas, arr_date, dep_date):
+    """Actividades cuya fecha quedó fuera de la estadía del huésped. Pasa cuando
+    recepción agregó algo a mano y después la reserva se movió de fechas."""
+    import itinerario as _it
+
+    def a_par(iso):
+        """'2026-08-05' -> (8, 5), comparable con el orden de las filas."""
+        try:
+            _y, m, d = iso.split("-")
+            return (int(m), int(d))
+        except (ValueError, AttributeError):
+            return None
+
+    ini, fin = a_par(arr_date), a_par(dep_date)
+    if not ini or not fin:
+        return []
+    fuera = []
+    for f in filas:
+        clave = _it._clave_orden(f)
+        if clave == (0, 0):
+            continue
+        if clave < ini or clave > fin:
+            fuera.append(f"{f.get('dia')} {' '.join((f.get('actividad') or '').split())}")
+    return fuera
+
+
 def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_canceladas=True):
     conn = get_connection()
     cur = conn.cursor()
@@ -75,15 +101,21 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
         # IMPORTANTE: antes de borrar los tours, se guardan las asignaciones de guía
         # y bote que recepción ya hizo manualmente, para restaurarlas después y no
         # perder ese trabajo.
+        # Asignaciones que recepción ya hizo (guía, bote, grupo operativo). Se guardan
+        # por fecha+tour y también agrupadas solo por tour, porque si el PDF actualizado
+        # mueve el tour de día la asignación seguía siendo válida y antes se perdía:
+        # recepción tenía que volver a asignar todo.
         asignaciones_previas = {}
+        asignaciones_por_tour = {}
         for prev in cur.execute(
-            "SELECT fecha, tour_codigo, guia_nombre, bote_nombre, grupo_operativo FROM tour_asignado WHERE conf_no = ?",
+            "SELECT fecha, tour_codigo, guia_nombre, bote_nombre, grupo_operativo "
+            "FROM tour_asignado WHERE conf_no = ? ORDER BY fecha",
             (r["conf_no"],),
         ).fetchall():
             if prev["guia_nombre"] or prev["bote_nombre"] or prev["grupo_operativo"] != "A":
-                asignaciones_previas[(prev["fecha"], prev["tour_codigo"])] = (
-                    prev["guia_nombre"], prev["bote_nombre"], prev["grupo_operativo"],
-                )
+                datos_prev = (prev["guia_nombre"], prev["bote_nombre"], prev["grupo_operativo"])
+                asignaciones_previas[(prev["fecha"], prev["tour_codigo"])] = datos_prev
+                asignaciones_por_tour.setdefault(prev["tour_codigo"], []).append(datos_prev)
 
         cur.execute("DELETE FROM huesped WHERE conf_no = ?", (r["conf_no"],))
         cur.execute("DELETE FROM tour_asignado WHERE conf_no = ?", (r["conf_no"],))
@@ -108,9 +140,15 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
             )
 
         for a in r["agenda"]:
-            guia_prev, bote_prev, grupo_prev = asignaciones_previas.get(
-                (a["fecha"], a["tour"]), (None, None, "A")
-            )
+            asignacion = asignaciones_previas.pop((a["fecha"], a["tour"]), None)
+            if asignacion is None:
+                # No hay coincidencia exacta de fecha: el tour probablemente se movió
+                # de día en el PDF actualizado. Se recupera la asignación por tour, en
+                # orden, para no obligar a recepción a reasignar guía y bote.
+                pendientes_tour = asignaciones_por_tour.get(a["tour"])
+                if pendientes_tour:
+                    asignacion = pendientes_tour.pop(0)
+            guia_prev, bote_prev, grupo_prev = asignacion or (None, None, "A")
             cur.execute(
                 """INSERT INTO tour_asignado
                    (conf_no, fecha, tour_codigo, pax, conf_entrada_sinac, guia_nombre, bote_nombre, grupo_operativo)
@@ -178,25 +216,42 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                 "SELECT editado, filas_json FROM itinerario WHERE conf_no = ?", (conf_no,)
             ).fetchone()
             if ya and ya["editado"]:
-                # El itinerario fue editado a mano: no se sobrescribe. Pero si la reserva
-                # trae algo nuevo que no está en la versión editada, se avisa a recepción
-                # para que decida si lo incorpora.
+                # El itinerario fue editado a mano: no se sobrescribe, pero SÍ se le
+                # ajustan las fechas si la reserva cambió (cambio de habitación, de
+                # check-in/check-out, o de día de un tour). Antes las filas quedaban
+                # con la fecha vieja y el huésped recibía datos incorrectos; y al
+                # "incorporar lo que falta" se duplicaban.
                 guardadas = _json.loads(ya["filas_json"])
-                faltantes = _itin.detectar_faltantes(guardadas, filas)
+                ajustadas, movidas, faltantes = _itin.reconciliar_itinerario(guardadas, filas)
+
+                if movidas:
+                    cur.execute(
+                        "UPDATE itinerario SET filas_json = ?, actualizado_en = datetime('now') "
+                        "WHERE conf_no = ?",
+                        (_json.dumps(ajustadas, ensure_ascii=False), conf_no))
+
+                avisos_it = []
+                if movidas:
+                    avisos_it.append("Se ajustaron las fechas del itinerario: " + "; ".join(
+                        f"{m['actividad']} {m['de']} → {m['a']}" for m in movidas[:4]) + ".")
                 if faltantes:
-                    detalle = "; ".join(
+                    avisos_it.append("Falta agregar: " + "; ".join(
                         f"{f['dia']} {' '.join((f.get('actividad') or '').split())}"
-                        for f in faltantes)
-                    aviso = (f"El itinerario editado de la reserva {conf_no} no incluye: "
-                             f"{detalle}. Revisar antes de enviarlo al huésped.")
+                        for f in faltantes) + ".")
+                fuera = _filas_fuera_de_estadia(ajustadas, datos.get("arr_date_iso"),
+                                                datos.get("dep_date_iso"))
+                if fuera:
+                    avisos_it.append("Quedaron fuera de la estadía: " + "; ".join(fuera) + ".")
+
+                if avisos_it:
+                    aviso = " ".join(avisos_it) + " Revisar antes de enviarlo al huésped."
                     cur.execute("UPDATE itinerario SET aviso_cambios = ? WHERE conf_no = ?",
                                 (aviso, conf_no))
                     info = cur.execute(
                         "SELECT room_no, nombre_principal, arr_date FROM reserva WHERE conf_no = ?",
                         (conf_no,)).fetchone()
                     mensaje = (f"Itinerario por revisar: {info['nombre_principal']} "
-                               f"(hab. {info['room_no']}, {info['arr_date']}) — "
-                               f"la reserva cambió después de editarlo. Falta: {detalle}.")
+                               f"(hab. {info['room_no']}, {info['arr_date']}) — {aviso}")
                     existe = cur.execute(
                         "SELECT 1 FROM alerta WHERE tipo='ITINERARIO_DESACTUALIZADO' "
                         "AND mensaje=? AND resuelto=0", (mensaje,)).fetchone()

@@ -38,6 +38,11 @@ TOURS = [
     ("PNC PRIVADO", "PNC privado", "07:30", "12:30", None, None, 8, 1, 1, 1, "PNC"),
     ("SIRENA", "Sirena", "06:15", "13:30", None, None, 8, 1, 1, 0, None),
     ("SNORKEL", "Snorkel", "07:15", "12:30", None, None, 8, 1, 1, 0, None),
+    # Actividades en el lodge: no llevan bote ni entrada al SINAC. El horario es
+    # variable (lo coordina recepción), así que se deja sin hora fija y el
+    # itinerario del huésped lo pide completar.
+    ("CLARO", "Claro del Bosque", None, None, None, None, 10, 0, 0, 0, None),
+    ("SPA", "Spa / Masajes", None, None, None, None, 20, 0, 0, 0, None),
     ("TREENET", "Treenet", "16:00", "18:00", None, None, 4, 0, 0, 0, None),
 ]
 

@@ -191,6 +191,11 @@ ACTIVIDADES = {
                       "fr": "Cours de cuisine", "ru": "Кулинарный класс"},
     "Spa Treatment": {"es": "Tratamiento de spa", "pt": "Tratamento de spa",
                       "fr": "Soin au spa", "ru": "Спа-процедура"},
+    "Claro del Bosque\nExperience": {
+        "es": "Claro del Bosque\nExperiencia",
+        "pt": "Claro del Bosque\nExperiência",
+        "fr": "Claro del Bosque\nExpérience",
+        "ru": "Claro del Bosque\nэкскурсия"},
 }
 
 # --- Frases de horarios y recomendaciones ---
