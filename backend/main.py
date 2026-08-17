@@ -18,6 +18,26 @@ import auth
 app = FastAPI(title="Sistema de Operación Hotelera - Sierpe/Drake")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+@app.get("/api/salud")
+def salud():
+    """Comprobación de estado para el servidor donde está instalado el sistema.
+
+    No pide usuario ni contraseña: es la dirección que consulta la plataforma para
+    saber si el programa quedó bien levantado después de un despliegue. Si falla,
+    la plataforma da por mala la versión nueva y no la publica.
+
+    Se abre la base de datos a propósito: si el programa responde pero no puede
+    leer el disco, no está sano y es mejor que el despliegue se detenga.
+    """
+    try:
+        c = get_connection()
+        reservas = c.execute("SELECT COUNT(*) n FROM reserva").fetchone()["n"]
+        c.close()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Base de datos no disponible: {e}")
+    return {"estado": "ok", "reservas": reservas}
+
+
 # Crear usuarios por defecto la primera vez que arranca el sistema
 _auth_conn = get_connection()
 auth.seed_default_users(_auth_conn)
