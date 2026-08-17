@@ -75,6 +75,34 @@ AMENIDADES = [
 ]
 
 
+# Columnas agregadas después de que el sistema ya estaba en uso. El esquema se crea
+# con CREATE TABLE IF NOT EXISTS, así que en una base que ya existe estas columnas
+# NO aparecen solas: hay que agregarlas explícitamente. Sin esto fallan al importar
+# el PDF, al abrir Restaurantes y al guardar permisos.
+COLUMNAS_NUEVAS = [
+    ("reserva", "block_code", "TEXT"),
+    ("reserva", "forzar_restaurante", "TEXT"),
+    ("usuario", "permisos_json", "TEXT"),
+    ("amenidad_tarea", "fecha", "TEXT"),
+]
+
+
+def _migrar(conn):
+    """Agrega las columnas que falten. Es idempotente: se puede correr siempre."""
+    agregadas = []
+    for tabla, columna, tipo in COLUMNAS_NUEVAS:
+        existentes = {r[1] for r in conn.execute(f"PRAGMA table_info({tabla})")}
+        if not existentes:
+            continue          # la tabla aún no existe; el esquema ya la creará con la columna
+        if columna not in existentes:
+            conn.execute(f"ALTER TABLE {tabla} ADD COLUMN {columna} {tipo}")
+            agregadas.append(f"{tabla}.{columna}")
+    if agregadas:
+        conn.commit()
+        print("Base actualizada, columnas agregadas: " + ", ".join(agregadas))
+    return agregadas
+
+
 def init_db(reset=False):
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     if reset and os.path.exists(DB_PATH):
@@ -83,6 +111,8 @@ def init_db(reset=False):
     conn = get_connection()
     with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
         conn.executescript(f.read())
+
+    _migrar(conn)
 
     cur = conn.cursor()
 
