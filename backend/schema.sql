@@ -6,6 +6,9 @@ CREATE TABLE IF NOT EXISTS usuario (
     salt TEXT NOT NULL,
     nombre_completo TEXT NOT NULL,
     rol TEXT NOT NULL, -- 'recepcion' (lectura/escritura) | 'gerencia' (solo lectura) | 'staff' (solo lectura)
+    -- Permisos por pantalla. JSON del tipo {"restaurantes":"escribir","resumen":"ver"}.
+    -- Si viene NULL se usan los permisos del rol, para no romper los usuarios ya creados.
+    permisos_json TEXT,
     activo INTEGER NOT NULL DEFAULT 1,
     creado_en TEXT DEFAULT (datetime('now'))
 );
@@ -93,6 +96,11 @@ CREATE TABLE IF NOT EXISTS reserva (
     punto_salida TEXT,
     punto_entrada_sin_confirmar TEXT,
     punto_salida_sin_confirmar TEXT,
+    -- Código de bloque del PMS (ej. 2608RUSSTI). Sirve para agrupar reservas que
+    -- viajan juntas y que no traen la nota "viene con rsv".
+    block_code TEXT,
+    -- Restaurante fijo para toda la estadía, si recepción lo define
+    forzar_restaurante TEXT,
     hora_vuelo_entrada TEXT,
     hora_vuelo_salida TEXT,
     vuelo_entrada TEXT,
@@ -159,6 +167,10 @@ CREATE TABLE IF NOT EXISTS amenidad_tarea (
     tarea TEXT NOT NULL,
     area_responsable TEXT NOT NULL,
     estado TEXT NOT NULL DEFAULT 'PENDIENTE', -- PENDIENTE | HECHA
+    -- Noche concreta a la que aplica, en formato ISO. La usa la cena privada: el PDF
+    -- avisa que existe pero casi nunca dice el día, así que recepción lo confirma
+    -- desde la pantalla de restaurantes.
+    fecha TEXT,
     creado_en TEXT DEFAULT (datetime('now'))
 );
 
@@ -196,11 +208,62 @@ CREATE TABLE IF NOT EXISTS habitacion_qr (
     creado_en TEXT DEFAULT (datetime('now'))
 );
 
--- Las tablas 'publicacion' y 'publicacion_habitacion' llevaban el registro de lo
--- que se había subido a Netlify y de si el contenido de cada habitación cambiaba
--- desde la última publicación. Ya no existen: el itinerario se arma en el momento
--- en que el huésped escanea el QR, contra este mismo sistema, así que nunca queda
--- desactualizado y no hay nada que publicar ni de qué llevar registro.
+-- Registro de publicaciones del sitio de itinerarios
+CREATE TABLE IF NOT EXISTS publicacion (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    estado TEXT NOT NULL,          -- 'PENDIENTE' | 'PUBLICADO' | 'ERROR'
+    detalle TEXT,
+    habitaciones INTEGER,
+    intentos INTEGER NOT NULL DEFAULT 0,
+    creado_en TEXT DEFAULT (datetime('now')),
+    publicado_en TEXT
+);
+
+-- Qué se publicó de cada habitación, para saber si su contenido cambió desde la
+-- última publicación (y así avisar cuáles quedan pendientes de publicar).
+CREATE TABLE IF NOT EXISTS publicacion_habitacion (
+    room_no TEXT PRIMARY KEY,
+    conf_no TEXT,                  -- huésped que estaba publicado
+    huella TEXT,                   -- huella del contenido publicado
+    publicado_en TEXT
+);
+
+-- ---------------------------------------------------------------------------
+-- Distribución de restaurantes
+-- ---------------------------------------------------------------------------
+
+-- Cambios manuales de restaurante. Solo se guarda la EXCEPCIÓN: el resto se
+-- calcula al vuelo con las reglas. Afecta una sola fecha y una sola reserva.
+CREATE TABLE IF NOT EXISTS restaurante_cambio (
+    fecha TEXT NOT NULL,
+    conf_no TEXT NOT NULL,
+    comida TEXT NOT NULL,          -- 'ALMUERZO' | 'CENA'
+    restaurante TEXT NOT NULL,     -- 'Terra Kitchen' | 'Vitrales'
+    motivo TEXT,
+    creado_en TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (fecha, conf_no, comida),
+    FOREIGN KEY (conf_no) REFERENCES reserva(conf_no) ON DELETE CASCADE
+);
+
+-- Asignación de los días que ya pasaron. Se congela al terminar el día para que
+-- el historial de rotación no se reescriba cuando entra un PDF nuevo, y para que
+-- una deuda de cena en Terra Kitchen no desaparezca sola.
+CREATE TABLE IF NOT EXISTS restaurante_historico (
+    fecha TEXT NOT NULL,
+    conf_no TEXT NOT NULL,
+    almuerzo TEXT,
+    cena TEXT,
+    era_entrada INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (fecha, conf_no)
+);
+
+-- Hora reservada de cada mesa para la cena. La registra el salonero.
+CREATE TABLE IF NOT EXISTS restaurante_hora (
+    fecha TEXT NOT NULL,
+    conf_no TEXT NOT NULL,
+    hora TEXT,
+    PRIMARY KEY (fecha, conf_no)
+);
 
 -- Log de sincronización (para el modelo offline-first Sierpe/Drake)
 CREATE TABLE IF NOT EXISTS sync_log (

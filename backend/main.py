@@ -1,9 +1,10 @@
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Depends, Request
+from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from init_db import get_connection
 import os
 import sys
+import secrets
 import tempfile
 import datetime
 
@@ -15,49 +16,16 @@ from validations import (validar_todos_los_tours, validar_tour_asignado,
 import auth
 
 app = FastAPI(title="Sistema de Operación Hotelera - Sierpe/Drake")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# El frontend lo sirve este mismo proceso, así que normalmente NO hace falta CORS.
-# Antes estaba abierto a cualquier origen ("*"), lo que permitía a cualquier sitio
-# web hacer llamadas a la API desde el navegador de un usuario. Si alguna vez se
-# sirve el frontend desde otro dominio, se listan aquí separados por coma.
-_cors_origins = [o.strip() for o in os.environ.get("HOTEL_CORS_ORIGINS", "").split(",") if o.strip()]
-if _cors_origins:
-    app.add_middleware(CORSMiddleware, allow_origins=_cors_origins,
-                       allow_methods=["*"], allow_headers=["*"])
-
-
-@app.middleware("http")
-async def cabeceras_de_seguridad(request: Request, call_next):
-    respuesta = await call_next(request)
-    respuesta.headers.setdefault("X-Content-Type-Options", "nosniff")
-    respuesta.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
-    respuesta.headers.setdefault("Referrer-Policy", "same-origin")
-    return respuesta
-
-
-# Garantiza que siempre exista una cuenta con la que poder entrar (ver auth.py)
+# Crear usuarios por defecto la primera vez que arranca el sistema
 _auth_conn = get_connection()
-auth.asegurar_cuenta_admin(_auth_conn)
+auth.seed_default_users(_auth_conn)
 _auth_conn.close()
 
 
 def current_user(authorization: str = Header(None)):
     return auth.get_current_user(authorization, get_connection)
-
-
-@app.get("/api/salud")
-def salud():
-    """Comprobación para el hosting: responde 200 solo si la base de datos está
-    accesible. Railway la usa para decidir si un despliegue quedó sano; si falla,
-    mantiene arriba la versión anterior en vez de dejar el sistema caído.
-    No expone ningún dato."""
-    try:
-        conn = get_connection()
-        conn.execute("SELECT 1").fetchone()
-        conn.close()
-    except Exception:
-        raise HTTPException(status_code=503, detail="Base de datos no disponible")
-    return {"estado": "ok"}
 
 
 def ddmmyy(iso_date):
@@ -97,30 +65,24 @@ def reserva_resumen(row):
 
 # ---------- AUTENTICACIÓN ----------
 @app.post("/api/auth/login")
-async def login(payload: dict, request: Request):
-    # Freno a la fuerza bruta: varios fallos seguidos desde el mismo origen y para
-    # el mismo usuario bloquean el intento durante unos minutos.
-    origen = request.client.host if request.client else "?"
-    clave_intentos = f"{origen}|{payload.get('username', '')}"
-    auth.verificar_intentos(clave_intentos)
-
+async def login(payload: dict):
     conn = get_connection()
     user = conn.execute(
         "SELECT * FROM usuario WHERE username = ? AND activo = 1", (payload.get("username", ""),)
     ).fetchone()
     if not user or not auth.verify_password(payload.get("password", ""), user["password_hash"], user["salt"]):
         conn.close()
-        auth.registrar_fallo(clave_intentos)
         raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
-    auth.limpiar_intentos(clave_intentos)
     token = auth.crear_sesion(conn, user["id"])
     conn.close()
-    return {"token": token, "username": user["username"], "nombre_completo": user["nombre_completo"], "rol": user["rol"]}
+    return {"token": token, "username": user["username"],
+            "nombre_completo": user["nombre_completo"], "rol": user["rol"],
+            "permisos": auth.permisos_de(dict(user))}
 
 
 @app.get("/api/auth/me")
 def me(user: dict = Depends(current_user)):
-    return user
+    return {**user, "permisos": auth.permisos_de(user)}
 
 
 @app.post("/api/auth/logout")
@@ -299,7 +261,17 @@ def resumen_operacion(fecha: str, user: dict = Depends(current_user)):
         "tours": tours,
         "restricciones_cocina": restricciones,
         "amenidades": amenidades,
+        "restaurantes": _restaurantes_resumen(conn, fecha),
     }
+
+
+def _restaurantes_resumen(conn, fecha):
+    """Totales de cada restaurante, para que cocina los vea en la hoja del día."""
+    try:
+        import restaurantes as rest
+        return rest.resumen_dia(conn, fecha)
+    except Exception:
+        return None
 
 
 @app.get("/api/ocupacion")
@@ -308,8 +280,8 @@ def ocupacion(desde: str, hasta: str, user: dict = Depends(current_user)):
     Útil para gerencia, y para ver de un vistazo los días fuertes del mes."""
     conn = get_connection()
     # Se importa aquí para no depender del orden de las importaciones del archivo
-    import qr_huesped as _qrh
-    total_habitaciones = len(_qrh.cargar_config().get("habitaciones") or []) or 30
+    import publicador as _pub
+    total_habitaciones = len(_pub.cargar_config().get("habitaciones") or []) or 30
 
     reservas = [dict(r) for r in conn.execute(
         """SELECT room_no, arr_date, dep_date, adl, chl FROM reserva
@@ -649,12 +621,23 @@ async def pdf_confirm(file: UploadFile = File(...), user: dict = Depends(current
     _load_batch(batch, fuente_pdf=file.filename)
     alertas = validar_todos_los_tours()
 
-    # Los itinerarios que ven los huéspedes no hay que publicarlos: se arman en el
-    # momento en que se escanea el QR, así que quedan al día apenas termina esto.
+    # La publicación del sitio de itinerarios se hace en segundo plano: genera 30
+    # páginas con sus PDF y sube unos 13 MB, y con el internet del lodge eso puede
+    # tardar minutos. No tiene por qué hacer esperar a recepción.
+    publicacion = _publicar_en_segundo_plano()
+
     return {"status": "ok", "reservas_cargadas": len(batch["reservas"]),
-            "alertas_generadas": len(alertas)}
+            "alertas_generadas": len(alertas), "publicacion": publicacion}
 
 
+def _publicar_en_segundo_plano():
+    """Se mantiene por compatibilidad: ya no hay nada que publicar.
+
+    El itinerario se arma en el instante en que el huésped escanea su código, así que
+    cualquier cambio —editar el itinerario, mover un tour, cambiar de restaurante—
+    se ve de inmediato sin que nadie tenga que hacer nada.
+    """
+    return "en vivo"
 @app.post("/api/tours/agenda/{tour_id}/asignar")
 def asignar_guia_bote(tour_id: int, guia: str = None, bote: str = None, user: dict = Depends(current_user)):
     auth.requiere_escritura(user)
@@ -751,18 +734,9 @@ _startup_conn.execute(
     "UPDATE sync_log SET origen_estacion = ? WHERE origen_estacion IS NULL",
     (_cfg.get("nombre_estacion", "Sierpe"),),
 )
-# Los disparadores del esquema anotan en sync_log cada escritura de la base. Con una
-# sola instalación (el caso normal: todos entran al mismo servidor) nadie consume
-# esas filas y la tabla crece para siempre. Se podan al arrancar; si hay otra
-# estación configurada no se toca nada, porque ahí sí están pendientes de enviar.
-if not _cfg.get("peer_url", "").strip():
-    _startup_conn.execute("DELETE FROM sync_log WHERE creado_en <= datetime('now', '-7 days')")
 _startup_conn.commit()
 _startup_conn.close()
-# El hilo de sincronización solo se levanta si de verdad hay otra estación
-# configurada; si no, era un bucle despertándose cada 30 s sin hacer nada.
-if _cfg.get("peer_url", "").strip():
-    sync_engine.iniciar_sync_en_segundo_plano()
+sync_engine.iniciar_sync_en_segundo_plano()
 
 
 @app.get("/api/sync/estado")
@@ -783,8 +757,7 @@ def sync_ahora(user: dict = Depends(current_user)):
 
 
 @app.get("/api/sync/pending")
-def sync_pending(x_sync_token: str = Header(None)):
-    sync_engine.exigir_token(x_sync_token)
+def sync_pending():
     conn = get_connection()
     cfg = sync_engine.load_sync_config()
     changes = sync_engine.get_pending_changes(conn, cfg.get("nombre_estacion"))
@@ -793,8 +766,7 @@ def sync_pending(x_sync_token: str = Header(None)):
 
 
 @app.post("/api/sync/apply")
-async def sync_apply(payload: dict, x_sync_token: str = Header(None)):
-    sync_engine.exigir_token(x_sync_token)
+async def sync_apply(payload: dict):
     conn = get_connection()
     aplicados = sync_engine.apply_remote_changes(conn, payload.get("changes", []))
     conn.close()
@@ -803,7 +775,7 @@ async def sync_apply(payload: dict, x_sync_token: str = Header(None)):
 
 @app.get("/api/usuarios")
 def listar_usuarios(user: dict = Depends(current_user)):
-    auth.requiere_admin(user)
+    auth.requiere_escritura(user)
     conn = get_connection()
     rows = conn.execute("SELECT id, username, nombre_completo, rol, activo FROM usuario ORDER BY username").fetchall()
     conn.close()
@@ -812,10 +784,9 @@ def listar_usuarios(user: dict = Depends(current_user)):
 
 @app.post("/api/usuarios")
 async def crear_usuario(payload: dict, user: dict = Depends(current_user)):
-    auth.requiere_admin(user)
+    auth.requiere_escritura(user)
     if payload.get("rol") not in ("recepcion", "gerencia", "staff"):
         raise HTTPException(status_code=400, detail="Rol inválido")
-    auth.validar_password(payload.get("password"))
     conn = get_connection()
     existe = conn.execute("SELECT id FROM usuario WHERE username = ?", (payload["username"],)).fetchone()
     if existe:
@@ -833,19 +804,8 @@ async def crear_usuario(payload: dict, user: dict = Depends(current_user)):
 
 @app.post("/api/usuarios/{usuario_id}/estado")
 def cambiar_estado_usuario(usuario_id: int, activo: bool, user: dict = Depends(current_user)):
-    auth.requiere_admin(user)
+    auth.requiere_escritura(user)
     conn = get_connection()
-    if not activo:
-        # Sin esta comprobación era posible desactivar la última cuenta de recepción
-        # y quedarse sin nadie que pueda administrar el sistema.
-        quedan = conn.execute(
-            "SELECT COUNT(*) c FROM usuario WHERE rol = 'recepcion' AND activo = 1 AND id != ?",
-            (usuario_id,),
-        ).fetchone()["c"]
-        if quedan == 0:
-            conn.close()
-            raise HTTPException(status_code=400,
-                                detail="Debe quedar al menos una cuenta de Recepción activa")
     conn.execute("UPDATE usuario SET activo = ? WHERE id = ?", (1 if activo else 0, usuario_id))
     conn.commit()
     conn.close()
@@ -854,13 +814,10 @@ def cambiar_estado_usuario(usuario_id: int, activo: bool, user: dict = Depends(c
 
 @app.post("/api/usuarios/{usuario_id}/password")
 async def cambiar_password_usuario(usuario_id: int, payload: dict, user: dict = Depends(current_user)):
-    auth.requiere_admin(user)
-    auth.validar_password(payload.get("password"))
+    auth.requiere_escritura(user)
     h, salt = auth.hash_password(payload["password"])
     conn = get_connection()
     conn.execute("UPDATE usuario SET password_hash = ?, salt = ? WHERE id = ?", (h, salt, usuario_id))
-    # Cambiar la contraseña cierra las sesiones abiertas de esa cuenta.
-    conn.execute("DELETE FROM sesion WHERE usuario_id = ?", (usuario_id,))
     conn.commit()
     conn.close()
     return {"status": "ok"}
@@ -1077,6 +1034,43 @@ def export_resumen(fecha: str, formato: str = "xlsx", user: dict = Depends(curre
     titulo = "Resumen de Operación — Corcovado Wilderness Lodge"
     buf = exports.to_xlsx(columns, tours, titulo) if formato == "xlsx" else exports.to_pdf(columns, tours, titulo, fecha)
     return export_response(buf, f"resumen_operacion_{fecha}", formato)
+
+
+@app.get("/api/export/restaurantes")
+def export_restaurantes(fecha: str, formato: str = "xlsx", user: dict = Depends(current_user)):
+    """Distribución del día para imprimir o pasarle a cocina y al salonero."""
+    import restaurantes as rest
+    conn = get_connection()
+    try:
+        d = rest.distribuir(conn, fecha)
+    finally:
+        conn.close()
+
+    filas = []
+    for comida, bloque in (("Almuerzo", d["almuerzo"]), ("Cena", d["cena"])):
+        for restaurante, clave in ((rest.TERRA, "terra_kitchen"), (rest.VITRALES, "vitrales")):
+            for x in bloque[clave]:
+                filas.append({
+                    "comida": comida, "restaurante": restaurante,
+                    "room_no": x["room_no"], "nombre": x["nombre"], "pax": x["pax"],
+                    "tipo": "Entra" if x["tipo"] == "ENTRA" else "En casa",
+                    "noche": f"{x.get('noche_estadia') or 1} de {x['noches']}",
+                    "hora": x.get("hora") or "",
+                    "nota": x.get("fijo") or ("cambio manual" if x.get("manual") else ""),
+                })
+    columns = [
+        ("comida", "Comida"), ("restaurante", "Restaurante"), ("room_no", "Hab."),
+        ("nombre", "Huésped"), ("pax", "Pax"), ("tipo", "Situación"),
+        ("noche", "Noche"), ("hora", "Hora mesa"), ("nota", "Observación"),
+    ]
+    titulo = "Distribución de restaurantes — Corcovado Wilderness Lodge"
+    c = d["cena"]
+    subt = (f"{fecha} · Cena: Terra Kitchen {c['pax_tk']} / Vitrales {c['pax_vit']} "
+            f"(diferencia {c['diferencia']}) · Almuerzo: Terra Kitchen "
+            f"{d['almuerzo']['pax_tk']} / Vitrales {d['almuerzo']['pax_vit']}")
+    buf = (exports.to_xlsx(columns, filas, titulo) if formato == "xlsx"
+           else exports.to_pdf(columns, filas, titulo, subt))
+    return export_response(buf, f"restaurantes_{fecha}", formato)
 
 
 @app.get("/api/export/analitica")
@@ -1434,6 +1428,7 @@ def cambiar_fecha_tour(tour_id: int, fecha: str, user: dict = Depends(current_us
             if cf["mensaje"] not in alertas:
                 alertas.append(cf["mensaje"])
 
+    _publicar_en_segundo_plano()
     return {"status": "ok", "de": fecha_anterior, "a": fecha,
             "entrada_sinac_movida": entrada_movida,
             "itinerario": aviso_itinerario, "alertas": alertas}
@@ -1549,6 +1544,8 @@ async def guardar_itinerario(conf_no: str, payload: dict, user: dict = Depends(c
                         idioma=payload.get("idioma"))
     conn.commit()
     conn.close()
+    # El huésped debe ver el cambio de inmediato al escanear su código
+    _publicar_en_segundo_plano()
     return {"status": "ok"}
 
 
@@ -1625,15 +1622,12 @@ import qr_huesped as qrh
 from fastapi.responses import HTMLResponse
 
 
-def _itinerario_de_habitacion(conn, ruta):
-    """Resuelve el enlace público y devuelve (reserva, filas, nombre, idioma).
-
-    Lanza 404 si el enlace no es válido. Lo comparten la página del huésped y la
-    descarga de su PDF, para que ambas muestren exactamente lo mismo.
-    """
-    room_no = qrh.resolver_habitacion(conn, ruta)
-    if room_no is None:
-        raise HTTPException(status_code=404, detail="Enlace no válido")
+@app.get("/i/{room_no}", response_class=HTMLResponse)
+def itinerario_publico(room_no: str):
+    """Página que ve el huésped al escanear el QR de su habitación.
+    NO requiere iniciar sesión: es la única parte pública del sistema, y solo
+    muestra el itinerario de quien ocupa esa habitación hoy — ningún otro dato."""
+    conn = get_connection()
     reserva = qrh.ocupante_actual(conn, room_no)
     filas, nombre, idioma_pag = [], "", "en"
     if reserva:
@@ -1649,75 +1643,125 @@ def _itinerario_de_habitacion(conn, ruta):
             if datos:
                 filas, _ = itin.construir_itinerario(datos)
                 nombre = datos["nombre_bienvenida"]
-    return reserva, filas, nombre, idioma_pag
-
-
-@app.get("/i/{ruta}", response_class=HTMLResponse)
-def itinerario_publico(ruta: str):
-    """Página que ve el huésped al escanear el QR de su habitación.
-
-    NO requiere iniciar sesión: es la única parte pública del sistema, y solo
-    muestra el itinerario de quien ocupa esa habitación hoy — ningún otro dato.
-
-    `ruta` es el número de habitación (`05`), o `05-a1b2c3d4` si está activada la
-    opción de enlaces con código. El itinerario se arma en el momento, así que
-    siempre refleja lo que hay ahora mismo en el sistema.
-    """
-    conn = get_connection()
-    try:
-        reserva, filas, nombre, idioma_pag = _itinerario_de_habitacion(conn, ruta)
-    finally:
-        conn.close()
+    # Los restaurantes se calculan aquí mismo, así el huésped ve la distribución
+    # vigente aunque haya cambiado hoy. Por eso no van en el PDF impreso.
+    comidas = pub.comidas_de(conn, reserva, idioma_pag) if reserva else None
+    conn.close()
     import catalogo_itinerario as _cat
-    html = qrh.pagina_huesped_html(
-        reserva, filas, nombre, _cat.HORARIOS_LODGE, _cat.WHATSAPP_RECEPCION,
-        # El enlace es relativo a esta página, así que /i/05 y /i/05-a1b2c3d4
-        # llevan cada uno a su propio PDF sin tener que repetir la ruta.
-        enlace_pdf="itinerary.pdf" if (reserva and filas) else None,
-        idioma=idioma_pag)
+    html = qrh.pagina_huesped_html(reserva, filas, nombre,
+                                   _cat.HORARIOS_LODGE, _cat.WHATSAPP_RECEPCION,
+                                   room_no=room_no, idioma=idioma_pag, comidas=comidas)
     return HTMLResponse(content=html)
 
 
-@app.get("/i/{ruta}/itinerary.pdf")
-def itinerario_publico_pdf(ruta: str):
-    """El itinerario del huésped en PDF, con el formato oficial del lodge.
+@app.get("/i/{room_no}/{token}", response_class=HTMLResponse)
+def itinerario_publico_con_codigo(room_no: str, token: str):
+    """Misma página, cuando están activados los enlaces con código secreto.
 
-    Es el botón de descarga de la página anterior. Se genera en el momento, así que
-    siempre coincide con lo que muestra la página."""
+    Sirve para que un huésped no pueda adivinar el enlace de otra habitación
+    cambiando el número en la dirección.
+    """
     conn = get_connection()
-    try:
-        reserva, filas, nombre, idioma_pag = _itinerario_de_habitacion(conn, ruta)
-    finally:
+    esperado = pub.token_habitacion(conn, room_no)
+    conn.close()
+    if not secrets.compare_digest(token, esperado):
+        raise HTTPException(status_code=404, detail="Enlace no válido")
+    return itinerario_publico(room_no)
+
+
+@app.get("/api/qr/config")
+def qr_config(user: dict = Depends(current_user)):
+    cfg = qrh.cargar_config()
+    conn = get_connection()
+    habs = [dict(r)["room_no"] for r in conn.execute(
+        "SELECT DISTINCT room_no FROM reserva WHERE room_no IS NOT NULL "
+        "ORDER BY CAST(room_no AS INTEGER)")]
+    conn.close()
+    if not cfg.get("habitaciones"):
+        cfg["habitaciones"] = habs
+    cfg["habitaciones_detectadas"] = habs
+    return cfg
+
+
+@app.post("/api/qr/config")
+async def guardar_qr_config(payload: dict, user: dict = Depends(current_user)):
+    auth.requiere_escritura(user)
+    cfg = qrh.cargar_config()
+    if "base_url" in payload:
+        cfg["base_url"] = (payload["base_url"] or "").strip()
+    if "habitaciones" in payload:
+        cfg["habitaciones"] = [str(h).strip() for h in payload["habitaciones"] if str(h).strip()]
+    qrh.guardar_config(cfg)
+    return {"status": "ok", **cfg}
+
+
+@app.get("/api/qr/hoja")
+def qr_hoja(user: dict = Depends(current_user)):
+    """PDF con el QR de cada habitación, para imprimir una sola vez."""
+    cfg = qrh.cargar_config()
+    if not cfg.get("base_url"):
+        raise HTTPException(status_code=400,
+                            detail="Primero configura la dirección base de los códigos QR")
+    habs = cfg.get("habitaciones") or []
+    if not habs:
+        conn = get_connection()
+        habs = [dict(r)["room_no"] for r in conn.execute(
+            "SELECT DISTINCT room_no FROM reserva WHERE room_no IS NOT NULL "
+            "ORDER BY CAST(room_no AS INTEGER)")]
         conn.close()
-    if not reserva or not filas:
-        raise HTTPException(status_code=404, detail="No hay itinerario para esta habitación")
-    buf = itin.generar_pdf_de_filas(nombre, filas, idioma_pag)
+    buf = qrh.hoja_qr_pdf(cfg["base_url"], habs)
     return Response(content=buf.getvalue(), media_type="application/pdf",
-                    headers={"Content-Disposition": 'inline; filename="itinerary.pdf"'})
+                    headers={"Content-Disposition": 'attachment; filename="Codigos_QR_habitaciones.pdf"'})
 
 
 @app.get("/api/qr/estado")
-def qr_estado(fecha: str = None, filtro: str = "todas",
-              user: dict = Depends(current_user)):
-    """Qué vería hoy cada habitación al escanear su código QR.
+def qr_estado(user: dict = Depends(current_user)):
+    """Muestra qué huésped vería hoy cada habitación al escanear su QR."""
+    cfg = qrh.cargar_config()
+    conn = get_connection()
+    habs = cfg.get("habitaciones") or [dict(r)["room_no"] for r in conn.execute(
+        "SELECT DISTINCT room_no FROM reserva WHERE room_no IS NOT NULL "
+        "ORDER BY CAST(room_no AS INTEGER)")]
+    resultado = []
+    for h in habs:
+        r = qrh.ocupante_actual(conn, h)
+        resultado.append({
+            "room_no": h,
+            "url": qrh.url_habitacion(cfg.get("base_url", ""), h),
+            "huesped": r["nombre_principal"] if r else None,
+            "conf_no": r["conf_no"] if r else None,
+            "arr_date": r["arr_date"] if r else None,
+            "dep_date": r["dep_date"] if r else None,
+        })
+    conn.close()
+    return {"base_url": cfg.get("base_url", ""), "habitaciones": resultado}
 
-    Permite revisar por fecha qué habitaciones entran, salen o están ocupadas, y
-    detectar las que quedarían sin itinerario que mostrar.
 
-    filtro: 'todas' | 'movimiento' (entran o salen ese día) | 'sin_itinerario'
+import publicador as pub
+
+
+@app.get("/api/publicacion/estado")
+def publicacion_estado(fecha: str = None, filtro: str = "todas",
+                       user: dict = Depends(current_user)):
+    """Qué muestra el código QR de cada habitación.
+
+    Ya no hay estados de publicación: la página se arma en el momento en que el
+    huésped escanea su código, así que siempre refleja lo que hay en el sistema.
+    Esta lista sirve para revisar y para ver los movimientos de una fecha.
+
+    filtro: 'todas' | 'movimiento' (entran o salen ese día) | 'con_huesped'
     """
     conn = get_connection()
-    cfg = qrh.cargar_config()
+    cfg = pub.cargar_config()
+    por_hab = {h["room_no"]: h for h in pub.estado_por_habitacion(conn)}
     hoy = fecha or datetime.date.today().isoformat()
     y, m, d = hoy.split("-")
     dd = f"{d}-{m}-{y[2:]}"
 
     detalle = []
-    for room in cfg.get("habitaciones", []):
+    for room in cfg.get("habitaciones") or []:
+        h = por_hab.get(room, {})
         r = qrh.ocupante_actual(conn, room, hoy)
-        # Movimiento de esa habitación en la fecha consultada. Se distingue el caso
-        # de una llegada futura: si la habitación está vacía ese día, el sistema
-        # muestra la próxima reserva, y decir "en casa" sería falso.
         movimiento = None
         if r:
             if r["arr_date"] == dd:
@@ -1729,69 +1773,71 @@ def qr_estado(fecha: str = None, filtro: str = "todas",
             else:
                 movimiento = "EN_CASA"
         detalle.append({
-            "room_no": room,
-            "url": qrh.url_habitacion(conn, room, cfg.get("base_url")),
+            "room_no": room, "url": h.get("url", ""),
             "huesped": r["nombre_principal"] if r else None,
             "conf_no": r["conf_no"] if r else None,
             "arr_date": r["arr_date"] if r else None,
             "dep_date": r["dep_date"] if r else None,
             "movimiento": movimiento,
+            "idioma": h.get("idioma", "en"), "editado": h.get("editado", False),
         })
-    conn.close()
 
-    con_huesped = [x for x in detalle if x["huesped"]]
     if filtro == "movimiento":
-        mostrados = [x for x in detalle if x["movimiento"] in ("ENTRA", "SALE")]
-    elif filtro == "sin_itinerario":
-        mostrados = [x for x in detalle if not x["huesped"]]
-    else:
-        mostrados = detalle
+        detalle = [x for x in detalle if x["movimiento"] in ("ENTRA", "SALE")]
+    elif filtro == "con_huesped":
+        detalle = [x for x in detalle if x["huesped"]]
 
+    conn.close()
     return {
-        "configurado": qrh.esta_configurado(),
+        "fecha": hoy, "filtro": filtro,
         "base_url": cfg.get("base_url", ""),
+        "habitaciones": cfg.get("habitaciones") or [],
         "enlaces_con_codigo": bool(cfg.get("enlaces_con_codigo")),
-        "habitaciones": cfg.get("habitaciones", []),
-        "fecha": hoy,
-        "filtro": filtro,
-        "detalle": mostrados,
-        "resumen": {
-            "total": len(detalle),
-            "con_huesped": len(con_huesped),
-            "sin_ocupante": len(detalle) - len(con_huesped),
-        },
+        "configurado": pub.esta_configurado(),
+        "detalle": detalle,
+        "resumen": {"habitaciones": len(por_hab),
+                    "con_huesped": sum(1 for x in por_hab.values() if x["huesped"]),
+                    "sin_ocupante": sum(1 for x in por_hab.values() if not x["huesped"])},
     }
 
 
-@app.post("/api/qr/config")
-async def qr_config(payload: dict, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
-    cfg = qrh.cargar_config()
-    if "base_url" in payload:
-        cfg["base_url"] = (payload["base_url"] or "").strip().rstrip("/")
-    if "enlaces_con_codigo" in payload:
-        cfg["enlaces_con_codigo"] = bool(payload["enlaces_con_codigo"])
-    if "habitaciones" in payload:
-        cfg["habitaciones"] = [str(h).strip() for h in payload["habitaciones"] if str(h).strip()]
-    qrh.guardar_config(cfg)
-    return {"status": "ok", "configurado": qrh.esta_configurado(), **cfg}
+@app.post("/api/publicacion/config")
+async def publicacion_config(payload: dict, user: dict = Depends(current_user)):
+    """Dirección por la que se alcanza el sistema y habitaciones del hotel.
+
+    Ya no hace falta cuenta externa, Site ID ni token de acceso: los itinerarios los
+    sirve este mismo programa cuando el huésped escanea su código.
+    """
+    auth.requiere_permiso(user, "publicacion")
+    cfg = pub.guardar_config({
+        "base_url": (payload.get("base_url") or "").strip(),
+        "habitaciones": payload.get("habitaciones"),
+        "enlaces_con_codigo": bool(payload.get("enlaces_con_codigo")),
+    })
+    return {"status": "ok", "configurado": pub.esta_configurado(),
+            "habitaciones": cfg.get("habitaciones")}
 
 
-@app.get("/api/qr/hoja")
-def qr_hoja(user: dict = Depends(current_user)):
+@app.get("/api/publicacion/qr")
+def publicacion_qr(user: dict = Depends(current_user)):
     """Hoja imprimible con el QR de cada habitación. Se imprime una sola vez:
     el enlace de cada habitación no cambia nunca."""
-    cfg = qrh.cargar_config()
-    if not cfg.get("base_url"):
-        raise HTTPException(status_code=400,
-                            detail="Primero configura la dirección del sistema")
     conn = get_connection()
-    pares = [(room, qrh.url_habitacion(conn, room, cfg.get("base_url")))
-             for room in cfg.get("habitaciones", [])]
+    cfg = pub.cargar_config()
+    if not cfg.get("base_url"):
+        conn.close()
+        raise HTTPException(status_code=400, detail="Primero configura la dirección del sitio")
+    pares = [(room, pub.url_habitacion(conn, room)) for room in cfg.get("habitaciones", [])]
     conn.close()
     buf = qrh.hoja_qr_pdf_urls(pares)
     return Response(content=buf.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": 'attachment; filename="Codigos_QR_habitaciones.pdf"'})
+
+
+@app.get("/api/publicacion/vista-previa/{room_no}", response_class=HTMLResponse)
+def publicacion_vista_previa(room_no: str, user: dict = Depends(current_user)):
+    """Permite a recepción ver exactamente lo que verá el huésped de esa habitación."""
+    return itinerario_publico(room_no)
 
 
 @app.get("/api/buscar")
@@ -1942,6 +1988,161 @@ def pendientes_manana(fecha: str = None, user: dict = Depends(current_user)):
         "sin_bote": [s for s in lista if not s["bote"]],
         "conflictos": detectar_conflictos_asignacion(objetivo),
     }
+
+
+# ---------------------------------------------------------------------------
+# Restaurantes
+# ---------------------------------------------------------------------------
+
+@app.get("/api/permisos/catalogo")
+def permisos_catalogo(user: dict = Depends(current_user)):
+    """Pantallas disponibles y perfiles sugeridos, para la pantalla de Usuarios."""
+    return {"pantallas": [{"clave": k, "nombre": n} for k, n in auth.PANTALLAS],
+            "perfiles": auth.PERFILES}
+
+
+@app.post("/api/usuarios/{user_id}/permisos")
+def guardar_permisos(user_id: int, payload: dict, user: dict = Depends(current_user)):
+    """Define a qué pantallas entra un usuario y si puede modificar en ellas."""
+    auth.requiere_permiso(user, "usuarios")
+    permisos = payload.get("permisos") or {}
+    validas = {k for k, _ in auth.PANTALLAS}
+    limpios = {k: v for k, v in permisos.items()
+               if k in validas and v in ("ver", "escribir")}
+    conn = get_connection()
+    conn.execute("UPDATE usuario SET permisos_json = ? WHERE id = ?",
+                 (_json.dumps(limpios, ensure_ascii=False) if limpios else None, user_id))
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "permisos": limpios}
+
+
+@app.get("/api/restaurantes")
+def restaurantes_dia(fecha: str, user: dict = Depends(current_user)):
+    """Distribución de almuerzo y cena de esa fecha."""
+    import restaurantes as rest
+    conn = get_connection()
+    try:
+        rest.congelar_dias_pasados(conn)
+        datos = rest.distribuir(conn, fecha)
+    finally:
+        conn.close()
+    return datos
+
+
+@app.post("/api/restaurantes/cambiar")
+def restaurantes_cambiar(payload: dict, user: dict = Depends(current_user)):
+    """Cambia de restaurante a una reserva en una fecha concreta.
+
+    Afecta solo ese día y esa reserva. Se permite aunque el restaurante quede por
+    encima de su tope: recepción sabe si la cocina puede absorberlo, pero el
+    sistema lo advierte.
+    """
+    auth.requiere_permiso(user, "restaurantes")
+    import restaurantes as rest
+    fecha = payload.get("fecha")
+    conf_no = payload.get("conf_no")
+    comida = (payload.get("comida") or "CENA").upper()
+    restaurante = payload.get("restaurante")
+    if not (fecha and conf_no and restaurante in (rest.TERRA, rest.VITRALES)):
+        raise HTTPException(status_code=400, detail="Faltan datos o el restaurante no es válido")
+
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO restaurante_cambio (fecha, conf_no, comida, restaurante, motivo)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(fecha, conf_no, comida) DO UPDATE SET
+             restaurante = excluded.restaurante, motivo = excluded.motivo,
+             creado_en = datetime('now')""",
+        (fecha, conf_no, comida, restaurante, payload.get("motivo") or "solicitud del huésped"))
+    conn.commit()
+    datos = rest.distribuir(conn, fecha)
+    conn.close()
+
+    # El itinerario del huésped cambió, así que se republica el sitio del QR
+    _publicar_en_segundo_plano()
+    aviso = None
+    bloque = datos["cena"] if comida == "CENA" else datos["almuerzo"]
+    if restaurante == rest.TERRA and bloque["pax_tk"] > bloque["cap_tk"]:
+        aviso = (f"Terra Kitchen queda con {bloque['pax_tk']} pax y su tope es "
+                 f"{bloque['cap_tk']}. Avisa a cocina.")
+    return {"status": "ok", "distribucion": datos, "aviso_capacidad": aviso}
+
+
+@app.delete("/api/restaurantes/cambiar")
+def restaurantes_quitar_cambio(fecha: str, conf_no: str, comida: str = "CENA",
+                               user: dict = Depends(current_user)):
+    """Deshace un cambio manual y devuelve la reserva a la asignación automática."""
+    auth.requiere_permiso(user, "restaurantes")
+    conn = get_connection()
+    conn.execute(
+        "DELETE FROM restaurante_cambio WHERE fecha=? AND conf_no=? AND comida=?",
+        (fecha, conf_no, comida.upper()))
+    conn.commit()
+    conn.close()
+    _publicar_en_segundo_plano()
+    return {"status": "ok"}
+
+
+@app.post("/api/restaurantes/hora")
+def restaurantes_hora(payload: dict, user: dict = Depends(current_user)):
+    """Hora reservada de la mesa. La registra el salonero en la mañana."""
+    auth.requiere_permiso(user, "restaurantes")
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO restaurante_hora (fecha, conf_no, hora) VALUES (?,?,?)
+           ON CONFLICT(fecha, conf_no) DO UPDATE SET hora = excluded.hora""",
+        (payload.get("fecha"), payload.get("conf_no"), payload.get("hora")))
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/api/restaurantes/cena-privada")
+def restaurantes_cena_privada(payload: dict, user: dict = Depends(current_user)):
+    """Marca (o desmarca) la noche de una cena privada.
+
+    El PDF avisa que la reserva tiene cena privada pero casi nunca dice el día, así
+    que recepción confirma la fecha aquí. Queda fija en Vitrales.
+    """
+    auth.requiere_permiso(user, "restaurantes")
+    conf_no, fecha = payload.get("conf_no"), payload.get("fecha")
+    conn = get_connection()
+    if payload.get("quitar"):
+        conn.execute(
+            "UPDATE amenidad_tarea SET fecha = NULL WHERE conf_no = ? AND fecha = ? "
+            "AND (amenidad LIKE '%privada%' OR tarea LIKE '%privada%')", (conf_no, fecha))
+    else:
+        fila = conn.execute(
+            "SELECT id FROM amenidad_tarea WHERE conf_no = ? "
+            "AND (amenidad LIKE '%privada%' OR tarea LIKE '%privada%') LIMIT 1",
+            (conf_no,)).fetchone()
+        if fila:
+            conn.execute("UPDATE amenidad_tarea SET fecha = ? WHERE id = ?",
+                         (fecha, dict(fila)["id"]))
+        else:
+            # No venía en el PDF: recepción la registra ahora
+            conn.execute(
+                """INSERT INTO amenidad_tarea (conf_no, amenidad, origen, detalle, tarea,
+                                               area_responsable, fecha)
+                   VALUES (?,?,'MANUAL',?,?,?,?)""",
+                (conf_no, "Cena privada", payload.get("detalle"),
+                 "Preparar cena privada", "Cocina", fecha))
+    conn.commit()
+    conn.close()
+    _publicar_en_segundo_plano()
+    return {"status": "ok"}
+
+
+@app.get("/api/restaurantes/avisos")
+def restaurantes_avisos(dias: int = 30, user: dict = Depends(current_user)):
+    """Noches futuras que no van a caber o no se van a poder equilibrar."""
+    import restaurantes as rest
+    conn = get_connection()
+    try:
+        return {"avisos": rest.avisos_anticipados(conn, dias)}
+    finally:
+        conn.close()
 
 
 _resource_dir = os.environ.get("HOTEL_RESOURCE_DIR")

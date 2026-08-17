@@ -2,18 +2,13 @@
 Acceso del huésped al itinerario mediante código QR.
 
 Cada habitación tiene UN código QR fijo que nunca cambia. El código apunta a una
-dirección de este mismo sistema que siempre muestra el itinerario de quien ocupa
-esa habitación hoy, de modo que al cambiar de huésped no hay que reimprimir nada.
-
-El itinerario que ve el huésped es SIEMPRE el actual: se arma en el momento de la
-consulta a partir de la base. No hay nada que publicar ni que quede desactualizado.
+dirección que siempre muestra el itinerario de quien ocupa esa habitación hoy, de
+modo que al cambiar de huésped no hay que reimprimir nada.
 """
 import io
 import os
 import json
 import datetime
-import secrets
-import html as _html
 
 import qrcode
 from qrcode.image.pil import PilImage
@@ -26,42 +21,22 @@ from reportlab.lib.utils import ImageReader
 
 VERDE = colors.Color(0.1216, 0.2275, 0.1804)
 
-_DATA_DIR = (os.environ.get("HOTEL_DATA_DIR")
-             or os.path.join(os.path.dirname(__file__), "..", "data"))
-CONFIG_PATH = os.path.join(_DATA_DIR, "config_qr.json")
-# Nombre que usaba la versión con publicación a Netlify. Se lee una sola vez para
-# no perder la dirección y la lista de habitaciones ya configuradas.
-CONFIG_PATH_ANTIGUO = os.path.join(_DATA_DIR, "config_publicacion.json")
+CONFIG_PATH = os.path.join(
+    os.environ.get("HOTEL_DATA_DIR") or os.path.join(os.path.dirname(__file__), "..", "data"),
+    "config_qr.json",
+)
 
-CONFIG_POR_DEFECTO = {
-    "base_url": "",
-    "enlaces_con_codigo": False,
-    "habitaciones": [f"{i:02d}" for i in range(1, 31)],
-}
-
-
-# ---------------------------------------------------------------------------
-# Configuración
-# ---------------------------------------------------------------------------
 
 def cargar_config():
-    """Dirección base a la que apuntan los QR y lista de habitaciones del hotel."""
-    for ruta in (CONFIG_PATH, CONFIG_PATH_ANTIGUO):
-        if not os.path.exists(ruta):
-            continue
+    """Dirección base a la que apuntan los QR. Se configura una sola vez, según
+    cómo quede accesible el sistema (red local, dirección de internet, etc.)."""
+    if os.path.exists(CONFIG_PATH):
         try:
-            with open(ruta, "r", encoding="utf-8") as f:
-                guardado = json.load(f)
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
         except (ValueError, OSError):
-            continue
-        cfg = dict(CONFIG_POR_DEFECTO)
-        # Del archivo antiguo se toman solo estos campos: el site_id y el token de
-        # Netlify ya no se usan para nada.
-        for campo in ("base_url", "enlaces_con_codigo", "habitaciones"):
-            if campo in guardado:
-                cfg[campo] = guardado[campo]
-        return cfg
-    return dict(CONFIG_POR_DEFECTO)
+            pass
+    return {"base_url": "", "habitaciones": []}
 
 
 def guardar_config(cfg):
@@ -70,63 +45,9 @@ def guardar_config(cfg):
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
-def esta_configurado():
-    return bool(cargar_config().get("base_url"))
-
-
-# ---------------------------------------------------------------------------
-# Enlaces fijos por habitación
-# ---------------------------------------------------------------------------
-
-def token_habitacion(conn, room_no):
-    """Devuelve el código fijo de la habitación, creándolo la primera vez.
-    Nunca se regenera: de eso depende que el QR impreso siga funcionando."""
-    fila = conn.execute("SELECT token FROM habitacion_qr WHERE room_no = ?", (room_no,)).fetchone()
-    if fila:
-        return fila["token"]
-    token = secrets.token_hex(4)   # 8 caracteres, suficiente para no ser adivinable
-    conn.execute("INSERT INTO habitacion_qr (room_no, token) VALUES (?, ?)", (room_no, token))
-    conn.commit()
-    return token
-
-
-def ruta_habitacion(conn, room_no):
-    """Parte final del enlace público de la habitación.
-
-    Por defecto es el enlace simple (`05`). Si se activa "enlaces_con_codigo", se le
-    agrega un código aleatorio fijo (`05-a1b2c3d4`) para que nadie pueda adivinar el
-    enlace de otra habitación; en ese caso los QR hay que reimprimirlos."""
-    if cargar_config().get("enlaces_con_codigo"):
-        return f"{room_no}-{token_habitacion(conn, room_no)}"
-    return str(room_no)
-
-
-def url_habitacion(conn, room_no, base_url=None):
-    base = (base_url if base_url is not None else cargar_config().get("base_url", "")).rstrip("/")
-    return f"{base}/i/{ruta_habitacion(conn, room_no)}"
-
-
-def resolver_habitacion(conn, ruta):
-    """Traduce lo que viene en la URL (`05` o `05-a1b2c3d4`) al número de habitación.
-
-    Devuelve None si el enlace no es válido. Cuando "enlaces_con_codigo" está activo
-    se EXIGE el código correcto: si no, bastaría con probar /i/01, /i/02… para ver el
-    itinerario de cualquier huésped, que es justo lo que esa opción evita.
-    """
-    ruta = (ruta or "").strip()
-    if not ruta:
-        return None
-    con_codigo = cargar_config().get("enlaces_con_codigo")
-    room_no, _, codigo = ruta.partition("-")
-    if not con_codigo:
-        # Sin códigos, un enlace con sufijo no corresponde a esta configuración.
-        return ruta if not codigo else None
-    if not codigo:
-        return None
-    fila = conn.execute("SELECT token FROM habitacion_qr WHERE room_no = ?", (room_no,)).fetchone()
-    if not fila or not secrets.compare_digest(fila["token"], codigo):
-        return None
-    return room_no
+def url_habitacion(base_url, room_no):
+    base = (base_url or "").rstrip("/")
+    return f"{base}/i/{room_no}"
 
 
 def ocupante_actual(conn, room_no, fecha=None, dias_adelante=2):
@@ -181,11 +102,15 @@ def generar_qr_png(texto, tamano=10):
 
 
 def hoja_qr_pdf_urls(pares):
-    """Hoja imprimible con el QR de cada habitación, para pegar en el cuarto.
-    Recibe (habitación, url) ya resueltos, porque cada habitación puede tener su
-    propio código fijo en el enlace. Se imprime una sola vez: el código no cambia
-    aunque cambie el huésped."""
+    """Igual que hoja_qr_pdf pero recibe (habitacion, url) ya resueltos, porque cada
+    habitación tiene su propio código fijo en el enlace."""
     return _hoja_qr(pares)
+
+
+def hoja_qr_pdf(base_url, habitaciones):
+    """Hoja imprimible con el QR de cada habitación, para pegar en el cuarto.
+    Se imprime una sola vez: el código no cambia aunque cambie el huésped."""
+    return _hoja_qr([(r, url_habitacion(base_url, r)) for r in habitaciones])
 
 
 def _hoja_qr(pares):
@@ -222,7 +147,8 @@ def _hoja_qr(pares):
 
 
 def pagina_huesped_html(reserva, filas, nombre_bienvenida, horarios, whatsapp,
-                        enlace_pdf=None, room_no=None, para_web=False, idioma="en"):
+                        enlace_pdf=None, room_no=None, para_web=False, idioma="en",
+                        comidas=None):
     """Página que ve el huésped al escanear el QR.
 
     Mantiene el formato oficial del lodge: fondo fotográfico, tarjeta blanca,
@@ -232,15 +158,6 @@ def pagina_huesped_html(reserva, filas, nombre_bienvenida, horarios, whatsapp,
     """
     import traducciones as tr
     T = lambda k: tr.t(k, idioma)
-
-    # Todo lo que viene de la reserva o de lo que escribió recepción se escapa antes
-    # de insertarlo: esta página es pública, y un nombre o una nota con etiquetas HTML
-    # se ejecutaría en el navegador del huésped.
-    def esc(texto):
-        return _html.escape(str(texto or ""), quote=True)
-
-    def esc_multilinea(texto):
-        return esc(texto).replace(chr(10), "<br>")
 
     # En el sitio publicado los recursos viven un nivel arriba de la carpeta de la
     # habitación; sirviendo desde el propio sistema van en la raíz.
@@ -254,34 +171,35 @@ def pagina_huesped_html(reserva, filas, nombre_bienvenida, horarios, whatsapp,
     else:
         filas_html = "".join(f"""
           <tr>
-            <td class="c-dia"><span class="et">{T('dia')}</span>{esc(tr.formatear_horas(_dia_idioma(f.get('dia',''), idioma), idioma))}</td>
+            <td class="c-dia"><span class="et">{T('dia')}</span>{tr.formatear_horas(_dia_idioma(f.get('dia',''), idioma), idioma)}</td>
             <td class="c-act"><span class="et">{T('actividad')}</span>
-                {esc_multilinea(tr.traducir_actividad(f.get('actividad') or '', idioma))}
-                {f'<div class="dur">{esc(tr.traducir_texto(f["duracion"], idioma))}</div>' if f.get('duracion') else ''}
+                {tr.traducir_actividad(f.get('actividad') or '', idioma).replace(chr(10),'<br>')}
+                {f'<div class="dur">{tr.traducir_texto(f["duracion"], idioma)}</div>' if f.get('duracion') else ''}
             </td>
-            <td class="c-hor"><span class="et">{T('horario')}</span>{esc_multilinea(tr.formatear_horas(tr.traducir_texto(f.get('horario') or '', idioma), idioma))}</td>
-            <td class="c-det"><span class="et">{T('detalles')}</span>{esc_multilinea(tr.formatear_horas(tr.traducir_texto(f.get('detalles') or '', idioma), idioma))}</td>
+            <td class="c-hor"><span class="et">{T('horario')}</span>{tr.formatear_horas(tr.traducir_texto(f.get('horario') or '', idioma), idioma).replace(chr(10),'<br>')}</td>
+            <td class="c-det"><span class="et">{T('detalles')}</span>{tr.formatear_horas(tr.traducir_texto(f.get('detalles') or '', idioma), idioma).replace(chr(10),'<br>')}</td>
           </tr>""" for f in filas)
 
         cuerpo = f"""
-          {f'<p class="hab">{T("habitacion")} {esc(room_no)}</p>' if room_no else ''}
-          <h1>{T('bienvenida')} {esc(nombre_bienvenida)}</h1>
+          {f'<p class="hab">{T("habitacion")} {room_no}</p>' if room_no else ''}
+          <h1>{T('bienvenida')} {nombre_bienvenida}</h1>
           <p class="sub">{T('sub1')}<br>{T('sub2')}</p>
           <table class="itin">
             <thead><tr><th>{T('dia')}</th><th>{T('actividad')}</th><th>{T('horario')}</th><th>{T('detalles')}</th></tr></thead>
             <tbody>{filas_html}</tbody>
           </table>
-          {f'<p class="descarga"><a href="{esc(enlace_pdf)}" download>{T("descargar_pdf")}</a></p>' if enlace_pdf else ''}
+          {f'<p class="descarga"><a href="{enlace_pdf}" download>{T("descargar_pdf")}</a></p>' if enlace_pdf else ''}
           <p class="lema">{T('lema')}</p>
           <img class="logo" src="{pre}/logo.jpg" alt="Corcovado Wilderness Lodge">
 
+          {_bloque_comidas(comidas, idioma) if comidas else ""}
           <h2>{T('titulo_horarios')}</h2>
           <div class="horarios">
-            {"".join(f'<div><span>{esc(tr.traducir_servicio(n, idioma))}</span><span>{esc(tr.formatear_horas(h, idioma))}</span></div>' for n, h in horarios if n)}
+            {"".join(f'<div><span>{tr.traducir_servicio(n, idioma)}</span><span>{tr.formatear_horas(h, idioma)}</span></div>' for n, h in horarios if n)}
           </div>
           <p class="wsp">{T('snacks')}<br><br>
              {T('whatsapp')}<br>
-             <strong>{esc(whatsapp)}</strong></p>
+             <strong>{whatsapp}</strong></p>
           <p class="cierre">{T('cierre').replace(chr(10), '<br>')}</p>"""
 
     return f"""<!DOCTYPE html>
@@ -387,3 +305,30 @@ def _dia_idioma(texto_dia, idioma):
         return texto_dia
     nombre = tr.MESES.get(idioma, tr.MESES["en"])[mes - 1]
     return tr.FORMATO_FECHA.get(idioma, tr.FORMATO_FECHA["en"]).format(dia=dia, mes=nombre)
+
+
+def _bloque_comidas(comidas, idioma):
+    """Dónde almuerza y cena el huésped en los próximos días.
+
+    Va solo en la página del código QR, no en el PDF impreso: la distribución de
+    los restaurantes se recalcula cuando entra un PDF nuevo, así que un papel
+    impreso quedaría desactualizado. El QR siempre muestra el dato vigente.
+    """
+    import traducciones as tr
+    titulos = {
+        "en": ("Your restaurants", "Day", "Lunch", "Dinner", "Time"),
+        "es": ("Sus restaurantes", "Día", "Almuerzo", "Cena", "Hora"),
+        "pt": ("Seus restaurantes", "Dia", "Almoço", "Jantar", "Hora"),
+        "fr": ("Vos restaurants", "Jour", "Déjeuner", "Dîner", "Heure"),
+        "ru": ("Ваши рестораны", "День", "Обед", "Ужин", "Время"),
+    }
+    t = titulos.get(idioma, titulos["en"])
+    filas = "".join(
+        f"""<tr><td class="c-dia"><span class="et">{t[1]}</span>{c.get('dia','')}</td>
+            <td><span class="et">{t[2]}</span>{c.get('almuerzo') or '—'}</td>
+            <td><span class="et">{t[3]}</span>{c.get('cena') or '—'}</td>
+            <td><span class="et">{t[4]}</span>{c.get('hora') or '—'}</td></tr>"""
+        for c in comidas)
+    return f"""<h2>{t[0]}</h2>
+      <table class="itin"><thead><tr><th>{t[1]}</th><th>{t[2]}</th><th>{t[3]}</th>
+        <th>{t[4]}</th></tr></thead><tbody>{filas}</tbody></table>"""

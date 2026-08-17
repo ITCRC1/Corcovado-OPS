@@ -91,6 +91,22 @@ VUELO_RE = re.compile(r"\b(?:RZ|SANSA)\s?(\d{3,4})\b", re.IGNORECASE)
 HORA_RE = re.compile(r"(\d{1,2}):(\d{2})\s*([ap])\.?\s?m\.?", re.IGNORECASE)
 HORA_SIMPLE_RE = re.compile(r"\b(\d{1,2}):(\d{2})\b")
 
+# Código de bloque del PMS: identifica reservas que viajan juntas (un grupo, una
+# agencia). Aparece como "2608RUSSTI" o "2608CR2608". Es la única señal de grupo
+# para las reservas que no traen la nota "viene con rsv".
+BLOCK_RE = re.compile(r"\b(\d{4}[A-Z][A-Z0-9]{3,})\b")
+# Palabras que descartan la línea: los números de certificación de buceo tienen la
+# misma forma (ej. "Certification #1810S8860") y no son códigos de grupo.
+BLOCK_EXCLUIR = re.compile(r"certificat|#|PADI|diver", re.IGNORECASE)
+
+
+def _es_block_code(texto, candidato):
+    """Un código de bloque real trae al menos dos letras tras los cuatro dígitos.
+    Así se descarta '1810S8860' (certificación) y se conserva '2608RUSSTI'."""
+    if BLOCK_EXCLUIR.search(texto):
+        return False
+    return sum(ch.isalpha() for ch in candidato[4:]) >= 2
+
 # Documento de identidad del huésped. Aparece en muchos formatos y no siempre al
 # final de la línea, así que se busca en cualquier posición:
 #   555591746 · A13343206 · GD0011047 · PAMO75815 · C1VW6C3JF · 1-0745-0194
@@ -238,6 +254,7 @@ def parse_reservations(pdf_path):
                 "operacion": [],
                 "notas": "",
                 "texto_completo": "",
+            "block_code": None,
                 "guia_sugerido": None,
                 "vinculo_texto": None,
             }
@@ -253,6 +270,14 @@ def parse_reservations(pdf_path):
         # amenidades pueden aparecer en cualquier parte (línea de RESERVATION, la de
         # Rooming, las notas...), no solo en la sección NOTAS.
         current["texto_completo"] += " " + line
+
+        # Código de bloque del PMS. Identifica reservas que viajan juntas cuando no
+        # traen la nota "viene con rsv" — es el caso de los grupos de agencia, que
+        # antes quedaban sin agrupar y se separaban en la distribución.
+        if not current.get("block_code"):
+            mb = BLOCK_RE.search(line)
+            if mb and _es_block_code(line, mb.group(1)):
+                current["block_code"] = mb.group(1)
 
         m_conf = CONF_RE.match(line)
         if m_conf and current["conf_no"] is None:

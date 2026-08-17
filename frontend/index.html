@@ -114,6 +114,20 @@
   .trabajando p { margin:0; font-size:14px; color:var(--forest-dark); font-weight:600; }
   .trabajando small { display:block; margin-top:5px; font-size:12px; color:var(--muted); }
 
+  /* Distribución de restaurantes */
+  .rest-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .rest-col { background:#fff; border:1px solid var(--border); border-radius:var(--r-md); padding:14px; }
+  .rest-col h5 { margin:0; font-family:'Display',Georgia,serif; font-weight:700;
+    font-size:calc(var(--t-lg)*var(--escala)); color:var(--forest-dark); }
+  .rest-col .cifra { font-family:'Display',Georgia,serif; font-weight:700;
+    font-size:calc(var(--t-xxl)*var(--escala)); color:var(--forest-dark); line-height:1.1; }
+  .rest-barra { background:#EFEBE0; border-radius:5px; height:10px; margin-top:8px; overflow:hidden; }
+  .rest-barra div { height:100%; border-radius:5px; }
+  .rest-nota { font-size:calc(var(--t-xs)*var(--escala)); color:var(--muted);
+    padding:3px 0; border-bottom:1px dotted var(--border); }
+  .rest-nota:last-child { border-bottom:none; }
+  @media (max-width: 760px) { .rest-grid { grid-template-columns:1fr; } }
+
   .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-md); padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.03); }
   .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
   .title { font-weight: 700; font-size: calc(var(--t-lg) * var(--escala)); margin: 0;
@@ -220,11 +234,7 @@
     <input type="password" id="login-pass" placeholder="Contraseña" autocomplete="current-password">
     <button onclick="doLogin()">Ingresar</button>
     <div class="login-error" id="login-error"></div>
-    <!-- Antes aquí se listaban los usuarios y contraseñas de demostración. En una
-         dirección pública de internet eso le regalaba a cualquier visitante los
-         nombres de cuenta reales para intentar adivinar la contraseña. Si necesita
-         las credenciales de prueba, están en el README. -->
-    <div class="login-hint">Acceso solo para personal del lodge</div>
+    <div class="login-hint">Usuarios de prueba: recepcion / gerencia / staff<br>(contraseña: [usuario]2026)</div>
   </div>
 </div>
 
@@ -252,12 +262,13 @@
       <button onclick="loadTransporte()">Transporte</button>
       <button onclick="loadEntradas()">Entradas SINAC</button>
       <button onclick="loadAmenidades()">Amenidades</button>
-      <button onclick="loadAnalitica()">Analítica</button>
+      <button onclick="loadRestaurantes()">Restaurantes</button>
+    <button onclick="loadAnalitica()">Analítica</button>
       <button onclick="loadResumenOperacion()">Resumen operación</button>
       <button id="nav-importar" onclick="loadImportarPDF()">Importar PDF</button>
       <button id="nav-usuarios" onclick="loadUsuarios()">Usuarios</button>
       <button id="nav-catalogo" onclick="loadCatalogoAdmin()">Catálogo</button>
-      <button id="nav-publicacion" onclick="loadPublicacion()">Itinerarios QR</button>
+      <button id="nav-publicacion" onclick="loadPublicacion()">Publicación</button>
     </nav>
     <div id="app"></div>
   </div>
@@ -301,6 +312,7 @@ const FILTROS = {
   analitica:  { desde: inicioMesISO(), hasta: finMesISO() },
   resumen:    { fecha: hoyISO() },
   publicacion:{ fecha: hoyISO(), filtro: "todas" },
+  restaurantes:{ fecha: hoyISO() },
 };
 
 async function fetchAuth(url, options) {
@@ -321,15 +333,7 @@ async function doLogin() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
     });
-    if (!res.ok) {
-      // Se muestra el motivo real que manda el servidor. Antes decía siempre
-      // "contraseña incorrecta", y eso ocultaba el bloqueo por intentos fallidos:
-      // uno seguía probando la contraseña correcta sin entender por qué no entraba.
-      let motivo = "Usuario o contraseña incorrectos.";
-      try { motivo = (await res.json()).detail || motivo; } catch (e) {}
-      errEl.textContent = motivo;
-      return;
-    }
+    if (!res.ok) { errEl.textContent = "Usuario o contraseña incorrectos."; return; }
     const data = await res.json();
     TOKEN = data.token;
     CURRENT_USER = data;
@@ -352,13 +356,18 @@ function doLogout() {
 function showApp() {
   document.getElementById("login-screen").style.display = "none";
   document.getElementById("app-screen").style.display = "block";
+  ROL = CURRENT_USER.rol;
+  PERMISOS = CURRENT_USER.permisos || {};
   const rolLabel = { recepcion: "Recepción", gerencia: "Gerencia", staff: "Staff de campo" }[CURRENT_USER.rol] || CURRENT_USER.rol;
   document.getElementById("user-label").textContent = `${CURRENT_USER.nombre_completo} · ${rolLabel}`;
-  document.getElementById("nav-importar").style.display = isRecepcion() ? "" : "none";
-  document.getElementById("nav-usuarios").style.display = isRecepcion() ? "" : "none";
-  document.getElementById("nav-catalogo").style.display = isRecepcion() ? "" : "none";
-  document.getElementById("nav-publicacion").style.display = isRecepcion() ? "" : "none";
-  loadDashboard();
+
+  // Se ocultan las pestañas a las que el usuario no tiene acceso. Un usuario de
+  // restaurante solo verá lo que necesita para su trabajo.
+  const primera = aplicarPermisos();
+  const abrir = [loadDashboard, loadReservas, loadAgenda, loadTransporte, loadEntradas,
+                 loadAmenidades, loadRestaurantes, loadAnalitica, loadResumenOperacion,
+                 loadImportarPDF, loadUsuarios, loadCatalogoAdmin, loadPublicacion];
+  (abrir[primera >= 0 ? primera : 0] || loadDashboard)();
 }
 
 // ---------- Aviso flotante de confirmación ----------
@@ -452,6 +461,29 @@ function etiquetaFecha(fecha) {
   return "";
 }
 
+// Permisos del usuario. Si no tiene configuración propia se usan los del rol,
+// así los usuarios creados antes de esta función siguen entrando igual.
+let PERMISOS = {};
+const CLAVE_PANTALLA = ["dashboard","reservas","agenda","transporte","sinac","amenidades",
+  "restaurantes","analitica","resumen","importar","usuarios","catalogo","publicacion"];
+
+function puedeVer(pantalla) {
+  const n = PERMISOS[pantalla];
+  return n === "ver" || n === "escribir";
+}
+function puedeEscribir(pantalla) { return PERMISOS[pantalla] === "escribir"; }
+
+function aplicarPermisos() {
+  const botones = document.querySelectorAll("nav button");
+  botones.forEach((b, i) => {
+    const clave = CLAVE_PANTALLA[i];
+    if (clave && !puedeVer(clave)) b.style.display = "none";
+  });
+  // Si la pantalla inicial no está permitida, se abre la primera que sí
+  const primera = CLAVE_PANTALLA.findIndex(k => puedeVer(k));
+  return primera;
+}
+
 function isRecepcion() { return CURRENT_USER && (CURRENT_USER.rol === "recepcion" || CURRENT_USER.rol === "gerencia"); }
 
 async function tryAutoLogin() {
@@ -482,6 +514,7 @@ function hayCambiosSinGuardar() {
 }
 
 function setActive(i) {
+  window._pantallaActiva = i;
   const btns = document.querySelectorAll("nav button:not([style*='display: none'])");
   document.querySelectorAll("nav button").forEach((b, idx) => b.classList.toggle("active", idx === i));
 }
@@ -1566,8 +1599,251 @@ async function marcarAmenidad(id, estado) {
   loadAmenidades();
 }
 
-async function loadAnalitica(desdeNuevo, hastaNuevo) {
+async function abrirPermisos(userId, username) {
+  const cat = await (await fetchAuth(`${API}/api/permisos/catalogo`)).json();
+  const usuarios = await (await fetchAuth(`${API}/api/usuarios`)).json();
+  const u = usuarios.find(x => x.id === userId) || {};
+  let actuales = {};
+  try { actuales = JSON.parse(u.permisos_json || "{}"); } catch (e) {}
+
+  const fila = (p) => {
+    const nivel = actuales[p.clave] || "";
+    return `<tr>
+      <td>${p.nombre}</td>
+      <td><label style="font-size:12px;"><input type="radio" name="pm-${p.clave}" value="" ${nivel===""?"checked":""}> Sin acceso</label></td>
+      <td><label style="font-size:12px;"><input type="radio" name="pm-${p.clave}" value="ver" ${nivel==="ver"?"checked":""}> Solo ver</label></td>
+      <td><label style="font-size:12px;"><input type="radio" name="pm-${p.clave}" value="escribir" ${nivel==="escribir"?"checked":""}> Ver y modificar</label></td>
+    </tr>`;
+  };
+
+  const fondo = document.createElement("div");
+  fondo.className = "modal-fondo"; fondo.id = "modal-pm";
+  fondo.innerHTML = `<div class="modal-caja">
+    <div class="modal-encabezado">
+      <div><p class="title">Permisos de ${username}</p>
+        <p class="subtitle">A qué pantallas entra y en cuáles puede modificar</p></div>
+      <button class="btn" onclick="document.getElementById('modal-pm').remove()">Cerrar</button>
+    </div>
+    <div class="modal-cuerpo">
+      <div class="filterbar" style="margin-bottom:12px;">
+        <span style="font-size:12.5px;">Aplicar un perfil:</span>
+        ${Object.keys(cat.perfiles).map(p => `<button class="btn" onclick="aplicarPerfil('${p}')">${p}</button>`).join("")}
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">
+        Si dejas todo en "Sin acceso" el usuario usa los permisos de su rol.
+      </p>
+      <table>${cat.pantallas.map(fila).join("")}</table>
+      <div style="margin-top:14px;">
+        <button class="btn btn-primary" onclick="guardarPermisos(${userId})">Guardar permisos</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(fondo);
+  window._perfiles = cat.perfiles;
+}
+
+function aplicarPerfil(nombre) {
+  const p = (window._perfiles || {})[nombre] || {};
+  document.querySelectorAll('#modal-pm input[type=radio]').forEach(r => {
+    const clave = r.name.replace("pm-", "");
+    r.checked = (p[clave] || "") === r.value;
+  });
+  avisar(`Perfil ${nombre} aplicado — recuerda guardar`);
+}
+
+async function guardarPermisos(userId) {
+  const permisos = {};
+  document.querySelectorAll('#modal-pm input[type=radio]:checked').forEach(r => {
+    if (r.value) permisos[r.name.replace("pm-", "")] = r.value;
+  });
+  await fetchAuth(`${API}/api/usuarios/${userId}/permisos`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ permisos }),
+  });
+  document.getElementById("modal-pm")?.remove();
+  avisar("Permisos guardados");
+  loadUsuarios();
+}
+
+async function loadRestaurantes(fecha) {
   setActive(6);
+  const F = FILTROS.restaurantes;
+  if (fecha) F.fecha = fecha;
+  window._restAbierto = null;
+  const d = await (await fetchAuth(`${API}/api/restaurantes?fecha=${F.fecha}`)).json();
+  window._restData = d;
+  const c = d.cena, a = d.almuerzo;
+
+  const barra = (pax, tope, color) => `<div class="rest-barra">
+    <div style="width:${Math.min(100, Math.round(100*pax/tope))}%;background:${color};"></div></div>`;
+
+  const panel = (titulo, pax, tope, habs, color) => `
+    <div class="rest-col">
+      <h5>${titulo}</h5>
+      <p class="cifra">${pax} <span style="font-size:14px;font-weight:400;color:var(--muted);">de ${tope} pax</span></p>
+      <p style="font-size:11.5px;color:var(--muted);margin:2px 0 0;">${habs} habitación${habs===1?'':'es'}</p>
+      ${barra(pax, tope, color)}
+    </div>`;
+
+  document.getElementById("app").innerHTML = `
+    <div class="card">
+      <div class="header">
+        <div><p class="title">Restaurantes ${etiquetaFecha(F.fecha)}</p>
+          <p class="subtitle">${F.fecha} · toca un bloque para ver quiénes son</p></div>
+        <div class="filterbar">
+          <button class="btn" onclick="loadRestaurantes(shiftDate('${F.fecha}',-1))">‹</button>
+          <input type="date" value="${F.fecha}" onchange="loadRestaurantes(this.value)">
+          <button class="btn" onclick="loadRestaurantes(shiftDate('${F.fecha}',1))">›</button>
+          <button class="btn" onclick="loadRestaurantes(hoyISO())">Hoy</button>
+          <button class="btn" onclick="loadRestaurantes(masDiasISO(1))">Mañana</button>
+          <button class="btn" onclick="descargar('restaurantes', {fecha:'${F.fecha}'}, 'xlsx')">⬇ Excel</button>
+          <button class="btn" onclick="descargar('restaurantes', {fecha:'${F.fecha}'}, 'pdf')">⬇ PDF</button>
+        </div>
+      </div>
+
+      ${d.avisos.length ? `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:11px 13px;margin-bottom:14px;font-size:13px;">
+        ${d.avisos.map(x => `<p style="margin:0 0 3px;">⚠ ${x}</p>`).join("")}</div>` : ""}
+
+      <p style="font-weight:600;font-size:14px;margin:4px 0 8px;">Cena · ${c.total} pax</p>
+      <div class="rest-grid">
+        ${panel("Terra Kitchen", c.pax_tk, c.cap_tk, c.terra_kitchen.length, "var(--forest)")}
+        ${panel("Vitrales", c.pax_vit, c.cap_vit, c.vitrales.length, "#6B8E7B")}
+      </div>
+      <p style="text-align:center;font-size:12.5px;margin:10px 0 0;color:${c.dentro_margen ? 'var(--ok-text)' : 'var(--warn-text)'};">
+        Diferencia: ${c.diferencia} pax · ${c.dentro_margen ? "dentro del margen de 4 ✓" : "fuera del margen de 4"}
+      </p>
+
+      <div class="stats" style="grid-template-columns:repeat(4,1fr);margin-top:16px;">
+        <div class="stat" onclick="detalleRest('cena_tk')"><p class="stat-label">Cena · Terra Kitchen</p><p class="stat-value">${c.pax_tk}</p></div>
+        <div class="stat" onclick="detalleRest('cena_vit')"><p class="stat-label">Cena · Vitrales</p><p class="stat-value">${c.pax_vit}</p></div>
+        <div class="stat" onclick="detalleRest('alm_tk')"><p class="stat-label">Almuerzo · Terra Kitchen</p><p class="stat-value">${a.pax_tk}</p></div>
+        <div class="stat" onclick="detalleRest('alm_vit')"><p class="stat-label">Almuerzo · Vitrales</p><p class="stat-value">${a.pax_vit}</p></div>
+      </div>
+      <div id="rest-detalle"></div>
+    </div>
+
+    ${d.notas.length ? `
+    <div class="card">
+      <p class="title">Movimientos del día</p>
+      <p class="subtitle" style="margin-bottom:10px;">Por qué el sistema cambió a estas habitaciones de su restaurante por defecto</p>
+      ${d.notas.map(x => `<p class="rest-nota">
+        <strong>Hab. ${x.room_no}</strong> ${x.nombre} (${x.pax} pax) ·
+        ${x.de} → <strong>${x.a}</strong> · ${x.motivo}
+        ${x.rezagado ? '<span class="badge badge-warn" style="margin-left:5px;">queda debiendo cena de bienvenida</span>' : ''}
+      </p>`).join("")}
+    </div>` : ""}
+
+    <div class="card">
+      <p class="title">Cenas privadas</p>
+      ${d.cenas_privadas.length
+        ? `<p style="font-size:13px;margin:8px 0 0;">${d.cenas_privadas.length} declarada(s) para esta fecha · van fijas en Vitrales y cuentan para sus ${c.cap_vit} lugares.</p>`
+        : `<p class="empty" style="padding:16px 12px;">Sin cenas privadas esta noche.<small>El PDF avisa cuándo un huésped la tiene contratada, pero no siempre dice el día. Márcala aquí.</small></p>`}
+      ${isRecepcion() ? `<button class="btn" onclick="abrirCenaPrivada('${F.fecha}')">Marcar cena privada</button>` : ""}
+    </div>
+  `;
+}
+
+function detalleRest(cual) {
+  const d = window._restData;
+  const panel = document.getElementById("rest-detalle");
+  if (window._restAbierto === cual) {
+    window._restAbierto = null; panel.innerHTML = "";
+    document.querySelectorAll("#app .stat").forEach(s => s.classList.remove("selected"));
+    return;
+  }
+  window._restAbierto = cual;
+  document.querySelectorAll("#app .stat").forEach(s => s.classList.remove("selected"));
+  if (event && event.currentTarget) event.currentTarget.classList.add("selected");
+
+  const mapa = {
+    cena_tk: ["Cena en Terra Kitchen", d.cena.terra_kitchen, "CENA", "Vitrales"],
+    cena_vit: ["Cena en Vitrales", d.cena.vitrales, "CENA", "Terra Kitchen"],
+    alm_tk: ["Almuerzo en Terra Kitchen", d.almuerzo.terra_kitchen, "ALMUERZO", "Vitrales"],
+    alm_vit: ["Almuerzo en Vitrales", d.almuerzo.vitrales, "ALMUERZO", "Terra Kitchen"],
+  };
+  const [titulo, lista, comida, destino] = mapa[cual];
+  const esCena = comida === "CENA";
+  if (!lista.length) { panel.innerHTML = `<div class="detail-panel">Nadie asignado.</div>`; return; }
+
+  panel.innerHTML = `<div class="detail-panel">
+    <p style="font-weight:600;margin:0 0 8px;">${titulo} — ${lista.length} habitación(es),
+      ${lista.reduce((s,x)=>s+x.pax,0)} pax</p>
+    <table>
+      <tr><th>Hab.</th><th>Huésped</th><th>Pax</th><th>Noche</th><th></th>
+        ${esCena ? "<th>Hora reservada</th>" : ""}${isRecepcion() ? "<th></th>" : ""}</tr>
+      ${lista.map(x => `<tr class="${x.tipo === 'ENTRA' ? 'fila-entra' : ''}">
+        <td><strong>${x.room_no || '—'}</strong></td>
+        <td>${x.nombre}${x.grupo ? ' <span class="badge badge-tour">grupo</span>' : ''}</td>
+        <td>${x.pax}</td>
+        <td style="font-size:11.5px;color:var(--muted);">${x.noche_estadia || 1} de ${x.noches}</td>
+        <td>${x.tipo === 'ENTRA' ? '<span class="badge badge-warn">entra</span>' : ''}
+            ${x.fijo ? `<span class="badge badge-tour">${x.fijo}</span>` : ''}
+            ${x.manual ? '<span class="badge badge-ok">cambio manual</span>' : ''}</td>
+        ${esCena ? `<td><input type="time" value="${x.hora || ''}"
+            onchange="guardarHoraMesa('${d.fecha}','${x.conf_no}',this.value)"
+            style="font-size:11.5px;padding:2px 4px;width:96px;" ${isRecepcion()?'':'disabled'}></td>` : ""}
+        ${isRecepcion() ? `<td>${x.fijo && x.fijo.includes('privada') ? '<span style="font-size:11px;color:var(--muted);">fija</span>'
+          : `<button class="btn" onclick="cambiarRestaurante('${d.fecha}','${x.conf_no}','${comida}','${destino}')">A ${destino.split(' ')[0]}</button>`}</td>` : ""}
+      </tr>`).join("")}
+    </table>
+    ${esCena ? '<p style="font-size:11px;color:var(--muted);margin-top:8px;">La hora de cada mesa la registra el salonero en la mañana.</p>' : ""}
+  </div>`;
+}
+
+async function cambiarRestaurante(fecha, confNo, comida, restaurante) {
+  const res = await fetchAuth(`${API}/api/restaurantes/cambiar`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fecha, conf_no: confNo, comida, restaurante }),
+  });
+  if (!res.ok) { avisar((await res.json()).detail || "No se pudo cambiar", true); return; }
+  const d = await res.json();
+  avisar(d.aviso_capacidad ? d.aviso_capacidad : `Cambiado a ${restaurante}`, !!d.aviso_capacidad);
+  loadRestaurantes();
+}
+
+async function guardarHoraMesa(fecha, confNo, hora) {
+  await fetchAuth(`${API}/api/restaurantes/hora`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fecha, conf_no: confNo, hora }),
+  });
+  avisar(hora ? `Mesa a las ${hora}` : "Hora borrada");
+}
+
+async function abrirCenaPrivada(fecha) {
+  const r = await (await fetchAuth(`${API}/api/reservas?desde=${fecha}&hasta=${fecha}`)).json();
+  const d = window._restData;
+  const enCasa = [...d.cena.terra_kitchen, ...d.cena.vitrales];
+  const opciones = enCasa.map(x => `<option value="${x.conf_no}">Hab. ${x.room_no} · ${x.nombre}</option>`).join("");
+  const fondo = document.createElement("div");
+  fondo.className = "modal-fondo"; fondo.id = "modal-cp";
+  fondo.innerHTML = `<div class="modal-caja" style="max-width:520px;">
+    <div class="modal-encabezado"><p class="title">Marcar cena privada</p>
+      <button class="btn" onclick="document.getElementById('modal-cp').remove()">Cerrar</button></div>
+    <div class="modal-cuerpo">
+      <p style="font-size:13px;color:var(--muted);">Noche del ${fecha}. La cena privada se sirve
+        en la piscina y queda fija en Vitrales, contando para su capacidad.</p>
+      <select id="cp-conf" style="width:100%;margin:8px 0;">${opciones}</select>
+      <input type="text" id="cp-detalle" placeholder="Detalle (opcional): aniversario, decoración…" style="width:100%;">
+      <div style="margin-top:12px;">
+        <button class="btn btn-primary" onclick="guardarCenaPrivada('${fecha}')">Guardar</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(fondo);
+}
+
+async function guardarCenaPrivada(fecha) {
+  const conf_no = document.getElementById("cp-conf").value;
+  const detalle = document.getElementById("cp-detalle").value.trim();
+  await fetchAuth(`${API}/api/restaurantes/cena-privada`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fecha, conf_no, detalle }),
+  });
+  document.getElementById("modal-cp")?.remove();
+  avisar("Cena privada marcada");
+  loadRestaurantes();
+}
+
+async function loadAnalitica(desdeNuevo, hastaNuevo) {
+  setActive(7);
   if (desdeNuevo) FILTROS.analitica.desde = desdeNuevo;
   if (hastaNuevo) FILTROS.analitica.hasta = hastaNuevo;
   const desde = FILTROS.analitica.desde, hasta = FILTROS.analitica.hasta;
@@ -1713,7 +1989,7 @@ async function mostrarDetalleGuia(nombre, desde, hasta) {
 
 // ---------- RESUMEN OPERACION ----------
 async function loadResumenOperacion(fecha) {
-  setActive(7);
+  setActive(8);
   if (fecha) FILTROS.resumen.fecha = fecha;
   fecha = FILTROS.resumen.fecha;
   window._resAbierto = null;
@@ -1771,6 +2047,19 @@ async function loadResumenOperacion(fecha) {
       </div>
       <div id="res-punto"></div>` : `<p class="empty">Sin entradas ni salidas este día.<small>Usa los botones Hoy o Mañana para ir al día que necesitas.</small></p>`}
     </div>
+
+    ${d.restaurantes ? `
+    <div class="card">
+      <p class="title">Restaurantes</p>
+      <p class="subtitle" style="margin-bottom:12px;">Comensales por servicio · para cocina</p>
+      <table style="max-width:520px;">
+        <tr><th></th><th>Terra Kitchen</th><th>Vitrales</th></tr>
+        <tr><td><strong>Almuerzo</strong></td><td>${d.restaurantes.almuerzo_tk} pax</td><td>${d.restaurantes.almuerzo_vit} pax</td></tr>
+        <tr><td><strong>Cena</strong></td><td>${d.restaurantes.cena_tk} pax</td><td>${d.restaurantes.cena_vit} pax</td></tr>
+      </table>
+      ${(d.restaurantes.avisos || []).length ? `<p style="font-size:12px;color:var(--warn-text);margin-top:8px;">⚠ ${d.restaurantes.avisos.join(" ")}</p>` : ""}
+      <button class="btn" style="margin-top:10px;" onclick="loadRestaurantes('${fecha}')">Ver la distribución completa</button>
+    </div>` : ""}
 
     <div class="card">
       <p class="title">Tours del día</p>
@@ -1874,7 +2163,7 @@ function detalleResumen(campo) {
 
 // ---------- IMPORTAR PDF ----------
 function loadImportarPDF() {
-  setActive(8);
+  setActive(9);
   const app = document.getElementById("app");
   app.innerHTML = `
     <div class="card">
@@ -1940,6 +2229,7 @@ async function confirmarImportacion() {
   form.append("file", window._pdfFile);
   const res = await fetchAuth(`${API}/api/pdf/confirm`, { method: "POST", body: form });
   const data = await res.json();
+  const publicando = data.publicacion === "publicando en segundo plano";
   panel.innerHTML = `
     <div style="background:var(--ok-bg);color:var(--ok-text);border-radius:var(--r-sm);padding:14px 16px;margin-top:16px;">
       <p style="margin:0 0 4px;font-weight:600;">Importación completa</p>
@@ -1947,7 +2237,7 @@ async function confirmarImportacion() {
         ${data.reservas_cargadas} reserva${data.reservas_cargadas === 1 ? "" : "s"} cargada${data.reservas_cargadas === 1 ? "" : "s"} ·
         ${data.alertas_generadas} alerta${data.alertas_generadas === 1 ? "" : "s"} generada${data.alertas_generadas === 1 ? "" : "s"}
       </p>
-      <p style="margin:6px 0 0;font-size:12px;">Los itinerarios de los huéspedes ya quedaron al día: se arman solos al escanear el QR.</p>
+      ${publicando ? `<p style="margin:6px 0 0;font-size:12px;">Los itinerarios se están publicando en segundo plano; puedes seguir trabajando.</p>` : ""}
     </div>
     <div style="margin-top:12px;">
       <button class="btn" onclick="loadDashboard()">Ir al Dashboard</button>
@@ -1958,7 +2248,7 @@ async function confirmarImportacion() {
 
 // ---------- USUARIOS ----------
 async function loadUsuarios() {
-  setActive(9);
+  setActive(10);
   const res = await fetchAuth(`${API}/api/usuarios`);
   const rows = await res.json();
   const app = document.getElementById("app");
@@ -1978,6 +2268,7 @@ async function loadUsuarios() {
             <td><span class="badge badge-tour">${ {recepcion:"Recepción",gerencia:"Gerencia",staff:"Staff de campo"}[u.rol] || u.rol }</span></td>
             <td><span class="badge ${u.activo ? 'badge-ok' : 'badge-warn'}">${u.activo ? 'Activo' : 'Inactivo'}</span></td>
             <td>
+              <button class="btn" onclick="abrirPermisos(${u.id}, '${u.username}')">Permisos</button>
               <button class="btn" onclick="cambiarPassword(${u.id})">Cambiar contraseña</button>
               <button class="btn" onclick="cambiarEstado(${u.id}, ${u.activo ? 'false' : 'true'})">${u.activo ? 'Desactivar' : 'Activar'}</button>
             </td>
@@ -2031,84 +2322,61 @@ async function crearUsuario() {
 }
 
 async function cambiarEstado(id, activo) {
-  const res = await fetchAuth(`${API}/api/usuarios/${id}/estado?activo=${activo}`, { method: "POST" });
-  if (!res.ok) {
-    // El servidor impide desactivar la última cuenta de Recepción activa: sin
-    // mirar la respuesta, el sistema decía "Usuario desactivado" y no era cierto.
-    let motivo = "No se pudo cambiar el estado del usuario.";
-    try { motivo = (await res.json()).detail || motivo; } catch (e) {}
-    avisar(motivo, true);
-    loadUsuarios();
-    return;
-  }
+  await fetchAuth(`${API}/api/usuarios/${id}/estado?activo=${activo}`, { method: "POST" });
   avisar(activo === true || activo === "true" ? "Usuario activado" : "Usuario desactivado");
   loadUsuarios();
 }
 
 async function cambiarPassword(id) {
-  const nueva = prompt("Nueva contraseña para este usuario (mínimo 10 caracteres):");
+  const nueva = prompt("Nueva contraseña para este usuario:");
   if (!nueva) return;
-  if (nueva.length < 10) {
-    avisar("La contraseña debe tener al menos 10 caracteres. No se cambió.", true);
-    return;
-  }
-  const res = await fetchAuth(`${API}/api/usuarios/${id}/password`, {
+  await fetchAuth(`${API}/api/usuarios/${id}/password`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: nueva }),
   });
-  // Antes se avisaba "Contraseña actualizada" sin mirar la respuesta. Si el
-  // servidor la rechazaba, la contraseña seguía siendo la anterior y nadie se
-  // enteraba hasta quedarse afuera del sistema.
-  if (!res.ok) {
-    let motivo = "No se pudo cambiar la contraseña.";
-    try { motivo = (await res.json()).detail || motivo; } catch (e) {}
-    avisar(motivo, true);
-    return;
-  }
-  avisar("Contraseña actualizada. Se cerraron las sesiones abiertas de esa cuenta.");
+  avisar("Contraseña actualizada");
 }
 
 // ---------- CATÁLOGO (guías, botes, tours) ----------
-// ---------- ITINERARIOS QR ----------
+// ---------- PUBLICACIÓN DE ITINERARIOS ----------
 async function loadPublicacion(fechaNueva, filtroNuevo) {
-  setActive(11);
+  setActive(12);
   const F = FILTROS.publicacion;
   if (fechaNueva) F.fecha = fechaNueva;
   if (filtroNuevo !== undefined) F.filtro = filtroNuevo;
-  const d = await (await fetchAuth(`${API}/api/qr/estado?fecha=${F.fecha}&filtro=${F.filtro}`)).json();
+  const d = await (await fetchAuth(`${API}/api/publicacion/estado?fecha=${F.fecha}&filtro=${F.filtro}`)).json();
   const R = d.resumen || {};
 
-  const estadoTxt = d.configurado ? "Itinerarios al día" : "Falta la dirección";
-  const estadoColor = d.configurado ? "badge-ok" : "badge-warn";
   const movTxt = { ENTRA: "Entra", SALE: "Sale", EN_CASA: "En casa", PROXIMO: "Próximo ingreso" };
+  const claseFila = (m, tiene) => m === "ENTRA" ? "fila-entra"
+    : (m === "SALE" ? "fila-sale" : (m === "PROXIMO" ? "fila-poringresar" : (tiene ? "" : "fila-salio")));
 
   document.getElementById("app").innerHTML = `
     <div class="card">
       <div class="header">
-        <div>
-          <p class="title">Itinerarios QR</p>
-          <p class="subtitle">Lo que ve el huésped al escanear el código QR de su habitación</p>
-        </div>
-        <span class="badge ${estadoColor}" style="font-size:12px;">${estadoTxt}</span>
+        <div><p class="title">Itinerarios QR</p>
+          <p class="subtitle">Lo que ve el huésped al escanear el código QR de su habitación</p></div>
+        <span class="badge ${d.configurado ? "badge-ok" : "badge-warn"}">
+          ${d.configurado ? "Itinerarios al día" : "Falta la dirección"}</span>
       </div>
 
-      ${!d.configurado ? `
-      <div style="background:var(--warn-bg);border-radius:8px;padding:14px;margin-bottom:16px;font-size:13px;color:var(--warn-text);">
-        <p style="margin:0 0 6px;font-weight:600;">Falta indicar la dirección del sistema</p>
-        <p style="margin:0;">Es la dirección con la que entras a este sistema desde internet.
-        Se usa para armar los códigos QR de las habitaciones. Configúrala más abajo.</p>
-      </div>` : `
-      <div style="background:var(--ok-bg);border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--ok-text);">
+      ${d.configurado ? `
+      <div style="background:var(--ok-bg);color:var(--ok-text);border-radius:var(--r-sm);padding:11px 13px;margin-bottom:14px;font-size:13px;">
         No hay nada que publicar: el itinerario se arma en el momento en que el huésped
         escanea su código, así que siempre muestra lo que hay ahora en el sistema.
+      </div>` : `
+      <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:12px 14px;margin-bottom:14px;font-size:13px;">
+        <p style="margin:0 0 4px;font-weight:600;">Falta indicar la dirección del sistema</p>
+        <p style="margin:0;">Es la dirección por la que el celular del huésped alcanza este
+        programa. Se configura abajo, una sola vez, y es la que llevan impresos los códigos QR.</p>
       </div>`}
 
       <div class="stats" style="grid-template-columns:repeat(3,1fr);">
-        <div class="stat" style="cursor:pointer;" onclick="loadPublicacion(null,'todas')">
-          <p class="stat-label">Habitaciones</p><p class="stat-value">${R.total || 0}</p></div>
-        <div class="stat" style="cursor:pointer;" onclick="loadPublicacion(null,'todas')">
-          <p class="stat-label">Con huésped</p><p class="stat-value" style="color:var(--ok-text);">${R.con_huesped || 0}</p></div>
-        <div class="stat" style="cursor:pointer;" onclick="loadPublicacion(null,'sin_itinerario')">
-          <p class="stat-label">Sin ocupante</p><p class="stat-value">${R.sin_ocupante || 0}</p></div>
+        <div class="stat" style="cursor:default;"><p class="stat-label">Habitaciones</p>
+          <p class="stat-value">${R.habitaciones || 0}</p></div>
+        <div class="stat" style="cursor:default;"><p class="stat-label">Con huésped</p>
+          <p class="stat-value">${R.con_huesped || 0}</p></div>
+        <div class="stat" style="cursor:default;"><p class="stat-label">Sin ocupante</p>
+          <p class="stat-value">${R.sin_ocupante || 0}</p></div>
       </div>
 
       <div style="display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:14px;margin-top:6px;">
@@ -2128,69 +2396,91 @@ async function loadPublicacion(fechaNueva, filtroNuevo) {
           <input type="date" value="${F.fecha}" onchange="loadPublicacion(this.value)">
           <button class="btn" onclick="loadPublicacion(shiftDate('${F.fecha}',1))">›</button>
           <select onchange="loadPublicacion(null, this.value)">
-            <option value="todas" ${F.filtro==='todas'?'selected':''}>Todas las habitaciones</option>
-            <option value="movimiento" ${F.filtro==='movimiento'?'selected':''}>Solo entradas y salidas</option>
-            <option value="sin_itinerario" ${F.filtro==='sin_itinerario'?'selected':''}>Solo sin ocupante</option>
+            <option value="todas" ${F.filtro==="todas"?"selected":""}>Todas las habitaciones</option>
+            <option value="movimiento" ${F.filtro==="movimiento"?"selected":""}>Solo entradas y salidas</option>
+            <option value="con_huesped" ${F.filtro==="con_huesped"?"selected":""}>Solo con huésped</option>
           </select>
         </div>
       </div>
       <table>
-        <tr><th>Hab.</th><th>Movimiento</th><th>Huésped</th><th>Estadía</th><th></th></tr>
-        ${(d.detalle||[]).map(h => `
-          <tr class="${h.movimiento==='ENTRA'?'fila-entra':(h.movimiento==='SALE'?'fila-sale':(h.movimiento==='PROXIMO'?'fila-poringresar':(h.huesped?'':'fila-salio')))}">
-            <td><strong>${h.room_no}</strong></td>
-            <td style="font-size:12px;">${movTxt[h.movimiento] || '—'}</td>
-            <td>${h.huesped || '<span style="color:var(--muted);">sin ocupante</span>'}</td>
-            <td style="font-size:12px;">${h.arr_date ? `${h.arr_date} – ${h.dep_date}` : '—'}</td>
-            <td><button class="btn" onclick="vistaPreviaHuesped('${h.url}')">Ver</button></td>
-          </tr>`).join("") || '<tr><td colspan="5" class="empty">No hay habitaciones con ese filtro.</td></tr>'}
+        <tr><th>Hab.</th><th>Movimiento</th><th>Huésped</th><th>Estadía</th><th>Idioma</th><th></th></tr>
+        ${d.detalle.map(h => `<tr class="${claseFila(h.movimiento, h.huesped)}">
+          <td><strong>${h.room_no}</strong></td>
+          <td>${movTxt[h.movimiento] || "—"}</td>
+          <td>${h.huesped || '<span style="color:var(--muted);">sin ocupante</span>'}</td>
+          <td>${h.arr_date ? `${h.arr_date} – ${h.dep_date || "?"}` : "—"}</td>
+          <td>${h.huesped ? (h.idioma || "en").toUpperCase() : "—"}${h.editado ? ' <span class="badge badge-tour">editado</span>' : ""}</td>
+          <td><button class="btn" onclick="verPaginaHuesped('${h.room_no}')">Ver</button></td>
+        </tr>`).join("")}
       </table>
-      <div class="leyenda">
-        <span><i style="background:#FFF8DC;"></i>Entra ese día</span>
-        <span><i style="background:#FDE8E8;"></i>Sale ese día</span>
-        <span><i style="background:#F2F2F0;"></i>Sin ocupante</span>
-      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:10px;">
+        <span class="badge badge-warn">Entra ese día</span>
+        <span class="badge" style="background:var(--danger-bg);color:var(--danger-text);">Sale ese día</span>
+        <span class="badge badge-tour">Próximo ingreso</span>
+      </p>
     </div>
 
     <div class="card">
-      <p class="title" style="cursor:pointer;user-select:none;margin:0;"
-         onclick="alternarConfigPublicacion()">
-        <span id="pb-flecha">${d.configurado ? "▸" : "▾"}</span>
-        Configuración
-        <span style="font-weight:400;font-size:12px;color:var(--muted);">
-          — dirección y habitaciones del hotel (se ajusta una sola vez)
-        </span>
-      </p>
-
-      <div id="pb-config" style="display:${d.configurado ? "none" : "block"};margin-top:14px;">
-        <div style="display:grid;grid-template-columns:190px 1fr;gap:10px;align-items:center;font-size:13px;max-width:720px;">
-          <label>Dirección del sistema</label>
-          <input type="text" id="pb-url" value="${d.base_url || ""}" placeholder="https://mi-sistema.up.railway.app">
-          <label>Habitaciones del hotel</label>
-          <input type="text" id="pb-habs" value="${(d.habitaciones||[]).join(', ')}" placeholder="01, 02, 03...">
-          <label>Enlaces con código</label>
-          <label style="font-weight:400;display:flex;align-items:center;gap:8px;">
-            <input type="checkbox" id="pb-codigo" style="width:auto;" ${d.enlaces_con_codigo ? "checked" : ""}>
-            <span style="font-size:12px;color:var(--muted);">
-              Agrega un código secreto a cada enlace para que no se pueda adivinar el de otra habitación
-            </span>
-          </label>
+      <p class="title">▾ Configuración <span style="font-weight:400;font-size:13px;color:var(--muted);">— dirección y habitaciones del hotel (se ajusta una sola vez)</span></p>
+      <div style="margin-top:12px;">
+        <div class="filterbar" style="align-items:flex-start;">
+          <label style="width:190px;font-size:13px;padding-top:6px;">Dirección del sistema</label>
+          <input type="text" id="pb-url" value="${d.base_url || ""}" placeholder="https://itinerarios.milodge.com" style="flex:1;max-width:420px;">
         </div>
-        <div style="background:#FAF8F2;border-radius:8px;padding:11px 13px;margin-top:10px;font-size:12px;color:var(--muted);">
-          <strong style="color:var(--text);">Sobre la lista de habitaciones:</strong>
-          define qué habitaciones existen en el hotel. Determina cuántos códigos QR se generan.
-          <span style="color:var(--warn-text);">Si quitas una habitación, su código QR deja de funcionar.</span>
+        <div class="filterbar" style="align-items:flex-start;margin-top:8px;">
+          <label style="width:190px;font-size:13px;padding-top:6px;">Habitaciones del hotel</label>
+          <input type="text" id="pb-habs" value="${(d.habitaciones||[]).join(', ')}" style="flex:1;max-width:420px;">
         </div>
-        <div style="background:var(--warn-bg);border-radius:8px;padding:11px 13px;margin-top:10px;font-size:12px;color:var(--warn-text);">
-          <strong>Cuidado con "enlaces con código":</strong> al activarlo o desactivarlo cambian
-          todos los enlaces, y hay que <strong>reimprimir los códigos QR</strong> de todas las
-          habitaciones. Los ya pegados en los cuartos dejan de funcionar.
+        <div class="filterbar" style="align-items:flex-start;margin-top:8px;">
+          <label style="width:190px;font-size:13px;">Enlaces con código</label>
+          <label style="font-size:12.5px;"><input type="checkbox" id="pb-codigo" ${d.enlaces_con_codigo ? "checked" : ""}>
+            Agrega un código secreto a cada enlace para que no se pueda adivinar el de otra habitación</label>
+        </div>
+        <div style="background:var(--ok-bg);color:var(--ok-text);border-radius:var(--r-sm);padding:10px 12px;margin-top:12px;font-size:12px;">
+          <strong>Sobre la dirección:</strong> es por donde el celular del huésped alcanza este
+          programa. Si el hotel tiene una dirección pública, ponla aquí. Si no, sirve la
+          dirección en la red del hotel que muestra el programa al arrancar — pero entonces
+          el QR solo funcionará conectado al WiFi del hotel.
+        </div>
+        <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:10px 12px;margin-top:8px;font-size:12px;">
+          <strong>Cuidado con la lista de habitaciones y con los enlaces con código:</strong>
+          determinan cuántos códigos QR hay y qué dirección lleva cada uno. Si cambias
+          cualquiera de las dos, hay que <strong>reimprimir los códigos</strong>: los ya
+          pegados en los cuartos dejan de funcionar.
         </div>
         <button class="btn btn-primary" style="margin-top:12px;" onclick="guardarConfigPublicacion()">Guardar datos</button>
-        <span id="pb-msg" style="font-size:12px;margin-left:10px;"></span>
       </div>
     </div>
   `;
+}
+
+async function guardarConfigPublicacion() {
+  const habs = document.getElementById("pb-habs").value.split(",").map(s => s.trim()).filter(Boolean);
+  const res = await fetchAuth(`${API}/api/publicacion/config`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      base_url: document.getElementById("pb-url").value.trim(),
+      habitaciones: habs,
+      enlaces_con_codigo: document.getElementById("pb-codigo").checked,
+    }),
+  });
+  if (!res.ok) { avisar((await res.json()).detail || "No se pudo guardar", true); return; }
+  avisar("Configuración guardada");
+  loadPublicacion();
+}
+
+function verPaginaHuesped(roomNo) {
+  window.open(`${API}/i/${roomNo}`, "_blank");
+}
+
+async function descargarHojaQR() {
+  const res = await fetchAuth(`${API}/api/publicacion/qr`);
+  if (!res.ok) { avisar("No se pudo generar la hoja", true); return; }
+  const blob = await res.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "codigos_qr_habitaciones.pdf";
+  a.click();
 }
 
 function alternarConfigPublicacion() {
@@ -2202,24 +2492,42 @@ function alternarConfigPublicacion() {
 }
 
 async function guardarConfigPublicacion() {
-  const payload = {
-    base_url: document.getElementById("pb-url").value.trim(),
-    enlaces_con_codigo: document.getElementById("pb-codigo").checked,
-  };
+  const payload = { base_url: document.getElementById("pb-url").value.trim() };
+  const site = document.getElementById("pb-site").value.trim();
+  const token = document.getElementById("pb-token").value.trim();
+  if (site) payload.site_id = site;
+  if (token) payload.token = token;
   const habs = document.getElementById("pb-habs");
   if (habs) payload.habitaciones = habs.value.split(",").map(s => s.trim()).filter(Boolean);
-  const res = await fetchAuth(`${API}/api/qr/config`, {
+  const res = await fetchAuth(`${API}/api/publicacion/config`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
   });
   const d = await res.json();
   document.getElementById("pb-msg").innerHTML = d.configurado
-    ? '<span style="color:var(--ok-text);">Guardado. Ya puedes descargar la hoja de códigos QR.</span>'
-    : '<span style="color:var(--warn-text);">Guardado, pero falta la dirección del sistema.</span>';
+    ? '<span style="color:var(--ok-text);">Datos guardados. Ya puedes publicar.</span>'
+    : '<span style="color:var(--warn-text);">Guardado, pero aún falta algún dato.</span>';
   setTimeout(loadPublicacion, 1200);
 }
 
+async function publicarAhora() {
+  const panel = document.getElementById("pb-resultado");
+  panel.innerHTML = '<p class="empty">Publicando… puede tomar un momento.</p>';
+  const res = await fetchAuth(`${API}/api/publicacion/publicar`, { method: "POST" });
+  const d = await res.json();
+  if (d.estado === "PUBLICADO") {
+    panel.innerHTML = `<div style="background:var(--ok-bg);color:var(--ok-text);border-radius:8px;padding:10px 12px;font-size:13px;">
+      Publicado correctamente: ${d.habitaciones} habitaciones actualizadas.</div>`;
+  } else if (d.estado === "PENDIENTE") {
+    panel.innerHTML = `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:10px 12px;font-size:13px;">
+      ${d.mensaje}<br><span style="font-size:11px;">${d.detalle || ""}</span></div>`;
+  } else {
+    panel.innerHTML = `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:10px 12px;font-size:13px;">${d.mensaje || d.estado}</div>`;
+  }
+  setTimeout(loadPublicacion, 2500);
+}
+
 async function descargarHojaQR() {
-  const res = await fetchAuth(`${API}/api/qr/hoja`);
+  const res = await fetchAuth(`${API}/api/publicacion/qr`);
   if (!res.ok) { alert((await res.json()).detail); return; }
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
@@ -2229,14 +2537,12 @@ async function descargarHojaQR() {
   URL.revokeObjectURL(url);
 }
 
-function vistaPreviaHuesped(url) {
-  // Se abre exactamente el mismo enlace que lleva el código QR de la habitación, así
-  // que recepción ve lo mismo que verá el huésped, sin aproximaciones.
-  window.open(url, "_blank");
+function vistaPreviaHuesped(room) {
+  window.open(`${API}/i/${room}`, "_blank");
 }
 
 async function loadCatalogoAdmin() {
-  setActive(10);
+  setActive(11);
   const cat = await (await fetchAuth(`${API}/api/catalogo?todos=true`)).json();
   const app = document.getElementById("app");
   app.innerHTML = `
