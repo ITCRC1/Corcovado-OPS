@@ -1639,14 +1639,15 @@ def estados_itinerarios(desde: str = None, hasta: str = None, user: dict = Depen
 
 
 import qr_huesped as qrh
+import publicador as pub
 from fastapi.responses import HTMLResponse
 
 
-@app.get("/i/{room_no}", response_class=HTMLResponse)
-def itinerario_publico(room_no: str):
-    """Página que ve el huésped al escanear el QR de su habitación.
-    NO requiere iniciar sesión: es la única parte pública del sistema, y solo
-    muestra el itinerario de quien ocupa esa habitación hoy — ningún otro dato."""
+def _pagina_huesped(room_no: str):
+    """Arma la página del huésped de esa habitación.
+
+    Quien puede verla se decide en las rutas de abajo; aquí solo se construye.
+    """
     conn = get_connection()
     reserva = qrh.ocupante_actual(conn, room_no)
     filas, nombre, idioma_pag = [], "", "en"
@@ -1674,6 +1675,22 @@ def itinerario_publico(room_no: str):
     return HTMLResponse(content=html)
 
 
+@app.get("/i/{room_no}", response_class=HTMLResponse)
+def itinerario_publico(room_no: str):
+    """Página que ve el huésped al escanear el QR de su habitación.
+
+    NO requiere iniciar sesión: es la única parte pública del sistema, y solo
+    muestra el itinerario de quien ocupa esa habitación hoy — ningún otro dato.
+
+    Si están activados los enlaces con código, esta dirección corta deja de servir:
+    de nada valdría el código secreto si bastara con quitarlo de la dirección para
+    ver el itinerario de cualquier otro cuarto.
+    """
+    if pub.cargar_config().get("enlaces_con_codigo"):
+        raise HTTPException(status_code=404, detail="Enlace no válido")
+    return _pagina_huesped(room_no)
+
+
 @app.get("/i/{room_no}/{token}", response_class=HTMLResponse)
 def itinerario_publico_con_codigo(room_no: str, token: str):
     """Misma página, cuando están activados los enlaces con código secreto.
@@ -1686,7 +1703,7 @@ def itinerario_publico_con_codigo(room_no: str, token: str):
     conn.close()
     if not secrets.compare_digest(token, esperado):
         raise HTTPException(status_code=404, detail="Enlace no válido")
-    return itinerario_publico(room_no)
+    return _pagina_huesped(room_no)
 
 
 @app.get("/api/qr/config")
@@ -1722,14 +1739,15 @@ def qr_hoja(user: dict = Depends(current_user)):
     if not cfg.get("base_url"):
         raise HTTPException(status_code=400,
                             detail="Primero configura la dirección base de los códigos QR")
-    habs = cfg.get("habitaciones") or []
-    if not habs:
-        conn = get_connection()
-        habs = [dict(r)["room_no"] for r in conn.execute(
-            "SELECT DISTINCT room_no FROM reserva WHERE room_no IS NOT NULL "
-            "ORDER BY CAST(room_no AS INTEGER)")]
-        conn.close()
-    buf = qrh.hoja_qr_pdf(cfg["base_url"], habs)
+    conn = get_connection()
+    habs = cfg.get("habitaciones") or [dict(r)["room_no"] for r in conn.execute(
+        "SELECT DISTINCT room_no FROM reserva WHERE room_no IS NOT NULL "
+        "ORDER BY CAST(room_no AS INTEGER)")]
+    # Las direcciones las arma publicador, que es quien sabe si los enlaces llevan
+    # código secreto; si no, el QR impreso apuntaría a una página que no existe.
+    pares = [(h, pub.url_habitacion(conn, h)) for h in habs]
+    conn.close()
+    buf = qrh.hoja_qr_pdf_urls(pares)
     return Response(content=buf.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": 'attachment; filename="Codigos_QR_habitaciones.pdf"'})
 
@@ -1747,7 +1765,7 @@ def qr_estado(user: dict = Depends(current_user)):
         r = qrh.ocupante_actual(conn, h)
         resultado.append({
             "room_no": h,
-            "url": qrh.url_habitacion(cfg.get("base_url", ""), h),
+            "url": pub.url_habitacion(conn, h),
             "huesped": r["nombre_principal"] if r else None,
             "conf_no": r["conf_no"] if r else None,
             "arr_date": r["arr_date"] if r else None,
@@ -1755,9 +1773,6 @@ def qr_estado(user: dict = Depends(current_user)):
         })
     conn.close()
     return {"base_url": cfg.get("base_url", ""), "habitaciones": resultado}
-
-
-import publicador as pub
 
 
 @app.get("/api/publicacion/estado")
@@ -1829,10 +1844,12 @@ async def publicacion_config(payload: dict, user: dict = Depends(current_user)):
     sirve este mismo programa cuando el huésped escanea su código.
     """
     auth.requiere_permiso(user, "publicacion")
+    # Se pasa tal cual lo que llegue: lo que el formulario no mande se queda como
+    # estaba. Antes un guardado incompleto borraba la lista de habitaciones.
     cfg = pub.guardar_config({
-        "base_url": (payload.get("base_url") or "").strip(),
+        "base_url": payload.get("base_url"),
         "habitaciones": payload.get("habitaciones"),
-        "enlaces_con_codigo": bool(payload.get("enlaces_con_codigo")),
+        "enlaces_con_codigo": payload.get("enlaces_con_codigo"),
     })
     return {"status": "ok", "configurado": pub.esta_configurado(),
             "habitaciones": cfg.get("habitaciones")}
@@ -1856,8 +1873,11 @@ def publicacion_qr(user: dict = Depends(current_user)):
 
 @app.get("/api/publicacion/vista-previa/{room_no}", response_class=HTMLResponse)
 def publicacion_vista_previa(room_no: str, user: dict = Depends(current_user)):
-    """Permite a recepción ver exactamente lo que verá el huésped de esa habitación."""
-    return itinerario_publico(room_no)
+    """Permite a recepción ver exactamente lo que verá el huésped de esa habitación.
+
+    Se salta el código secreto a propósito: quien mira ya inició sesión en el sistema.
+    """
+    return _pagina_huesped(room_no)
 
 
 @app.get("/api/buscar")

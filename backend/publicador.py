@@ -31,26 +31,89 @@ CONFIG_PATH = os.path.join(
 HABITACIONES_POR_DEFECTO = [f"{i:02d}" for i in range(1, 31)]
 
 
-def cargar_config():
+def _limpiar_url(valor):
+    """Quita espacios y la barra final: es normal pegar la dirección con '/' al
+    final, y así queda siempre guardada de una sola forma."""
+    return (valor or "").strip().rstrip("/")
+
+
+def _url_del_entorno():
+    """Dirección del sistema según el servidor donde está corriendo, si él la sabe.
+
+    Sirve para que los códigos QR funcionen desde el primer arranque sin que nadie
+    entre a configurar nada, y para que la dirección vuelva sola si el volumen se
+    pierde en un despliegue. Se puede fijar a mano con HOTEL_BASE_URL; si no, se
+    toma el dominio público que Railway publica en el entorno del servicio.
+
+    Lo que se haya guardado desde la pantalla siempre manda sobre esto.
+    """
+    explicita = os.environ.get("HOTEL_BASE_URL")
+    if explicita:
+        return explicita
+    dominio = (os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+               or os.environ.get("RAILWAY_STATIC_URL") or "").strip()
+    if not dominio:
+        return ""
+    return dominio if dominio.startswith("http") else f"https://{dominio}"
+
+
+def _lista_habitaciones(valor):
+    """Acepta la lista tal cual o escrita a mano ('01, 02, 03'). Vacío es vacío."""
+    if isinstance(valor, str):
+        valor = valor.split(",")
+    if not isinstance(valor, (list, tuple)):
+        return []
+    return [str(h).strip() for h in valor if str(h).strip()]
+
+
+def _config_en_disco():
+    """Lo que hay guardado, tal cual: sin la dirección que pueda aportar el entorno."""
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             cfg = json.load(f)
     except (OSError, ValueError):
         cfg = {}
-    cfg.setdefault("base_url", "")
-    cfg.setdefault("habitaciones", list(HABITACIONES_POR_DEFECTO))
-    cfg.setdefault("enlaces_con_codigo", False)
+    if not isinstance(cfg, dict):
+        cfg = {}
+    return {
+        "base_url": _limpiar_url(cfg.get("base_url")),
+        # Sin habitaciones no hay códigos QR ni nada que revisar, así que una lista
+        # vacía o nula se repara con la lista por defecto en vez de dejar el hotel a
+        # oscuras: un guardado parcial antiguo podía haberla dejado en null.
+        "habitaciones": _lista_habitaciones(cfg.get("habitaciones")) or list(HABITACIONES_POR_DEFECTO),
+        "enlaces_con_codigo": bool(cfg.get("enlaces_con_codigo")),
+    }
+
+
+def cargar_config():
+    """Configuración vigente: lo guardado y, si nadie puso dirección, la del entorno."""
+    cfg = _config_en_disco()
+    cfg["base_url"] = cfg["base_url"] or _limpiar_url(_url_del_entorno())
     return cfg
 
 
 def guardar_config(cfg):
+    """Guarda solo los datos que vengan con valor.
+
+    Lo que no venga se queda como estaba. Antes bastaba con que la clave existiera,
+    aunque llegara vacía: un guardado parcial dejaba la lista de habitaciones en
+    null y el sistema se quedaba sin ningún código QR.
+
+    Se parte de lo que hay en disco, no de la configuración vigente, para no dejar
+    escrita la dirección que puso el entorno: mientras nadie escriba una a mano,
+    la dirección sigue siendo la del servidor, aunque cambie.
+    """
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    actual = cargar_config()
-    for k in ("base_url", "habitaciones", "enlaces_con_codigo"):
-        if k in cfg:
-            actual[k] = cfg[k]
-    if isinstance(actual.get("habitaciones"), str):
-        actual["habitaciones"] = [h.strip() for h in actual["habitaciones"].split(",") if h.strip()]
+    actual = _config_en_disco()
+
+    if cfg.get("base_url") is not None:
+        actual["base_url"] = _limpiar_url(str(cfg["base_url"]))
+    if cfg.get("enlaces_con_codigo") is not None:
+        actual["enlaces_con_codigo"] = bool(cfg["enlaces_con_codigo"])
+    habitaciones = _lista_habitaciones(cfg.get("habitaciones"))
+    if habitaciones:
+        actual["habitaciones"] = habitaciones
+
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(actual, f, ensure_ascii=False, indent=2)
     return actual

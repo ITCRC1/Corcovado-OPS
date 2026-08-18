@@ -21,33 +21,44 @@ from reportlab.lib.utils import ImageReader
 
 VERDE = colors.Color(0.1216, 0.2275, 0.1804)
 
-CONFIG_PATH = os.path.join(
+# Archivo propio que este módulo usaba antes. Ya no se escribe: la configuración
+# es una sola, la de publicador.py. Se sigue leyendo por si quedó de una versión
+# anterior, para no perder la dirección que alguien ya había dejado puesta.
+CONFIG_ANTIGUA_PATH = os.path.join(
     os.environ.get("HOTEL_DATA_DIR") or os.path.join(os.path.dirname(__file__), "..", "data"),
     "config_qr.json",
 )
 
 
+def _config_antigua():
+    try:
+        with open(CONFIG_ANTIGUA_PATH, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+        return datos if isinstance(datos, dict) else {}
+    except (ValueError, OSError):
+        return {}
+
+
 def cargar_config():
-    """Dirección base a la que apuntan los QR. Se configura una sola vez, según
-    cómo quede accesible el sistema (red local, dirección de internet, etc.)."""
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (ValueError, OSError):
-            pass
-    return {"base_url": "", "habitaciones": []}
+    """Dirección base a la que apuntan los QR, compartida con la pantalla de Publicación.
+
+    Antes había dos archivos de configuración distintos —uno de este módulo y otro de
+    publicador.py—, así que la dirección se dejaba puesta en una pantalla y la otra
+    seguía diciendo que faltaba. Ahora hay una sola. Si quedó un archivo viejo con la
+    dirección, se aprovecha una única vez y a partir de ahí manda la compartida.
+    """
+    import publicador as pub
+    cfg = pub.cargar_config()
+    if not cfg.get("base_url"):
+        heredada = (_config_antigua().get("base_url") or "").strip()
+        if heredada:
+            cfg = pub.guardar_config({"base_url": heredada})
+    return cfg
 
 
 def guardar_config(cfg):
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-
-
-def url_habitacion(base_url, room_no):
-    base = (base_url or "").rstrip("/")
-    return f"{base}/i/{room_no}"
+    import publicador as pub
+    return pub.guardar_config(cfg)
 
 
 def ocupante_actual(conn, room_no, fecha=None, dias_adelante=2):
@@ -102,15 +113,14 @@ def generar_qr_png(texto, tamano=10):
 
 
 def hoja_qr_pdf_urls(pares):
-    """Igual que hoja_qr_pdf pero recibe (habitacion, url) ya resueltos, porque cada
-    habitación tiene su propio código fijo en el enlace."""
-    return _hoja_qr(pares)
-
-
-def hoja_qr_pdf(base_url, habitaciones):
     """Hoja imprimible con el QR de cada habitación, para pegar en el cuarto.
-    Se imprime una sola vez: el código no cambia aunque cambie el huésped."""
-    return _hoja_qr([(r, url_habitacion(base_url, r)) for r in habitaciones])
+    Se imprime una sola vez: el código no cambia aunque cambie el huésped.
+
+    Recibe los pares (habitación, url) ya resueltos por publicador.url_habitacion,
+    que es el único lugar que arma la dirección: si los enlaces llevan código
+    secreto, hay que respetarlo o el QR impreso apuntaría a una página inexistente.
+    """
+    return _hoja_qr(pares)
 
 
 def _hoja_qr(pares):
