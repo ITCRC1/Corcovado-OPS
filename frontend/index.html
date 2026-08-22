@@ -2797,6 +2797,58 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// ---------- Si una pantalla falla, que se vea ----------
+// Antes, cualquier error al cargar una pantalla la dejaba en blanco sin decir nada:
+// desde afuera parecía que "el botón no funciona" y había que abrir la consola del
+// navegador para saber por qué. La causa más común es un despliegue nuevo con el HTML
+// viejo todavía en el navegador, y eso se arregla recargando sin caché.
+function mostrarFalloPantalla(pantalla, error) {
+  const app = document.getElementById("app");
+  if (!app) return;
+  // Si el refresco automático vuelve a fallar, se reemplaza el aviso anterior en vez
+  // de ir apilando uno debajo de otro.
+  document.getElementById("fallo-pantalla")?.remove();
+  const aviso = document.createElement("div");
+  aviso.id = "fallo-pantalla";
+  aviso.className = "card";
+  aviso.style.cssText = "background:var(--warn-bg);color:var(--warn-text);";
+  aviso.innerHTML = `
+    <p class="title" style="color:var(--warn-text);">No se pudo cargar esta pantalla</p>
+    <p style="font-size:13px;margin:6px 0 0;">Casi siempre es que el navegador tiene guardada
+       una versión anterior del sistema. Recarga sin caché y debería quedar bien.</p>
+    <p style="font-size:12px;margin:8px 0 0;color:var(--muted);">Detalle técnico:
+       <span id="fallo-detalle"></span></p>
+    <button class="btn btn-primary" style="margin-top:12px;"
+      onclick="location.replace(location.pathname + '?v=' + Date.now())">Recargar sin caché</button>
+    <span style="font-size:12px;margin-left:8px;">o Ctrl+Shift+R</span>`;
+  // El detalle va como texto, no como HTML: un mensaje de error puede traer '<' o
+  // comillas y rompería el aviso justo cuando más falta hace que se lea.
+  aviso.querySelector("#fallo-detalle").textContent =
+    (error && (error.message || String(error))) || "error desconocido";
+  // Se agrega arriba en vez de reemplazar: si la pantalla alcanzó a pintar algo, se
+  // conserva, y si no, el aviso es lo único que se ve — que es justo lo correcto.
+  app.prepend(aviso);
+  avisar("No se pudo cargar " + pantalla, true);
+  console.error(`[${pantalla}]`, error);
+}
+
+for (const nombre of ["loadDashboard", "loadReservas", "loadAgenda", "loadTransporte",
+                      "loadEntradas", "loadAmenidades", "loadRestaurantes", "loadAnalitica",
+                      "loadResumenOperacion", "loadImportarPDF", "loadUsuarios",
+                      "loadCatalogoAdmin", "loadPublicacion"]) {
+  const original = window[nombre];
+  if (typeof original !== "function") continue;
+  window[nombre] = async function (...args) {
+    try {
+      return await original.apply(this, args);
+    } catch (e) {
+      // La sesión vencida ya la maneja fetchAuth cerrando sesión; no es un fallo que
+      // haya que explicarle a nadie.
+      if (!(e && e.message === "Sesión expirada")) mostrarFalloPantalla(nombre, e);
+    }
+  };
+}
+
 document.getElementById("login-pass").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
 tryAutoLogin();
 </script>
