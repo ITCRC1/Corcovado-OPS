@@ -873,7 +873,11 @@ def cambios(user: dict = Depends(current_user)):
                   FROM restaurante_hora)                                           AS rest_suma
     """).fetchone()
     conn.close()
-    return {"version": "-".join(str(v) for v in tuple(fila))}
+    # Se manda también la versión del sistema, aprovechando que esta consulta ya va y
+    # viene cada pocos segundos: así la pantalla puede avisar sola si el servidor fue
+    # actualizado mientras alguien tenía el sistema abierto.
+    return {"version": "-".join(str(v) for v in tuple(fila)),
+            "version_sistema": _version_sistema()["version"]}
 
 
 @app.get("/api/sync/estado")
@@ -2314,6 +2318,82 @@ if _resource_dir:
     frontend_dir = os.path.join(_resource_dir, "frontend")
 else:
     frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
+
+INDEX_PATH = os.path.join(frontend_dir, "index.html")
+
+# ---------------------------------------------------------------------------
+# Sello de versión
+# ---------------------------------------------------------------------------
+# Sirve para responder de un vistazo la pregunta que aparece cada vez que se
+# despliega algo: "¿el sistema que estoy viendo ya trae el cambio?". El sello se saca
+# de la fecha de los propios archivos, así que no hay que acordarse de subirlo a mano
+# ni hace falta un paso de compilación.
+#
+# Se inyecta ADEMÁS dentro del index.html que se entrega, para que la página sepa con
+# qué versión se cargó: si el navegador tiene una copia vieja, el sello de la página y
+# el del servidor no coinciden y el propio sistema lo avisa.
+
+def _version_sistema():
+    """Fecha del archivo más nuevo entre el frontend y el backend, en UTC.
+
+    La hora se devuelve en ISO para que la muestre el navegador en la hora de quien
+    mira, y no en la del servidor (que en Railway va en UTC).
+    """
+    rutas = [INDEX_PATH] + [os.path.join(os.path.dirname(__file__), f)
+                            for f in ("main.py", "restaurantes.py", "publicador.py",
+                                      "itinerario.py", "importer.py", "loader.py")]
+    reciente = 0.0
+    for r in rutas:
+        try:
+            reciente = max(reciente, os.path.getmtime(r))
+        except OSError:
+            continue
+    sello = datetime.datetime.fromtimestamp(
+        reciente, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    commit = (os.environ.get("RAILWAY_GIT_COMMIT_SHA") or "")[:7]
+    return {"version": sello, "commit": commit}
+
+
+@app.get("/api/version")
+def version():
+    """Qué versión tiene el servidor. Sin sesión: la usa la propia pantalla de ingreso."""
+    return _version_sistema()
+
+
+_index_cache = {"version": None, "html": None}
+
+
+def _index_con_version():
+    """El index.html con su sello de versión puesto.
+
+    Se guarda en memoria usando como llave el propio sello, no la fecha del archivo:
+    si se despliega un cambio solo del backend, el index no cambia pero el sello sí, y
+    con la fecha del archivo como llave se habría seguido entregando la página con el
+    sello anterior. El navegador la habría visto siempre en desacuerdo con el servidor
+    y habría avisado "versión nueva" sin fin, incluso recién recargada.
+    """
+    v = _version_sistema()
+    if _index_cache["version"] != v["version"]:
+        with open(INDEX_PATH, "r", encoding="utf-8") as f:
+            html = f.read()
+        marca = f'<meta name="version-sistema" content="{v["version"]}" data-commit="{v["commit"]}">'
+        _index_cache["html"] = html.replace("<!--VERSION-->", marca)
+        _index_cache["version"] = v["version"]
+    return _index_cache["html"]
+
+
+@app.get("/", response_class=HTMLResponse)
+@app.get("/index.html", response_class=HTMLResponse)
+def index():
+    """Entrega la aplicación con el sello de versión dentro.
+
+    Va antes del montaje de archivos estáticos, así que gana sobre él; el resto de
+    los archivos (fuentes, fotos, logo) los sigue sirviendo el montaje de abajo.
+    """
+    return HTMLResponse(content=_index_con_version(),
+                        headers={"Cache-Control": "no-cache, must-revalidate"})
+
+
 class _FrontendSinCache(StaticFiles):
     """Sirve el frontend pidiendo al navegador que revise si hay versión nueva.
 

@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <title>Corcovado Wilderness Lodge — Sistema de Operación</title>
+<!-- El servidor reemplaza esta marca por la versión con la que entrega la página, así
+     la pantalla sabe cuál está corriendo y puede avisar si quedó una copia vieja. -->
+<!--VERSION-->
 <style>
   /* Tipografías del lodge: las mismas que recibe el huésped en su itinerario.
      Playfair para títulos, Archivo Narrow para datos (es condensada, así caben
@@ -70,6 +73,12 @@
   /* Alguien más cambió algo y la pantalla se acaba de actualizar. Azul, para que no
      se confunda con "guardado" (verde) ni con un error (rojo), y se va enseguida. */
   .aviso-flotante.ajeno { background:#1D4ED8; }
+
+  /* Sello de versión: discreto mientras todo está al día, ámbar y pulsable cuando el
+     servidor ya tiene una versión más nueva que la que está abierta. */
+  #sello-version { font-size:11px; opacity:.55; letter-spacing:.3px; white-space:nowrap; }
+  #sello-version.vieja { opacity:1; background:#E5A93B; color:#3A2B08; font-weight:600;
+    padding:3px 9px; border-radius:12px; cursor:pointer; }
 
   /* Fila con cambios sin guardar */
   tr.sin-guardar { background:#FFF8DC !important; box-shadow:inset 3px 0 0 #E5A93B; }
@@ -254,6 +263,9 @@
     <div class="topbar-user">
       <button id="btn-escala" onclick="cambiarEscala()" title="Tamaño del texto">A+</button>
       <span id="user-label"></span>
+      <!-- Sello de la versión que está corriendo. Se pone ámbar y se vuelve botón si el
+           servidor pasa a tener una más nueva. -->
+      <span id="sello-version" title=""></span>
       <button onclick="doLogout()">Cerrar sesión</button>
     </div>
   </div>
@@ -397,6 +409,7 @@ function showApp() {
 
   // Se ocultan las pestañas a las que el usuario no tiene acceso. Un usuario de
   // restaurante solo verá lo que necesita para su trabajo.
+  mostrarSelloVersion();
   const primera = aplicarPermisos();
   // Se entra por irAPantalla para que la primera pantalla también abra en el día de
   // hoy, aunque la sesión se haya iniciado con la página abierta desde ayer.
@@ -421,6 +434,37 @@ function avisar(texto, esError, tipo) {
   clearTimeout(_avisoTimer);
   // El aviso de cambio de otra persona dura menos: solo hace falta enterarse.
   _avisoTimer = setTimeout(() => el.classList.remove("visible"), tipo === "ajeno" ? 1800 : 2600);
+}
+
+// ---------- Sello de versión ----------
+// La página conoce SU versión porque el servidor se la deja puesta al entregarla. Con
+// eso se puede distinguir lo que antes no se podía: si el sistema no trae un cambio
+// porque no se desplegó, o porque el navegador se quedó con una copia anterior.
+const VERSION_PAGINA = document.querySelector('meta[name="version-sistema"]')?.content || "";
+
+function textoVersion(iso) {
+  // Llega en UTC y se muestra en la hora de quien mira, que es la que le sirve.
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const p = n => String(n).padStart(2, "0");
+  return `v ${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function mostrarSelloVersion() {
+  const el = document.getElementById("sello-version");
+  if (!el) return;
+  el.textContent = textoVersion(VERSION_PAGINA);
+  el.title = VERSION_PAGINA ? `Versión del sistema que está abierta: ${VERSION_PAGINA}`
+                            : "Versión desconocida";
+}
+
+function avisarVersionNueva(versionServidor) {
+  const el = document.getElementById("sello-version");
+  if (!el || el.classList.contains("vieja")) return;   // ya está avisado
+  el.classList.add("vieja");
+  el.textContent = "versión nueva · recargar";
+  el.title = `Abierta: ${VERSION_PAGINA}\nEn el servidor: ${versionServidor}`;
+  el.onclick = () => location.replace(location.pathname + "?v=" + Date.now());
 }
 
 // ---------- Refresco automático entre computadoras ----------
@@ -476,7 +520,13 @@ async function revisarCambios() {
     // cerrarle la sesión a nadie desde un temporizador de fondo. Se reintenta solo.
     const res = await fetch(`${API}/api/cambios`, { headers: { "Authorization": "Bearer " + TOKEN } });
     if (!res.ok) return;
-    version = (await res.json()).version;
+    const datos = await res.json();
+    version = datos.version;
+    // Si el servidor fue actualizado mientras esto estaba abierto, se avisa en el sello
+    // en vez de recargar por sorpresa: puede haber trabajo a medio hacer en pantalla.
+    if (datos.version_sistema && VERSION_PAGINA && datos.version_sistema !== VERSION_PAGINA) {
+      avisarVersionNueva(datos.version_sistema);
+    }
   } catch (e) { return; }
 
   if (_versionDatos === null) { _versionDatos = version; return; }  // primera lectura
