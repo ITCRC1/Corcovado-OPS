@@ -490,6 +490,49 @@ def agenda(fecha: str = None, desde: str = None, hasta: str = None, user: dict =
     return [agrupado[k] for k in orden]
 
 
+def _hora_traslado(fila, es_entrada):
+    """Hora a la que de verdad se mueve el huésped, según lo ya dispuesto por el lodge.
+
+    La pantalla de Transporte mostraba solo lo que viniera escrito en el PDF, y por eso
+    salían tantas líneas en blanco: por Sierpe el bote sale a la misma hora todos los
+    días y el PDF no la repite, y en las salidas por Sierpe la hora estaba fija en "—".
+
+    El orden es: lo que diga el PDF manda; si no dice nada, se aplica la regla del punto.
+
+      · Sierpe → horario fijo del bote (llegada y salida).
+      · Drake, llegada → la hora del vuelo; sin vuelo no se puede saber.
+      · Drake, salida  → el bote, calculado hacia atrás desde el vuelo, la misma cuenta
+        que se le imprime al huésped en su itinerario.
+
+    Devuelve (hora, origen). El origen sirve para que recepción distinga de un vistazo
+    lo confirmado de lo que sigue pendiente de verdad.
+    """
+    import catalogo_itinerario as cat
+    import itinerario as _itin
+
+    if es_entrada:
+        punto = (fila.get("punto_entrada") or "").lower()
+        if fila.get("hora_vuelo_entrada"):
+            return fila["hora_vuelo_entrada"], "del PDF"
+        if fila.get("arr_time"):
+            return fila["arr_time"], "del PDF"
+        if punto == "sierpe":
+            return cat.SIERPE_BOTE_LLEGADA, "horario fijo de Sierpe"
+        if punto == "drake":
+            return None, "falta la hora del vuelo"
+        return None, "falta el punto"
+
+    punto = (fila.get("punto_salida") or "").lower()
+    if punto == "sierpe":
+        return cat.SIERPE_SALIDA["bote"], "horario fijo de Sierpe"
+    if punto == "drake":
+        logistica = _itin.calcular_logistica_salida(fila.get("hora_vuelo_salida"))
+        if logistica:
+            return logistica["bote"], "calculado del vuelo"
+        return None, "falta la hora del vuelo"
+    return None, "falta el punto"
+
+
 @app.get("/api/transporte")
 def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: dict = Depends(current_user)):
     conn = get_connection()
@@ -509,9 +552,18 @@ def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: di
         params_s,
     ).fetchall()
     conn.close()
+
+    def con_hora(filas, es_entrada):
+        salida = []
+        for f in filas:
+            d = dict(f)
+            d["hora_efectiva"], d["hora_origen"] = _hora_traslado(d, es_entrada)
+            salida.append(d)
+        return salida
+
     return {
-        "entradas": [dict(r) for r in entradas],
-        "salidas": [dict(r) for r in salidas],
+        "entradas": con_hora(entradas, True),
+        "salidas": con_hora(salidas, False),
     }
 
 
@@ -660,21 +712,45 @@ def _publicar_en_segundo_plano():
     return "en vivo"
 @app.post("/api/tours/agenda/{tour_id}/asignar")
 def asignar_guia_bote(tour_id: int, guia: str = None, bote: str = None, user: dict = Depends(current_user)):
+    """Asigna guía y bote a una salida.
+
+    Se distingue "no me mandaron el dato" de "lo dejaron en Sin asignar":
+
+      · parámetro ausente  → el valor anterior se queda como estaba.
+      · parámetro vacío    → se borra la asignación y queda en NULL.
+
+    Lo segundo antes no se podía: se usaba COALESCE, así que elegir "Sin asignar" no
+    hacía nada y no había forma de dejar una salida sin guía desde la pantalla. Tiene
+    que quedar en NULL y no en texto vacío, porque los avisos de "sin guía" y "sin
+    bote" buscan justamente NULL y una cadena vacía se les escaparía.
+    """
     auth.requiere_escritura(user)
     conn = get_connection()
     anterior = conn.execute(
         "SELECT fecha, guia_nombre, bote_nombre FROM tour_asignado WHERE id = ?", (tour_id,)
     ).fetchone()
 
-    conn.execute(
-        "UPDATE tour_asignado SET guia_nombre = COALESCE(?, guia_nombre), bote_nombre = COALESCE(?, bote_nombre) WHERE id = ?",
-        (guia, bote, tour_id),
-    )
+    campos, valores = [], []
+    nuevo_guia = None if guia is None else (guia.strip() or None)
+    nuevo_bote = None if bote is None else (bote.strip() or None)
+    if guia is not None:
+        campos.append("guia_nombre = ?")
+        valores.append(nuevo_guia)
+    if bote is not None:
+        campos.append("bote_nombre = ?")
+        valores.append(nuevo_bote)
+    if campos:
+        conn.execute(
+            f"UPDATE tour_asignado SET {', '.join(campos)} WHERE id = ?",
+            (*valores, tour_id),
+        )
 
     cambio_ultimo_momento = None
     if anterior:
         hoy = datetime.date.today().isoformat()
-        cambio_real = (guia and guia != anterior["guia_nombre"]) or (bote and bote != anterior["bote_nombre"])
+        # Quitar un guía el mismo día del tour también es un cambio de último momento.
+        cambio_real = ((guia is not None and nuevo_guia != anterior["guia_nombre"])
+                       or (bote is not None and nuevo_bote != anterior["bote_nombre"]))
         if anterior["fecha"] == hoy and cambio_real:
             conn.execute("UPDATE tour_asignado SET es_cambio_ultimo_momento = 1 WHERE id = ?", (tour_id,))
             info = conn.execute(
@@ -682,11 +758,13 @@ def asignar_guia_bote(tour_id: int, guia: str = None, bote: str = None, user: di
                    JOIN reserva r ON r.conf_no = ta.conf_no WHERE ta.id = ?""",
                 (tour_id,),
             ).fetchone()
+            guia_final = nuevo_guia if guia is not None else anterior["guia_nombre"]
+            bote_final = nuevo_bote if bote is not None else anterior["bote_nombre"]
             mensaje = (
                 f"Cambio de último momento: {info['tour_codigo']} de {info['nombre_principal']} "
                 f"(hab. {info['room_no']}) modificado el mismo día del tour "
-                f"(guía: {anterior['guia_nombre'] or '—'} → {guia or anterior['guia_nombre']}, "
-                f"bote: {anterior['bote_nombre'] or '—'} → {bote or anterior['bote_nombre']})."
+                f"(guía: {anterior['guia_nombre'] or '—'} → {guia_final or 'sin asignar'}, "
+                f"bote: {anterior['bote_nombre'] or '—'} → {bote_final or 'sin asignar'})."
             )
             conn.execute(
                 "INSERT INTO alerta (tipo, referencia_id, mensaje) VALUES ('CAMBIO_ULTIMO_MOMENTO', ?, ?)",
@@ -757,6 +835,40 @@ _startup_conn.execute(
 _startup_conn.commit()
 _startup_conn.close()
 sync_engine.iniciar_sync_en_segundo_plano()
+
+
+@app.get("/api/cambios")
+def cambios(user: dict = Depends(current_user)):
+    """Huella del estado de los datos compartidos, para refrescar solo si hace falta.
+
+    Todas las computadoras la piden cada pocos segundos, así que tiene que ser barata:
+    son agregados sobre índices o sobre tablas chicas, nunca un recorrido de reserva
+    ni de tour_asignado. Si el número que devuelve cambió, alguien tocó algo.
+
+    Lo que se vigila:
+      · sync_log      — reservas, tours, guías, botes, grupos y entradas SINAC, que ya
+                        anotan cada cambio ahí por medio de los disparadores.
+      · itinerario    — su fecha de actualización cambia con cada edición.
+      · amenidad_tarea, alerta — cuántas hay y cuántas están cerradas.
+      · restaurantes  — cambios de mesa y horas de cena; la hora se suma en número
+                        ('19:30' → 1930) porque cambiar la hora no cambia el total.
+    """
+    conn = get_connection()
+    fila = conn.execute("""
+        SELECT (SELECT COALESCE(MAX(id), 0)              FROM sync_log)            AS operacion,
+               (SELECT COUNT(*)                          FROM itinerario)          AS itinerarios,
+               (SELECT COALESCE(MAX(actualizado_en), '') FROM itinerario)          AS itin_fecha,
+               (SELECT COUNT(*)                          FROM amenidad_tarea)      AS amenidades,
+               (SELECT COUNT(*) FROM amenidad_tarea WHERE estado = 'HECHA')        AS amen_hechas,
+               (SELECT COALESCE(MAX(id), 0)              FROM alerta)              AS alertas,
+               (SELECT COUNT(*) FROM alerta WHERE resuelto = 0)                    AS alertas_abiertas,
+               (SELECT COUNT(*)                          FROM restaurante_cambio)  AS rest_cambios,
+               (SELECT COUNT(*)                          FROM restaurante_hora)    AS rest_horas,
+               (SELECT COALESCE(SUM(CAST(REPLACE(COALESCE(hora, '0'), ':', '') AS INTEGER)), 0)
+                  FROM restaurante_hora)                                           AS rest_suma
+    """).fetchone()
+    conn.close()
+    return {"version": "-".join(str(v) for v in tuple(fila))}
 
 
 @app.get("/api/sync/estado")
@@ -1010,13 +1122,20 @@ def export_transporte(fecha: str = None, desde: str = None, hasta: str = None, f
     for r in entradas + salidas:
         r["pax"] = r["adl"] + r["chl"]
         r["tipo"] = "Entrada" if "arr_date" in r else "Salida"
+    # La hora sale de la misma regla que usa la pantalla: por Sierpe el horario fijo
+    # del bote, por Drake el vuelo (o el bote calculado desde él). Antes el Excel
+    # copiaba solo lo escrito en el PDF y salía en blanco en casi todas las salidas.
     for r in entradas:
-        r["fecha"] = r["arr_date"]; r["punto"] = r["punto_entrada"]; r["hora"] = r.get("hora_vuelo_entrada") or r.get("arr_time")
+        r["fecha"] = r["arr_date"]; r["punto"] = r["punto_entrada"]
+        hora, origen = _hora_traslado(r, True)
+        r["hora"], r["hora_origen"] = hora or "—", origen
     for r in salidas:
-        r["fecha"] = r["dep_date"]; r["punto"] = r["punto_salida"]; r["hora"] = r.get("hora_vuelo_salida")
+        r["fecha"] = r["dep_date"]; r["punto"] = r["punto_salida"]
+        hora, origen = _hora_traslado(r, False)
+        r["hora"], r["hora_origen"] = hora or "—", origen
     rows = entradas + salidas
     columns = [("fecha", "Fecha"), ("tipo", "Tipo"), ("room_no", "Hab."), ("nombre_principal", "Huésped"),
-               ("punto", "Punto"), ("hora", "Hora"), ("pax", "Pax")]
+               ("punto", "Punto"), ("hora", "Hora"), ("hora_origen", "Según"), ("pax", "Pax")]
     titulo = "Transporte — Corcovado Wilderness Lodge"
     subt = fecha or f"{desde} a {hasta}"
     buf = exports.to_xlsx(columns, rows, titulo) if formato == "xlsx" else exports.to_pdf(columns, rows, titulo, subt)

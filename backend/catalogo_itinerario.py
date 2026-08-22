@@ -6,6 +6,17 @@ recibe el huésped: nombre de la actividad, horario y recomendaciones.
 Fuente: documento "TOUR_INGLES.pdf" del hotel.
 """
 
+# ---------------------------------------------------------------------------
+# Horarios del traslado, según lo dispuesto por el lodge
+# ---------------------------------------------------------------------------
+# Por Sierpe el traslado es en bote y sale a la misma hora todos los días, así que el
+# PDF de reservas casi nunca escribe la hora: se da por sabida. Por Drake depende del
+# vuelo de cada huésped y se calcula hacia atrás (ver itinerario.calcular_logistica_salida).
+# Están aquí, con nombre, porque los usan tanto el itinerario del huésped como la
+# pantalla de Transporte: si algún día cambia el horario del bote, se cambia una vez.
+SIERPE_BOTE_LLEGADA = "11:30 a.m."
+SIERPE_SALIDA = {"equipaje": "7:00 a.m.", "checkout": "7:45 a.m.", "bote": "8:00 a.m."}
+
 # Recomendaciones que se repiten en varios tours, para no duplicarlas
 VESTIR_SELVA = "What to wear: Long pants, closed shoes or boots."
 LLEVAR_SELVA = ("What to bring: Sunscreen, refillable water bottle, sun hat, "
@@ -208,7 +219,7 @@ def texto_llegada(punto, vuelo=None, hora=None):
     return {
         "nombre": "Arrival Day",
         "duracion": "",
-        "horario": f"Boat departure around\n{hora or '11:30 a.m.'}",
+        "horario": f"Boat departure around\n{hora or SIERPE_BOTE_LLEGADA}",
         "detalles": "From La Hacienda, Sierpe\nto CWL",
         "requiere_revision": False,
     }
@@ -235,8 +246,9 @@ def texto_salida(punto, vuelo=None, hora=None, logistica=None):
     return {
         "nombre": "Departure Day",
         "duracion": "",
-        "horario": ("Luggage pick-up in your room at 7:00 a.m.\n"
-                    "Check-out at 7:45 a.m.\nBoat departure at 8:00 a.m."),
+        "horario": (f"Luggage pick-up in your room at {SIERPE_SALIDA['equipaje']}\n"
+                    f"Check-out at {SIERPE_SALIDA['checkout']}\n"
+                    f"Boat departure at {SIERPE_SALIDA['bote']}"),
         "detalles": "From CWL to\nLa Hacienda, Sierpe",
         "requiere_revision": False,
     }

@@ -31,7 +31,14 @@ AMENIDADES_PATRONES = [
     # se llaman "VIP Experience Package" y eso no implica una amenidad que preparar.
     ("Luna de miel / cliente VIP", r"luna\s+de\s+miel|honeymoon|aniversario|anniversary|cliente\s+vip|hu[ée]sped\s+vip"),
     ("Decoración por cumpleaños", r"cumplea[ñn]os|birthday|decoraci[óo]n"),
-    ("Cena privada", r"cena\s+privada|private\s+dinner"),
+    # La cena privada se escribe de muchas formas y con palabras en medio ("cena
+    # romántica privada", "cena privada en la playa", "private candlelight dinner").
+    # Importa detectarla bien porque no es solo una tarea de cocina: fija la mesa en
+    # Vitrales y ocupa uno de sus lugares, así que afecta el reparto del restaurante.
+    ("Cena privada", (
+        r"cena\s+(?:\w+\s+){0,2}privada|cena\s+rom[áa]ntica|"
+        r"private\s+(?:\w+\s+){0,2}dinner|romantic\s+dinner"
+    )),
     ("Botella de vino cortesía", r"botella\s+de\s+vino|vino\s+de\s+cortes[íi]a|champ[áa]n|champagne"),
     ("Frutas con chocolate cortesía", r"frutas?\s+con\s+chocolate|chocolate\s+covered"),
     ("Frutas de cortesía", r"frutas?\s+(?:de\s+)?cortes[íi]a|canasta\s+de\s+frutas"),

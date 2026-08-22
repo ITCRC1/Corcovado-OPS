@@ -140,12 +140,49 @@ def _cambios_manuales(conn, fecha):
                 (_iso(fecha),)).fetchall()}
 
 
+def _filtro_privada(prefijo=""):
+    """Cómo se reconoce una cena privada entre las amenidades.
+
+    En un solo lugar porque se consulta desde varios sitios y tiene que coincidir
+    siempre: si aquí se reconoce y allá no, la mesa se cuenta mal.
+    """
+    p = f"{prefijo}." if prefijo else ""
+    return (f"({p}amenidad LIKE '%privada%' OR {p}tarea LIKE '%privada%' "
+            f"OR {p}amenidad LIKE '%private%dinner%')")
+
+
 def _cenas_privadas(conn, fecha):
     """Reservas con cena privada declarada esa noche. Van fijas a Vitrales."""
     return {dict(r)["conf_no"] for r in conn.execute(
-        """SELECT conf_no FROM amenidad_tarea
-           WHERE fecha = ? AND (amenidad LIKE '%privada%' OR tarea LIKE '%privada%')""",
+        f"""SELECT conf_no FROM amenidad_tarea
+            WHERE fecha = ? AND {_filtro_privada()}""",
         (_iso(fecha),)).fetchall()}
+
+
+def _privadas_sin_noche(conn, conf_nos):
+    """Cenas privadas contratadas a las que todavía nadie les puso noche.
+
+    El PDF avisa que el huésped la tiene contratada, pero casi nunca dice el día, así
+    que la amenidad entra sin fecha. Y mientras no tenga fecha no entra en el reparto:
+    Vitrales no le guarda la mesa, no cuenta para sus 45 lugares y cocina no la ve
+    venir. Antes eso no se mostraba en ninguna parte y la pantalla decía "sin cenas
+    privadas esta noche", que es justo lo contrario de lo que pasaba.
+
+    Se devuelven las de los huéspedes que están en casa esa noche, para que la pantalla
+    las reclame mientras el huésped todavía está en el lodge.
+    """
+    if not conf_nos:
+        return []
+    marcas = ",".join("?" * len(conf_nos))
+    filas = conn.execute(
+        f"""SELECT DISTINCT a.conf_no, r.room_no, r.nombre_principal, a.detalle,
+                   r.arr_date, r.dep_date
+            FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
+            WHERE a.fecha IS NULL AND {_filtro_privada('a')}
+              AND a.conf_no IN ({marcas})
+            ORDER BY CAST(r.room_no AS INTEGER)""",
+        tuple(conf_nos)).fetchall()
+    return [dict(f) for f in filas]
 
 
 # ---------------------------------------------------------------------------
@@ -333,6 +370,10 @@ def distribuir(conn, fecha):
         "salen": [{"room_no": r["room_no"], "nombre": r["nombre_principal"],
                    "pax": r["pax"]} for r in salidas],
         "cenas_privadas": sorted(privadas),
+        # Contratadas pero sin noche puesta: no entran en el reparto todavía, y por eso
+        # hay que reclamarlas en pantalla mientras el huésped está en casa.
+        "cenas_privadas_sin_noche": _privadas_sin_noche(
+            conn, [r["conf_no"] for r in entradas + en_casa]),
     }
 
 

@@ -67,6 +67,9 @@
     opacity:0; transition:opacity .2s, bottom .2s; pointer-events:none; }
   .aviso-flotante.visible { opacity:1; bottom:34px; }
   .aviso-flotante.error { background:#B91C1C; }
+  /* Alguien más cambió algo y la pantalla se acaba de actualizar. Azul, para que no
+     se confunda con "guardado" (verde) ni con un error (rojo), y se va enseguida. */
+  .aviso-flotante.ajeno { background:#1D4ED8; }
 
   /* Fila con cambios sin guardar */
   tr.sin-guardar { background:#FFF8DC !important; box-shadow:inset 3px 0 0 #E5A93B; }
@@ -320,6 +323,9 @@ async function fetchAuth(url, options) {
   options.headers = Object.assign({}, options.headers, { "Authorization": "Bearer " + TOKEN });
   const res = await fetch(url, options);
   if (res.status === 401) { doLogout(); throw new Error("Sesión expirada"); }
+  // Lo que cambia uno mismo no debe anunciarse como "alguien más hizo un cambio":
+  // se pone al día la referencia del refresco automático sin recargar nada.
+  if ((options.method || "GET").toUpperCase() !== "GET" && res.ok) ponerAlDiaVersion();
   return res;
 }
 
@@ -346,6 +352,7 @@ async function doLogin() {
 
 function doLogout() {
   if (TOKEN) fetch(`${API}/api/auth/logout`, { method: "POST", headers: { "Authorization": "Bearer " + TOKEN } }).catch(() => {});
+  detenerRefrescoAutomatico();
   TOKEN = null; CURRENT_USER = null;
   localStorage.removeItem("hotel_token");
   document.getElementById("app-screen").style.display = "none";
@@ -364,15 +371,14 @@ function showApp() {
   // Se ocultan las pestañas a las que el usuario no tiene acceso. Un usuario de
   // restaurante solo verá lo que necesita para su trabajo.
   const primera = aplicarPermisos();
-  const abrir = [loadDashboard, loadReservas, loadAgenda, loadTransporte, loadEntradas,
-                 loadAmenidades, loadRestaurantes, loadAnalitica, loadResumenOperacion,
-                 loadImportarPDF, loadUsuarios, loadCatalogoAdmin, loadPublicacion];
+  const abrir = cargadoresPantalla();
   (abrir[primera >= 0 ? primera : 0] || loadDashboard)();
+  iniciarRefrescoAutomatico();
 }
 
 // ---------- Aviso flotante de confirmación ----------
 let _avisoTimer = null;
-function avisar(texto, esError) {
+function avisar(texto, esError, tipo) {
   let el = document.getElementById("aviso-flotante");
   if (!el) {
     el = document.createElement("div");
@@ -382,10 +388,89 @@ function avisar(texto, esError) {
   }
   el.textContent = texto;
   el.classList.toggle("error", !!esError);
+  el.classList.toggle("ajeno", tipo === "ajeno");
   el.classList.add("visible");
   clearTimeout(_avisoTimer);
-  _avisoTimer = setTimeout(() => el.classList.remove("visible"), 2600);
+  // El aviso de cambio de otra persona dura menos: solo hace falta enterarse.
+  _avisoTimer = setTimeout(() => el.classList.remove("visible"), tipo === "ajeno" ? 1800 : 2600);
 }
+
+// ---------- Refresco automático entre computadoras ----------
+// El sistema lo usan varias personas a la vez desde distintas computadoras. Cada
+// pocos segundos se le pregunta al servidor si alguien cambió algo, y solo entonces
+// se vuelve a cargar la pantalla. Es una sola consulta muy barata, y nunca se
+// refresca a lo bruto: si la persona tiene algo a medio editar o un detalle abierto,
+// se respeta lo que está haciendo.
+const REFRESCO_MS = 6000;
+// Pantallas que conviene refrescar solas. Quedan fuera a propósito Analítica (informe
+// pesado que nadie mira en vivo) e Importar PDF, Usuarios y Catálogo, donde un
+// refresco borraría el archivo elegido o un formulario a medio llenar.
+const PANTALLAS_QUE_SE_REFRESCAN = [0, 1, 2, 3, 4, 5, 6, 8, 12];
+let _versionDatos = null;
+let _refrescoTimer = null;
+
+// Cargadores en el mismo orden que los botones del menú.
+function cargadoresPantalla() {
+  return [loadDashboard, loadReservas, loadAgenda, loadTransporte, loadEntradas,
+          loadAmenidades, loadRestaurantes, loadAnalitica, loadResumenOperacion,
+          loadImportarPDF, loadUsuarios, loadCatalogoAdmin, loadPublicacion];
+}
+
+function iniciarRefrescoAutomatico() {
+  clearInterval(_refrescoTimer);
+  _versionDatos = null;
+  // Se toma la referencia de entrada ya mismo: así el primer turno del reloj ya puede
+  // detectar un cambio, en vez de gastarse en aprender cómo estaban las cosas.
+  ponerAlDiaVersion();
+  _refrescoTimer = setInterval(revisarCambios, REFRESCO_MS);
+}
+
+function detenerRefrescoAutomatico() {
+  clearInterval(_refrescoTimer);
+  _refrescoTimer = null;
+  _versionDatos = null;
+}
+
+async function ponerAlDiaVersion() {
+  if (!TOKEN) return;
+  try {
+    const res = await fetch(`${API}/api/cambios`, { headers: { "Authorization": "Bearer " + TOKEN } });
+    if (res.ok) _versionDatos = (await res.json()).version;
+  } catch (e) { /* si falla, el próximo turno del reloj lo resuelve */ }
+}
+
+async function revisarCambios() {
+  // Sin sesión, o con la pestaña en segundo plano, no hay nada que refrescar.
+  if (!TOKEN || document.hidden) return;
+  let version;
+  try {
+    // A propósito no se usa fetchAuth: un fallo de red o un token vencido no debe
+    // cerrarle la sesión a nadie desde un temporizador de fondo. Se reintenta solo.
+    const res = await fetch(`${API}/api/cambios`, { headers: { "Authorization": "Bearer " + TOKEN } });
+    if (!res.ok) return;
+    version = (await res.json()).version;
+  } catch (e) { return; }
+
+  if (_versionDatos === null) { _versionDatos = version; return; }  // primera lectura
+  if (version === _versionDatos) return;                            // nadie tocó nada
+  _versionDatos = version;
+
+  const cargar = cargadoresPantalla()[window._pantallaActiva];
+  if (!cargar || !PANTALLAS_QUE_SE_REFRESCAN.includes(window._pantallaActiva)) return;
+  if (document.querySelector(".modal-fondo")) return;   // hay un detalle abierto encima
+  if (hayCambiosSinGuardar()) {
+    // No se recarga: se perderían los guías que la persona acaba de elegir.
+    avisar("Alguien más hizo un cambio · guarda para ver lo nuevo", false, "ajeno");
+    return;
+  }
+  cargar();
+  avisar("Actualizado", false, "ajeno");
+}
+
+document.addEventListener("visibilitychange", () => {
+  // Al volver a la pestaña se revisa de una vez, sin esperar el turno del reloj.
+  if (!document.hidden && TOKEN) revisarCambios();
+});
 
 // ---------- Búsqueda global ----------
 let _buscarTimer = null;
@@ -1261,9 +1346,11 @@ function marcarSinGuardar(tourId) {
 async function guardarAsignacion(tourId) {
   const guia = document.getElementById(`g-${tourId}`).value;
   const bote = document.getElementById(`b-${tourId}`).value;
+  // Se mandan siempre los dos, incluso vacíos: vacío significa "Sin asignar" y el
+  // servidor lo borra. Si no se mandaran, dejaría el guía anterior puesto.
   const params = new URLSearchParams();
-  if (guia) params.append("guia", guia);
-  if (bote) params.append("bote", bote);
+  params.append("guia", guia);
+  params.append("bote", bote);
   const res = await fetchAuth(`${API}/api/tours/agenda/${tourId}/asignar?${params.toString()}`, { method: "POST" });
   const data = await res.json();
   // La fila deja de estar marcada como pendiente de guardar
@@ -1295,8 +1382,15 @@ async function loadTransporte(fecha, desde, hasta) {
   const d = await res.json();
   const pendientes = await (await fetchAuth(`${API}/api/transporte/pendientes`)).json();
   const app = document.getElementById("app");
-  const filaE = r => `<tr><td>${r.arr_date}</td><td>${r.room_no}</td><td>${r.nombre_principal}</td><td>${r.punto_entrada||"-"}</td><td>${r.punto_entrada==='Drake' ? (r.hora_vuelo_entrada||r.arr_time||"-") : r.arr_time||"-"}</td><td>${r.adl+r.chl}</td></tr>`;
-  const filaS = r => `<tr><td>${r.dep_date}</td><td>${r.room_no}</td><td>${r.nombre_principal}</td><td>${r.punto_salida||"-"}</td><td>${r.punto_salida==='Drake' ? (r.hora_vuelo_salida||"-") : "-"}</td><td>${r.adl+r.chl}</td></tr>`;
+  // La hora la resuelve el servidor con las reglas del lodge: por Sierpe el horario
+  // fijo del bote, por Drake el vuelo o el bote calculado desde él. Se marca de dónde
+  // sale cada una, para distinguir lo confirmado de lo que falta de verdad.
+  const celdaHora = r => r.hora_efectiva
+    ? `${r.hora_efectiva}${r.hora_origen === "del PDF" ? ""
+        : ` <span style="font-size:10px;color:var(--muted);">${r.hora_origen}</span>`}`
+    : `<span style="color:var(--warn-text);">${r.hora_origen}</span>`;
+  const filaE = r => `<tr><td>${r.arr_date}</td><td>${r.room_no}</td><td>${r.nombre_principal}</td><td>${r.punto_entrada||"-"}</td><td>${celdaHora(r)}</td><td>${r.adl+r.chl}</td></tr>`;
+  const filaS = r => `<tr><td>${r.dep_date}</td><td>${r.room_no}</td><td>${r.nombre_principal}</td><td>${r.punto_salida||"-"}</td><td>${celdaHora(r)}</td><td>${r.adl+r.chl}</td></tr>`;
   app.innerHTML = `
     <div class="card">
       <div class="header">
@@ -1736,8 +1830,24 @@ async function loadRestaurantes(fecha) {
       <p class="title">Cenas privadas</p>
       ${d.cenas_privadas.length
         ? `<p style="font-size:13px;margin:8px 0 0;">${d.cenas_privadas.length} declarada(s) para esta fecha · van fijas en Vitrales y cuentan para sus ${c.cap_vit} lugares.</p>`
-        : `<p class="empty" style="padding:16px 12px;">Sin cenas privadas esta noche.<small>El PDF avisa cuándo un huésped la tiene contratada, pero no siempre dice el día. Márcala aquí.</small></p>`}
-      ${isRecepcion() ? `<button class="btn" onclick="abrirCenaPrivada('${F.fecha}')">Marcar cena privada</button>` : ""}
+        : `<p class="empty" style="padding:16px 12px;">Sin cenas privadas asignadas a esta noche.<small>Con noche asignada quedan fijas en Vitrales y ocupan su lugar.</small></p>`}
+
+      ${(d.cenas_privadas_sin_noche || []).length ? `
+        <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:11px 13px;margin-top:12px;font-size:13px;">
+          <p style="margin:0 0 6px;font-weight:600;">⚠ Contratadas sin noche asignada (${d.cenas_privadas_sin_noche.length})</p>
+          <p style="margin:0 0 8px;font-size:12px;">El PDF avisa que estos huéspedes tienen cena privada, pero no dice qué día.
+             Mientras no se le ponga la noche, <strong>no se le guarda mesa en Vitrales ni cocina la ve venir</strong>.</p>
+          ${d.cenas_privadas_sin_noche.map(p => `
+            <p style="margin:0 0 5px;">
+              <strong>Hab. ${p.room_no}</strong> · ${p.nombre_principal}
+              <span style="font-size:11px;color:var(--muted);">(${p.arr_date} – ${p.dep_date})</span>
+              ${p.detalle ? `<br><span style="font-size:11.5px;">${p.detalle}</span>` : ""}
+              ${isRecepcion() ? `<button class="btn" style="margin-left:6px;"
+                  onclick="abrirCenaPrivada('${F.fecha}', '${p.conf_no}')">Es esta noche</button>` : ""}
+            </p>`).join("")}
+        </div>` : ""}
+
+      ${isRecepcion() ? `<button class="btn" style="margin-top:12px;" onclick="abrirCenaPrivada('${F.fecha}')">Marcar cena privada</button>` : ""}
     </div>
   `;
 }
@@ -1808,11 +1918,11 @@ async function guardarHoraMesa(fecha, confNo, hora) {
   avisar(hora ? `Mesa a las ${hora}` : "Hora borrada");
 }
 
-async function abrirCenaPrivada(fecha) {
-  const r = await (await fetchAuth(`${API}/api/reservas?desde=${fecha}&hasta=${fecha}`)).json();
+async function abrirCenaPrivada(fecha, confNo) {
   const d = window._restData;
   const enCasa = [...d.cena.terra_kitchen, ...d.cena.vitrales];
-  const opciones = enCasa.map(x => `<option value="${x.conf_no}">Hab. ${x.room_no} · ${x.nombre}</option>`).join("");
+  // Si se entra desde una cena contratada sin noche, ya viene elegido el huésped.
+  const opciones = enCasa.map(x => `<option value="${x.conf_no}" ${x.conf_no === confNo ? "selected" : ""}>Hab. ${x.room_no} · ${x.nombre}</option>`).join("");
   const fondo = document.createElement("div");
   fondo.className = "modal-fondo"; fondo.id = "modal-cp";
   fondo.innerHTML = `<div class="modal-caja" style="max-width:520px;">

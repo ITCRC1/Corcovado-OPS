@@ -132,6 +132,17 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                     "INSERT INTO amenidad_tarea (conf_no, amenidad, tarea, area_responsable) VALUES (?,?,?,?)",
                     (r["conf_no"], catalog_row["nombre"], catalog_row["tarea_automatica"], catalog_row["area_responsable"]),
                 )
+            else:
+                # Detectada en el PDF pero sin fila en el catálogo (porque se renombró,
+                # se borró, o la base es anterior a esa amenidad). Antes se descartaba
+                # en silencio y nadie se enteraba de que el huésped la tenía pedida.
+                # Se guarda igual, con una tarea genérica, para que alguien la vea.
+                cur.execute(
+                    "INSERT INTO amenidad_tarea (conf_no, amenidad, tarea, area_responsable) VALUES (?,?,?,?)",
+                    (r["conf_no"], amenidad,
+                     f"Revisar con recepción: el PDF menciona «{amenidad}» y no está en el catálogo",
+                     "Recepción"),
+                )
 
         for g in r["rooming"]:
             cur.execute(
