@@ -314,12 +314,12 @@ function finMesSiguienteISO() {
 // se quedaba pegada en el día en que se abrió.
 const DEFECTOS_FILTRO = {
   dashboard:   () => ({ fecha: hoyISO() }),
-  reservas:    () => ({ desde: inicioMesISO(), hasta: finMesISO() }),
+  reservas:    () => ({ fecha: hoyISO(), desde: inicioMesISO(), hasta: finMesISO(), modo: "dia" }),
   agenda:      () => ({ fecha: hoyISO(), desde: inicioMesISO(), hasta: finMesISO(), modo: "dia" }),
   transporte:  () => ({ fecha: hoyISO(), desde: inicioMesISO(), hasta: finMesISO(), modo: "dia" }),
   sinac:       () => ({ desde: hoyISO(), hasta: masDiasISO(120) }),
-  amenidades:  () => ({ desde: inicioMesISO(), hasta: finMesISO() }),
-  analitica:   () => ({ desde: inicioMesISO(), hasta: finMesISO() }),
+  amenidades:  () => ({ fecha: hoyISO(), desde: inicioMesISO(), hasta: finMesISO(), modo: "dia" }),
+  analitica:   () => ({ fecha: hoyISO(), desde: inicioMesISO(), hasta: finMesISO(), modo: "dia" }),
   resumen:     () => ({ fecha: hoyISO() }),
   publicacion: () => ({ fecha: hoyISO(), filtro: "todas" }),
   restaurantes:() => ({ fecha: hoyISO() }),
@@ -870,11 +870,20 @@ function mostrarListaDash(campo) {
 }
 
 // ---------- RESERVAS ----------
-async function loadReservas(desde, hasta) {
+// Mismo manejo de fechas que Agenda y Transporte: abre en el día de hoy y desde ahí
+// se puede mover de día o pasar a un rango. `fecha` nula significa "ver rango".
+async function loadReservas(fecha, desde, hasta) {
   setActive(1);
-  if (desde) FILTROS.reservas.desde = desde;
-  if (hasta) FILTROS.reservas.hasta = hasta;
-  desde = FILTROS.reservas.desde; hasta = FILTROS.reservas.hasta;
+  const F = FILTROS.reservas;
+  if (fecha) { F.fecha = fecha; F.modo = "dia"; }
+  if (desde) F.desde = desde;
+  if (hasta) F.hasta = hasta;
+  if (fecha === null) F.modo = "rango";
+  if (fecha === undefined) fecha = F.modo === "dia" ? F.fecha : null;
+  // En vista de día se consulta ese único día: el servidor devuelve las reservas que
+  // lo tocan, o sea quien entra, quien sale y quien está en casa ese día.
+  desde = fecha || F.desde;
+  hasta = fecha || F.hasta;
   const res = await fetchAuth(`${API}/api/reservas?desde=${desde}&hasta=${hasta}`);
   const rows = await res.json();
   // Estado del itinerario de cada reserva, para avisar si la reserva cambió
@@ -885,13 +894,19 @@ async function loadReservas(desde, hasta) {
   app.innerHTML = `
     <div class="card">
       <div class="header">
-        <p class="title">Reservas</p>
+        <p class="title">Reservas ${fecha ? etiquetaFecha(fecha) : ""}</p>
         <div class="filterbar">
-          Desde <input type="date" id="res-desde" value="${desde}">
-          Hasta <input type="date" id="res-hasta" value="${hasta}">
-          <button class="btn" onclick="loadReservas(document.getElementById('res-desde').value, document.getElementById('res-hasta').value)">Filtrar</button>
-          <button class="btn" onclick="descargar('reservas', {desde, hasta}, 'xlsx')">⬇ Excel</button>
-          <button class="btn" onclick="descargar('reservas', {desde, hasta}, 'pdf')">⬇ PDF</button>
+          <button class="btn" onclick="loadReservas(shiftDate('${fecha || F.fecha}',-1))">‹ Día ant.</button>
+          <input type="date" value="${fecha || ""}" onchange="loadReservas(this.value)">
+          <button class="btn" onclick="loadReservas(shiftDate('${fecha || F.fecha}',1))">Día sig. ›</button>
+          <button class="btn" onclick="loadReservas(hoyISO())">Hoy</button>
+          <button class="btn" onclick="loadReservas(masDiasISO(1))">Mañana</button>
+          <span style="color:var(--muted);">o rango:</span>
+          <input type="date" id="res-desde" value="${F.desde}">
+          <input type="date" id="res-hasta" value="${F.hasta}">
+          <button class="btn" onclick="loadReservas(null, document.getElementById('res-desde').value, document.getElementById('res-hasta').value)">Ver rango</button>
+          <button class="btn" onclick="descargar('reservas', {desde:'${desde}', hasta:'${hasta}'}, 'xlsx')">⬇ Excel</button>
+          <button class="btn" onclick="descargar('reservas', {desde:'${desde}', hasta:'${hasta}'}, 'pdf')">⬇ PDF</button>
         </div>
       </div>
       <table>
@@ -1399,13 +1414,13 @@ async function guardarAsignacion(tourId) {
 // ---------- TRANSPORTE ----------
 async function loadTransporte(fecha, desde, hasta) {
   setActive(3);
-  const T = FILTROS.transporte;
-  if (fecha) { T.fecha = fecha; T.modo = "dia"; }
-  if (desde) T.desde = desde;
-  if (hasta) T.hasta = hasta;
-  if (fecha === null) T.modo = "rango";
-  if (fecha === undefined) fecha = T.modo === "dia" ? T.fecha : null;
-  let url = fecha ? `${API}/api/transporte?fecha=${fecha}` : `${API}/api/transporte?desde=${T.desde}&hasta=${T.hasta}`;
+  const F = FILTROS.transporte;
+  if (fecha) { F.fecha = fecha; F.modo = "dia"; }
+  if (desde) F.desde = desde;
+  if (hasta) F.hasta = hasta;
+  if (fecha === null) F.modo = "rango";
+  if (fecha === undefined) fecha = F.modo === "dia" ? F.fecha : null;
+  let url = fecha ? `${API}/api/transporte?fecha=${fecha}` : `${API}/api/transporte?desde=${F.desde}&hasta=${F.hasta}`;
   const res = await fetchAuth(url);
   const d = await res.json();
   const pendientes = await (await fetchAuth(`${API}/api/transporte/pendientes`)).json();
@@ -1424,17 +1439,17 @@ async function loadTransporte(fecha, desde, hasta) {
       <div class="header">
         <p class="title">Transporte ${fecha ? etiquetaFecha(fecha) : ''}</p>
         <div class="filterbar">
-          <button class="btn" onclick="loadTransporte(shiftDate('${fecha || T.fecha}',-1))">‹ Día ant.</button>
+          <button class="btn" onclick="loadTransporte(shiftDate('${fecha || F.fecha}',-1))">‹ Día ant.</button>
           <input type="date" value="${fecha||""}" onchange="loadTransporte(this.value)">
-          <button class="btn" onclick="loadTransporte(shiftDate('${fecha || T.fecha}',1))">Día sig. ›</button>
+          <button class="btn" onclick="loadTransporte(shiftDate('${fecha || F.fecha}',1))">Día sig. ›</button>
           <button class="btn" onclick="loadTransporte(hoyISO())">Hoy</button>
           <button class="btn" onclick="loadTransporte(masDiasISO(1))">Mañana</button>
           <span style="color:var(--muted);">o rango:</span>
-          <input type="date" id="tr-desde" value="${T.desde}">
-          <input type="date" id="tr-hasta" value="${T.hasta}">
+          <input type="date" id="tr-desde" value="${F.desde}">
+          <input type="date" id="tr-hasta" value="${F.hasta}">
           <button class="btn" onclick="loadTransporte(null, document.getElementById('tr-desde').value, document.getElementById('tr-hasta').value)">Ver rango</button>
-          <button class="btn" onclick="descargar('transporte', {fecha: '${fecha||''}', desde: '${fecha?'':T.desde}', hasta: '${fecha?'':T.hasta}'}, 'xlsx')">⬇ Excel</button>
-          <button class="btn" onclick="descargar('transporte', {fecha: '${fecha||''}', desde: '${fecha?'':T.desde}', hasta: '${fecha?'':T.hasta}'}, 'pdf')">⬇ PDF</button>
+          <button class="btn" onclick="descargar('transporte', {fecha: '${fecha||''}', desde: '${fecha?'':F.desde}', hasta: '${fecha?'':F.hasta}'}, 'xlsx')">⬇ Excel</button>
+          <button class="btn" onclick="descargar('transporte', {fecha: '${fecha||''}', desde: '${fecha?'':F.desde}', hasta: '${fecha?'':F.hasta}'}, 'pdf')">⬇ PDF</button>
         </div>
       </div>
       <p style="font-weight:600;font-size:14px;">Entradas</p>
@@ -1601,11 +1616,19 @@ async function marcarEntrada(id) {
 
 // ---------- ANALITICA ----------
 // ---------- AMENIDADES / TAREAS ----------
-async function loadAmenidades(desdeNuevo, hastaNuevo, estadoNuevo) {
+// Mismo manejo de fechas que Agenda y Transporte: abre en el día de hoy y desde ahí
+// se puede mover de día o pasar a un rango. `fecha` nula significa "ver rango".
+async function loadAmenidades(fecha, desdeNuevo, hastaNuevo, estadoNuevo) {
   setActive(5);
-  if (desdeNuevo) FILTROS.amenidades.desde = desdeNuevo;
-  if (hastaNuevo) FILTROS.amenidades.hasta = hastaNuevo;
-  const desde = FILTROS.amenidades.desde, hasta = FILTROS.amenidades.hasta;
+  const F = FILTROS.amenidades;
+  if (fecha) { F.fecha = fecha; F.modo = "dia"; }
+  if (desdeNuevo) F.desde = desdeNuevo;
+  if (hastaNuevo) F.hasta = hastaNuevo;
+  if (fecha === null) F.modo = "rango";
+  if (fecha === undefined) fecha = F.modo === "dia" ? F.fecha : null;
+  // El servidor filtra por la fecha de llegada del huésped, que es cuando hay que
+  // tener la amenidad lista: en vista de día son las de quien entra ese día.
+  const desde = fecha || F.desde, hasta = fecha || F.hasta;
   const estado = estadoNuevo !== undefined ? estadoNuevo : (window._amenEstado || "");
   window._amenEstado = estado;
 
@@ -1622,16 +1645,22 @@ async function loadAmenidades(desdeNuevo, hastaNuevo, estadoNuevo) {
   document.getElementById("app").innerHTML = `
     <div class="card">
       <div class="header">
-        <p class="title">Amenidades y tareas</p>
+        <p class="title">Amenidades y tareas ${fecha ? etiquetaFecha(fecha) : ""}</p>
         <div class="filterbar">
-          Desde <input type="date" id="am-desde" value="${desde}">
-          Hasta <input type="date" id="am-hasta" value="${hasta}">
-          <select id="am-estado" onchange="loadAmenidades(null,null,this.value)">
+          <button class="btn" onclick="loadAmenidades(shiftDate('${fecha || F.fecha}',-1))">‹ Día ant.</button>
+          <input type="date" value="${fecha || ""}" onchange="loadAmenidades(this.value)">
+          <button class="btn" onclick="loadAmenidades(shiftDate('${fecha || F.fecha}',1))">Día sig. ›</button>
+          <button class="btn" onclick="loadAmenidades(hoyISO())">Hoy</button>
+          <button class="btn" onclick="loadAmenidades(masDiasISO(1))">Mañana</button>
+          <span style="color:var(--muted);">o rango:</span>
+          <input type="date" id="am-desde" value="${F.desde}">
+          <input type="date" id="am-hasta" value="${F.hasta}">
+          <button class="btn" onclick="loadAmenidades(null, document.getElementById('am-desde').value, document.getElementById('am-hasta').value)">Ver rango</button>
+          <select id="am-estado" onchange="loadAmenidades(undefined, undefined, undefined, this.value)">
             <option value="" ${estado===""?"selected":""}>Todas</option>
             <option value="PENDIENTE" ${estado==="PENDIENTE"?"selected":""}>Solo pendientes</option>
             <option value="HECHA" ${estado==="HECHA"?"selected":""}>Solo hechas</option>
           </select>
-          <button class="btn" onclick="loadAmenidades(document.getElementById('am-desde').value, document.getElementById('am-hasta').value)">Filtrar</button>
           <button class="btn" onclick="descargar('amenidades', {desde:'${desde}', hasta:'${hasta}'}, 'xlsx')">⬇ Excel</button>
           <button class="btn" onclick="descargar('amenidades', {desde:'${desde}', hasta:'${hasta}'}, 'pdf')">⬇ PDF</button>
           ${isRecepcion() ? `<button class="btn btn-primary" onclick="mostrarFormAmenidad()">+ Agregar requerimiento</button>` : ""}
@@ -1980,11 +2009,19 @@ async function guardarCenaPrivada(fecha) {
   loadRestaurantes();
 }
 
-async function loadAnalitica(desdeNuevo, hastaNuevo) {
+// Mismo manejo de fechas que Agenda y Transporte: abre en el día de hoy y desde ahí
+// se puede mover de día o pasar a un rango. `fecha` nula significa "ver rango".
+// Aquí el rango es lo habitual —un informe de un solo día dice poco—, pero se abre
+// en hoy para que todas las pantallas se comporten igual.
+async function loadAnalitica(fecha, desdeNuevo, hastaNuevo) {
   setActive(7);
-  if (desdeNuevo) FILTROS.analitica.desde = desdeNuevo;
-  if (hastaNuevo) FILTROS.analitica.hasta = hastaNuevo;
-  const desde = FILTROS.analitica.desde, hasta = FILTROS.analitica.hasta;
+  const F = FILTROS.analitica;
+  if (fecha) { F.fecha = fecha; F.modo = "dia"; }
+  if (desdeNuevo) F.desde = desdeNuevo;
+  if (hastaNuevo) F.hasta = hastaNuevo;
+  if (fecha === null) F.modo = "rango";
+  if (fecha === undefined) fecha = F.modo === "dia" ? F.fecha : null;
+  const desde = fecha || F.desde, hasta = fecha || F.hasta;
   window._boteAbierto = null; window._guiaAbierto = null;
   const res = await fetchAuth(`${API}/api/analitica?desde=${desde}&hasta=${hasta}`);
   const d = await res.json();
@@ -1995,16 +2032,21 @@ async function loadAnalitica(desdeNuevo, hastaNuevo) {
   app.innerHTML = `
     <div class="card">
       <div class="header">
-        <p class="title">Analítica operativa</p>
+        <p class="title">Analítica operativa ${fecha ? etiquetaFecha(fecha) : ""}</p>
         <div class="filterbar">
-          Desde <input type="date" id="an-desde" value="${desde}">
-          Hasta <input type="date" id="an-hasta" value="${hasta}">
-          <button class="btn" onclick="loadAnalitica(document.getElementById('an-desde').value, document.getElementById('an-hasta').value)">Filtrar</button>
+          <button class="btn" onclick="loadAnalitica(shiftDate('${fecha || F.fecha}',-1))">‹ Día ant.</button>
+          <input type="date" value="${fecha || ""}" onchange="loadAnalitica(this.value)">
+          <button class="btn" onclick="loadAnalitica(shiftDate('${fecha || F.fecha}',1))">Día sig. ›</button>
+          <button class="btn" onclick="loadAnalitica(hoyISO())">Hoy</button>
+          <span style="color:var(--muted);">o rango:</span>
+          <input type="date" id="an-desde" value="${F.desde}">
+          <input type="date" id="an-hasta" value="${F.hasta}">
+          <button class="btn" onclick="loadAnalitica(null, document.getElementById('an-desde').value, document.getElementById('an-hasta').value)">Ver rango</button>
           <button class="btn" onclick="descargar('analitica', {desde:'${desde}', hasta:'${hasta}'}, 'xlsx')">⬇ Excel</button>
           <button class="btn" onclick="descargar('analitica', {desde:'${desde}', hasta:'${hasta}'}, 'pdf')">⬇ PDF</button>
         </div>
       </div>
-      <p class="subtitle">${desde} a ${hasta}</p>
+      <p class="subtitle">${desde === hasta ? desde : `${desde} a ${hasta}`}</p>
       <p style="font-weight:600;font-size:14px;margin-top:14px;">Uso de botes por actividad <span style="font-weight:400;color:var(--muted);font-size:12px;">(toca un bote)</span></p>
       ${d.uso_botes.map(b => `
         <div class="bar-row pulsable" style="display:flex;align-items:center;gap:10px;margin-bottom:6px;cursor:pointer;border-radius:5px;padding:2px 4px;" onclick="mostrarDetalleBote('${b.bote_nombre}','${desde}','${hasta}')">
