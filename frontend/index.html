@@ -1800,7 +1800,7 @@ async function loadRestaurantes(fecha) {
       <p style="font-weight:600;font-size:14px;margin:4px 0 8px;">Cena · ${c.total} pax</p>
       <div class="rest-grid">
         ${panel("Terra Kitchen", c.pax_tk, c.cap_tk, c.terra_kitchen.length, "var(--forest)")}
-        ${panel("Vitrales", c.pax_vit, c.cap_vit, c.vitrales.length, "#6B8E7B")}
+        ${panel("Bar el Bosque", c.pax_bosque, c.cap_bosque, c.bar_el_bosque.length, "#6B8E7B")}
       </div>
       <p style="text-align:center;font-size:12.5px;margin:10px 0 0;color:${c.dentro_margen ? 'var(--ok-text)' : 'var(--warn-text)'};">
         Diferencia: ${c.diferencia} pax · ${c.dentro_margen ? "dentro del margen de 4 ✓" : "fuera del margen de 4"}
@@ -1808,9 +1808,9 @@ async function loadRestaurantes(fecha) {
 
       <div class="stats" style="grid-template-columns:repeat(4,1fr);margin-top:16px;">
         <div class="stat" onclick="detalleRest('cena_tk')"><p class="stat-label">Cena · Terra Kitchen</p><p class="stat-value">${c.pax_tk}</p></div>
-        <div class="stat" onclick="detalleRest('cena_vit')"><p class="stat-label">Cena · Vitrales</p><p class="stat-value">${c.pax_vit}</p></div>
+        <div class="stat" onclick="detalleRest('cena_bosque')"><p class="stat-label">Cena · Bar el Bosque</p><p class="stat-value">${c.pax_bosque}</p></div>
         <div class="stat" onclick="detalleRest('alm_tk')"><p class="stat-label">Almuerzo · Terra Kitchen</p><p class="stat-value">${a.pax_tk}</p></div>
-        <div class="stat" onclick="detalleRest('alm_vit')"><p class="stat-label">Almuerzo · Vitrales</p><p class="stat-value">${a.pax_vit}</p></div>
+        <div class="stat" onclick="detalleRest('alm_bosque')"><p class="stat-label">Almuerzo · Bar el Bosque</p><p class="stat-value">${a.pax_bosque}</p></div>
       </div>
       <div id="rest-detalle"></div>
     </div>
@@ -1829,14 +1829,14 @@ async function loadRestaurantes(fecha) {
     <div class="card">
       <p class="title">Cenas privadas</p>
       ${d.cenas_privadas.length
-        ? `<p style="font-size:13px;margin:8px 0 0;">${d.cenas_privadas.length} declarada(s) para esta fecha · van fijas en Vitrales y cuentan para sus ${c.cap_vit} lugares.</p>`
-        : `<p class="empty" style="padding:16px 12px;">Sin cenas privadas asignadas a esta noche.<small>Con noche asignada quedan fijas en Vitrales y ocupan su lugar.</small></p>`}
+        ? `<p style="font-size:13px;margin:8px 0 0;">${d.cenas_privadas.length} declarada(s) para esta fecha · van fijas en Bar el Bosque y cuentan para sus ${c.cap_bosque} lugares.</p>`
+        : `<p class="empty" style="padding:16px 12px;">Sin cenas privadas asignadas a esta noche.<small>Con noche asignada quedan fijas en Bar el Bosque y ocupan su lugar.</small></p>`}
 
       ${(d.cenas_privadas_sin_noche || []).length ? `
         <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:11px 13px;margin-top:12px;font-size:13px;">
           <p style="margin:0 0 6px;font-weight:600;">⚠ Contratadas sin noche asignada (${d.cenas_privadas_sin_noche.length})</p>
           <p style="margin:0 0 8px;font-size:12px;">El PDF avisa que estos huéspedes tienen cena privada, pero no dice qué día.
-             Mientras no se le ponga la noche, <strong>no se le guarda mesa en Vitrales ni cocina la ve venir</strong>.</p>
+             Mientras no se le ponga la noche, <strong>no se le guarda mesa en Bar el Bosque ni cocina la ve venir</strong>.</p>
           ${d.cenas_privadas_sin_noche.map(p => `
             <p style="margin:0 0 5px;">
               <strong>Hab. ${p.room_no}</strong> · ${p.nombre_principal}
@@ -1865,10 +1865,10 @@ function detalleRest(cual) {
   if (event && event.currentTarget) event.currentTarget.classList.add("selected");
 
   const mapa = {
-    cena_tk: ["Cena en Terra Kitchen", d.cena.terra_kitchen, "CENA", "Vitrales"],
-    cena_vit: ["Cena en Vitrales", d.cena.vitrales, "CENA", "Terra Kitchen"],
-    alm_tk: ["Almuerzo en Terra Kitchen", d.almuerzo.terra_kitchen, "ALMUERZO", "Vitrales"],
-    alm_vit: ["Almuerzo en Vitrales", d.almuerzo.vitrales, "ALMUERZO", "Terra Kitchen"],
+    cena_tk: ["Cena en Terra Kitchen", d.cena.terra_kitchen, "CENA", "Bar el Bosque"],
+    cena_bosque: ["Cena en Bar el Bosque", d.cena.bar_el_bosque, "CENA", "Terra Kitchen"],
+    alm_tk: ["Almuerzo en Terra Kitchen", d.almuerzo.terra_kitchen, "ALMUERZO", "Bar el Bosque"],
+    alm_bosque: ["Almuerzo en Bar el Bosque", d.almuerzo.bar_el_bosque, "ALMUERZO", "Terra Kitchen"],
   };
   const [titulo, lista, comida, destino] = mapa[cual];
   const esCena = comida === "CENA";
@@ -1920,7 +1920,7 @@ async function guardarHoraMesa(fecha, confNo, hora) {
 
 async function abrirCenaPrivada(fecha, confNo) {
   const d = window._restData;
-  const enCasa = [...d.cena.terra_kitchen, ...d.cena.vitrales];
+  const enCasa = [...d.cena.terra_kitchen, ...d.cena.bar_el_bosque];
   // Si se entra desde una cena contratada sin noche, ya viene elegido el huésped.
   const opciones = enCasa.map(x => `<option value="${x.conf_no}" ${x.conf_no === confNo ? "selected" : ""}>Hab. ${x.room_no} · ${x.nombre}</option>`).join("");
   const fondo = document.createElement("div");
@@ -1930,7 +1930,7 @@ async function abrirCenaPrivada(fecha, confNo) {
       <button class="btn" onclick="document.getElementById('modal-cp').remove()">Cerrar</button></div>
     <div class="modal-cuerpo">
       <p style="font-size:13px;color:var(--muted);">Noche del ${fecha}. La cena privada se sirve
-        en la piscina y queda fija en Vitrales, contando para su capacidad.</p>
+        en la piscina y queda fija en Bar el Bosque, contando para su capacidad.</p>
       <select id="cp-conf" style="width:100%;margin:8px 0;">${opciones}</select>
       <input type="text" id="cp-detalle" placeholder="Detalle (opcional): aniversario, decoración…" style="width:100%;">
       <div style="margin-top:12px;">
@@ -2163,9 +2163,9 @@ async function loadResumenOperacion(fecha) {
       <p class="title">Restaurantes</p>
       <p class="subtitle" style="margin-bottom:12px;">Comensales por servicio · para cocina</p>
       <table style="max-width:520px;">
-        <tr><th></th><th>Terra Kitchen</th><th>Vitrales</th></tr>
-        <tr><td><strong>Almuerzo</strong></td><td>${d.restaurantes.almuerzo_tk} pax</td><td>${d.restaurantes.almuerzo_vit} pax</td></tr>
-        <tr><td><strong>Cena</strong></td><td>${d.restaurantes.cena_tk} pax</td><td>${d.restaurantes.cena_vit} pax</td></tr>
+        <tr><th></th><th>Terra Kitchen</th><th>Bar el Bosque</th></tr>
+        <tr><td><strong>Almuerzo</strong></td><td>${d.restaurantes.almuerzo_tk} pax</td><td>${d.restaurantes.almuerzo_bosque} pax</td></tr>
+        <tr><td><strong>Cena</strong></td><td>${d.restaurantes.cena_tk} pax</td><td>${d.restaurantes.cena_bosque} pax</td></tr>
       </table>
       ${(d.restaurantes.avisos || []).length ? `<p style="font-size:12px;color:var(--warn-text);margin-top:8px;">⚠ ${d.restaurantes.avisos.join(" ")}</p>` : ""}
       <button class="btn" style="margin-top:10px;" onclick="loadRestaurantes('${fecha}')">Ver la distribución completa</button>

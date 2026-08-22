@@ -100,7 +100,44 @@ def _migrar(conn):
     if agregadas:
         conn.commit()
         print("Base actualizada, columnas agregadas: " + ", ".join(agregadas))
+    _renombrar_restaurante(conn, "Vitrales", "Bar el Bosque")
     return agregadas
+
+
+# Dónde quedó guardado el nombre del restaurante. Son los tres lugares donde el
+# sistema lo escribe como texto, no como referencia a un catálogo.
+CAMPOS_CON_RESTAURANTE = [
+    ("restaurante_cambio", "restaurante"),      # cambios manuales de una fecha
+    ("restaurante_historico", "cena"),          # histórico congelado de la rotación
+    ("restaurante_historico", "almuerzo"),
+    ("reserva", "forzar_restaurante"),          # restaurante fijo de toda la estadía
+]
+
+
+def _renombrar_restaurante(conn, viejo, nuevo):
+    """Pasa al nombre nuevo los datos que quedaron guardados con el anterior.
+
+    El nombre del restaurante se guarda como texto en el histórico de rotación, en los
+    cambios manuales y en el restaurante fijo de estadía. Si solo se cambiara el nombre
+    en el código, esas filas dejarían de coincidir: la rotación perdería el historial,
+    los cambios manuales dejarían de aplicarse y una cena de bienvenida pendiente
+    desaparecería sin que nadie se enterara.
+
+    Es idempotente: corre en cada arranque y no hace nada cuando ya no queda nada
+    con el nombre viejo.
+    """
+    cambiadas = 0
+    for tabla, columna in CAMPOS_CON_RESTAURANTE:
+        existentes = {r[1] for r in conn.execute(f"PRAGMA table_info({tabla})")}
+        if columna not in existentes:
+            continue
+        cur = conn.execute(
+            f"UPDATE {tabla} SET {columna} = ? WHERE {columna} = ?", (nuevo, viejo))
+        cambiadas += cur.rowcount or 0
+    if cambiadas:
+        conn.commit()
+        print(f"Restaurante renombrado: «{viejo}» → «{nuevo}» en {cambiadas} registro(s)")
+    return cambiadas
 
 
 def init_db(reset=False):

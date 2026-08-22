@@ -3,13 +3,13 @@ Distribución de huéspedes entre los dos restaurantes del lodge.
 
 Reglas de la operación (definidas con el hotel):
 
-  Capacidades      Terra Kitchen   Vitrales
+  Capacidades      Terra Kitchen   Bar el Bosque
     Cena                30            45      (75 es el techo de la propiedad)
     Almuerzo            35            —
 
   1. Asignación base
-       · Quien entra hoy: almuerza en Vitrales y cena en Terra Kitchen
-       · Quien está en casa: almuerza en Terra Kitchen y cena en Vitrales
+       · Quien entra hoy: almuerza en Bar el Bosque y cena en Terra Kitchen
+       · Quien está en casa: almuerza en Terra Kitchen y cena en Bar el Bosque
        · Quien sale hoy no cuenta para ninguna comida (el bote sale de madrugada)
 
   2. La cena en Terra Kitchen se llena por prioridad
@@ -25,7 +25,7 @@ Reglas de la operación (definidas con el hotel):
      Por encima de 64 pax es imposible cumplirlo (Terra Kitchen topa en 30) y el
      sistema lo informa en vez de fallar en silencio.
 
-  5. La cena privada queda fija en Vitrales y cuenta para sus 45 lugares: aunque
+  5. La cena privada queda fija en Bar el Bosque y cuenta para sus 45 lugares: aunque
      se sirva en la piscina, ocupa servicio.
 
   6. El cambio manual afecta una sola fecha y una sola reserva, pero sí queda en
@@ -38,10 +38,14 @@ restaurante, así se autocorrige cuando una noche no se pudo cumplir.
 import datetime
 
 TERRA = "Terra Kitchen"
-VITRALES = "Vitrales"
+# Antes se llamaba "Vitrales". El nombre viejo quedó guardado en los cambios manuales,
+# en el histórico de rotación y en los restaurantes fijos de estadía, así que init_db
+# lo renombra en la base al arrancar (ver _renombrar_bar_el_bosque).
+BOSQUE = "Bar el Bosque"
+NOMBRE_ANTERIOR_BOSQUE = "Vitrales"
 
 CAP_CENA_TK = 30
-CAP_CENA_VIT = 45
+CAP_CENA_BOSQUE = 45
 CAP_ALMUERZO_TK = 35
 MARGEN_BALANCE = 4
 
@@ -118,12 +122,12 @@ def _historial(conn, hasta_fecha):
         (_iso(hasta_fecha),),
     ).fetchall():
         d = dict(r)
-        c = conteo.setdefault(d["conf_no"], {"tk": 0, "vit": 0, "noches": 0,
+        c = conteo.setdefault(d["conf_no"], {"tk": 0, "bosque": 0, "noches": 0,
                                              "debe_bienvenida": False})
         if d["cena"] == TERRA:
             c["tk"] += 1
-        elif d["cena"] == VITRALES:
-            c["vit"] += 1
+        elif d["cena"] == BOSQUE:
+            c["bosque"] += 1
         if d["cena"]:
             c["noches"] += 1
         # Si el día que entró no cenó en Terra Kitchen, quedó debiendo su
@@ -152,7 +156,7 @@ def _filtro_privada(prefijo=""):
 
 
 def _cenas_privadas(conn, fecha):
-    """Reservas con cena privada declarada esa noche. Van fijas a Vitrales."""
+    """Reservas con cena privada declarada esa noche. Van fijas a Bar el Bosque."""
     return {dict(r)["conf_no"] for r in conn.execute(
         f"""SELECT conf_no FROM amenidad_tarea
             WHERE fecha = ? AND {_filtro_privada()}""",
@@ -164,7 +168,7 @@ def _privadas_sin_noche(conn, conf_nos):
 
     El PDF avisa que el huésped la tiene contratada, pero casi nunca dice el día, así
     que la amenidad entra sin fecha. Y mientras no tenga fecha no entra en el reparto:
-    Vitrales no le guarda la mesa, no cuenta para sus 45 lugares y cocina no la ve
+    Bar el Bosque no le guarda la mesa, no cuenta para sus 45 lugares y cocina no la ve
     venir. Antes eso no se mostraba en ninguna parte y la pantalla decía "sin cenas
     privadas esta noche", que es justo lo contrario de lo que pasaba.
 
@@ -226,7 +230,7 @@ def distribuir(conn, fecha):
     for r in entradas + en_casa:
         cn = r["conf_no"]
         if cn in privadas:
-            fijos[cn] = (VITRALES, "cena privada")
+            fijos[cn] = (BOSQUE, "cena privada")
         elif r.get("forzar_restaurante"):
             fijos[cn] = (r["forzar_restaurante"], "restaurante fijo de la estadía")
         m = manuales.get((cn, "CENA"))
@@ -235,7 +239,7 @@ def distribuir(conn, fecha):
 
     libres = [r for r in entradas + en_casa if r["conf_no"] not in fijos]
     tk_fijo = [r for r in entradas + en_casa if fijos.get(r["conf_no"], ("",))[0] == TERRA]
-    vit_fijo = [r for r in entradas + en_casa if fijos.get(r["conf_no"], ("",))[0] == VITRALES]
+    bosque_fijo = [r for r in entradas + en_casa if fijos.get(r["conf_no"], ("",))[0] == BOSQUE]
 
     # Prioridad para Terra Kitchen: rezagados, entradas, en casa por rotación
     def prioridad(r):
@@ -257,23 +261,23 @@ def distribuir(conn, fecha):
     total_cena = _pax(entradas) + _pax(en_casa)
     objetivo_tk = max(0, min(CAP_CENA_TK, (total_cena + 1) // 2))
 
-    tk, vit = list(tk_fijo), list(vit_fijo)
-    pax_tk, pax_vit = _pax(_agrupar(tk_fijo)), _pax(_agrupar(vit_fijo))
+    tk, bosque = list(tk_fijo), list(bosque_fijo)
+    pax_tk, pax_bosque = _pax(_agrupar(tk_fijo)), _pax(_agrupar(bosque_fijo))
 
     for b in bloques:
         cabe_tk = pax_tk + b["pax"] <= CAP_CENA_TK
-        # Se llena Terra Kitchen hasta el objetivo; el resto va a Vitrales
+        # Se llena Terra Kitchen hasta el objetivo; el resto va a Bar el Bosque
         if cabe_tk and pax_tk < objetivo_tk:
             tk.extend(b["reservas"]); pax_tk += b["pax"]
         else:
-            vit.extend(b["reservas"]); pax_vit += b["pax"]
+            bosque.extend(b["reservas"]); pax_bosque += b["pax"]
             for r in b["reservas"]:
                 if r["tipo"] == "ENTRA":
                     motivo = ("Terra Kitchen al tope" if not cabe_tk
                               else "para equilibrar los restaurantes")
                     notas.append({
                         "room_no": r["room_no"], "nombre": r["nombre_principal"],
-                        "pax": r["pax"], "de": TERRA, "a": VITRALES,
+                        "pax": r["pax"], "de": TERRA, "a": BOSQUE,
                         "motivo": motivo, "rezagado": True,
                     })
 
@@ -282,11 +286,11 @@ def distribuir(conn, fecha):
         if r["tipo"] == "EN_CASA" and r["conf_no"] not in fijos:
             notas.append({
                 "room_no": r["room_no"], "nombre": r["nombre_principal"],
-                "pax": r["pax"], "de": VITRALES, "a": TERRA,
+                "pax": r["pax"], "de": BOSQUE, "a": TERRA,
                 "motivo": "para equilibrar los restaurantes", "rezagado": False,
             })
 
-    diferencia = abs(pax_tk - pax_vit)
+    diferencia = abs(pax_tk - pax_bosque)
     if total_cena > TOTAL_MAX_BALANCEABLE:
         avisos.append(
             f"Noche de {total_cena} pax: no se puede equilibrar porque Terra Kitchen "
@@ -295,23 +299,23 @@ def distribuir(conn, fecha):
         avisos.append(
             f"La diferencia quedó en {diferencia} pax (margen {MARGEN_BALANCE}). "
             f"Los grupos no se dividen, así que no siempre se puede ajustar más.")
-    if pax_vit > CAP_CENA_VIT:
-        avisos.append(f"Vitrales queda con {pax_vit} pax y su tope es {CAP_CENA_VIT}.")
-    if total_cena > CAP_CENA_TK + CAP_CENA_VIT:
+    if pax_bosque > CAP_CENA_BOSQUE:
+        avisos.append(f"Bar el Bosque queda con {pax_bosque} pax y su tope es {CAP_CENA_BOSQUE}.")
+    if total_cena > CAP_CENA_TK + CAP_CENA_BOSQUE:
         avisos.append(f"{total_cena} pax superan la capacidad total de la propiedad "
-                      f"({CAP_CENA_TK + CAP_CENA_VIT}).")
+                      f"({CAP_CENA_TK + CAP_CENA_BOSQUE}).")
 
     # ---------- ALMUERZO ----------
     # Los de tour almuerzan en el hotel al regresar, así que cuentan como en casa.
-    alm_tk, alm_vit = [], []
+    alm_tk, alm_bosque = [], []
     for r in en_casa:
         m = manuales.get((r["conf_no"], "ALMUERZO"))
-        (alm_vit if (m and m["restaurante"] == VITRALES) else alm_tk).append(r)
+        (alm_bosque if (m and m["restaurante"] == BOSQUE) else alm_tk).append(r)
     for r in entradas:
         m = manuales.get((r["conf_no"], "ALMUERZO"))
-        (alm_tk if (m and m["restaurante"] == TERRA) else alm_vit).append(r)
+        (alm_tk if (m and m["restaurante"] == TERRA) else alm_bosque).append(r)
 
-    # Si el almuerzo en Terra Kitchen se pasa del tope, el sobrante va a Vitrales
+    # Si el almuerzo en Terra Kitchen se pasa del tope, el sobrante va a Bar el Bosque
     # con el mismo criterio de prioridad.
     if _pax(_agrupar(alm_tk)) > CAP_ALMUERZO_TK:
         sobra = _pax(_agrupar(alm_tk)) - CAP_ALMUERZO_TK
@@ -321,12 +325,12 @@ def distribuir(conn, fecha):
             if sobra <= 0:
                 break
             for r in b["reservas"]:
-                alm_tk.remove(r); alm_vit.append(r)
+                alm_tk.remove(r); alm_bosque.append(r)
             sobra -= b["pax"]
             notas.append({
                 "room_no": ", ".join(x["room_no"] or "?" for x in b["reservas"]),
                 "nombre": b["reservas"][0]["nombre_principal"],
-                "pax": b["pax"], "de": TERRA, "a": VITRALES,
+                "pax": b["pax"], "de": TERRA, "a": BOSQUE,
                 "motivo": f"almuerzo en Terra Kitchen al tope ({CAP_ALMUERZO_TK})",
                 "rezagado": False, "comida": "almuerzo",
             })
@@ -354,15 +358,15 @@ def distribuir(conn, fecha):
     return {
         "fecha": _iso(fecha),
         "cena": {
-            "terra_kitchen": salida(tk, "cena"), "vitrales": salida(vit, "cena"),
-            "pax_tk": pax_tk, "pax_vit": pax_vit, "total": total_cena,
-            "cap_tk": CAP_CENA_TK, "cap_vit": CAP_CENA_VIT,
+            "terra_kitchen": salida(tk, "cena"), "bar_el_bosque": salida(bosque, "cena"),
+            "pax_tk": pax_tk, "pax_bosque": pax_bosque, "total": total_cena,
+            "cap_tk": CAP_CENA_TK, "cap_bosque": CAP_CENA_BOSQUE,
             "diferencia": diferencia, "dentro_margen": diferencia <= MARGEN_BALANCE,
         },
         "almuerzo": {
-            "terra_kitchen": salida(alm_tk, "almuerzo"), "vitrales": salida(alm_vit, "almuerzo"),
-            "pax_tk": _pax(_agrupar(alm_tk)), "pax_vit": _pax(_agrupar(alm_vit)),
-            "total": _pax(_agrupar(alm_tk)) + _pax(_agrupar(alm_vit)),
+            "terra_kitchen": salida(alm_tk, "almuerzo"), "bar_el_bosque": salida(alm_bosque, "almuerzo"),
+            "pax_tk": _pax(_agrupar(alm_tk)), "pax_bosque": _pax(_agrupar(alm_bosque)),
+            "total": _pax(_agrupar(alm_tk)) + _pax(_agrupar(alm_bosque)),
             "cap_tk": CAP_ALMUERZO_TK,
         },
         "notas": notas,
@@ -404,10 +408,10 @@ def congelar_dias_pasados(conn, hasta=None):
     while d < hoy:
         dist = distribuir(conn, d)
         for lugar, restaurante in ((dist["cena"]["terra_kitchen"], TERRA),
-                                   (dist["cena"]["vitrales"], VITRALES)):
+                                   (dist["cena"]["bar_el_bosque"], BOSQUE)):
             for x in lugar:
                 alm = TERRA if any(y["conf_no"] == x["conf_no"]
-                                   for y in dist["almuerzo"]["terra_kitchen"]) else VITRALES
+                                   for y in dist["almuerzo"]["terra_kitchen"]) else BOSQUE
                 conn.execute(
                     """INSERT INTO restaurante_historico (fecha, conf_no, almuerzo, cena, era_entrada)
                        VALUES (?,?,?,?,?)
@@ -435,10 +439,10 @@ def avisos_anticipados(conn, dias=30, desde=None):
         total = sum(r["pax"] for r in entradas + en_casa)
         if not total:
             continue
-        if total > CAP_CENA_TK + CAP_CENA_VIT:
+        if total > CAP_CENA_TK + CAP_CENA_BOSQUE:
             problemas.append({"fecha": _iso(f), "total": total, "gravedad": "NO_CABE",
                               "mensaje": f"{total} pax superan la capacidad total "
-                                         f"({CAP_CENA_TK + CAP_CENA_VIT}). Hay que abrir otro turno."})
+                                         f"({CAP_CENA_TK + CAP_CENA_BOSQUE}). Hay que abrir otro turno."})
         elif total > TOTAL_MAX_BALANCEABLE:
             problemas.append({"fecha": _iso(f), "total": total, "gravedad": "SIN_BALANCE",
                               "mensaje": f"{total} pax: no se podrá equilibrar, "
@@ -451,7 +455,7 @@ def resumen_dia(conn, fecha):
     d = distribuir(conn, fecha)
     return {
         "fecha": d["fecha"],
-        "almuerzo_tk": d["almuerzo"]["pax_tk"], "almuerzo_vit": d["almuerzo"]["pax_vit"],
-        "cena_tk": d["cena"]["pax_tk"], "cena_vit": d["cena"]["pax_vit"],
+        "almuerzo_tk": d["almuerzo"]["pax_tk"], "almuerzo_bosque": d["almuerzo"]["pax_bosque"],
+        "cena_tk": d["cena"]["pax_tk"], "cena_bosque": d["cena"]["pax_bosque"],
         "avisos": d["avisos"],
     }

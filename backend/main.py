@@ -268,6 +268,11 @@ def resumen_operacion(fecha: str, user: dict = Depends(current_user)):
            WHERE a.estado = 'PENDIENTE'""")
         if x["room_no"] in habitaciones_ingresan]
 
+    # Se calcula ANTES de cerrar la conexión. Estaba dentro del return, o sea después
+    # del close, así que siempre fallaba por dentro y _restaurantes_resumen devolvía
+    # None sin decir nada: el bloque de restaurantes de esta hoja nunca se mostró.
+    resumen_restaurantes = _restaurantes_resumen(conn, fecha)
+
     conn.close()
     return {
         "fecha": fecha,
@@ -281,7 +286,7 @@ def resumen_operacion(fecha: str, user: dict = Depends(current_user)):
         "tours": tours,
         "restricciones_cocina": restricciones,
         "amenidades": amenidades,
-        "restaurantes": _restaurantes_resumen(conn, fecha),
+        "restaurantes": resumen_restaurantes,
     }
 
 
@@ -1187,7 +1192,7 @@ def export_restaurantes(fecha: str, formato: str = "xlsx", user: dict = Depends(
 
     filas = []
     for comida, bloque in (("Almuerzo", d["almuerzo"]), ("Cena", d["cena"])):
-        for restaurante, clave in ((rest.TERRA, "terra_kitchen"), (rest.VITRALES, "vitrales")):
+        for restaurante, clave in ((rest.TERRA, "terra_kitchen"), (rest.BOSQUE, "bar_el_bosque")):
             for x in bloque[clave]:
                 filas.append({
                     "comida": comida, "restaurante": restaurante,
@@ -1204,9 +1209,9 @@ def export_restaurantes(fecha: str, formato: str = "xlsx", user: dict = Depends(
     ]
     titulo = "Distribución de restaurantes — Corcovado Wilderness Lodge"
     c = d["cena"]
-    subt = (f"{fecha} · Cena: Terra Kitchen {c['pax_tk']} / Vitrales {c['pax_vit']} "
+    subt = (f"{fecha} · Cena: Terra Kitchen {c['pax_tk']} / Bar el Bosque {c['pax_bosque']} "
             f"(diferencia {c['diferencia']}) · Almuerzo: Terra Kitchen "
-            f"{d['almuerzo']['pax_tk']} / Vitrales {d['almuerzo']['pax_vit']}")
+            f"{d['almuerzo']['pax_tk']} / Bar el Bosque {d['almuerzo']['pax_bosque']}")
     buf = (exports.to_xlsx(columns, filas, titulo) if formato == "xlsx"
            else exports.to_pdf(columns, filas, titulo, subt))
     return export_response(buf, f"restaurantes_{fecha}", formato)
@@ -2203,7 +2208,7 @@ def restaurantes_cambiar(payload: dict, user: dict = Depends(current_user)):
     conf_no = payload.get("conf_no")
     comida = (payload.get("comida") or "CENA").upper()
     restaurante = payload.get("restaurante")
-    if not (fecha and conf_no and restaurante in (rest.TERRA, rest.VITRALES)):
+    if not (fecha and conf_no and restaurante in (rest.TERRA, rest.BOSQUE)):
         raise HTTPException(status_code=400, detail="Faltan datos o el restaurante no es válido")
 
     conn = get_connection()
@@ -2262,7 +2267,7 @@ def restaurantes_cena_privada(payload: dict, user: dict = Depends(current_user))
     """Marca (o desmarca) la noche de una cena privada.
 
     El PDF avisa que la reserva tiene cena privada pero casi nunca dice el día, así
-    que recepción confirma la fecha aquí. Queda fija en Vitrales.
+    que recepción confirma la fecha aquí. Queda fija en Bar el Bosque.
     """
     auth.requiere_permiso(user, "restaurantes")
     conf_no, fecha = payload.get("conf_no"), payload.get("fecha")

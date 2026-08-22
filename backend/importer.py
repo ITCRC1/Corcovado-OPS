@@ -34,7 +34,7 @@ AMENIDADES_PATRONES = [
     # La cena privada se escribe de muchas formas y con palabras en medio ("cena
     # romántica privada", "cena privada en la playa", "private candlelight dinner").
     # Importa detectarla bien porque no es solo una tarea de cocina: fija la mesa en
-    # Vitrales y ocupa uno de sus lugares, así que afecta el reparto del restaurante.
+    # Bar el Bosque y ocupa uno de sus lugares, así que afecta el reparto del restaurante.
     ("Cena privada", (
         r"cena\s+(?:\w+\s+){0,2}privada|cena\s+rom[áa]ntica|"
         r"private\s+(?:\w+\s+){0,2}dinner|romantic\s+dinner"

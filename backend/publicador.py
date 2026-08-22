@@ -266,7 +266,7 @@ def comidas_de(conn, reserva, idioma="en"):
             break
 
         def buscar(bloque):
-            for restaurante, clave in ((rest.TERRA, "terra_kitchen"), (rest.VITRALES, "vitrales")):
+            for restaurante, clave in ((rest.TERRA, "terra_kitchen"), (rest.BOSQUE, "bar_el_bosque")):
                 for x in bloque[clave]:
                     if x["conf_no"] == cn:
                         return restaurante, x.get("hora")

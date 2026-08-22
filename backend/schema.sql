@@ -238,7 +238,7 @@ CREATE TABLE IF NOT EXISTS restaurante_cambio (
     fecha TEXT NOT NULL,
     conf_no TEXT NOT NULL,
     comida TEXT NOT NULL,          -- 'ALMUERZO' | 'CENA'
-    restaurante TEXT NOT NULL,     -- 'Terra Kitchen' | 'Vitrales'
+    restaurante TEXT NOT NULL,     -- 'Terra Kitchen' | 'Bar el Bosque'
     motivo TEXT,
     creado_en TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (fecha, conf_no, comida),
