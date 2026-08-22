@@ -2344,6 +2344,9 @@ async function loadPublicacion(fechaNueva, filtroNuevo) {
   if (filtroNuevo !== undefined) F.filtro = filtroNuevo;
   const d = await (await fetchAuth(`${API}/api/publicacion/estado?fecha=${F.fecha}&filtro=${F.filtro}`)).json();
   const R = d.resumen || {};
+  // La configuración se ajusta una sola vez, así que arranca cerrada. Solo se abre
+  // sola cuando falta la dirección, que es justo lo que hay que ir a poner ahí.
+  const abierto = !d.configurado;
 
   const movTxt = { ENTRA: "Entra", SALE: "Sale", EN_CASA: "En casa", PROXIMO: "Próximo ingreso" };
   const claseFila = (m, tiene) => m === "ENTRA" ? "fila-entra"
@@ -2420,8 +2423,11 @@ async function loadPublicacion(fechaNueva, filtroNuevo) {
     </div>
 
     <div class="card">
-      <p class="title">▾ Configuración <span style="font-weight:400;font-size:13px;color:var(--muted);">— dirección y habitaciones del hotel (se ajusta una sola vez)</span></p>
-      <div style="margin-top:12px;">
+      <p class="title" onclick="alternarConfigPublicacion()" style="cursor:pointer;user-select:none;"
+         title="${abierto ? "Ocultar" : "Mostrar"} la configuración">
+        <span id="pb-flecha">${abierto ? "▾" : "▸"}</span> Configuración
+        <span style="font-weight:400;font-size:13px;color:var(--muted);">— dirección y habitaciones del hotel (se ajusta una sola vez)</span></p>
+      <div id="pb-config" style="margin-top:12px;${abierto ? "" : "display:none;"}">
         <div class="filterbar" style="align-items:flex-start;">
           <label style="width:190px;font-size:13px;padding-top:6px;">Dirección del sistema</label>
           <input type="text" id="pb-url" value="${d.base_url || ""}" placeholder="https://itinerarios.milodge.com" style="flex:1;max-width:420px;">
@@ -2451,6 +2457,15 @@ async function loadPublicacion(fechaNueva, filtroNuevo) {
       </div>
     </div>
   `;
+}
+
+function alternarConfigPublicacion() {
+  const caja = document.getElementById("pb-config");
+  if (!caja) return;
+  const oculto = caja.style.display === "none";
+  caja.style.display = oculto ? "block" : "none";
+  const flecha = document.getElementById("pb-flecha");
+  if (flecha) flecha.textContent = oculto ? "▾" : "▸";
 }
 
 async function guardarConfigPublicacion() {
