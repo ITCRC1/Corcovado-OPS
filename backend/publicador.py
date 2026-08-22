@@ -20,6 +20,7 @@ el celular del huésped, y la lista de habitaciones del hotel.
 """
 
 import os
+import re
 import json
 import secrets
 
@@ -32,9 +33,32 @@ HABITACIONES_POR_DEFECTO = [f"{i:02d}" for i in range(1, 31)]
 
 
 def _limpiar_url(valor):
-    """Quita espacios y la barra final: es normal pegar la dirección con '/' al
-    final, y así queda siempre guardada de una sola forma."""
-    return (valor or "").strip().rstrip("/")
+    """Deja la dirección utilizable aunque venga pegada de cualquier manera.
+
+    Los códigos QR se imprimen y se pegan en los cuartos: si la dirección lleva
+    basura, el huésped escanea y no llega a ninguna parte, y hay que reimprimir los
+    30 códigos. Así que aquí se arregla lo que se pueda:
+
+      · 'HOTEL_BASE_URL = https://...'  → se descarta el nombre de la variable, que
+        es lo que pasa cuando se pega la línea completa en vez de solo el valor.
+      · 'cwl-ops.up.railway.app'        → se le pone https:// adelante.
+      · 'https://algo.com/'            → se le quita la barra final.
+    """
+    texto = (valor or "").strip().strip('"').strip("'")
+    # Nombre de variable pegado por delante: 'HOTEL_BASE_URL = https://...'. Se pide
+    # el '=' a propósito, para no confundirlo con el 'https:' de una dirección normal.
+    asignacion = re.match(r"^[A-Za-z_][A-Za-z0-9_]*\s*=\s*(\S.*)$", texto)
+    if asignacion and "." in asignacion.group(1):
+        texto = asignacion.group(1).strip()
+    texto = texto.rstrip("/")
+    if not texto:
+        return ""
+    if not texto.startswith(("http://", "https://")):
+        # Sin esquema el celular del huésped no sabe qué hacer con el código. En la red
+        # del hotel el sistema se sirve por http; hacia internet, por https.
+        en_la_red = re.match(r"^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)", texto)
+        texto = ("http://" if en_la_red else "https://") + texto.lstrip("/")
+    return texto
 
 
 def _url_del_entorno():

@@ -2190,4 +2190,22 @@ if _resource_dir:
     frontend_dir = os.path.join(_resource_dir, "frontend")
 else:
     frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
-app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
+class _FrontendSinCache(StaticFiles):
+    """Sirve el frontend pidiendo al navegador que revise si hay versión nueva.
+
+    Toda la aplicación es un solo index.html. Si el navegador se lo guarda en caché,
+    después de un despliegue se sigue viendo la pantalla vieja y parece que el cambio
+    no funcionó — y no hay forma de darse cuenta desde el sistema. Las fuentes y las
+    fotos sí se dejan cachear: pesan y casi nunca cambian.
+    """
+
+    async def get_response(self, path, scope):
+        respuesta = await super().get_response(path, scope)
+        es_html = path.endswith((".html", "/")) or path in ("", ".") or \
+            (respuesta.headers.get("content-type") or "").startswith("text/html")
+        if es_html:
+            respuesta.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return respuesta
+
+
+app.mount("/", _FrontendSinCache(directory=frontend_dir, html=True), name="frontend")
