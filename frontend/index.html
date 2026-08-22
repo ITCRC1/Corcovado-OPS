@@ -259,19 +259,21 @@
   </div>
   <div class="container">
     <nav>
-      <button class="active" onclick="loadDashboard()">Dashboard</button>
-      <button onclick="loadReservas()">Reservas</button>
-      <button onclick="loadAgenda()">Agenda de tours</button>
-      <button onclick="loadTransporte()">Transporte</button>
-      <button onclick="loadEntradas()">Entradas SINAC</button>
-      <button onclick="loadAmenidades()">Amenidades</button>
-      <button onclick="loadRestaurantes()">Restaurantes</button>
-    <button onclick="loadAnalitica()">Analítica</button>
-      <button onclick="loadResumenOperacion()">Resumen operación</button>
-      <button id="nav-importar" onclick="loadImportarPDF()">Importar PDF</button>
-      <button id="nav-usuarios" onclick="loadUsuarios()">Usuarios</button>
-      <button id="nav-catalogo" onclick="loadCatalogoAdmin()">Catálogo</button>
-      <button id="nav-publicacion" onclick="loadPublicacion()">Publicación</button>
+      <!-- Cada botón abre su pantalla en el día de hoy: irAPantalla reinicia el filtro
+           de fechas de esa pantalla antes de cargarla. -->
+      <button class="active" onclick="irAPantalla(0)">Dashboard</button>
+      <button onclick="irAPantalla(1)">Reservas</button>
+      <button onclick="irAPantalla(2)">Agenda de tours</button>
+      <button onclick="irAPantalla(3)">Transporte</button>
+      <button onclick="irAPantalla(4)">Entradas SINAC</button>
+      <button onclick="irAPantalla(5)">Amenidades</button>
+      <button onclick="irAPantalla(6)">Restaurantes</button>
+      <button onclick="irAPantalla(7)">Analítica</button>
+      <button onclick="irAPantalla(8)">Resumen operación</button>
+      <button id="nav-importar" onclick="irAPantalla(9)">Importar PDF</button>
+      <button id="nav-usuarios" onclick="irAPantalla(10)">Usuarios</button>
+      <button id="nav-catalogo" onclick="irAPantalla(11)">Catálogo</button>
+      <button id="nav-publicacion" onclick="irAPantalla(12)">Publicación</button>
     </nav>
     <div id="app"></div>
   </div>
@@ -302,21 +304,46 @@ function finMesSiguienteISO() {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
-// Cada pantalla tiene su PROPIO filtro de fechas, independiente de las demás.
-// Si eliges una fecha en Reservas, no afecta a Transporte ni a Agenda. Cada filtro
-// se recuerda mientras dure la sesión, así puedes ir y volver sin perderlo.
-const FILTROS = {
-  dashboard:  { fecha: hoyISO() },
-  reservas:   { desde: inicioMesISO(), hasta: finMesISO() },
-  agenda:     { fecha: hoyISO(), desde: inicioMesISO(), hasta: finMesISO(), modo: "dia" },
-  transporte: { fecha: hoyISO(), desde: inicioMesISO(), hasta: finMesISO(), modo: "dia" },
-  sinac:      { desde: hoyISO(), hasta: masDiasISO(120) },
-  amenidades: { desde: inicioMesISO(), hasta: finMesISO() },
-  analitica:  { desde: inicioMesISO(), hasta: finMesISO() },
-  resumen:    { fecha: hoyISO() },
-  publicacion:{ fecha: hoyISO(), filtro: "todas" },
-  restaurantes:{ fecha: hoyISO() },
+// Cada pantalla tiene su PROPIO filtro de fechas, independiente de las demás:
+// si eliges una fecha en Reservas, no afecta a Transporte ni a Agenda.
+//
+// Los valores por defecto son funciones, no valores fijos, porque se vuelven a
+// calcular cada vez que se abre la pantalla desde el menú. Así siempre se entra en
+// el día de hoy, incluso si el sistema quedó abierto desde ayer en una computadora
+// que nadie apaga — antes la fecha se calculaba una sola vez al cargar la página y
+// se quedaba pegada en el día en que se abrió.
+const DEFECTOS_FILTRO = {
+  dashboard:   () => ({ fecha: hoyISO() }),
+  reservas:    () => ({ desde: inicioMesISO(), hasta: finMesISO() }),
+  agenda:      () => ({ fecha: hoyISO(), desde: inicioMesISO(), hasta: finMesISO(), modo: "dia" }),
+  transporte:  () => ({ fecha: hoyISO(), desde: inicioMesISO(), hasta: finMesISO(), modo: "dia" }),
+  sinac:       () => ({ desde: hoyISO(), hasta: masDiasISO(120) }),
+  amenidades:  () => ({ desde: inicioMesISO(), hasta: finMesISO() }),
+  analitica:   () => ({ desde: inicioMesISO(), hasta: finMesISO() }),
+  resumen:     () => ({ fecha: hoyISO() }),
+  publicacion: () => ({ fecha: hoyISO(), filtro: "todas" }),
+  restaurantes:() => ({ fecha: hoyISO() }),
 };
+
+const FILTROS = {};
+for (const p in DEFECTOS_FILTRO) FILTROS[p] = DEFECTOS_FILTRO[p]();
+
+// Nombre del filtro de cada botón del menú, en el mismo orden que los botones y que
+// cargadoresPantalla(). Las pantallas sin fechas (Importar, Usuarios, Catálogo) no
+// tienen filtro que reiniciar.
+const FILTRO_DE_PANTALLA = ["dashboard", "reservas", "agenda", "transporte", "sinac",
+                            "amenidades", "restaurantes", "analitica", "resumen",
+                            null, null, null, "publicacion"];
+
+function irAPantalla(indice) {
+  // Abrir desde el menú siempre lleva al día de hoy. Filtrar otra fecha DENTRO de la
+  // pantalla no pasa por aquí, así que se respeta mientras se esté trabajando ahí:
+  // ni el refresco automático ni un guardado devuelven la vista al día de hoy.
+  const filtro = FILTRO_DE_PANTALLA[indice];
+  if (filtro) FILTROS[filtro] = DEFECTOS_FILTRO[filtro]();
+  const cargar = cargadoresPantalla()[indice];
+  if (cargar) cargar();
+}
 
 async function fetchAuth(url, options) {
   options = options || {};
@@ -371,8 +398,9 @@ function showApp() {
   // Se ocultan las pestañas a las que el usuario no tiene acceso. Un usuario de
   // restaurante solo verá lo que necesita para su trabajo.
   const primera = aplicarPermisos();
-  const abrir = cargadoresPantalla();
-  (abrir[primera >= 0 ? primera : 0] || loadDashboard)();
+  // Se entra por irAPantalla para que la primera pantalla también abra en el día de
+  // hoy, aunque la sesión se haya iniciado con la página abierta desde ayer.
+  irAPantalla(primera >= 0 ? primera : 0);
   iniciarRefrescoAutomatico();
 }
 
@@ -668,7 +696,7 @@ async function loadDashboard(fecha) {
           </p>
           ${d.sinac_vencidas?.length ? `<p style="font-size:12px;margin:0 0 4px;color:var(--danger-text);"><strong>${d.sinac_vencidas.length} con plazo VENCIDO:</strong> ${d.sinac_vencidas.slice(0,4).map(s=>`${s.tour} ${s.fecha}`).join(" · ")}${d.sinac_vencidas.length>4?" …":""}</p>` : ""}
           ${d.sinac_urgentes?.length ? `<p style="font-size:12px;margin:0;color:var(--warn-text);"><strong>${d.sinac_urgentes.length} urgentes (≤7 días):</strong> ${d.sinac_urgentes.slice(0,4).map(s=>`${s.tour} ${s.fecha} (faltan ${s.dias}d)`).join(" · ")}${d.sinac_urgentes.length>4?" …":""}</p>` : ""}
-          <button class="btn" style="margin-top:8px;" onclick="loadEntradas()">Ver Entradas SINAC</button>
+          <button class="btn" style="margin-top:8px;" onclick="irAPantalla(4)">Ver Entradas SINAC</button>
         </div>` : ""}
       ${(manana && manana.total_salidas) ? `
         <div style="background:${(manana.sin_guia.length || manana.conflictos.length) ? 'var(--warn-bg)' : 'var(--ok-bg)'};border-radius:8px;padding:12px 14px;margin-bottom:16px;">
@@ -2349,8 +2377,8 @@ async function confirmarImportacion() {
       <p style="margin:6px 0 0;font-size:12px;">Los itinerarios QR ya quedaron al día: el huésped ve la versión nueva al escanear su código.</p>
     </div>
     <div style="margin-top:12px;">
-      <button class="btn" onclick="loadDashboard()">Ir al Dashboard</button>
-      <button class="btn" onclick="loadReservas()">Ver las reservas</button>
+      <button class="btn" onclick="irAPantalla(0)">Ir al Dashboard</button>
+      <button class="btn" onclick="irAPantalla(1)">Ver las reservas</button>
     </div>`;
   avisar(`${data.reservas_cargadas} reservas importadas`);
 }
