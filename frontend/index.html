@@ -1913,11 +1913,14 @@ async function loadRestaurantes(fecha) {
         Diferencia: ${c.diferencia} pax · ${c.dentro_margen ? "dentro del margen de 4 ✓" : "fuera del margen de 4"}
       </p>
 
-      <div class="stats" style="grid-template-columns:repeat(4,1fr);margin-top:16px;">
+      <div class="stats" style="grid-template-columns:repeat(5,1fr);margin-top:16px;">
         <div class="stat" onclick="detalleRest('cena_tk')"><p class="stat-label">Cena · Terra Kitchen</p><p class="stat-value">${c.pax_tk}</p></div>
         <div class="stat" onclick="detalleRest('cena_bosque')"><p class="stat-label">Cena · Bar el Bosque</p><p class="stat-value">${c.pax_bosque}</p></div>
         <div class="stat" onclick="detalleRest('alm_tk')"><p class="stat-label">Almuerzo · Terra Kitchen</p><p class="stat-value">${a.pax_tk}</p></div>
         <div class="stat" onclick="detalleRest('alm_bosque')"><p class="stat-label">Almuerzo · Bar el Bosque</p><p class="stat-value">${a.pax_bosque}</p></div>
+        <div class="stat" onclick="detalleRest('regimen')"><p class="stat-label">Full board</p>
+          <p class="stat-value">${paxFullBoard(d)}</p>
+          <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${habsFullBoard(d)} hab. de ${enCasaHoy(d).length}</p></div>
       </div>
       <div id="rest-detalle"></div>
     </div>
@@ -1959,6 +1962,98 @@ async function loadRestaurantes(fecha) {
   `;
 }
 
+// ---------- Régimen de comidas ----------
+// Quiénes comen en el lodge ese día son los mismos que aparecen en la cena: quien
+// entra y quien está en casa. Los que salen no cuentan, el bote se va de madrugada.
+// Así el conteo del día no necesita pedir nada más al servidor.
+function enCasaHoy(d) {
+  return [...d.cena.terra_kitchen, ...d.cena.bar_el_bosque];
+}
+function porRegimen(d, regimen) {
+  return enCasaHoy(d).filter(x => (x.regimen || "SIN_DATO") === regimen);
+}
+function paxFullBoard(d) {
+  return porRegimen(d, "PENSION_COMPLETA").reduce((s, x) => s + x.pax, 0);
+}
+function habsFullBoard(d) {
+  return porRegimen(d, "PENSION_COMPLETA").length;
+}
+
+const ORDEN_REGIMEN = ["PENSION_COMPLETA", "DESAYUNO_CENA", "SOLO_DESAYUNO",
+                       "COMEDOR_TRABAJADORES", "SIN_DATO"];
+const NOMBRE_REGIMEN = {
+  PENSION_COMPLETA: "Full board · comidas incluidas",
+  DESAYUNO_CENA: "Solo desayuno y cena",
+  SOLO_DESAYUNO: "Solo desayuno",
+  COMEDOR_TRABAJADORES: "Come en el comedor de trabajadores",
+  SIN_DATO: "El PDF no indicó el régimen",
+};
+
+function detalleRegimen() {
+  const d = window._restData;
+  const panel = document.getElementById("rest-detalle");
+  const F = FILTROS.restaurantes;
+  const grupos = ORDEN_REGIMEN
+    .map(r => [r, porRegimen(d, r)])
+    .filter(([, lista]) => lista.length);
+
+  panel.innerHTML = `<div class="detail-panel">
+    <p style="font-weight:600;margin:0 0 4px;">Régimen de comidas · ${F.fecha}</p>
+    <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">
+      Habitaciones que comen en el lodge ese día: quien entra y quien está en casa.</p>
+    ${grupos.map(([regimen, lista]) => `
+      <p style="margin:10px 0 4px;font-weight:600;font-size:13px;">
+        ${NOMBRE_REGIMEN[regimen]}
+        <span style="font-weight:400;color:var(--muted);">— ${lista.length} hab.,
+          ${lista.reduce((s, x) => s + x.pax, 0)} pax</span></p>
+      <table>
+        <tr><th>Hab.</th><th>Huésped</th><th>Pax</th><th></th></tr>
+        ${lista.map(x => `<tr class="${x.tipo === 'ENTRA' ? 'fila-entra' : ''}">
+          <td><strong>${x.room_no || '—'}</strong></td>
+          <td>${x.nombre}</td>
+          <td>${x.pax}</td>
+          <td>${x.tipo === 'ENTRA' ? '<span class="badge badge-warn">entra</span>' : ''}</td>
+        </tr>`).join("")}
+      </table>`).join("")}
+
+    <div class="filterbar" style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;">
+      <span style="font-size:12.5px;color:var(--muted);">Ver por rango:</span>
+      <input type="date" id="rg-desde" value="${F.fecha}">
+      <input type="date" id="rg-hasta" value="${masDiasISO(7)}">
+      <button class="btn" onclick="verRegimenRango()">Ver rango</button>
+    </div>
+    <div id="rg-rango"></div>
+  </div>`;
+}
+
+async function verRegimenRango() {
+  const desde = document.getElementById("rg-desde").value;
+  const hasta = document.getElementById("rg-hasta").value;
+  const caja = document.getElementById("rg-rango");
+  caja.innerHTML = `<p class="empty" style="padding:12px;">Contando…</p>`;
+  const d = await (await fetchAuth(`${API}/api/restaurantes/regimen?desde=${desde}&hasta=${hasta}`)).json();
+  const cols = ORDEN_REGIMEN.filter(r => d.totales[r]);
+  caja.innerHTML = `
+    <p style="font-weight:600;font-size:13px;margin:14px 0 4px;">Del ${d.desde} al ${d.hasta}</p>
+    <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">
+      Cada día cuenta aparte: quien se queda tres noches suma tres veces, que es lo que
+      importa para el servicio.${d.recortado ? " El rango se recortó a 92 días." : ""}</p>
+    <table>
+      <tr><th>Fecha</th>${cols.map(r => `<th>${NOMBRE_REGIMEN[r].split(" · ")[0]}</th>`).join("")}</tr>
+      ${d.dias.map(dia => `<tr>
+        <td>${dia.fecha}</td>
+        ${cols.map(r => {
+          const v = dia.resumen[r];
+          return `<td>${v ? `${v.pax} pax <span style="font-size:11px;color:var(--muted);">(${v.habitaciones} hab.)</span>` : "—"}</td>`;
+        }).join("")}
+      </tr>`).join("")}
+      <tr style="font-weight:600;background:var(--surface-2, #F3F1EA);">
+        <td>Total</td>
+        ${cols.map(r => `<td>${d.totales[r].pax} pax <span style="font-size:11px;">(${d.totales[r].habitaciones} hab.)</span></td>`).join("")}
+      </tr>
+    </table>`;
+}
+
 function detalleRest(cual) {
   const d = window._restData;
   const panel = document.getElementById("rest-detalle");
@@ -1970,6 +2065,9 @@ function detalleRest(cual) {
   window._restAbierto = cual;
   document.querySelectorAll("#app .stat").forEach(s => s.classList.remove("selected"));
   if (event && event.currentTarget) event.currentTarget.classList.add("selected");
+
+  // El régimen no es un restaurante: se agrupa por lo que trae pagado el huésped.
+  if (cual === "regimen") { detalleRegimen(); return; }
 
   const mapa = {
     cena_tk: ["Cena en Terra Kitchen", d.cena.terra_kitchen, "CENA", "Bar el Bosque"],

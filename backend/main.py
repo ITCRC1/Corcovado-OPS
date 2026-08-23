@@ -2302,6 +2302,71 @@ def restaurantes_cena_privada(payload: dict, user: dict = Depends(current_user))
     return {"status": "ok"}
 
 
+@app.get("/api/restaurantes/regimen")
+def restaurantes_regimen(fecha: str = None, desde: str = None, hasta: str = None,
+                         user: dict = Depends(current_user)):
+    """Quiénes tienen las comidas incluidas y quiénes no, día por día.
+
+    Para un solo día basta con lo que ya devuelve /api/restaurantes; esto existe para
+    poder mirar un rango: cuántos huéspedes con pensión completa hay cada día de la
+    semana entrante, que es lo que sirve para compras y para planear el servicio.
+
+    Se cuentan los que comen ese día —quien entra y quien está en casa—, igual que el
+    reparto. Los que salen no cuentan: el bote se va de madrugada.
+    """
+    import restaurantes as rest
+
+    hoy = datetime.date.today()
+    if fecha:
+        inicio = fin = datetime.date.fromisoformat(fecha)
+    else:
+        inicio = datetime.date.fromisoformat(desde) if desde else hoy
+        fin = datetime.date.fromisoformat(hasta) if hasta else inicio
+    if fin < inicio:
+        inicio, fin = fin, inicio
+    # Tope de tres meses: cada día es una lectura aparte y nadie planea más allá.
+    TOPE_DIAS = 92
+    recortado = (fin - inicio).days + 1 > TOPE_DIAS
+    if recortado:
+        fin = inicio + datetime.timedelta(days=TOPE_DIAS - 1)
+
+    conn = get_connection()
+    try:
+        dias, totales = [], {}
+        d = inicio
+        while d <= fin:
+            entradas, en_casa, _ = rest._reservas_del_dia(conn, d)
+            categorias = {}
+            for r in entradas + en_casa:
+                clave = r.get("regimen") or "SIN_DATO"
+                categorias.setdefault(clave, []).append({
+                    "conf_no": r["conf_no"], "room_no": r["room_no"],
+                    "nombre": r["nombre_principal"], "pax": r["pax"],
+                    "tipo": r["tipo"],
+                })
+            resumen = {k: {"habitaciones": len(v), "pax": sum(x["pax"] for x in v)}
+                       for k, v in categorias.items()}
+            for k, v in resumen.items():
+                acum = totales.setdefault(k, {"habitaciones": 0, "pax": 0})
+                acum["habitaciones"] += v["habitaciones"]
+                acum["pax"] += v["pax"]
+            dias.append({"fecha": d.isoformat(), "resumen": resumen,
+                         "categorias": categorias})
+            d += datetime.timedelta(days=1)
+    finally:
+        conn.close()
+
+    return {
+        "desde": inicio.isoformat(), "hasta": fin.isoformat(),
+        "dias": dias,
+        # En un rango los totales suman noche-huésped, no personas distintas: alguien
+        # que se queda tres noches cuenta tres veces. Es lo que sirve para el servicio.
+        "totales": totales,
+        "textos": rest.TEXTO_REGIMEN,
+        "recortado": recortado,
+    }
+
+
 @app.get("/api/restaurantes/avisos")
 def restaurantes_avisos(dias: int = 30, user: dict = Depends(current_user)):
     """Noches futuras que no van a caber o no se van a poder equilibrar."""
