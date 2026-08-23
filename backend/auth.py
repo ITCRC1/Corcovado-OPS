@@ -52,7 +52,11 @@ def crear_sesion(conn, usuario_id):
 
 def usuario_por_token(conn, token):
     row = conn.execute(
-        """SELECT u.id, u.username, u.nombre_completo, u.rol FROM sesion s
+        # permisos_json tiene que venir aquí: es lo que se consulta en CADA petición
+        # para decidir qué puede hacer el usuario. Sin esta columna, permisos_de() no
+        # encontraba nada y caía en los permisos del rol, así que lo configurado en la
+        # pantalla de Usuarios se guardaba pero no se aplicaba nunca.
+        """SELECT u.id, u.username, u.nombre_completo, u.rol, u.permisos_json FROM sesion s
            JOIN usuario u ON u.id = s.usuario_id WHERE s.token = ? AND u.activo = 1""",
         (token,),
     ).fetchone()
@@ -72,9 +76,14 @@ def get_current_user(authorization: str = Header(None), get_connection=None):
     return user
 
 
-def requiere_escritura(user):
-    if user["rol"] not in ("recepcion", "gerencia"):
-        raise HTTPException(status_code=403, detail="Tu rol solo tiene permiso de lectura")
+def puede_alguna(user, pantallas, escribir=False):
+    """Si el usuario tiene el permiso pedido en AL MENOS UNA de esas pantallas.
+
+    Hace falta para los datos que consulta más de una pantalla —el catálogo de guías y
+    botes, por ejemplo, que la Agenda necesita para sus listas—. Atarlos a una sola
+    pantalla dejaría sin funcionar a quien tiene acceso a la otra.
+    """
+    return any(puede(user, p, escribir=escribir) for p in pantallas)
 
 
 # ---------------------------------------------------------------------------

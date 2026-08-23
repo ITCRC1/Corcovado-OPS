@@ -642,12 +642,18 @@ function aplicarPermisos() {
     const clave = CLAVE_PANTALLA[i];
     if (clave && !puedeVer(clave)) b.style.display = "none";
   });
+  // El buscador devuelve reservas, así que el servidor pide permiso de Reservas. Si el
+  // usuario no lo tiene, se esconde en vez de dejarlo fallar al escribir.
+  const buscador = document.querySelector(".topbar-buscar");
+  if (buscador) buscador.style.display = puedeVer("reservas") ? "" : "none";
   // Si la pantalla inicial no está permitida, se abre la primera que sí
   const primera = CLAVE_PANTALLA.findIndex(k => puedeVer(k));
   return primera;
 }
 
-function isRecepcion() { return CURRENT_USER && (CURRENT_USER.rol === "recepcion" || CURRENT_USER.rol === "gerencia"); }
+// Ya no existe isRecepcion(): decidía por el ROL del usuario, y eso hacía que los
+// permisos por pantalla no se respetaran. Para saber si mostrar un botón de editar se
+// usa puedeEscribir("<pantalla>"), que es lo mismo que exige el servidor.
 
 async function tryAutoLogin() {
   const saved = localStorage.getItem("hotel_token");
@@ -986,7 +992,7 @@ async function loadReservas(fecha, desde, hasta) {
         <span><i style="background:#E8F5E9;"></i>Por ingresar</span>
         <span><i style="background:#F2F2F0;"></i>Ya salió</span>
       </div>
-      ${isRecepcion() ? `
+      ${puedeEscribir("reservas") ? `
       <div style="margin-top:16px;">
         ${rows.filter(r => r.grupo_id && !r.confirmado_por_recepcion).map(r => `
           <div style="background:var(--warn-bg);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
@@ -1357,22 +1363,22 @@ async function loadAgenda(fecha, desde, hasta) {
         </div>` : ""}
       ${rows.length ? `
       <table>
-        <tr><th>Huésped / Hab.</th><th>Tour</th><th>Fecha del tour</th><th>Grupo</th><th>Guía</th><th>Bote</th><th>Pax</th>${isRecepcion() ? "<th></th>" : ""}</tr>
+        <tr><th>Huésped / Hab.</th><th>Tour</th><th>Fecha del tour</th><th>Grupo</th><th>Guía</th><th>Bote</th><th>Pax</th>${puedeEscribir("agenda") ? "<th></th>" : ""}</tr>
         ${rows.map(r => r.tours.map((t, i) => `
           <tr>
             ${i === 0 ? `<td rowspan="${r.tours.length}">${r.nombre_principal} · ${r.room_no}</td>` : ''}
             <td>${t.tour_codigo}</td>
-            <td>${isRecepcion()
+            <td>${puedeEscribir("agenda")
               ? `<input type="date" value="${t.fecha || r.fecha}" style="font-size:11.5px;padding:3px 5px;width:130px;"
                    onchange="cambiarFechaTour(${t.id}, this.value, '${t.fecha || r.fecha}')">`
               : (t.fecha || r.fecha)}</td>
-            <td>${isRecepcion() ? `<select id="gr-${t.id}" onchange="cambiarGrupo(${t.id}, this.value)" style="width:60px;">
+            <td>${puedeEscribir("agenda") ? `<select id="gr-${t.id}" onchange="cambiarGrupo(${t.id}, this.value)" style="width:60px;">
                 ${["A","B","C","D"].map(g => `<option value="${g}" ${(t.grupo_operativo||"A")===g?"selected":""}>${g}</option>`).join("")}
               </select>` : (t.grupo_operativo || "A")}</td>
-            <td>${isRecepcion() ? `<select id="g-${t.id}" onchange="marcarSinGuardar(${t.id})">${'<option value="">Sin asignar</option>' + opcionesGuia(t.tour_codigo, t.guia_nombre)}</select>` : (t.guia_nombre || "Sin asignar")}</td>
-            <td>${isRecepcion() ? `<select id="b-${t.id}" onchange="marcarSinGuardar(${t.id})">${'<option value="">Sin asignar</option>' + opcionesBote(t.tour_codigo, t.bote_nombre)}</select>` : (t.bote_nombre || "Sin asignar")}</td>
+            <td>${puedeEscribir("agenda") ? `<select id="g-${t.id}" onchange="marcarSinGuardar(${t.id})">${'<option value="">Sin asignar</option>' + opcionesGuia(t.tour_codigo, t.guia_nombre)}</select>` : (t.guia_nombre || "Sin asignar")}</td>
+            <td>${puedeEscribir("agenda") ? `<select id="b-${t.id}" onchange="marcarSinGuardar(${t.id})">${'<option value="">Sin asignar</option>' + opcionesBote(t.tour_codigo, t.bote_nombre)}</select>` : (t.bote_nombre || "Sin asignar")}</td>
             ${i === 0 ? `<td rowspan="${r.tours.length}">${r.pax}</td>` : ''}
-            ${isRecepcion() ? `<td><button class="btn" onclick="guardarAsignacion(${t.id})">Guardar</button></td>` : ''}
+            ${puedeEscribir("agenda") ? `<td><button class="btn" onclick="guardarAsignacion(${t.id})">Guardar</button></td>` : ''}
           </tr>`).join("")).join("")}
       </table>
       <p style="font-size:11px;color:var(--muted);margin-top:8px;">
@@ -1506,7 +1512,7 @@ async function loadTransporte(fecha, desde, hasta) {
       ${d.entradas.length ? `<table><tr><th>Fecha</th><th>Hab.</th><th>Huésped</th><th>Punto</th><th>Hora</th><th>Pax</th></tr>${d.entradas.map(filaE).join("")}</table>` : `<p class="empty">Nadie ingresa este día.<small>Cambia la fecha con las flechas para revisar otro día.</small></p>`}
       <p style="font-weight:600;font-size:14px;margin-top:16px;">Salidas</p>
       ${d.salidas.length ? `<table><tr><th>Fecha</th><th>Hab.</th><th>Huésped</th><th>Punto</th><th>Hora</th><th>Pax</th></tr>${d.salidas.map(filaS).join("")}</table>` : `<p class="empty">Nadie sale este día.</p>`}
-      ${pendientes.length && isRecepcion() ? `
+      ${pendientes.length && puedeEscribir("transporte") ? `
         <p style="font-weight:600;font-size:14px;margin-top:20px;color:var(--warn-text);">⚠ Pendientes de confirmar (${pendientes.length})</p>
         <p style="font-size:12px;color:var(--muted);margin:0 0 8px;">El PDF menciona un ingreso o salida, pero no indica claramente si es por Sierpe o Drake.</p>
         ${pendientes.map(p => `
@@ -1579,7 +1585,7 @@ async function loadEntradas(desde, hasta) {
       </div>
       <div id="sinac-detalle"></div>
       <table>
-        <tr><th>Fecha tour</th><th>Actividad</th><th>Reservas</th><th>Pax + guía</th><th>Comprar antes de</th><th>Plazo</th><th>Conf.</th><th>Estado</th>${isRecepcion() ? "<th></th>" : ""}</tr>
+        <tr><th>Fecha tour</th><th>Actividad</th><th>Reservas</th><th>Pax + guía</th><th>Comprar antes de</th><th>Plazo</th><th>Conf.</th><th>Estado</th>${puedeEscribir("sinac") ? "<th></th>" : ""}</tr>
         ${rows.map(e => `
           <tr class="${colorUrg[e.urgencia] || ''}">
             <td>${e.fecha}</td><td>${e.tour_codigo}</td>
@@ -1589,7 +1595,7 @@ async function loadEntradas(desde, hasta) {
             <td><strong>${textoUrg(e)}</strong></td>
             <td>${e.conf_entrada || "-"}</td>
             <td><span class="badge ${e.estado === "COMPRADA" ? "badge-ok" : "badge-warn"}">${e.estado.replace("_"," ")}</span></td>
-            ${isRecepcion() ? `<td>${e.estado !== "COMPRADA" ? `<button class="btn" onclick="marcarEntrada(${e.id})">Marcar comprada</button>` : ""}</td>` : ""}
+            ${puedeEscribir("sinac") ? `<td>${e.estado !== "COMPRADA" ? `<button class="btn" onclick="marcarEntrada(${e.id})">Marcar comprada</button>` : ""}</td>` : ""}
           </tr>`).join("") || `<tr><td colspan="9" class="empty">Sin entradas SINAC en estas fechas. Amplía el rango para ver las de los próximos meses.</td></tr>`}
       </table>
       <div class="leyenda">
@@ -1713,7 +1719,7 @@ async function loadAmenidades(fecha, desdeNuevo, hastaNuevo, estadoNuevo) {
           </select>
           <button class="btn" onclick="descargar('amenidades', {desde:'${desde}', hasta:'${hasta}'}, 'xlsx')">⬇ Excel</button>
           <button class="btn" onclick="descargar('amenidades', {desde:'${desde}', hasta:'${hasta}'}, 'pdf')">⬇ PDF</button>
-          ${isRecepcion() ? `<button class="btn btn-primary" onclick="mostrarFormAmenidad()">+ Agregar requerimiento</button>` : ""}
+          ${puedeEscribir("amenidades") ? `<button class="btn btn-primary" onclick="mostrarFormAmenidad()">+ Agregar requerimiento</button>` : ""}
         </div>
       </div>
       <div id="form-amenidad"></div>
@@ -1726,7 +1732,7 @@ async function loadAmenidades(fecha, desdeNuevo, hastaNuevo, estadoNuevo) {
       ${rows.length ? Object.entries(porArea).map(([area, lista]) => `
         <p style="font-weight:600;font-size:14px;margin:16px 0 6px;color:var(--forest);">${area} (${lista.length})</p>
         <table>
-          <tr><th>Llegada</th><th>Hab.</th><th>Huésped</th><th>Amenidad</th><th>Tarea</th><th>Estado</th>${isRecepcion()?"<th></th>":""}</tr>
+          <tr><th>Llegada</th><th>Hab.</th><th>Huésped</th><th>Amenidad</th><th>Tarea</th><th>Estado</th>${puedeEscribir("amenidades")?"<th></th>":""}</tr>
           ${lista.map(a => `
             <tr class="${a.estado === 'HECHA' ? 'fila-salio' : ''}">
               <td>${a.arr_date}</td>
@@ -1735,7 +1741,7 @@ async function loadAmenidades(fecha, desdeNuevo, hastaNuevo, estadoNuevo) {
               <td><span class="badge badge-tour">${a.amenidad}</span>${a.origen === 'MANUAL' ? ' <span style="font-size:10px;color:var(--muted);">(manual)</span>' : ''}</td>
               <td style="font-size:12px;color:var(--muted);">${a.detalle ? `<strong style="color:var(--text);">${a.detalle}</strong><br>` : ''}${a.tarea}</td>
               <td><span class="badge ${a.estado === 'HECHA' ? 'badge-ok' : 'badge-warn'}">${a.estado}</span></td>
-              ${isRecepcion() ? `<td><button class="btn" onclick="marcarAmenidad(${a.id}, '${a.estado === 'HECHA' ? 'PENDIENTE' : 'HECHA'}')">${a.estado === 'HECHA' ? 'Reabrir' : 'Marcar hecha'}</button>${a.origen === 'MANUAL' ? `<button class="btn" onclick="eliminarAmenidad(${a.id})">Eliminar</button>` : ''}</td>` : ""}
+              ${puedeEscribir("amenidades") ? `<td><button class="btn" onclick="marcarAmenidad(${a.id}, '${a.estado === 'HECHA' ? 'PENDIENTE' : 'HECHA'}')">${a.estado === 'HECHA' ? 'Reabrir' : 'Marcar hecha'}</button>${a.origen === 'MANUAL' ? `<button class="btn" onclick="eliminarAmenidad(${a.id})">Eliminar</button>` : ''}</td>` : ""}
             </tr>`).join("")}
         </table>`).join("") : `<p class="empty">No hay amenidades en estas fechas.<small>Se detectan al importar el PDF, y puedes agregar requerimientos a mano con el botón de arriba.</small></p>`}
     </div>
@@ -1952,12 +1958,12 @@ async function loadRestaurantes(fecha) {
               <strong>Hab. ${p.room_no}</strong> · ${p.nombre_principal}
               <span style="font-size:11px;color:var(--muted);">(${p.arr_date} – ${p.dep_date})</span>
               ${p.detalle ? `<br><span style="font-size:11.5px;">${p.detalle}</span>` : ""}
-              ${isRecepcion() ? `<button class="btn" style="margin-left:6px;"
+              ${puedeEscribir("restaurantes") ? `<button class="btn" style="margin-left:6px;"
                   onclick="abrirCenaPrivada('${F.fecha}', '${p.conf_no}')">Es esta noche</button>` : ""}
             </p>`).join("")}
         </div>` : ""}
 
-      ${isRecepcion() ? `<button class="btn" style="margin-top:12px;" onclick="abrirCenaPrivada('${F.fecha}')">Marcar cena privada</button>` : ""}
+      ${puedeEscribir("restaurantes") ? `<button class="btn" style="margin-top:12px;" onclick="abrirCenaPrivada('${F.fecha}')">Marcar cena privada</button>` : ""}
     </div>
   `;
 }
@@ -2104,7 +2110,7 @@ function detalleRest(cual) {
       Se les cobra aparte.</div>` : ""}
     <table>
       <tr><th>Hab.</th><th>Huésped</th><th>Pax</th><th>Noche</th><th>${esCena ? "Cena" : "Almuerzo"}</th><th></th>
-        ${esCena ? "<th>Hora reservada</th>" : ""}${isRecepcion() ? "<th></th>" : ""}</tr>
+        ${esCena ? "<th>Hora reservada</th>" : ""}${puedeEscribir("restaurantes") ? "<th></th>" : ""}</tr>
       ${lista.map(x => `<tr class="${x.tipo === 'ENTRA' ? 'fila-entra' : ''}">
         <td><strong>${x.room_no || '—'}</strong></td>
         <td>${x.nombre}${x.grupo ? ' <span class="badge badge-tour">grupo</span>' : ''}</td>
@@ -2116,8 +2122,8 @@ function detalleRest(cual) {
             ${x.manual ? '<span class="badge badge-ok">cambio manual</span>' : ''}</td>
         ${esCena ? `<td><input type="time" value="${x.hora || ''}"
             onchange="guardarHoraMesa('${d.fecha}','${x.conf_no}',this.value)"
-            style="font-size:11.5px;padding:2px 4px;width:96px;" ${isRecepcion()?'':'disabled'}></td>` : ""}
-        ${isRecepcion() ? `<td>${x.fijo && x.fijo.includes('privada') ? '<span style="font-size:11px;color:var(--muted);">fija</span>'
+            style="font-size:11.5px;padding:2px 4px;width:96px;" ${puedeEscribir("restaurantes")?'':'disabled'}></td>` : ""}
+        ${puedeEscribir("restaurantes") ? `<td>${x.fijo && x.fijo.includes('privada') ? '<span style="font-size:11px;color:var(--muted);">fija</span>'
           : `<button class="btn" onclick="cambiarRestaurante('${d.fecha}','${x.conf_no}','${comida}','${destino}')">A ${destino.split(' ')[0]}</button>`}</td>` : ""}
       </tr>`).join("")}
     </table>

@@ -48,6 +48,35 @@ def current_user(authorization: str = Header(None)):
     return auth.get_current_user(authorization, get_connection)
 
 
+def exige(*pantallas, escribir=False):
+    """Dependencia que exige permiso sobre una pantalla concreta.
+
+    El permiso queda declarado en la firma del endpoint, a la vista, en vez de
+    escondido en una línea del cuerpo. Se usa así:
+
+        def reservas(..., user: dict = Depends(exige("reservas"))):
+        def asignar(..., user: dict = Depends(exige("agenda", escribir=True))):
+
+    Antes de esto, casi todas las escrituras preguntaban solo por el ROL del usuario
+    ("¿es recepción o gerencia?"), así que la configuración por pantalla no se
+    aplicaba: a un usuario con solo lectura en Agenda se le ocultaba el botón, pero el
+    servidor le aceptaba igual el cambio. Y casi todas las lecturas se conformaban con
+    tener sesión, así que cualquiera podía leer los datos de los huéspedes.
+
+    Con varias pantallas alcanza con tener permiso en una: es para los datos que
+    consulta más de una pantalla, como el catálogo de guías y botes.
+    """
+    def dependencia(user: dict = Depends(current_user)):
+        if not auth.puede_alguna(user, pantallas, escribir=escribir):
+            donde = " o ".join(pantallas)
+            raise HTTPException(
+                status_code=403,
+                detail=(f"Tu usuario no tiene permiso para {'modificar' if escribir else 'ver'} "
+                        f"{donde}."))
+        return user
+    return dependencia
+
+
 def ddmmyy(iso_date):
     y, m, d = iso_date.split("-")
     return f"{d}-{m}-{y[2:]}"
@@ -117,7 +146,7 @@ def logout(authorization: str = Header(None)):
 
 # ---------- LECTURA (cualquier rol autenticado) ----------
 @app.get("/api/dashboard/{fecha}")
-def dashboard(fecha: str, user: dict = Depends(current_user)):
+def dashboard(fecha: str, user: dict = Depends(exige("dashboard"))):
     conn = get_connection()
     dd = ddmmyy(fecha)
     yy = yymmdd(fecha)   # formato comparable cronológicamente
@@ -182,7 +211,7 @@ def dashboard(fecha: str, user: dict = Depends(current_user)):
 
 
 @app.get("/api/resumen-operacion")
-def resumen_operacion(fecha: str, user: dict = Depends(current_user)):
+def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
     """Resumen del día pensado para que cada departamento encuentre lo suyo:
     recepción, cocina, housekeeping, guías y transporte."""
     conn = get_connection()
@@ -300,7 +329,7 @@ def _restaurantes_resumen(conn, fecha):
 
 
 @app.get("/api/ocupacion")
-def ocupacion(desde: str, hasta: str, user: dict = Depends(current_user)):
+def ocupacion(desde: str, hasta: str, user: dict = Depends(exige("analitica"))):
     """Ocupación día por día: cuántas habitaciones ocupadas, pax y porcentaje.
     Útil para gerencia, y para ver de un vistazo los días fuertes del mes."""
     conn = get_connection()
@@ -365,7 +394,7 @@ def ocupacion(desde: str, hasta: str, user: dict = Depends(current_user)):
 
 
 @app.get("/api/reservas")
-def reservas(desde: str = None, hasta: str = None, user: dict = Depends(current_user)):
+def reservas(desde: str = None, hasta: str = None, user: dict = Depends(exige("reservas"))):
     conn = get_connection()
     query = """SELECT r.*, g.confianza, g.confirmado_por_recepcion
                FROM reserva r LEFT JOIN grupo g ON g.id = r.grupo_id"""
@@ -399,7 +428,7 @@ def reservas(desde: str = None, hasta: str = None, user: dict = Depends(current_
 
 
 @app.get("/api/entradas-sinac")
-def entradas_sinac(desde: str = None, hasta: str = None, user: dict = Depends(current_user)):
+def entradas_sinac(desde: str = None, hasta: str = None, user: dict = Depends(exige("sinac"))):
     conn = get_connection()
     query = "SELECT * FROM entrada_sinac"
     params = ()
@@ -460,7 +489,7 @@ def entradas_sinac(desde: str = None, hasta: str = None, user: dict = Depends(cu
 
 
 @app.get("/api/tours/agenda")
-def agenda(fecha: str = None, desde: str = None, hasta: str = None, user: dict = Depends(current_user)):
+def agenda(fecha: str = None, desde: str = None, hasta: str = None, user: dict = Depends(exige("agenda"))):
     conn = get_connection()
     query = """SELECT ta.*, r.nombre_principal, r.room_no, tc.horario_inicio, tc.horario_fin, tc.max_pax_guia
                FROM tour_asignado ta
@@ -539,7 +568,7 @@ def _hora_traslado(fila, es_entrada):
 
 
 @app.get("/api/transporte")
-def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: dict = Depends(current_user)):
+def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: dict = Depends(exige("transporte"))):
     conn = get_connection()
     if fecha:
         cond_e, params_e = "arr_date = ?", (ddmmyy(fecha),)
@@ -573,7 +602,7 @@ def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: di
 
 
 @app.get("/api/analitica")
-def analitica(desde: str, hasta: str, user: dict = Depends(current_user)):
+def analitica(desde: str, hasta: str, user: dict = Depends(exige("analitica"))):
     conn = get_connection()
     uso_botes = conn.execute(
         """SELECT bote_nombre, COUNT(*) tours FROM tour_asignado
@@ -602,7 +631,7 @@ def analitica(desde: str, hasta: str, user: dict = Depends(current_user)):
 
 
 @app.get("/api/analitica/bote/{nombre}")
-def analitica_bote_detalle(nombre: str, desde: str, hasta: str, user: dict = Depends(current_user)):
+def analitica_bote_detalle(nombre: str, desde: str, hasta: str, user: dict = Depends(exige("analitica"))):
     conn = get_connection()
     rows = conn.execute(
         """SELECT ta.fecha, ta.tour_codigo, ta.pax, ta.guia_nombre, r.nombre_principal, r.room_no
@@ -616,7 +645,7 @@ def analitica_bote_detalle(nombre: str, desde: str, hasta: str, user: dict = Dep
 
 
 @app.get("/api/analitica/guia/{nombre}")
-def analitica_guia_detalle(nombre: str, desde: str, hasta: str, user: dict = Depends(current_user)):
+def analitica_guia_detalle(nombre: str, desde: str, hasta: str, user: dict = Depends(exige("analitica"))):
     conn = get_connection()
     rows = conn.execute(
         """SELECT ta.fecha, ta.tour_codigo, ta.pax, ta.bote_nombre, r.nombre_principal, r.room_no
@@ -630,7 +659,7 @@ def analitica_guia_detalle(nombre: str, desde: str, hasta: str, user: dict = Dep
 
 
 @app.get("/api/catalogo")
-def catalogo(todos: bool = False, user: dict = Depends(current_user)):
+def catalogo(todos: bool = False, user: dict = Depends(exige("agenda", "catalogo", "amenidades", "restaurantes"))):
     conn = get_connection()
     cond = "" if todos else "WHERE activo = 1"
     tours = conn.execute(f"SELECT * FROM tour_catalogo {cond} ORDER BY codigo").fetchall()
@@ -674,8 +703,7 @@ def _analizar_pdf(datos, nombre="archivo.pdf"):
 
 # ---------- ESCRITURA (solo rol recepción) ----------
 @app.post("/api/pdf/preview")
-async def pdf_preview(file: UploadFile = File(...), user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+async def pdf_preview(file: UploadFile = File(...), user: dict = Depends(exige("importar", escribir=True))):
     batch = _analizar_pdf(await file.read(), file.filename)
     simplified = []
     for item in batch["reservas"]:
@@ -692,8 +720,7 @@ async def pdf_preview(file: UploadFile = File(...), user: dict = Depends(current
 
 
 @app.post("/api/pdf/confirm")
-async def pdf_confirm(file: UploadFile = File(...), user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+async def pdf_confirm(file: UploadFile = File(...), user: dict = Depends(exige("importar", escribir=True))):
     batch = _analizar_pdf(await file.read(), file.filename)
     _load_batch(batch, fuente_pdf=file.filename)
     alertas = validar_todos_los_tours()
@@ -716,7 +743,7 @@ def _publicar_en_segundo_plano():
     """
     return "en vivo"
 @app.post("/api/tours/agenda/{tour_id}/asignar")
-def asignar_guia_bote(tour_id: int, guia: str = None, bote: str = None, user: dict = Depends(current_user)):
+def asignar_guia_bote(tour_id: int, guia: str = None, bote: str = None, user: dict = Depends(exige("agenda", escribir=True))):
     """Asigna guía y bote a una salida.
 
     Se distingue "no me mandaron el dato" de "lo dejaron en Sin asignar":
@@ -729,7 +756,6 @@ def asignar_guia_bote(tour_id: int, guia: str = None, bote: str = None, user: di
     que quedar en NULL y no en texto vacío, porque los avisos de "sin guía" y "sin
     bote" buscan justamente NULL y una cadena vacía se les escaparía.
     """
-    auth.requiere_escritura(user)
     conn = get_connection()
     anterior = conn.execute(
         "SELECT fecha, guia_nombre, bote_nombre FROM tour_asignado WHERE id = ?", (tour_id,)
@@ -791,8 +817,7 @@ def asignar_guia_bote(tour_id: int, guia: str = None, bote: str = None, user: di
 
 
 @app.post("/api/grupos/{grupo_id}/confirmar")
-def confirmar_grupo(grupo_id: int, confirmar: bool = True, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+def confirmar_grupo(grupo_id: int, confirmar: bool = True, user: dict = Depends(exige("reservas", escribir=True))):
     conn = get_connection()
     if confirmar:
         conn.execute("UPDATE grupo SET confirmado_por_recepcion = 1 WHERE id = ?", (grupo_id,))
@@ -805,8 +830,7 @@ def confirmar_grupo(grupo_id: int, confirmar: bool = True, user: dict = Depends(
 
 
 @app.post("/api/reservas/{conf_no}/guia")
-def confirmar_guia_reserva(conf_no: str, guia: str = None, confirmar: bool = True, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+def confirmar_guia_reserva(conf_no: str, guia: str = None, confirmar: bool = True, user: dict = Depends(exige("reservas", escribir=True))):
     conn = get_connection()
     if guia:
         conn.execute("UPDATE reserva SET guia_sugerido = ?, guia_confirmado = 1 WHERE conf_no = ?", (guia, conf_no))
@@ -818,8 +842,7 @@ def confirmar_guia_reserva(conf_no: str, guia: str = None, confirmar: bool = Tru
 
 
 @app.post("/api/entradas-sinac/{entrada_id}/marcar")
-def marcar_entrada(entrada_id: int, estado: str = "COMPRADA", user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+def marcar_entrada(entrada_id: int, estado: str = "COMPRADA", user: dict = Depends(exige("sinac", escribir=True))):
     conn = get_connection()
     conn.execute("UPDATE entrada_sinac SET estado = ? WHERE id = ?", (estado, entrada_id))
     conn.commit()
@@ -881,7 +904,7 @@ def cambios(user: dict = Depends(current_user)):
 
 
 @app.get("/api/sync/estado")
-def sync_estado(user: dict = Depends(current_user)):
+def sync_estado(user: dict = Depends(exige("usuarios"))):
     conn = get_connection()
     pendientes = conn.execute("SELECT COUNT(*) c FROM sync_log WHERE sincronizado = 0").fetchone()["c"]
     ultimo = conn.execute("SELECT MAX(creado_en) t FROM sync_log WHERE sincronizado = 1").fetchone()["t"]
@@ -892,8 +915,7 @@ def sync_estado(user: dict = Depends(current_user)):
 
 
 @app.post("/api/sync/ahora")
-def sync_ahora(user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+def sync_ahora(user: dict = Depends(exige("usuarios", escribir=True))):
     return sync_engine.intentar_sincronizar()
 
 
@@ -915,8 +937,7 @@ async def sync_apply(payload: dict):
 
 
 @app.get("/api/usuarios")
-def listar_usuarios(user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+def listar_usuarios(user: dict = Depends(exige("usuarios"))):
     conn = get_connection()
     rows = conn.execute("SELECT id, username, nombre_completo, rol, activo FROM usuario ORDER BY username").fetchall()
     conn.close()
@@ -924,8 +945,7 @@ def listar_usuarios(user: dict = Depends(current_user)):
 
 
 @app.post("/api/usuarios")
-async def crear_usuario(payload: dict, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+async def crear_usuario(payload: dict, user: dict = Depends(exige("usuarios", escribir=True))):
     if payload.get("rol") not in ("recepcion", "gerencia", "staff"):
         raise HTTPException(status_code=400, detail="Rol inválido")
     conn = get_connection()
@@ -944,8 +964,7 @@ async def crear_usuario(payload: dict, user: dict = Depends(current_user)):
 
 
 @app.post("/api/usuarios/{usuario_id}/estado")
-def cambiar_estado_usuario(usuario_id: int, activo: bool, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+def cambiar_estado_usuario(usuario_id: int, activo: bool, user: dict = Depends(exige("usuarios", escribir=True))):
     conn = get_connection()
     conn.execute("UPDATE usuario SET activo = ? WHERE id = ?", (1 if activo else 0, usuario_id))
     conn.commit()
@@ -954,8 +973,7 @@ def cambiar_estado_usuario(usuario_id: int, activo: bool, user: dict = Depends(c
 
 
 @app.post("/api/usuarios/{usuario_id}/password")
-async def cambiar_password_usuario(usuario_id: int, payload: dict, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+async def cambiar_password_usuario(usuario_id: int, payload: dict, user: dict = Depends(exige("usuarios", escribir=True))):
     h, salt = auth.hash_password(payload["password"])
     conn = get_connection()
     conn.execute("UPDATE usuario SET password_hash = ?, salt = ? WHERE id = ?", (h, salt, usuario_id))
@@ -965,8 +983,7 @@ async def cambiar_password_usuario(usuario_id: int, payload: dict, user: dict = 
 
 
 @app.post("/api/catalogo/guia")
-async def crear_guia(payload: dict, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+async def crear_guia(payload: dict, user: dict = Depends(exige("catalogo", escribir=True))):
     conn = get_connection()
     existe = conn.execute("SELECT nombre FROM guia WHERE nombre = ?", (payload["nombre"],)).fetchone()
     if existe:
@@ -982,8 +999,7 @@ async def crear_guia(payload: dict, user: dict = Depends(current_user)):
 
 
 @app.post("/api/catalogo/guia/{nombre}/estado")
-def estado_guia(nombre: str, activo: bool, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+def estado_guia(nombre: str, activo: bool, user: dict = Depends(exige("catalogo", escribir=True))):
     conn = get_connection()
     conn.execute("UPDATE guia SET activo = ? WHERE nombre = ?", (1 if activo else 0, nombre))
     conn.commit()
@@ -992,8 +1008,7 @@ def estado_guia(nombre: str, activo: bool, user: dict = Depends(current_user)):
 
 
 @app.post("/api/catalogo/bote")
-async def crear_bote(payload: dict, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+async def crear_bote(payload: dict, user: dict = Depends(exige("catalogo", escribir=True))):
     conn = get_connection()
     existe = conn.execute("SELECT nombre FROM bote WHERE nombre = ?", (payload["nombre"],)).fetchone()
     if existe:
@@ -1009,8 +1024,7 @@ async def crear_bote(payload: dict, user: dict = Depends(current_user)):
 
 
 @app.post("/api/catalogo/bote/{nombre}/estado")
-def estado_bote(nombre: str, activo: bool, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+def estado_bote(nombre: str, activo: bool, user: dict = Depends(exige("catalogo", escribir=True))):
     conn = get_connection()
     conn.execute("UPDATE bote SET activo = ? WHERE nombre = ?", (1 if activo else 0, nombre))
     conn.commit()
@@ -1019,8 +1033,7 @@ def estado_bote(nombre: str, activo: bool, user: dict = Depends(current_user)):
 
 
 @app.post("/api/catalogo/tour")
-async def crear_tour(payload: dict, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+async def crear_tour(payload: dict, user: dict = Depends(exige("catalogo", escribir=True))):
     conn = get_connection()
     existe = conn.execute("SELECT codigo FROM tour_catalogo WHERE codigo = ?", (payload["codigo"],)).fetchone()
     if existe:
@@ -1042,8 +1055,7 @@ async def crear_tour(payload: dict, user: dict = Depends(current_user)):
 
 
 @app.post("/api/catalogo/tour/{codigo}/estado")
-def estado_tour(codigo: str, activo: bool, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+def estado_tour(codigo: str, activo: bool, user: dict = Depends(exige("catalogo", escribir=True))):
     conn = get_connection()
     conn.execute("UPDATE tour_catalogo SET activo = ? WHERE codigo = ?", (1 if activo else 0, codigo))
     conn.commit()
@@ -1064,7 +1076,7 @@ def export_response(buf, filename, formato):
 
 
 @app.get("/api/export/reservas")
-def export_reservas(desde: str = None, hasta: str = None, formato: str = "xlsx", user: dict = Depends(current_user)):
+def export_reservas(desde: str = None, hasta: str = None, formato: str = "xlsx", user: dict = Depends(exige("reservas"))):
     conn = get_connection()
     query = """SELECT r.*, g.confianza FROM reserva r LEFT JOIN grupo g ON g.id = r.grupo_id"""
     params = ()
@@ -1088,7 +1100,7 @@ def export_reservas(desde: str = None, hasta: str = None, formato: str = "xlsx",
 
 
 @app.get("/api/export/agenda")
-def export_agenda(fecha: str = None, desde: str = None, hasta: str = None, formato: str = "xlsx", user: dict = Depends(current_user)):
+def export_agenda(fecha: str = None, desde: str = None, hasta: str = None, formato: str = "xlsx", user: dict = Depends(exige("agenda"))):
     conn = get_connection()
     query = """SELECT ta.fecha, ta.tour_codigo, ta.guia_nombre, ta.bote_nombre, ta.pax,
                       r.nombre_principal, r.room_no
@@ -1114,7 +1126,7 @@ def export_agenda(fecha: str = None, desde: str = None, hasta: str = None, forma
 
 
 @app.get("/api/export/transporte")
-def export_transporte(fecha: str = None, desde: str = None, hasta: str = None, formato: str = "xlsx", user: dict = Depends(current_user)):
+def export_transporte(fecha: str = None, desde: str = None, hasta: str = None, formato: str = "xlsx", user: dict = Depends(exige("transporte"))):
     conn = get_connection()
     if fecha:
         cond_e, params_e = "arr_date = ?", (ddmmyy(fecha),)
@@ -1152,7 +1164,7 @@ def export_transporte(fecha: str = None, desde: str = None, hasta: str = None, f
 
 
 @app.get("/api/export/entradas-sinac")
-def export_entradas(desde: str = None, hasta: str = None, formato: str = "xlsx", user: dict = Depends(current_user)):
+def export_entradas(desde: str = None, hasta: str = None, formato: str = "xlsx", user: dict = Depends(exige("sinac"))):
     conn = get_connection()
     query = "SELECT * FROM entrada_sinac"
     params = ()
@@ -1171,7 +1183,7 @@ def export_entradas(desde: str = None, hasta: str = None, formato: str = "xlsx",
 
 
 @app.get("/api/export/resumen-operacion")
-def export_resumen(fecha: str, formato: str = "xlsx", user: dict = Depends(current_user)):
+def export_resumen(fecha: str, formato: str = "xlsx", user: dict = Depends(exige("resumen"))):
     conn = get_connection()
     tours = [dict(r) for r in conn.execute(
         """SELECT ta.tour_codigo, ta.guia_nombre, ta.bote_nombre, SUM(ta.pax) pax_total
@@ -1185,7 +1197,7 @@ def export_resumen(fecha: str, formato: str = "xlsx", user: dict = Depends(curre
 
 
 @app.get("/api/export/restaurantes")
-def export_restaurantes(fecha: str, formato: str = "xlsx", user: dict = Depends(current_user)):
+def export_restaurantes(fecha: str, formato: str = "xlsx", user: dict = Depends(exige("restaurantes"))):
     """Distribución del día para imprimir o pasarle a cocina y al salonero."""
     import restaurantes as rest
     conn = get_connection()
@@ -1222,7 +1234,7 @@ def export_restaurantes(fecha: str, formato: str = "xlsx", user: dict = Depends(
 
 
 @app.get("/api/export/analitica")
-def export_analitica(desde: str, hasta: str, formato: str = "xlsx", user: dict = Depends(current_user)):
+def export_analitica(desde: str, hasta: str, formato: str = "xlsx", user: dict = Depends(exige("analitica"))):
     conn = get_connection()
     uso_botes = [dict(r) for r in conn.execute(
         """SELECT bote_nombre, COUNT(*) tours FROM tour_asignado
@@ -1251,10 +1263,9 @@ def export_analitica(desde: str, hasta: str, formato: str = "xlsx", user: dict =
 
 
 @app.post("/api/reservas/{conf_no}/transporte")
-def confirmar_transporte(conf_no: str, tipo: str, punto: str, user: dict = Depends(current_user)):
+def confirmar_transporte(conf_no: str, tipo: str, punto: str, user: dict = Depends(exige("transporte", escribir=True))):
     """Permite a recepción fijar manualmente el punto (Sierpe/Drake) cuando el PDF
     no lo indicaba con claridad."""
-    auth.requiere_escritura(user)
     if tipo not in ("entrada", "salida") or punto not in ("Sierpe", "Drake"):
         raise HTTPException(status_code=400, detail="Tipo o punto inválido")
     conn = get_connection()
@@ -1279,7 +1290,7 @@ def confirmar_transporte(conf_no: str, tipo: str, punto: str, user: dict = Depen
 
 
 @app.get("/api/transporte/pendientes")
-def transporte_pendientes(user: dict = Depends(current_user)):
+def transporte_pendientes(user: dict = Depends(exige("transporte"))):
     conn = get_connection()
     rows = conn.execute(
         """SELECT conf_no, room_no, nombre_principal, arr_date, dep_date,
@@ -1293,7 +1304,7 @@ def transporte_pendientes(user: dict = Depends(current_user)):
 
 
 @app.get("/api/reservas/{conf_no}/detalle")
-def detalle_reserva(conf_no: str, user: dict = Depends(current_user)):
+def detalle_reserva(conf_no: str, user: dict = Depends(exige("reservas"))):
     """Devuelve toda la información de una reserva: datos, huéspedes, tours,
     amenidades y notas — para mostrarla en un cuadro de detalle."""
     conn = get_connection()
@@ -1339,10 +1350,9 @@ def detalle_reserva(conf_no: str, user: dict = Depends(current_user)):
 
 
 @app.post("/api/tours/agenda/{tour_id}/grupo")
-def cambiar_grupo_operativo(tour_id: int, grupo: str, user: dict = Depends(current_user)):
+def cambiar_grupo_operativo(tour_id: int, grupo: str, user: dict = Depends(exige("agenda", escribir=True))):
     """Mueve un tour a otro grupo operativo (A, B, C...). Sirve para dividir un tour
     grande en grupos separados, cada uno con su propio guía y bote."""
-    auth.requiere_escritura(user)
     grupo = (grupo or "A").strip().upper()
     if not grupo or len(grupo) > 2:
         raise HTTPException(status_code=400, detail="Grupo inválido (usa A, B, C...)")
@@ -1370,7 +1380,7 @@ def cambiar_grupo_operativo(tour_id: int, grupo: str, user: dict = Depends(curre
 
 
 @app.get("/api/tours/grupos-disponibles")
-def grupos_disponibles(fecha: str, tour_codigo: str, user: dict = Depends(current_user)):
+def grupos_disponibles(fecha: str, tour_codigo: str, user: dict = Depends(exige("agenda"))):
     """Devuelve los grupos operativos ya usados para un tour en una fecha, con su
     pax total, guía y bote — para mostrar el panorama al dividir."""
     conn = get_connection()
@@ -1387,10 +1397,9 @@ def grupos_disponibles(fecha: str, tour_codigo: str, user: dict = Depends(curren
 
 
 @app.post("/api/amenidades")
-async def crear_amenidad_manual(payload: dict, user: dict = Depends(current_user)):
+async def crear_amenidad_manual(payload: dict, user: dict = Depends(exige("amenidades", escribir=True))):
     """Permite a recepción/gerencia agregar un requerimiento del huésped que no venía
     en el PDF: alergias reportadas por teléfono, preferencias, peticiones especiales."""
-    auth.requiere_escritura(user)
     if not payload.get("conf_no") or not payload.get("amenidad"):
         raise HTTPException(status_code=400, detail="Falta la reserva o la descripción")
     conn = get_connection()
@@ -1411,10 +1420,9 @@ async def crear_amenidad_manual(payload: dict, user: dict = Depends(current_user
 
 
 @app.delete("/api/amenidades/{amenidad_id}")
-def eliminar_amenidad(amenidad_id: int, user: dict = Depends(current_user)):
+def eliminar_amenidad(amenidad_id: int, user: dict = Depends(exige("amenidades", escribir=True))):
     """Solo se pueden eliminar los requerimientos agregados manualmente; los detectados
     del PDF se vuelven a generar en cada importación."""
-    auth.requiere_escritura(user)
     conn = get_connection()
     row = conn.execute("SELECT origen FROM amenidad_tarea WHERE id = ?", (amenidad_id,)).fetchone()
     if not row:
@@ -1431,7 +1439,7 @@ def eliminar_amenidad(amenidad_id: int, user: dict = Depends(current_user)):
 
 @app.get("/api/amenidades")
 def listar_amenidades(desde: str = None, hasta: str = None, estado: str = None,
-                      user: dict = Depends(current_user)):
+                      user: dict = Depends(exige("amenidades"))):
     """Lista las amenidades a preparar, filtradas por la fecha de llegada del huésped
     (que es cuando normalmente hay que tenerlas listas)."""
     conn = get_connection()
@@ -1454,8 +1462,7 @@ def listar_amenidades(desde: str = None, hasta: str = None, estado: str = None,
 
 
 @app.post("/api/amenidades/{amenidad_id}/estado")
-def cambiar_estado_amenidad(amenidad_id: int, estado: str, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+def cambiar_estado_amenidad(amenidad_id: int, estado: str, user: dict = Depends(exige("amenidades", escribir=True))):
     if estado not in ("PENDIENTE", "HECHA"):
         raise HTTPException(status_code=400, detail="Estado inválido")
     conn = get_connection()
@@ -1467,7 +1474,7 @@ def cambiar_estado_amenidad(amenidad_id: int, estado: str, user: dict = Depends(
 
 @app.get("/api/export/amenidades")
 def export_amenidades(desde: str = None, hasta: str = None, formato: str = "xlsx",
-                      user: dict = Depends(current_user)):
+                      user: dict = Depends(exige("amenidades"))):
     conn = get_connection()
     query = f"""SELECT r.arr_date, r.room_no, r.nombre_principal, a.amenidad,
                        a.tarea, a.area_responsable, a.estado
@@ -1508,7 +1515,7 @@ def _guardar_itinerario(conn, conf_no, nombre, filas, editado=0, aviso=None, idi
 
 
 @app.post("/api/tours/agenda/{tour_id}/fecha")
-def cambiar_fecha_tour(tour_id: int, fecha: str, user: dict = Depends(current_user)):
+def cambiar_fecha_tour(tour_id: int, fecha: str, user: dict = Depends(exige("agenda", escribir=True))):
     """Cambia la fecha de un tour. La fecha que trae la reserva es una intención, pero
     la operación real puede moverla (clima, mareas, cupos, decisión del huésped).
 
@@ -1517,7 +1524,6 @@ def cambiar_fecha_tour(tour_id: int, fecha: str, user: dict = Depends(current_us
       · el itinerario del huésped, para que reciba la fecha correcta
       · las validaciones de capacidad y los conflictos de horario de ambos días
     """
-    auth.requiere_escritura(user)
     try:
         datetime.date.fromisoformat(fecha)
     except ValueError:
@@ -1632,7 +1638,7 @@ def _actualizar_itinerario_por_fecha(conn, conf_no, tour_codigo, fecha_vieja, fe
 
 
 @app.get("/api/reservas/{conf_no}/itinerario")
-def obtener_itinerario(conf_no: str, user: dict = Depends(current_user)):
+def obtener_itinerario(conf_no: str, user: dict = Depends(exige("reservas"))):
     """Devuelve el itinerario de la reserva. Si aún no existe, lo genera al momento."""
     conn = get_connection()
     fila = conn.execute("SELECT * FROM itinerario WHERE conf_no = ?", (conf_no,)).fetchone()
@@ -1684,8 +1690,7 @@ def obtener_itinerario(conf_no: str, user: dict = Depends(current_user)):
 
 
 @app.put("/api/reservas/{conf_no}/itinerario")
-async def guardar_itinerario(conf_no: str, payload: dict, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+async def guardar_itinerario(conf_no: str, payload: dict, user: dict = Depends(exige("reservas", escribir=True))):
     conn = get_connection()
     _guardar_itinerario(conn, conf_no, payload.get("nombre_bienvenida"),
                         payload.get("filas", []), editado=1, aviso=None,
@@ -1698,9 +1703,8 @@ async def guardar_itinerario(conf_no: str, payload: dict, user: dict = Depends(c
 
 
 @app.post("/api/reservas/{conf_no}/itinerario/regenerar")
-def regenerar_itinerario(conf_no: str, user: dict = Depends(current_user)):
+def regenerar_itinerario(conf_no: str, user: dict = Depends(exige("reservas", escribir=True))):
     """Descarta las ediciones manuales y vuelve a armarlo desde la reserva."""
-    auth.requiere_escritura(user)
     conn = get_connection()
     datos = itin.datos_de_reserva(conn, conf_no)
     if not datos:
@@ -1714,10 +1718,9 @@ def regenerar_itinerario(conf_no: str, user: dict = Depends(current_user)):
 
 
 @app.post("/api/reservas/{conf_no}/itinerario/incorporar")
-def incorporar_cambios_itinerario(conf_no: str, user: dict = Depends(current_user)):
+def incorporar_cambios_itinerario(conf_no: str, user: dict = Depends(exige("reservas", escribir=True))):
     """Agrega al itinerario editado lo que la reserva trae de nuevo, conservando
     todas las ediciones manuales que recepción ya había hecho."""
-    auth.requiere_escritura(user)
     conn = get_connection()
     fila = conn.execute("SELECT * FROM itinerario WHERE conf_no = ?", (conf_no,)).fetchone()
     datos = itin.datos_de_reserva(conn, conf_no)
@@ -1738,7 +1741,7 @@ def incorporar_cambios_itinerario(conf_no: str, user: dict = Depends(current_use
 
 
 @app.get("/api/reservas/{conf_no}/itinerario/pdf")
-def descargar_itinerario(conf_no: str, user: dict = Depends(current_user)):
+def descargar_itinerario(conf_no: str, user: dict = Depends(exige("reservas"))):
     conn = get_connection()
     fila = conn.execute("SELECT * FROM itinerario WHERE conf_no = ?", (conf_no,)).fetchone()
     datos = itin.datos_de_reserva(conn, conf_no)
@@ -1757,7 +1760,7 @@ def descargar_itinerario(conf_no: str, user: dict = Depends(current_user)):
 
 
 @app.get("/api/itinerarios/estados")
-def estados_itinerarios(desde: str = None, hasta: str = None, user: dict = Depends(current_user)):
+def estados_itinerarios(desde: str = None, hasta: str = None, user: dict = Depends(exige("reservas"))):
     """Estado del itinerario de cada reserva, para pintarlo en la lista de Reservas."""
     conn = get_connection()
     q = "SELECT conf_no, editado, aviso_cambios, idioma FROM itinerario"
@@ -1835,7 +1838,7 @@ def itinerario_publico_con_codigo(room_no: str, token: str):
 
 
 @app.get("/api/qr/config")
-def qr_config(user: dict = Depends(current_user)):
+def qr_config(user: dict = Depends(exige("publicacion"))):
     cfg = qrh.cargar_config()
     conn = get_connection()
     habs = [dict(r)["room_no"] for r in conn.execute(
@@ -1849,8 +1852,7 @@ def qr_config(user: dict = Depends(current_user)):
 
 
 @app.post("/api/qr/config")
-async def guardar_qr_config(payload: dict, user: dict = Depends(current_user)):
-    auth.requiere_escritura(user)
+async def guardar_qr_config(payload: dict, user: dict = Depends(exige("publicacion", escribir=True))):
     cfg = qrh.cargar_config()
     if "base_url" in payload:
         cfg["base_url"] = (payload["base_url"] or "").strip()
@@ -1861,7 +1863,7 @@ async def guardar_qr_config(payload: dict, user: dict = Depends(current_user)):
 
 
 @app.get("/api/qr/hoja")
-def qr_hoja(user: dict = Depends(current_user)):
+def qr_hoja(user: dict = Depends(exige("publicacion"))):
     """PDF con el QR de cada habitación, para imprimir una sola vez."""
     cfg = qrh.cargar_config()
     if not cfg.get("base_url"):
@@ -1881,7 +1883,7 @@ def qr_hoja(user: dict = Depends(current_user)):
 
 
 @app.get("/api/qr/estado")
-def qr_estado(user: dict = Depends(current_user)):
+def qr_estado(user: dict = Depends(exige("publicacion"))):
     """Muestra qué huésped vería hoy cada habitación al escanear su QR."""
     cfg = qrh.cargar_config()
     conn = get_connection()
@@ -1905,7 +1907,7 @@ def qr_estado(user: dict = Depends(current_user)):
 
 @app.get("/api/publicacion/estado")
 def publicacion_estado(fecha: str = None, filtro: str = "todas",
-                       user: dict = Depends(current_user)):
+                       user: dict = Depends(exige("publicacion"))):
     """Qué muestra el código QR de cada habitación.
 
     Ya no hay estados de publicación: la página se arma en el momento en que el
@@ -1984,7 +1986,7 @@ async def publicacion_config(payload: dict, user: dict = Depends(current_user)):
 
 
 @app.get("/api/publicacion/qr")
-def publicacion_qr(user: dict = Depends(current_user)):
+def publicacion_qr(user: dict = Depends(exige("publicacion"))):
     """Hoja imprimible con el QR de cada habitación. Se imprime una sola vez:
     el enlace de cada habitación no cambia nunca."""
     conn = get_connection()
@@ -2000,7 +2002,7 @@ def publicacion_qr(user: dict = Depends(current_user)):
 
 
 @app.get("/api/publicacion/vista-previa/{room_no}", response_class=HTMLResponse)
-def publicacion_vista_previa(room_no: str, user: dict = Depends(current_user)):
+def publicacion_vista_previa(room_no: str, user: dict = Depends(exige("publicacion"))):
     """Permite a recepción ver exactamente lo que verá el huésped de esa habitación.
 
     Se salta el código secreto a propósito: quien mira ya inició sesión en el sistema.
@@ -2009,7 +2011,7 @@ def publicacion_vista_previa(room_no: str, user: dict = Depends(current_user)):
 
 
 @app.get("/api/buscar")
-def buscar(q: str, user: dict = Depends(current_user)):
+def buscar(q: str, user: dict = Depends(exige("reservas"))):
     """Busca por nombre de huésped, número de habitación o número de reserva.
     Pensado para el mostrador: se escribe cualquier dato y aparece la reserva."""
     termino = (q or "").strip()
@@ -2086,14 +2088,14 @@ def buscar(q: str, user: dict = Depends(current_user)):
 
 
 @app.get("/api/agenda/conflictos")
-def agenda_conflictos(fecha: str = None, user: dict = Depends(current_user)):
+def agenda_conflictos(fecha: str = None, user: dict = Depends(exige("dashboard", "agenda"))):
     """Guías o botes asignados a dos salidas que coinciden en horario."""
     return {"conflictos": detectar_conflictos_asignacion(fecha)}
 
 
 @app.get("/api/agenda/disponibilidad")
 def agenda_disponibilidad(fecha: str, tour_codigo: str = None, excluir_id: int = None,
-                          user: dict = Depends(current_user)):
+                          user: dict = Depends(exige("agenda"))):
     """Quién está libre y quién ocupado en el horario de ese tour, para asignar sin
     tener que revisarlo mentalmente."""
     conn = get_connection()
@@ -2122,7 +2124,7 @@ def agenda_disponibilidad(fecha: str, tour_codigo: str = None, excluir_id: int =
 
 
 @app.get("/api/pendientes-manana")
-def pendientes_manana(fecha: str = None, user: dict = Depends(current_user)):
+def pendientes_manana(fecha: str = None, user: dict = Depends(exige("dashboard"))):
     """Lo que falta asignar para la operación del día siguiente. Se cuenta solo el día
     relevante, no el mes: '3 tours de mañana sin guía' es útil, '74 del mes' es ruido."""
     objetivo = fecha or (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
@@ -2163,7 +2165,7 @@ def pendientes_manana(fecha: str = None, user: dict = Depends(current_user)):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/permisos/catalogo")
-def permisos_catalogo(user: dict = Depends(current_user)):
+def permisos_catalogo(user: dict = Depends(exige("usuarios"))):
     """Pantallas disponibles y perfiles sugeridos, para la pantalla de Usuarios."""
     return {"pantallas": [{"clave": k, "nombre": n} for k, n in auth.PANTALLAS],
             "perfiles": auth.PERFILES}
@@ -2186,7 +2188,7 @@ def guardar_permisos(user_id: int, payload: dict, user: dict = Depends(current_u
 
 
 @app.get("/api/restaurantes")
-def restaurantes_dia(fecha: str, user: dict = Depends(current_user)):
+def restaurantes_dia(fecha: str, user: dict = Depends(exige("restaurantes"))):
     """Distribución de almuerzo y cena de esa fecha."""
     import restaurantes as rest
     conn = get_connection()
@@ -2304,7 +2306,7 @@ def restaurantes_cena_privada(payload: dict, user: dict = Depends(current_user))
 
 @app.get("/api/restaurantes/regimen")
 def restaurantes_regimen(fecha: str = None, desde: str = None, hasta: str = None,
-                         user: dict = Depends(current_user)):
+                         user: dict = Depends(exige("restaurantes"))):
     """Quiénes tienen las comidas incluidas y quiénes no, día por día.
 
     Para un solo día basta con lo que ya devuelve /api/restaurantes; esto existe para
@@ -2368,7 +2370,7 @@ def restaurantes_regimen(fecha: str = None, desde: str = None, hasta: str = None
 
 
 @app.get("/api/restaurantes/avisos")
-def restaurantes_avisos(dias: int = 30, user: dict = Depends(current_user)):
+def restaurantes_avisos(dias: int = 30, user: dict = Depends(exige("restaurantes"))):
     """Noches futuras que no van a caber o no se van a poder equilibrar."""
     import restaurantes as rest
     conn = get_connection()
