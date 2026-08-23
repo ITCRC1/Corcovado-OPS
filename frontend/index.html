@@ -249,7 +249,10 @@
     <input type="password" id="login-pass" placeholder="Contraseña" autocomplete="current-password">
     <button onclick="doLogin()">Ingresar</button>
     <div class="login-error" id="login-error"></div>
-    <div class="login-hint">Usuarios de prueba: recepcion / gerencia / staff<br>(contraseña: [usuario]2026)</div>
+    <!-- Aquí se listaban las cuentas iniciales con su contraseña. Servía cuando el
+         sistema corría solo en la red del hotel, pero con el sistema publicado en
+         internet le entregaba una cuenta válida a cualquiera que abriera la dirección. -->
+    <div class="login-hint">Si no tienes usuario, pídelo en recepción.</div>
   </div>
 </div>
 

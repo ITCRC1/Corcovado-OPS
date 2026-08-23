@@ -26,13 +26,29 @@ def verify_password(password, password_hash, salt):
 
 
 def seed_default_users(conn):
+    """Crea las cuentas iniciales, y SOLO si no hay ninguna todavía.
+
+    En un sistema que ya tiene usuarios esto no hace nada: las cuentas y contraseñas
+    existentes no se tocan nunca.
+
+    La contraseña ya no se deduce del nombre ("recepcion2026"). Eso era predecible, y
+    además estaba escrito en el código y publicado en la pantalla de ingreso, así que
+    cualquiera que abriera la dirección tenía una cuenta válida. Ahora:
+
+      · Si se define HOTEL_ADMIN_PASSWORD, se usa esa para las cuentas iniciales.
+        Sirve para fijarla desde las variables del servidor.
+      · Si no, se genera una al azar y se imprime UNA vez en el registro de arranque.
+        Hay que leerla ahí para el primer ingreso, y cambiarla desde Usuarios.
+    """
     existentes = conn.execute("SELECT COUNT(*) c FROM usuario").fetchone()["c"]
     if existentes > 0:
-        return
+        return None
+    fijada = os.environ.get("HOTEL_ADMIN_PASSWORD")
+    clave = fijada or secrets.token_urlsafe(9)
     defaults = [
-        ("recepcion", "recepcion2026", "Recepción", "recepcion"),
-        ("gerencia", "gerencia2026", "Gerencia", "gerencia"),
-        ("staff", "staff2026", "Staff de campo", "staff"),
+        ("recepcion", clave, "Recepción", "recepcion"),
+        ("gerencia", clave, "Gerencia", "gerencia"),
+        ("staff", clave, "Staff de campo", "staff"),
     ]
     import json as _json
     for username, password, nombre, rol in defaults:
@@ -48,6 +64,16 @@ def seed_default_users(conn):
              _json.dumps(POR_ROL.get(rol, POR_ROL["staff"]), ensure_ascii=False)),
         )
     conn.commit()
+    if fijada:
+        print("Cuentas iniciales creadas con la contraseña de HOTEL_ADMIN_PASSWORD.")
+    else:
+        print("\n" + "=" * 66)
+        print("  CUENTAS INICIALES CREADAS — esta contraseña se muestra UNA sola vez")
+        print(f"     usuario: recepcion   contraseña: {clave}")
+        print("  Entra con ella y cámbiala desde la pantalla de Usuarios.")
+        print("  ('gerencia' y 'staff' se crearon con la misma; desactiva las que no uses.)")
+        print("=" * 66 + "\n")
+    return {"usuarios": [u for u, _, _, _ in defaults], "password": clave}
 
 
 def crear_sesion(conn, usuario_id):
