@@ -116,8 +116,13 @@ def reserva_resumen(row):
 @app.post("/api/auth/login")
 async def login(payload: dict):
     conn = get_connection()
+    # El nombre de usuario se compara sin distinguir mayúsculas y sin espacios de más:
+    # en el celular el teclado escribe la primera letra en mayúscula por su cuenta, y
+    # el ingreso fallaba con un "usuario o contraseña incorrectos" que no explicaba nada.
+    # La contraseña sí distingue mayúsculas, como corresponde.
+    usuario = (payload.get("username") or "").strip()
     user = conn.execute(
-        "SELECT * FROM usuario WHERE username = ? AND activo = 1", (payload.get("username", ""),)
+        "SELECT * FROM usuario WHERE username = ? COLLATE NOCASE AND activo = 1", (usuario,)
     ).fetchone()
     if not user or not auth.verify_password(payload.get("password", ""), user["password_hash"], user["salt"]):
         conn.close()
@@ -954,7 +959,10 @@ async def crear_usuario(payload: dict, user: dict = Depends(exige("usuarios", es
     if payload.get("rol") not in ("recepcion", "gerencia", "staff"):
         raise HTTPException(status_code=400, detail="Rol inválido")
     conn = get_connection()
-    existe = conn.execute("SELECT id FROM usuario WHERE username = ?", (payload["username"],)).fetchone()
+    # Sin distinguir mayúsculas: si existiera "transporte" y se creara "Transporte", el
+    # ingreso —que ya no distingue— no sabría a cuál de los dos corresponde.
+    existe = conn.execute("SELECT id FROM usuario WHERE username = ? COLLATE NOCASE",
+                          (payload["username"],)).fetchone()
     if existe:
         conn.close()
         raise HTTPException(status_code=400, detail="Ese nombre de usuario ya existe")
@@ -2289,7 +2297,8 @@ async def editar_usuario(usuario_id: int, payload: dict,
             conn.close()
             raise HTTPException(status_code=400, detail="El usuario no puede ir vacío ni llevar espacios")
         repetido = conn.execute(
-            "SELECT id FROM usuario WHERE username = ? AND id != ?", (nuevo, usuario_id)).fetchone()
+            "SELECT id FROM usuario WHERE username = ? COLLATE NOCASE AND id != ?",
+            (nuevo, usuario_id)).fetchone()
         if repetido:
             conn.close()
             raise HTTPException(status_code=400, detail="Ya existe otro usuario con ese nombre")

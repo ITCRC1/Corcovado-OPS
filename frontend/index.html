@@ -242,7 +242,10 @@
   <div class="login-card">
     <img src="/assets/logo.jpg" alt="Corcovado Wilderness Lodge">
     <p style="font-weight:600;font-size:15px;margin:0 0 16px;color:#24291F;">Sistema de operación</p>
-    <input type="text" id="login-user" placeholder="Usuario" autocomplete="username">
+    <!-- autocapitalize/autocorrect apagados: en el celular el teclado ponía mayúscula a
+         la primera letra ("Transporte" en vez de "transporte") y el ingreso fallaba. -->
+    <input type="text" id="login-user" placeholder="Usuario" autocomplete="username"
+           autocapitalize="none" autocorrect="off" spellcheck="false">
     <input type="password" id="login-pass" placeholder="Contraseña" autocomplete="current-password">
     <button onclick="doLogin()">Ingresar</button>
     <div class="login-error" id="login-error"></div>
