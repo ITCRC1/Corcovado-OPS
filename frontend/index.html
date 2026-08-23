@@ -3,6 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <title>Corcovado Wilderness Lodge — Sistema de Operación</title>
+<!-- Sin esta línea el celular dibuja la página a 980px y la encoge: todo queda diminuto.
+     Se permite agrandar con los dedos (no se bloquea el zoom) por accesibilidad. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Para que se instale y se vea como una app en el teléfono -->
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#2C4A3E">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="CWL Operación">
+<link rel="apple-touch-icon" href="/assets/icono-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/assets/icono-192.png">
 <!-- El servidor reemplaza esta marca por la versión con la que entrega la página, así
      la pantalla sabe cuál está corriendo y puede avisar si quedó una copia vieja. -->
 <!--VERSION-->
@@ -188,6 +200,133 @@
   .pulsable.pulsado { background: #E6EEFC; }
   .btn-primary { background: var(--forest); color: white; border-color: var(--forest); }
   .filterbar { display: flex; align-items: center; gap: 8px; font-size: 13px; flex-wrap: wrap; }
+
+  /* ==========================================================================
+     CELULAR
+     El sistema se diseñó para computadora, y ahí se sigue trabajando: importar el
+     PDF, editar itinerarios, mover tours. En el teléfono la mayoría solo consulta,
+     así que aquí se busca que ABRA como una app y se LEA de un pulgar:
+       · el menú pasa a una barra fija abajo, al alcance del dedo
+       · las tablas se vuelven tarjetas, una por fila, con la etiqueta del dato
+       · las barras de filtros se deslizan de lado en vez de amontonarse
+     Los botones de editar no hace falta esconderlos: ya desaparecen solos para quien
+     tiene permiso de solo ver.
+     ========================================================================== */
+  .solo-movil { display: none; }
+
+  @media (max-width: 760px) {
+    .solo-movil { display: block; }
+    .solo-escritorio { display: none !important; }
+
+    /* Debajo de la barra fija tiene que quedar aire, o el último botón de la pantalla
+       queda tapado. El env() es para los teléfonos con barra de gestos. */
+    .container { padding: 12px 10px calc(86px + env(safe-area-inset-bottom)); max-width: 100%; }
+
+    .topbar { padding: 10px 12px; padding-top: calc(10px + env(safe-area-inset-top)); }
+    .topbar-title { display: none; }          /* el logo ya identifica al lodge */
+    .topbar-left img, .topbar img { height: 26px; }
+    .topbar-buscar { padding: 0 8px; }
+    .topbar-user { gap: 6px; font-size: 12px; }
+    #user-label { max-width: 84px; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; }
+    #sello-version { display: none; }          /* en pantalla chica no cabe; sigue en la web */
+
+    /* ---- Menú: barra fija abajo ----
+       Se desliza de lado si la persona tiene muchas pantallas. Quien tenga dos o tres
+       las ve todas de una: la barra se arma con los botones que su permiso deja pasar. */
+    nav {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 800;
+      margin: 0; gap: 0; flex-wrap: nowrap; overflow-x: auto; scroll-snap-type: x proximity;
+      background: var(--card); border-top: 1px solid var(--border);
+      padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+      box-shadow: 0 -3px 14px rgba(0,0,0,.10);
+      -webkit-overflow-scrolling: touch; scrollbar-width: none;
+    }
+    nav::-webkit-scrollbar { display: none; }
+    nav button {
+      flex: 1 0 auto; min-width: 74px; scroll-snap-align: center;
+      display: flex; flex-direction: column; align-items: center; gap: 3px;
+      border: none; background: transparent; border-radius: var(--r-sm);
+      padding: 7px 6px 5px; font-size: 10.5px; line-height: 1.15; color: var(--muted);
+      letter-spacing: .1px;
+    }
+    nav button.active { background: #EAF1EC; color: var(--forest-dark); font-weight: 600; }
+    /* El icono y el nombre corto viven en el propio botón, así el menú no se duplica */
+    nav button::before { content: attr(data-icono); font-size: 19px; line-height: 1; }
+    nav button .largo { display: none; }
+    nav button .corto { display: block; }
+
+    /* ---- Tablas convertidas en tarjetas ----
+       La etiqueta de cada dato la pone adaptarTablasMovil() leyendo el encabezado,
+       así funciona en todas las tablas sin tocar ninguna a mano. */
+    table thead, table tr:first-child th { display: none; }
+    table, table tbody, table tr, table td { display: block; width: 100%; }
+    table { border-collapse: separate; }
+    table tr {
+      border: 1px solid var(--border); border-radius: var(--r-md);
+      margin-bottom: 10px; padding: 4px 0; background: var(--card);
+      overflow: hidden;
+    }
+    table td {
+      border: none; border-bottom: 1px solid #F1EFE8;
+      padding: 7px 12px; text-align: left; font-size: 13px;
+      display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+    }
+    table tr td:last-child { border-bottom: none; }
+    table td::before {
+      content: attr(data-etiqueta);
+      flex: 0 0 38%; font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+      color: var(--muted); font-weight: 600; padding-top: 2px;
+    }
+    /* Celdas sin encabezado (la columna de botones) ocupan todo el ancho */
+    table td[data-etiqueta=""] { display: block; }
+    table td[data-etiqueta=""]::before { display: none; }
+    table td .btn { margin: 3px 6px 3px 0; }
+
+    /* ---- Recuadros de cifras: de a dos ---- */
+    .stats { grid-template-columns: repeat(2, 1fr) !important; gap: 8px; }
+    .stat { padding: 11px; }
+
+    /* ---- Filtros: una sola fila que se desliza ---- */
+    .filterbar {
+      flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px;
+      -webkit-overflow-scrolling: touch; scrollbar-width: none;
+    }
+    .filterbar::-webkit-scrollbar { display: none; }
+    .filterbar > * { flex: 0 0 auto; }
+    .header { flex-direction: column; align-items: stretch; gap: 10px; }
+
+    /* ---- Tocable con el pulgar, y sin que el iPhone haga zoom al escribir ---- */
+    .btn { padding: 10px 14px; }
+    nav button, .btn, .stat { -webkit-tap-highlight-color: transparent; }
+    input, select, textarea { font-size: 16px !important; }
+    .filterbar input, .filterbar select { padding: 8px 10px; }
+
+    .card { padding: 14px 12px; border-radius: var(--r-md); }
+    .modal-fondo { padding: 12px 8px calc(80px + env(safe-area-inset-bottom)); }
+    .modal-caja { padding: 16px 14px; }
+    .aviso-flotante { bottom: calc(78px + env(safe-area-inset-bottom)); width: max-content;
+      max-width: 88vw; text-align: center; }
+    .aviso-flotante.visible { bottom: calc(86px + env(safe-area-inset-bottom)); }
+    .buscar-panel { top: 52px; width: 96vw; }
+  }
+
+  /* Instalada en el teléfono: sin barra de direcciones, se gana ese alto */
+  @media (display-mode: standalone) {
+    .instalar-aviso { display: none !important; }
+  }
+
+  /* Aviso para instalar, solo la primera vez y solo en el teléfono */
+  .instalar-aviso {
+    position: fixed; left: 10px; right: 10px; bottom: calc(84px + env(safe-area-inset-bottom));
+    background: var(--forest-dark); color: #F5F1E8; border-radius: var(--r-md);
+    padding: 12px 14px; font-size: 12.5px; z-index: 1100; display: flex; gap: 10px;
+    align-items: center; box-shadow: 0 6px 22px rgba(0,0,0,.3);
+  }
+  .instalar-aviso button { flex: 0 0 auto; background: #F5F1E8; color: var(--forest-dark);
+    border: none; border-radius: var(--r-sm); padding: 8px 12px; font-weight: 600;
+    font-size: 12.5px; cursor: pointer; }
+  .instalar-aviso .cerrar { background: transparent; color: #9FB6A8; padding: 8px 4px; }
   .filterbar input, .filterbar select, select, input[type=date], input[type=text] { font-size: 13px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; }
   .note-tag { display:inline-block; font-size:10px; padding:1px 6px; border-radius:4px; margin-right:6px; font-weight:600; }
   .note-ingreso { background:#E6F1FB; color:#0C447C; }
@@ -278,20 +417,24 @@
   <div class="container">
     <nav>
       <!-- Cada botón abre su pantalla en el día de hoy: irAPantalla reinicia el filtro
-           de fechas de esa pantalla antes de cargarla. -->
-      <button class="active" onclick="irAPantalla(0)">Dashboard</button>
-      <button onclick="irAPantalla(1)">Reservas</button>
-      <button onclick="irAPantalla(2)">Agenda de tours</button>
-      <button onclick="irAPantalla(3)">Transporte</button>
-      <button onclick="irAPantalla(4)">Entradas SINAC</button>
-      <button onclick="irAPantalla(5)">Amenidades</button>
-      <button onclick="irAPantalla(6)">Restaurantes</button>
-      <button onclick="irAPantalla(7)">Analítica</button>
-      <button onclick="irAPantalla(8)">Resumen operación</button>
-      <button id="nav-importar" onclick="irAPantalla(9)">Importar PDF</button>
-      <button id="nav-usuarios" onclick="irAPantalla(10)">Usuarios</button>
-      <button id="nav-catalogo" onclick="irAPantalla(11)">Catálogo</button>
-      <button id="nav-publicacion" onclick="irAPantalla(12)">Publicación</button>
+           de fechas de esa pantalla antes de cargarla.
+           El nombre va dos veces: el largo se lee en computadora, el corto y el icono en
+           el teléfono. Así la barra de abajo no es un segundo menú que haya que mantener
+           aparte — y como los botones sin permiso ya se ocultan, a cada persona le queda
+           la barra con solo sus pantallas. -->
+      <button class="active" data-icono="🏠" onclick="irAPantalla(0)"><span class="largo">Dashboard</span><span class="corto">Hoy</span></button>
+      <button data-icono="🛏️" onclick="irAPantalla(1)"><span class="largo">Reservas</span><span class="corto">Reservas</span></button>
+      <button data-icono="🥾" onclick="irAPantalla(2)"><span class="largo">Agenda de tours</span><span class="corto">Tours</span></button>
+      <button data-icono="🚤" onclick="irAPantalla(3)"><span class="largo">Transporte</span><span class="corto">Transporte</span></button>
+      <button data-icono="🎫" onclick="irAPantalla(4)"><span class="largo">Entradas SINAC</span><span class="corto">SINAC</span></button>
+      <button data-icono="🎁" onclick="irAPantalla(5)"><span class="largo">Amenidades</span><span class="corto">Amenidades</span></button>
+      <button data-icono="🍽️" onclick="irAPantalla(6)"><span class="largo">Restaurantes</span><span class="corto">Comidas</span></button>
+      <button data-icono="📊" onclick="irAPantalla(7)"><span class="largo">Analítica</span><span class="corto">Analítica</span></button>
+      <button data-icono="📋" onclick="irAPantalla(8)"><span class="largo">Resumen operación</span><span class="corto">Resumen</span></button>
+      <button id="nav-importar" data-icono="📄" onclick="irAPantalla(9)"><span class="largo">Importar PDF</span><span class="corto">Importar</span></button>
+      <button id="nav-usuarios" data-icono="👤" onclick="irAPantalla(10)"><span class="largo">Usuarios</span><span class="corto">Usuarios</span></button>
+      <button id="nav-catalogo" data-icono="📚" onclick="irAPantalla(11)"><span class="largo">Catálogo</span><span class="corto">Catálogo</span></button>
+      <button id="nav-publicacion" data-icono="📱" onclick="irAPantalla(12)"><span class="largo">Publicación</span><span class="corto">QR</span></button>
     </nav>
     <div id="app"></div>
   </div>
@@ -416,6 +559,8 @@ function showApp() {
   // Se ocultan las pestañas a las que el usuario no tiene acceso. Un usuario de
   // restaurante solo verá lo que necesita para su trabajo.
   mostrarSelloVersion();
+  // Si el navegador ya ofreció instalar antes de entrar, se propone ahora que hay sesión.
+  setTimeout(mostrarAvisoInstalar, 1500);
   const primera = aplicarPermisos();
   // Se entra por irAPantalla para que la primera pantalla también abra en el día de
   // hoy, aunque la sesión se haya iniciado con la página abierta desde ayer.
@@ -440,6 +585,94 @@ function avisar(texto, esError, tipo) {
   clearTimeout(_avisoTimer);
   // El aviso de cambio de otra persona dura menos: solo hace falta enterarse.
   _avisoTimer = setTimeout(() => el.classList.remove("visible"), tipo === "ajeno" ? 1800 : 2600);
+}
+
+// ---------- App en el teléfono ----------
+// Tres cosas: registrar el programa de servicio (lo que permite instalarla y abrirla
+// sin señal), poner etiqueta a cada dato de las tablas para que se lean como tarjetas,
+// y ofrecer la instalación una vez.
+
+function esMovil() { return window.matchMedia("(max-width: 760px)").matches; }
+function estaInstalada() {
+  return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // Sin él la app sigue funcionando como página web; solo no se instala ni abre
+      // sin señal. No vale la pena molestar a nadie con este error.
+    });
+  });
+}
+
+// En el teléfono las tablas se dibujan como tarjetas, y cada dato necesita su etiqueta.
+// Se toma del encabezado de la propia tabla, así vale para todas —las de hoy y las que
+// se agreguen— sin tener que escribir la etiqueta a mano en cada celda.
+function adaptarTablasMovil(raiz) {
+  (raiz || document).querySelectorAll("table:not([data-adaptada])").forEach(tabla => {
+    const encabezados = [...tabla.querySelectorAll("tr")]
+      .find(f => f.querySelector("th"));
+    if (!encabezados) return;
+    const titulos = [...encabezados.querySelectorAll("th")].map(t => t.textContent.trim());
+    tabla.querySelectorAll("tr").forEach(fila => {
+      [...fila.children].forEach((celda, i) => {
+        if (celda.tagName === "TD" && !celda.hasAttribute("data-etiqueta")) {
+          celda.setAttribute("data-etiqueta", titulos[i] || "");
+        }
+      });
+    });
+    tabla.setAttribute("data-adaptada", "1");
+  });
+}
+
+// Las pantallas se dibujan en momentos distintos (al cargar, al abrir un detalle, en un
+// modal), así que en vez de llamar a la adaptación en cada lugar se observa el documento.
+new MutationObserver(cambios => {
+  if (cambios.some(c => c.addedNodes.length)) adaptarTablasMovil();
+}).observe(document.body, { childList: true, subtree: true });
+
+// ---------- Ofrecer la instalación ----------
+let _eventoInstalar = null;
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();            // se guarda para ofrecerlo cuando convenga
+  _eventoInstalar = e;
+  mostrarAvisoInstalar();
+});
+
+function mostrarAvisoInstalar() {
+  if (!esMovil() || estaInstalada() || !TOKEN) return;
+  if (localStorage.getItem("cwl_no_instalar") === "1") return;
+  if (document.querySelector(".instalar-aviso")) return;
+
+  const esIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  const caja = document.createElement("div");
+  caja.className = "instalar-aviso";
+  caja.innerHTML = _eventoInstalar
+    ? `<span style="flex:1;">Instálalo en este teléfono y ábrelo con un toque, sin escribir la dirección.</span>
+       <button onclick="instalarApp()">Instalar</button>
+       <button class="cerrar" onclick="descartarInstalar()">✕</button>`
+    : (esIOS
+        ? `<span style="flex:1;">Para tenerlo como app: toca <strong>Compartir</strong> y luego
+             <strong>“Añadir a inicio”</strong>.</span>
+           <button class="cerrar" onclick="descartarInstalar()">✕</button>`
+        : `<span style="flex:1;">Para tenerlo como app: menú del navegador →
+             <strong>“Instalar aplicación”</strong>.</span>
+           <button class="cerrar" onclick="descartarInstalar()">✕</button>`);
+  document.body.appendChild(caja);
+}
+
+async function instalarApp() {
+  if (!_eventoInstalar) return;
+  _eventoInstalar.prompt();
+  await _eventoInstalar.userChoice;
+  _eventoInstalar = null;
+  document.querySelector(".instalar-aviso")?.remove();
+}
+
+function descartarInstalar() {
+  localStorage.setItem("cwl_no_instalar", "1");
+  document.querySelector(".instalar-aviso")?.remove();
 }
 
 // ---------- Sello de versión ----------

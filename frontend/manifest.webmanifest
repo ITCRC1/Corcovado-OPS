@@ -1,0 +1,17 @@
+{
+  "name": "Corcovado Wilderness Lodge — Operación",
+  "short_name": "CWL Operación",
+  "description": "Sistema de operación del lodge: reservas, tours, transporte y restaurantes.",
+  "lang": "es",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#F5F1E8",
+  "theme_color": "#2C4A3E",
+  "icons": [
+    { "src": "/assets/icono-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/assets/icono-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/assets/icono-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

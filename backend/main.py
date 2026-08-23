@@ -2613,6 +2613,31 @@ def _index_con_version():
     return _index_cache["html"]
 
 
+@app.get("/manifest.webmanifest")
+def manifest():
+    """Datos de la app para el teléfono: nombre, icono y colores.
+
+    Se sirve desde aquí y no como archivo estático porque el navegador necesita el tipo
+    de contenido correcto para ofrecer "Instalar aplicación".
+    """
+    with open(os.path.join(frontend_dir, "manifest.webmanifest"), "r", encoding="utf-8") as f:
+        return Response(content=f.read(), media_type="application/manifest+json",
+                        headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/sw.js")
+def service_worker():
+    """El programa que hace que la app abra sin señal.
+
+    Tiene que servirse desde la raíz: un programa de servicio solo controla las
+    direcciones que están por debajo de la suya. Y sin caché, o un cambio aquí no
+    llegaría nunca a los teléfonos que ya lo tienen instalado.
+    """
+    with open(os.path.join(frontend_dir, "sw.js"), "r", encoding="utf-8") as f:
+        return Response(content=f.read(), media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/", response_class=HTMLResponse)
 @app.get("/index.html", response_class=HTMLResponse)
 def index():
