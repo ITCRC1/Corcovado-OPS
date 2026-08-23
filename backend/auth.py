@@ -112,7 +112,10 @@ PANTALLAS = [
 POR_ROL = {
     "recepcion": {k: "escribir" for k, _ in PANTALLAS},
     "gerencia": {k: "escribir" for k, _ in PANTALLAS},
-    "staff": {k: "ver" for k, _ in PANTALLAS},
+    # El staff de campo mira la operación, pero Usuarios no: ahí se ven las cuentas del
+    # sistema y quién puede hacer qué. Antes lo tenía en "ver" junto con todo lo demás,
+    # y como los permisos no se aplicaban nadie lo notó.
+    "staff": {k: "ver" for k, _ in PANTALLAS if k != "usuarios"},
 }
 
 # Perfiles sugeridos para crear usuarios rápido
@@ -124,6 +127,19 @@ PERFILES = {
     "Guías": {"agenda": "escribir", "transporte": "ver", "resumen": "ver"},
     "Solo lectura": {k: "ver" for k, _ in PANTALLAS},
 }
+
+
+def limpiar_permisos(permisos):
+    """Deja solo pantallas que existen y niveles válidos.
+
+    En un solo lugar porque se usa al crear el usuario y al editarle los permisos, y
+    las dos entradas tienen que filtrar igual: es lo que decide qué puede hacer alguien.
+    """
+    if not isinstance(permisos, dict):
+        return {}
+    validas = {k for k, _ in PANTALLAS}
+    return {k: v for k, v in permisos.items()
+            if k in validas and v in ("ver", "escribir")}
 
 
 def permisos_de(user):

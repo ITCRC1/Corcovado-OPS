@@ -939,7 +939,12 @@ async def sync_apply(payload: dict):
 @app.get("/api/usuarios")
 def listar_usuarios(user: dict = Depends(exige("usuarios"))):
     conn = get_connection()
-    rows = conn.execute("SELECT id, username, nombre_completo, rol, activo FROM usuario ORDER BY username").fetchall()
+    # permisos_json hace falta aquí: es lo que la pantalla de Usuarios muestra y lo que
+    # el editor de permisos precarga. Sin esta columna el editor abría siempre en
+    # blanco y, al guardar, borraba lo que el usuario ya tenía configurado.
+    rows = conn.execute(
+        """SELECT id, username, nombre_completo, rol, activo, permisos_json
+           FROM usuario ORDER BY username""").fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -954,13 +959,18 @@ async def crear_usuario(payload: dict, user: dict = Depends(exige("usuarios", es
         conn.close()
         raise HTTPException(status_code=400, detail="Ese nombre de usuario ya existe")
     h, salt = auth.hash_password(payload["password"])
+    # Los permisos por pantalla se pueden fijar al crear, sin tener que abrir después el
+    # editor: es cuando se sabe para qué se está creando el usuario.
+    permisos = auth.limpiar_permisos(payload.get("permisos"))
     conn.execute(
-        "INSERT INTO usuario (username, password_hash, salt, nombre_completo, rol) VALUES (?,?,?,?,?)",
-        (payload["username"], h, salt, payload["nombre_completo"], payload["rol"]),
+        """INSERT INTO usuario (username, password_hash, salt, nombre_completo, rol, permisos_json)
+           VALUES (?,?,?,?,?,?)""",
+        (payload["username"], h, salt, payload["nombre_completo"], payload["rol"],
+         _json.dumps(permisos, ensure_ascii=False) if permisos else None),
     )
     conn.commit()
     conn.close()
-    return {"status": "ok"}
+    return {"status": "ok", "permisos": permisos}
 
 
 @app.post("/api/usuarios/{usuario_id}/estado")
@@ -2172,13 +2182,10 @@ def permisos_catalogo(user: dict = Depends(exige("usuarios"))):
 
 
 @app.post("/api/usuarios/{user_id}/permisos")
-def guardar_permisos(user_id: int, payload: dict, user: dict = Depends(current_user)):
+def guardar_permisos(user_id: int, payload: dict,
+                     user: dict = Depends(exige("usuarios", escribir=True))):
     """Define a qué pantallas entra un usuario y si puede modificar en ellas."""
-    auth.requiere_permiso(user, "usuarios")
-    permisos = payload.get("permisos") or {}
-    validas = {k for k, _ in auth.PANTALLAS}
-    limpios = {k: v for k, v in permisos.items()
-               if k in validas and v in ("ver", "escribir")}
+    limpios = auth.limpiar_permisos(payload.get("permisos"))
     conn = get_connection()
     conn.execute("UPDATE usuario SET permisos_json = ? WHERE id = ?",
                  (_json.dumps(limpios, ensure_ascii=False) if limpios else None, user_id))

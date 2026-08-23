@@ -1807,67 +1807,58 @@ async function marcarAmenidad(id, estado) {
 }
 
 async function abrirPermisos(userId, username) {
-  const cat = await (await fetchAuth(`${API}/api/permisos/catalogo`)).json();
+  // Se relee la lista para traer los permisos que el usuario tiene HOY. Antes esta
+  // consulta no devolvía permisos_json, así que el editor abría siempre en blanco y
+  // al guardar borraba lo que estuviera configurado.
   const usuarios = await (await fetchAuth(`${API}/api/usuarios`)).json();
   const u = usuarios.find(x => x.id === userId) || {};
-  let actuales = {};
-  try { actuales = JSON.parse(u.permisos_json || "{}"); } catch (e) {}
-
-  const fila = (p) => {
-    const nivel = actuales[p.clave] || "";
-    return `<tr>
-      <td>${p.nombre}</td>
-      <td><label style="font-size:12px;"><input type="radio" name="pm-${p.clave}" value="" ${nivel===""?"checked":""}> Sin acceso</label></td>
-      <td><label style="font-size:12px;"><input type="radio" name="pm-${p.clave}" value="ver" ${nivel==="ver"?"checked":""}> Solo ver</label></td>
-      <td><label style="font-size:12px;"><input type="radio" name="pm-${p.clave}" value="escribir" ${nivel==="escribir"?"checked":""}> Ver y modificar</label></td>
-    </tr>`;
-  };
+  const actuales = permisosDe(u);
+  const sinConfigurar = !Object.keys(actuales).length;
 
   const fondo = document.createElement("div");
   fondo.className = "modal-fondo"; fondo.id = "modal-pm";
-  fondo.innerHTML = `<div class="modal-caja">
+  fondo.innerHTML = `<div class="modal-caja" style="max-width:760px;">
     <div class="modal-encabezado">
       <div><p class="title">Permisos de ${username}</p>
-        <p class="subtitle">A qué pantallas entra y en cuáles puede modificar</p></div>
+        <p class="subtitle">Botón por botón: si no entra, si solo mira o si puede modificar</p></div>
       <button class="btn" onclick="document.getElementById('modal-pm').remove()">Cerrar</button>
     </div>
     <div class="modal-cuerpo">
-      <div class="filterbar" style="margin-bottom:12px;">
-        <span style="font-size:12.5px;">Aplicar un perfil:</span>
-        ${Object.keys(cat.perfiles).map(p => `<button class="btn" onclick="aplicarPerfil('${p}')">${p}</button>`).join("")}
-      </div>
-      <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">
-        Si dejas todo en "Sin acceso" el usuario usa los permisos de su rol.
-      </p>
-      <table>${cat.pantallas.map(fila).join("")}</table>
-      <div style="margin-top:14px;">
+      ${sinConfigurar ? `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:9px 12px;margin:0 0 10px;font-size:12.5px;">
+        Este usuario todavía no tiene permisos propios: hoy usa los de su rol.
+        Al guardar aquí, manda esta configuración.</div>` : ""}
+      ${gridPermisos("pm", actuales)}
+      <div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <button class="btn btn-primary" onclick="guardarPermisos(${userId})">Guardar permisos</button>
+        <button class="btn" onclick="volverAlRol(${userId})">Usar los permisos de su rol</button>
       </div>
     </div></div>`;
   document.body.appendChild(fondo);
-  window._perfiles = cat.perfiles;
-}
-
-function aplicarPerfil(nombre) {
-  const p = (window._perfiles || {})[nombre] || {};
-  document.querySelectorAll('#modal-pm input[type=radio]').forEach(r => {
-    const clave = r.name.replace("pm-", "");
-    r.checked = (p[clave] || "") === r.value;
-  });
-  avisar(`Perfil ${nombre} aplicado — recuerda guardar`);
 }
 
 async function guardarPermisos(userId) {
-  const permisos = {};
-  document.querySelectorAll('#modal-pm input[type=radio]:checked').forEach(r => {
-    if (r.value) permisos[r.name.replace("pm-", "")] = r.value;
-  });
+  const permisos = leerPermisos("pm");
+  if (!Object.keys(permisos).length &&
+      !confirm("No marcaste ninguna pantalla. El usuario volverá a usar los permisos de su rol. ¿Continuar?")) {
+    return;
+  }
   await fetchAuth(`${API}/api/usuarios/${userId}/permisos`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ permisos }),
   });
   document.getElementById("modal-pm")?.remove();
   avisar("Permisos guardados");
+  loadUsuarios();
+}
+
+async function volverAlRol(userId) {
+  if (!confirm("El usuario dejará de tener permisos propios y usará los de su rol. ¿Continuar?")) return;
+  await fetchAuth(`${API}/api/usuarios/${userId}/permisos`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ permisos: {} }),
+  });
+  document.getElementById("modal-pm")?.remove();
+  avisar("Vuelve a usar los permisos de su rol");
   loadUsuarios();
 }
 
@@ -2601,10 +2592,74 @@ async function confirmarImportacion() {
 }
 
 // ---------- USUARIOS ----------
+// ---------- Permisos por pantalla ----------
+// La misma rejilla se usa al crear el usuario y al editarle los permisos después, para
+// que las dos entradas ofrezcan exactamente las mismas opciones.
+function permisosDe(u) {
+  try { return JSON.parse(u.permisos_json || "{}") || {}; } catch (e) { return {}; }
+}
+
+function gridPermisos(prefijo, actuales) {
+  const cat = window._catPermisos || { pantallas: [], perfiles: {} };
+  return `
+    <div class="filterbar" style="margin-bottom:10px;">
+      <span style="font-size:12.5px;">Aplicar un perfil:</span>
+      ${Object.keys(cat.perfiles).map(p =>
+        `<button class="btn" onclick="aplicarPerfilA('${prefijo}','${p}')">${p}</button>`).join("")}
+      <button class="btn" onclick="aplicarPerfilA('${prefijo}','__NADA__')">Limpiar todo</button>
+    </div>
+    <table>
+      <tr><th>Pantalla (botón del menú)</th><th>Sin acceso</th><th>Solo ver</th><th>Ver y modificar</th></tr>
+      ${cat.pantallas.map(p => {
+        const nivel = actuales[p.clave] || "";
+        const opcion = (valor, etiqueta) => `<td style="text-align:center;">
+          <label style="font-size:12px;cursor:pointer;">
+            <input type="radio" name="${prefijo}-${p.clave}" value="${valor}" ${nivel === valor ? "checked" : ""}>
+            ${etiqueta}</label></td>`;
+        return `<tr><td><strong>${p.nombre}</strong></td>
+          ${opcion("", "—")}${opcion("ver", "ver")}${opcion("escribir", "modificar")}</tr>`;
+      }).join("")}
+    </table>`;
+}
+
+function leerPermisos(prefijo) {
+  const permisos = {};
+  document.querySelectorAll(`input[type=radio][name^="${prefijo}-"]:checked`).forEach(r => {
+    if (r.value) permisos[r.name.slice(prefijo.length + 1)] = r.value;
+  });
+  return permisos;
+}
+
+function aplicarPerfilA(prefijo, nombre) {
+  const p = nombre === "__NADA__" ? {} : (window._catPermisos.perfiles[nombre] || {});
+  document.querySelectorAll(`input[type=radio][name^="${prefijo}-"]`).forEach(r => {
+    r.checked = (p[r.name.slice(prefijo.length + 1)] || "") === r.value;
+  });
+}
+
+function resumenPermisos(u) {
+  const actuales = permisosDe(u);
+  const claves = Object.keys(actuales);
+  if (!claves.length) {
+    const rol = { recepcion: "Recepción", gerencia: "Gerencia", staff: "Staff" }[u.rol] || u.rol;
+    return `<span style="font-size:11.5px;color:var(--muted);">Sin configurar · usa los de ${rol}</span>`;
+  }
+  const cat = window._catPermisos || { pantallas: [] };
+  const nombre = c => (cat.pantallas.find(p => p.clave === c) || {}).nombre || c;
+  const partes = claves.map(c =>
+    `<span class="badge ${actuales[c] === "escribir" ? "badge-ok" : "badge-tour"}"
+       style="font-size:10.5px;">${nombre(c)}${actuales[c] === "escribir" ? " ✎" : ""}</span>`);
+  return partes.join(" ");
+}
+
 async function loadUsuarios() {
   setActive(10);
-  const res = await fetchAuth(`${API}/api/usuarios`);
-  const rows = await res.json();
+  // El catálogo de pantallas se usa en la rejilla y en el resumen de cada fila.
+  const [rows, cat] = await Promise.all([
+    (await fetchAuth(`${API}/api/usuarios`)).json(),
+    (await fetchAuth(`${API}/api/permisos/catalogo`)).json(),
+  ]);
+  window._catPermisos = cat;
   const app = document.getElementById("app");
   app.innerHTML = `
     <div class="card">
@@ -2614,20 +2669,25 @@ async function loadUsuarios() {
       </div>
       <div id="usuarios-form"></div>
       <table>
-        <tr><th>Usuario</th><th>Nombre</th><th>Rol</th><th>Estado</th><th></th></tr>
+        <tr><th>Usuario</th><th>Nombre</th><th>Rol</th><th>Permisos por pantalla</th><th>Estado</th><th></th></tr>
         ${rows.map(u => `
           <tr>
             <td>${u.username}</td>
             <td>${u.nombre_completo}</td>
             <td><span class="badge badge-tour">${ {recepcion:"Recepción",gerencia:"Gerencia",staff:"Staff de campo"}[u.rol] || u.rol }</span></td>
+            <td>${resumenPermisos(u)}</td>
             <td><span class="badge ${u.activo ? 'badge-ok' : 'badge-warn'}">${u.activo ? 'Activo' : 'Inactivo'}</span></td>
             <td>
-              <button class="btn" onclick="abrirPermisos(${u.id}, '${u.username}')">Permisos</button>
+              <button class="btn btn-primary" onclick="abrirPermisos(${u.id}, '${u.username}')">Permisos</button>
               <button class="btn" onclick="cambiarPassword(${u.id})">Cambiar contraseña</button>
               <button class="btn" onclick="cambiarEstado(${u.id}, ${u.activo ? 'false' : 'true'})">${u.activo ? 'Desactivar' : 'Activar'}</button>
             </td>
           </tr>`).join("")}
       </table>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">
+        ✎ = puede modificar en esa pantalla. Sin marca = solo la ve.
+        Un usuario "sin configurar" usa los permisos que trae su rol.
+      </p>
     </div>
   `;
 }
@@ -2641,12 +2701,19 @@ function mostrarFormNuevoUsuario() {
         <input type="text" id="nu-nombre" placeholder="Nombre completo">
         <input type="password" id="nu-password" placeholder="Contraseña">
         <select id="nu-rol">
-          <option value="recepcion">Recepción (lectura/escritura)</option>
-          <option value="gerencia">Gerencia (solo lectura)</option>
-          <option value="staff">Staff de campo (solo lectura)</option>
+          <option value="recepcion">Rol: Recepción</option>
+          <option value="gerencia">Rol: Gerencia</option>
+          <option value="staff">Rol: Staff de campo</option>
         </select>
         <button class="btn btn-primary" onclick="crearUsuario()">Crear</button>
       </div>
+      <p style="font-size:12px;margin:12px 0 6px;font-weight:600;">Permisos, pantalla por pantalla</p>
+      <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">
+        Elige para cada botón del menú si no entra, si solo mira o si puede modificar.
+        Lo que dejes sin marcar queda sin acceso. Si no marcas nada, el usuario usa los
+        permisos de su rol y podrás ajustarlos después con el botón Permisos.
+      </p>
+      ${gridPermisos("nu", {})}
       <div id="nu-error" style="color:var(--danger-text);font-size:12px;margin-top:8px;"></div>
     </div>
   `;
@@ -2658,6 +2725,7 @@ async function crearUsuario() {
     nombre_completo: document.getElementById("nu-nombre").value.trim(),
     password: document.getElementById("nu-password").value,
     rol: document.getElementById("nu-rol").value,
+    permisos: leerPermisos("nu"),
   };
   const errEl = document.getElementById("nu-error");
   if (!payload.username || !payload.nombre_completo || !payload.password) {
