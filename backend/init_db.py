@@ -102,7 +102,52 @@ def _migrar(conn):
         conn.commit()
         print("Base actualizada, columnas agregadas: " + ", ".join(agregadas))
     _renombrar_restaurante(conn, "Vitrales", "Bar el Bosque")
+    _materializar_permisos(conn)
+    _sembrar_perfiles(conn)
     return agregadas
+
+
+def _materializar_permisos(conn):
+    """Escribe en cada usuario los permisos que hoy le da su rol.
+
+    El rol deja de otorgar permisos y pasa a ser solo una etiqueta: manda lo que está
+    en la rejilla de cada usuario. Para que nadie pierda ni gane acceso el día del
+    cambio, aquí se copia tal cual lo que su rol le daba hasta ahora.
+
+    Es idempotente: solo toca a quien no tenga rejilla propia. Si mañana se crea un
+    usuario a mano en la base sin permisos, este paso le pone los de su rol.
+    """
+    import json as _json
+    try:
+        import auth
+    except ImportError:
+        return 0
+    filas = conn.execute(
+        "SELECT id, rol FROM usuario WHERE permisos_json IS NULL OR permisos_json = ''"
+    ).fetchall()
+    if not filas:
+        return 0
+    for f in filas:
+        permisos = auth.POR_ROL.get(f["rol"]) or auth.POR_ROL["staff"]
+        conn.execute("UPDATE usuario SET permisos_json = ? WHERE id = ?",
+                     (_json.dumps(permisos, ensure_ascii=False), f["id"]))
+    conn.commit()
+    print(f"Permisos materializados desde el rol en {len(filas)} usuario(s)")
+    return len(filas)
+
+
+def _sembrar_perfiles(conn):
+    """Deja los perfiles sugeridos como punto de partida, sin pisar los del hotel."""
+    import json as _json
+    try:
+        import auth
+    except ImportError:
+        return
+    for nombre, permisos in auth.PERFILES.items():
+        conn.execute(
+            "INSERT OR IGNORE INTO perfil_permisos (nombre, permisos_json) VALUES (?,?)",
+            (nombre, _json.dumps(permisos, ensure_ascii=False)))
+    conn.commit()
 
 
 # Dónde quedó guardado el nombre del restaurante. Son los tres lugares donde el

@@ -1825,12 +1825,11 @@ async function abrirPermisos(userId, username) {
     </div>
     <div class="modal-cuerpo">
       ${sinConfigurar ? `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:9px 12px;margin:0 0 10px;font-size:12.5px;">
-        Este usuario todavía no tiene permisos propios: hoy usa los de su rol.
-        Al guardar aquí, manda esta configuración.</div>` : ""}
+        Este usuario no tiene ninguna pantalla marcada, así que hoy no puede entrar a
+        nada. Aplica un perfil o marca las pantallas que necesite.</div>` : ""}
       ${gridPermisos("pm", actuales)}
       <div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <button class="btn btn-primary" onclick="guardarPermisos(${userId})">Guardar permisos</button>
-        <button class="btn" onclick="volverAlRol(${userId})">Usar los permisos de su rol</button>
       </div>
     </div></div>`;
   document.body.appendChild(fondo);
@@ -1839,7 +1838,7 @@ async function abrirPermisos(userId, username) {
 async function guardarPermisos(userId) {
   const permisos = leerPermisos("pm");
   if (!Object.keys(permisos).length &&
-      !confirm("No marcaste ninguna pantalla. El usuario volverá a usar los permisos de su rol. ¿Continuar?")) {
+      !confirm("No marcaste ninguna pantalla: el usuario quedará SIN ACCESO a nada del sistema. ¿Continuar?")) {
     return;
   }
   await fetchAuth(`${API}/api/usuarios/${userId}/permisos`, {
@@ -1851,16 +1850,9 @@ async function guardarPermisos(userId) {
   loadUsuarios();
 }
 
-async function volverAlRol(userId) {
-  if (!confirm("El usuario dejará de tener permisos propios y usará los de su rol. ¿Continuar?")) return;
-  await fetchAuth(`${API}/api/usuarios/${userId}/permisos`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ permisos: {} }),
-  });
-  document.getElementById("modal-pm")?.remove();
-  avisar("Vuelve a usar los permisos de su rol");
-  loadUsuarios();
-}
+// Ya no hay un botón "usar los permisos de su rol": el rol dejó de otorgar permisos, y
+// ese botón habría dejado al usuario sin acceso a nada. Para el mismo efecto están los
+// perfiles Recepción, Gerencia y Solo lectura, que se aplican con un clic.
 
 async function loadRestaurantes(fecha) {
   setActive(6);
@@ -2608,6 +2600,15 @@ function gridPermisos(prefijo, actuales) {
         `<button class="btn" onclick="aplicarPerfilA('${prefijo}','${p}')">${p}</button>`).join("")}
       <button class="btn" onclick="aplicarPerfilA('${prefijo}','__NADA__')">Limpiar todo</button>
     </div>
+    <div class="filterbar" style="margin-bottom:10px;">
+      <span style="font-size:12.5px;color:var(--muted);">Los perfiles los armas vos:</span>
+      <button class="btn" onclick="guardarComoPerfil('${prefijo}')">Guardar esta combinación como perfil</button>
+      ${Object.keys(cat.perfiles).length ? `<select id="${prefijo}-borrar-perfil" style="font-size:12px;">
+          <option value="">— borrar un perfil —</option>
+          ${Object.keys(cat.perfiles).map(p => `<option value="${p}">${p}</option>`).join("")}
+        </select>
+        <button class="btn" onclick="borrarPerfil('${prefijo}')">Borrar</button>` : ""}
+    </div>
     <table>
       <tr><th>Pantalla (botón del menú)</th><th>Sin acceso</th><th>Solo ver</th><th>Ver y modificar</th></tr>
       ${cat.pantallas.map(p => {
@@ -2637,12 +2638,41 @@ function aplicarPerfilA(prefijo, nombre) {
   });
 }
 
+async function guardarComoPerfil(prefijo) {
+  const permisos = leerPermisos(prefijo);
+  if (!Object.keys(permisos).length) {
+    avisar("Marca al menos una pantalla antes de guardar el perfil", true);
+    return;
+  }
+  const nombre = prompt("Nombre del perfil (ej. Salonero, Housekeeping):");
+  if (!nombre || !nombre.trim()) return;
+  const res = await fetchAuth(`${API}/api/permisos/perfiles`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nombre: nombre.trim(), permisos }),
+  });
+  if (!res.ok) { avisar((await res.json()).detail || "No se pudo guardar el perfil", true); return; }
+  avisar(`Perfil "${nombre.trim()}" guardado`);
+  // Se recarga la pantalla para que el perfil nuevo aparezca en los botones.
+  document.getElementById("modal-pm")?.remove();
+  loadUsuarios();
+}
+
+async function borrarPerfil(prefijo) {
+  const sel = document.getElementById(`${prefijo}-borrar-perfil`);
+  const nombre = sel && sel.value;
+  if (!nombre) { avisar("Elige el perfil a borrar", true); return; }
+  if (!confirm(`¿Borrar el perfil "${nombre}"? Los usuarios que ya lo tenían aplicado no cambian.`)) return;
+  await fetchAuth(`${API}/api/permisos/perfiles/${encodeURIComponent(nombre)}`, { method: "DELETE" });
+  avisar(`Perfil "${nombre}" borrado`);
+  document.getElementById("modal-pm")?.remove();
+  loadUsuarios();
+}
+
 function resumenPermisos(u) {
   const actuales = permisosDe(u);
   const claves = Object.keys(actuales);
   if (!claves.length) {
-    const rol = { recepcion: "Recepción", gerencia: "Gerencia", staff: "Staff" }[u.rol] || u.rol;
-    return `<span style="font-size:11.5px;color:var(--muted);">Sin configurar · usa los de ${rol}</span>`;
+    return `<span class="badge badge-warn" style="font-size:10.5px;">sin acceso a nada</span>`;
   }
   const cat = window._catPermisos || { pantallas: [] };
   const nombre = c => (cat.pantallas.find(p => p.clave === c) || {}).nombre || c;
@@ -2679,6 +2709,7 @@ async function loadUsuarios() {
             <td><span class="badge ${u.activo ? 'badge-ok' : 'badge-warn'}">${u.activo ? 'Activo' : 'Inactivo'}</span></td>
             <td>
               <button class="btn btn-primary" onclick="abrirPermisos(${u.id}, '${u.username}')">Permisos</button>
+              <button class="btn" onclick="abrirEditarUsuario(${u.id})">Editar</button>
               <button class="btn" onclick="cambiarPassword(${u.id})">Cambiar contraseña</button>
               <button class="btn" onclick="cambiarEstado(${u.id}, ${u.activo ? 'false' : 'true'})">${u.activo ? 'Desactivar' : 'Activar'}</button>
             </td>
@@ -2686,7 +2717,12 @@ async function loadUsuarios() {
       </table>
       <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">
         ✎ = puede modificar en esa pantalla. Sin marca = solo la ve.
-        Un usuario "sin configurar" usa los permisos que trae su rol.
+        El rol es solo una etiqueta: lo que cada persona puede hacer sale <strong>únicamente</strong>
+        de sus permisos. Un usuario sin ninguna pantalla marcada no entra a nada.
+        ${cat.administradores === 1 ? `<br><span style="color:var(--warn-text);">Atención: hoy hay
+          <strong>un solo usuario</strong> que puede administrar usuarios. El sistema no va a
+          permitir quitarle ese permiso ni desactivarlo, para no quedar sin nadie que pueda entrar
+          aquí.</span>` : ""}
       </p>
     </div>
   `;
@@ -2710,8 +2746,8 @@ function mostrarFormNuevoUsuario() {
       <p style="font-size:12px;margin:12px 0 6px;font-weight:600;">Permisos, pantalla por pantalla</p>
       <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">
         Elige para cada botón del menú si no entra, si solo mira o si puede modificar.
-        Lo que dejes sin marcar queda sin acceso. Si no marcas nada, el usuario usa los
-        permisos de su rol y podrás ajustarlos después con el botón Permisos.
+        Hay que marcar al menos una pantalla: el rol no da acceso por sí solo.
+        Lo más rápido es aplicar un perfil y ajustar lo que haga falta.
       </p>
       ${gridPermisos("nu", {})}
       <div id="nu-error" style="color:var(--danger-text);font-size:12px;margin-top:8px;"></div>
@@ -2740,6 +2776,62 @@ async function crearUsuario() {
     errEl.textContent = err.detail || "No se pudo crear el usuario.";
     return;
   }
+  loadUsuarios();
+}
+
+async function abrirEditarUsuario(userId) {
+  const usuarios = await (await fetchAuth(`${API}/api/usuarios`)).json();
+  const u = usuarios.find(x => x.id === userId) || {};
+  const fondo = document.createElement("div");
+  fondo.className = "modal-fondo"; fondo.id = "modal-ed";
+  fondo.innerHTML = `<div class="modal-caja" style="max-width:520px;">
+    <div class="modal-encabezado">
+      <div><p class="title">Editar ${u.username}</p>
+        <p class="subtitle">Nombre de usuario, nombre completo y rol</p></div>
+      <button class="btn" onclick="document.getElementById('modal-ed').remove()">Cerrar</button>
+    </div>
+    <div class="modal-cuerpo">
+      <div class="filterbar" style="align-items:flex-start;">
+        <label style="width:150px;font-size:13px;padding-top:6px;">Usuario</label>
+        <input type="text" id="ed-username" value="${u.username || ""}" style="flex:1;">
+      </div>
+      <div class="filterbar" style="align-items:flex-start;margin-top:8px;">
+        <label style="width:150px;font-size:13px;padding-top:6px;">Nombre completo</label>
+        <input type="text" id="ed-nombre" value="${u.nombre_completo || ""}" style="flex:1;">
+      </div>
+      <div class="filterbar" style="align-items:flex-start;margin-top:8px;">
+        <label style="width:150px;font-size:13px;padding-top:6px;">Rol (etiqueta)</label>
+        <select id="ed-rol" style="flex:1;">
+          ${["recepcion", "gerencia", "staff"].map(r => `<option value="${r}" ${u.rol === r ? "selected" : ""}>
+            ${ {recepcion:"Recepción",gerencia:"Gerencia",staff:"Staff de campo"}[r] }</option>`).join("")}
+        </select>
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin:10px 0 0;">
+        El rol no da permisos: solo sirve para saber quién es esta persona. Lo que puede
+        hacer se define en <strong>Permisos</strong>.</p>
+      <div id="ed-error" style="color:var(--danger-text);font-size:12px;margin-top:8px;"></div>
+      <div style="margin-top:14px;">
+        <button class="btn btn-primary" onclick="guardarEdicionUsuario(${userId})">Guardar cambios</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(fondo);
+}
+
+async function guardarEdicionUsuario(userId) {
+  const res = await fetchAuth(`${API}/api/usuarios/${userId}/editar`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      username: document.getElementById("ed-username").value.trim(),
+      nombre_completo: document.getElementById("ed-nombre").value.trim(),
+      rol: document.getElementById("ed-rol").value,
+    }),
+  });
+  if (!res.ok) {
+    document.getElementById("ed-error").textContent = (await res.json()).detail || "No se pudo guardar";
+    return;
+  }
+  document.getElementById("modal-ed")?.remove();
+  avisar("Usuario actualizado");
   loadUsuarios();
 }
 

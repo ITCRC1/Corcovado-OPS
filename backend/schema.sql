@@ -281,6 +281,14 @@ CREATE TABLE IF NOT EXISTS sync_log (
     creado_en TEXT DEFAULT (datetime('now'))
 );
 
+-- Perfiles de permisos que arma el propio hotel. Antes estaban escritos en el código,
+-- así que agregar uno nuevo ("Salonero", "Housekeeping") exigía cambiar el programa.
+CREATE TABLE IF NOT EXISTS perfil_permisos (
+    nombre TEXT PRIMARY KEY,
+    permisos_json TEXT NOT NULL,
+    creado_en TEXT DEFAULT (datetime('now'))
+);
+
 -- Configuración local de esta instalación (estación, contador de versión)
 CREATE TABLE IF NOT EXISTS config_estacion (
     clave TEXT PRIMARY KEY,

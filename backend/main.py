@@ -962,6 +962,12 @@ async def crear_usuario(payload: dict, user: dict = Depends(exige("usuarios", es
     # Los permisos por pantalla se pueden fijar al crear, sin tener que abrir después el
     # editor: es cuando se sabe para qué se está creando el usuario.
     permisos = auth.limpiar_permisos(payload.get("permisos"))
+    if not permisos:
+        conn.close()
+        raise HTTPException(
+            status_code=400,
+            detail=("Marca al menos una pantalla en los permisos, o aplica un perfil. "
+                    "El rol por sí solo no da acceso a nada."))
     conn.execute(
         """INSERT INTO usuario (username, password_hash, salt, nombre_completo, rol, permisos_json)
            VALUES (?,?,?,?,?,?)""",
@@ -975,8 +981,14 @@ async def crear_usuario(payload: dict, user: dict = Depends(exige("usuarios", es
 
 @app.post("/api/usuarios/{usuario_id}/estado")
 def cambiar_estado_usuario(usuario_id: int, activo: bool, user: dict = Depends(exige("usuarios", escribir=True))):
+    if usuario_id == user["id"] and not activo:
+        raise HTTPException(status_code=400,
+                            detail="No puedes desactivar tu propia cuenta.")
     conn = get_connection()
     conn.execute("UPDATE usuario SET activo = ? WHERE id = ?", (1 if activo else 0, usuario_id))
+    # Desactivar al último que administra usuarios deja el sistema igual de trabado que
+    # quitarle el permiso, así que se comprueba lo mismo.
+    _sin_dejar_sin_administrador(conn, "desactivar este usuario")
     conn.commit()
     conn.close()
     return {"status": "ok"}
@@ -2174,11 +2186,138 @@ def pendientes_manana(fecha: str = None, user: dict = Depends(exige("dashboard")
 # Restaurantes
 # ---------------------------------------------------------------------------
 
+def _administradores_activos(conn):
+    """Cuántos usuarios activos pueden administrar usuarios.
+
+    Si llegara a cero, nadie podría volver a dar permisos ni crear cuentas, y habría
+    que entrar a la base de datos a mano. Por eso todo cambio que pueda dejarlo en cero
+    se deshace antes de confirmarse.
+    """
+    filas = conn.execute("SELECT rol, permisos_json FROM usuario WHERE activo = 1").fetchall()
+    return sum(1 for f in filas if auth.puede(dict(f), "usuarios", escribir=True))
+
+
+def _sin_dejar_sin_administrador(conn, que_paso):
+    """Deshace el cambio si dejó al sistema sin nadie que administre usuarios."""
+    if _administradores_activos(conn) == 0:
+        conn.rollback()
+        conn.close()
+        raise HTTPException(
+            status_code=400,
+            detail=(f"No se puede {que_paso}: quedaría sin ningún usuario capaz de "
+                    "administrar usuarios, y nadie podría volver a dar permisos."))
+
+
+def _perfiles_guardados(conn):
+    filas = conn.execute(
+        "SELECT nombre, permisos_json FROM perfil_permisos ORDER BY nombre").fetchall()
+    salida = {}
+    for f in filas:
+        try:
+            salida[f["nombre"]] = _json.loads(f["permisos_json"])
+        except (ValueError, TypeError):
+            continue
+    return salida
+
+
 @app.get("/api/permisos/catalogo")
 def permisos_catalogo(user: dict = Depends(exige("usuarios"))):
-    """Pantallas disponibles y perfiles sugeridos, para la pantalla de Usuarios."""
-    return {"pantallas": [{"clave": k, "nombre": n} for k, n in auth.PANTALLAS],
-            "perfiles": auth.PERFILES}
+    """Pantallas disponibles y perfiles guardados, para la pantalla de Usuarios."""
+    conn = get_connection()
+    try:
+        return {"pantallas": [{"clave": k, "nombre": n} for k, n in auth.PANTALLAS],
+                "perfiles": _perfiles_guardados(conn),
+                "administradores": _administradores_activos(conn)}
+    finally:
+        conn.close()
+
+
+@app.post("/api/permisos/perfiles")
+def guardar_perfil(payload: dict, user: dict = Depends(exige("usuarios", escribir=True))):
+    """Guarda un perfil de permisos con el nombre que le ponga el hotel.
+
+    Sirve para no marcar trece pantallas cada vez: se arma una combinación una sola vez
+    ("Salonero", "Housekeeping") y después se aplica a quien haga falta.
+    """
+    nombre = (payload.get("nombre") or "").strip()
+    if not nombre:
+        raise HTTPException(status_code=400, detail="Ponle un nombre al perfil")
+    if len(nombre) > 40:
+        raise HTTPException(status_code=400, detail="El nombre del perfil es muy largo")
+    permisos = auth.limpiar_permisos(payload.get("permisos"))
+    if not permisos:
+        raise HTTPException(status_code=400,
+                            detail="El perfil no tiene ninguna pantalla marcada")
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO perfil_permisos (nombre, permisos_json) VALUES (?,?)
+           ON CONFLICT(nombre) DO UPDATE SET permisos_json = excluded.permisos_json""",
+        (nombre, _json.dumps(permisos, ensure_ascii=False)))
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "nombre": nombre, "permisos": permisos}
+
+
+@app.delete("/api/permisos/perfiles/{nombre}")
+def borrar_perfil(nombre: str, user: dict = Depends(exige("usuarios", escribir=True))):
+    """Borra un perfil. No toca a los usuarios que ya lo tenían aplicado."""
+    conn = get_connection()
+    conn.execute("DELETE FROM perfil_permisos WHERE nombre = ?", (nombre,))
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/api/usuarios/{usuario_id}/editar")
+async def editar_usuario(usuario_id: int, payload: dict,
+                         user: dict = Depends(exige("usuarios", escribir=True))):
+    """Cambia el nombre de usuario, el nombre completo o el rol de una cuenta.
+
+    El rol es solo una etiqueta, así que cambiarlo no altera lo que la persona puede
+    hacer: eso está en su rejilla de permisos.
+    """
+    conn = get_connection()
+    actual = conn.execute("SELECT * FROM usuario WHERE id = ?", (usuario_id,)).fetchone()
+    if not actual:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Ese usuario no existe")
+
+    campos, valores = [], []
+    if payload.get("username") is not None:
+        nuevo = (payload["username"] or "").strip()
+        if not nuevo or " " in nuevo:
+            conn.close()
+            raise HTTPException(status_code=400, detail="El usuario no puede ir vacío ni llevar espacios")
+        repetido = conn.execute(
+            "SELECT id FROM usuario WHERE username = ? AND id != ?", (nuevo, usuario_id)).fetchone()
+        if repetido:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Ya existe otro usuario con ese nombre")
+        campos.append("username = ?")
+        valores.append(nuevo)
+    if payload.get("nombre_completo") is not None:
+        nombre = (payload["nombre_completo"] or "").strip()
+        if not nombre:
+            conn.close()
+            raise HTTPException(status_code=400, detail="El nombre completo no puede ir vacío")
+        campos.append("nombre_completo = ?")
+        valores.append(nombre)
+    if payload.get("rol") is not None:
+        if payload["rol"] not in ("recepcion", "gerencia", "staff"):
+            conn.close()
+            raise HTTPException(status_code=400, detail="Rol inválido")
+        campos.append("rol = ?")
+        valores.append(payload["rol"])
+
+    if not campos:
+        conn.close()
+        return {"status": "ok", "sin_cambios": True}
+
+    conn.execute(f"UPDATE usuario SET {', '.join(campos)} WHERE id = ?", (*valores, usuario_id))
+    _sin_dejar_sin_administrador(conn, "cambiar este usuario")
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
 
 
 @app.post("/api/usuarios/{user_id}/permisos")
@@ -2186,9 +2325,18 @@ def guardar_permisos(user_id: int, payload: dict,
                      user: dict = Depends(exige("usuarios", escribir=True))):
     """Define a qué pantallas entra un usuario y si puede modificar en ellas."""
     limpios = auth.limpiar_permisos(payload.get("permisos"))
+    # Quitarse a uno mismo el permiso de administrar usuarios deja la pantalla cerrada
+    # en el acto y hay que pedirle a otra persona que lo devuelva. Es un tropiezo fácil
+    # y sin ninguna ventaja, así que no se permite.
+    if user_id == user["id"] and limpios.get("usuarios") != "escribir":
+        raise HTTPException(
+            status_code=400,
+            detail=("No puedes quitarte a ti mismo el permiso de administrar usuarios. "
+                    "Pídele a otra persona con ese permiso que lo haga."))
     conn = get_connection()
     conn.execute("UPDATE usuario SET permisos_json = ? WHERE id = ?",
                  (_json.dumps(limpios, ensure_ascii=False) if limpios else None, user_id))
+    _sin_dejar_sin_administrador(conn, "guardar estos permisos")
     conn.commit()
     conn.close()
     return {"status": "ok", "permisos": limpios}

@@ -34,11 +34,18 @@ def seed_default_users(conn):
         ("gerencia", "gerencia2026", "Gerencia", "gerencia"),
         ("staff", "staff2026", "Staff de campo", "staff"),
     ]
+    import json as _json
     for username, password, nombre, rol in defaults:
         h, salt = hash_password(password)
+        # Los permisos se escriben aquí mismo. El rol ya no otorga nada por sí solo, y
+        # esta siembra corre DESPUÉS de la migración que rellena a los que no tienen
+        # rejilla, así que un usuario creado sin permisos se quedaría sin poder entrar
+        # a ninguna pantalla.
         conn.execute(
-            "INSERT INTO usuario (username, password_hash, salt, nombre_completo, rol) VALUES (?,?,?,?,?)",
-            (username, h, salt, nombre, rol),
+            """INSERT INTO usuario (username, password_hash, salt, nombre_completo, rol, permisos_json)
+               VALUES (?,?,?,?,?,?)""",
+            (username, h, salt, nombre, rol,
+             _json.dumps(POR_ROL.get(rol, POR_ROL["staff"]), ensure_ascii=False)),
         )
     conn.commit()
 
@@ -143,17 +150,26 @@ def limpiar_permisos(permisos):
 
 
 def permisos_de(user):
-    """Permisos efectivos del usuario: los propios, o los de su rol."""
+    """Permisos del usuario: los de su rejilla, y nada más.
+
+    El rol ya no otorga permisos —es solo una etiqueta para saber quién es alguien—.
+    Antes servía de respaldo cuando la rejilla estaba vacía, y eso hacía que un usuario
+    creado sin configurar quedara con escritura en las trece pantallas, incluidas
+    Usuarios e Importar PDF. Con dos fuentes de verdad nunca quedaba claro cuál mandaba.
+
+    init_db copia los permisos del rol a la rejilla de quien no la tenga, así que en la
+    práctica siempre hay algo; si aun así estuviera vacía, no se asume nada.
+    """
     import json as _json
     propios = user.get("permisos_json")
     if propios:
         try:
             p = _json.loads(propios)
-            if isinstance(p, dict) and p:
-                return p
+            if isinstance(p, dict):
+                return limpiar_permisos(p)
         except (ValueError, TypeError):
             pass
-    return POR_ROL.get(user.get("rol"), POR_ROL["staff"])
+    return {}
 
 
 def puede(user, pantalla, escribir=False):
