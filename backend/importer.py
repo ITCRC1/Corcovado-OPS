@@ -59,6 +59,55 @@ AMENIDADES_PATRONES = [
 AMENIDADES_CATALOGO = [nombre for nombre, _ in AMENIDADES_PATRONES]
 
 
+# ---------------------------------------------------------------------------
+# Régimen de comidas
+# ---------------------------------------------------------------------------
+# El PDF dice qué comidas trae pagadas cada reserva, pero lo escribe en texto libre y
+# de muchas formas. Los patrones de abajo salieron de leer reportes reales del PMS.
+#
+# Importa por comida, no como un sí/no: "Breakfast & Dinner" trae la cena pero NO el
+# almuerzo, así que ese huésped tiene que aparecer en la cena y no en el almuerzo.
+#
+# El orden importa: se evalúa de lo más específico a lo más general, porque una misma
+# reserva puede decir "Paquete 3N/4D+ Breakfast & Dinner" y también "Total $...".
+REGIMENES = [
+    # Personal de mantenimiento y proveedores: duermen en el lodge pero comen aparte.
+    ("COMEDOR_TRABAJADORES", r"comen\s+en\s+el\s+comedor\s+de\s+trabajador"),
+    # Desayuno y cena, sin almuerzo.
+    ("DESAYUNO_CENA", r"breakfast\s*&\s*dinner|breakfast\s+and\s+dinner|desayuno\s+y\s+cena"),
+    # Solo desayuno.
+    ("SOLO_DESAYUNO", r"only\s+breakfast|breakfast\s+only|solo\s+desayuno|"
+                      r"[uú]nicamente\s+desayuno"),
+    # Todas las comidas. 'FULL BOARDBENEFICIO' aparece pegado en el PDF, sin espacio,
+    # así que no se exige un límite de palabra al final de 'board'.
+    ("PENSION_COMPLETA", r"full\s*board|pensi[oó]n\s+completa|pension\s+completa|"
+                         r"\bFB\b|alimentaci[oó]n\s+y\s+tours|"
+                         r"hospedaje,?\s+transporte,?\s+alimentaci[oó]n"),
+]
+
+# Qué come cada régimen en los restaurantes del lodge.
+COMIDAS_DE_REGIMEN = {
+    "PENSION_COMPLETA":     {"almuerzo": True,  "cena": True},
+    "DESAYUNO_CENA":        {"almuerzo": False, "cena": True},
+    "SOLO_DESAYUNO":        {"almuerzo": False, "cena": False},
+    "COMEDOR_TRABAJADORES": {"almuerzo": False, "cena": False},
+}
+
+
+def detectar_regimen(reserva):
+    """Qué comidas trae pagadas la reserva, según lo que diga el PDF.
+
+    Devuelve None cuando el PDF no lo menciona: son muchas las reservas que no lo
+    escriben, y suponer que no tienen comidas sería peor que no saberlo.
+    """
+    texto = reserva.get("texto_completo") or \
+        f"{reserva.get('adicionales_raw','')} {reserva.get('notas','')}"
+    for nombre, patron in REGIMENES:
+        if re.search(patron, texto, re.IGNORECASE):
+            return nombre
+    return None
+
+
 def clasificar_notas(notas_libres):
     """Clasifica cada oración de las notas en ingreso / en_casa / salida (heurística por palabras clave)."""
     oraciones = re.split(r"(?<=[.!?])\s+", (notas_libres or "").strip())
@@ -160,6 +209,7 @@ def build_review_batch(pdf_path):
         r["grupo_link"] = detect_group_link(r)
         r.update(clasificar_notas(r["notas"]))
         r["amenidades_detectadas"] = detectar_amenidades(r)
+        r["regimen"] = detectar_regimen(r)
 
     grupo_de = build_group_sets(reservas)
 

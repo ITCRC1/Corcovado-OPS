@@ -84,6 +84,7 @@ COLUMNAS_NUEVAS = [
     ("reserva", "forzar_restaurante", "TEXT"),
     ("usuario", "permisos_json", "TEXT"),
     ("amenidad_tarea", "fecha", "TEXT"),
+    ("reserva", "regimen", "TEXT"),
 ]
 
 

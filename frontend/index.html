@@ -1981,17 +1981,38 @@ function detalleRest(cual) {
   const esCena = comida === "CENA";
   if (!lista.length) { panel.innerHTML = `<div class="detail-panel">Nadie asignado.</div>`; return; }
 
+  // Lo que el salonero necesita saber de un vistazo: si esta comida se la trae pagada.
+  // Se distingue "no la trae" (ámbar, hay que cobrarla) de "el PDF no lo dijo" (gris),
+  // porque no es lo mismo y no se le puede negar una comida por un dato que no vino.
+  const sinComida = lista.filter(x => x.incluye_esta_comida === false);
+  const celdaComida = x => {
+    if (x.incluye_esta_comida === false) {
+      return `<span class="badge" style="background:#E5A93B;color:#3A2B08;font-weight:600;">
+                ${comida === "CENA" ? "cena" : "almuerzo"} NO incluido</span>
+              <br><span style="font-size:10.5px;color:var(--muted);">${x.regimen_texto}</span>`;
+    }
+    if (x.incluye_esta_comida === true) {
+      return `<span class="badge badge-ok">incluido</span>`;
+    }
+    return `<span style="font-size:11px;color:var(--muted);" title="El PDF no indicó el régimen">sin dato</span>`;
+  };
+
   panel.innerHTML = `<div class="detail-panel">
     <p style="font-weight:600;margin:0 0 8px;">${titulo} — ${lista.length} habitación(es),
       ${lista.reduce((s,x)=>s+x.pax,0)} pax</p>
+    ${sinComida.length ? `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:9px 12px;margin:0 0 10px;font-size:12.5px;">
+      ⚠ <strong>${sinComida.length} habitación(es)</strong> con ${esCena ? "la cena" : "el almuerzo"} NO incluido:
+      ${sinComida.map(x => `hab. ${x.room_no || "—"} (${x.regimen_texto})`).join(" · ")}.
+      Se les cobra aparte.</div>` : ""}
     <table>
-      <tr><th>Hab.</th><th>Huésped</th><th>Pax</th><th>Noche</th><th></th>
+      <tr><th>Hab.</th><th>Huésped</th><th>Pax</th><th>Noche</th><th>${esCena ? "Cena" : "Almuerzo"}</th><th></th>
         ${esCena ? "<th>Hora reservada</th>" : ""}${isRecepcion() ? "<th></th>" : ""}</tr>
       ${lista.map(x => `<tr class="${x.tipo === 'ENTRA' ? 'fila-entra' : ''}">
         <td><strong>${x.room_no || '—'}</strong></td>
         <td>${x.nombre}${x.grupo ? ' <span class="badge badge-tour">grupo</span>' : ''}</td>
         <td>${x.pax}</td>
         <td style="font-size:11.5px;color:var(--muted);">${x.noche_estadia || 1} de ${x.noches}</td>
+        <td>${celdaComida(x)}</td>
         <td>${x.tipo === 'ENTRA' ? '<span class="badge badge-warn">entra</span>' : ''}
             ${x.fijo ? `<span class="badge badge-tour">${x.fijo}</span>` : ''}
             ${x.manual ? '<span class="badge badge-ok">cambio manual</span>' : ''}</td>

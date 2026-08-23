@@ -101,6 +101,10 @@ CREATE TABLE IF NOT EXISTS reserva (
     block_code TEXT,
     -- Restaurante fijo para toda la estadía, si recepción lo define
     forzar_restaurante TEXT,
+    -- Comidas que trae pagadas la reserva, según lo que diga el PDF:
+    -- PENSION_COMPLETA | DESAYUNO_CENA | SOLO_DESAYUNO | COMEDOR_TRABAJADORES | NULL
+    -- NULL significa que el PDF no lo dijo, no que no tenga comidas.
+    regimen TEXT,
     hora_vuelo_entrada TEXT,
     hora_vuelo_salida TEXT,
     vuelo_entrada TEXT,

@@ -79,7 +79,7 @@ def _reservas_del_dia(conn, fecha):
     """
     filas = [dict(r) for r in conn.execute(
         """SELECT conf_no, room_no, nombre_principal, adl, chl, arr_date, dep_date,
-                  grupo_id, block_code, forzar_restaurante
+                  grupo_id, block_code, forzar_restaurante, regimen
            FROM reserva WHERE res_status != 'CANCELADA'""").fetchall()]
 
     entradas, en_casa, salidas = [], [], []
@@ -142,6 +142,37 @@ def _cambios_manuales(conn, fecha):
             for r in conn.execute(
                 "SELECT conf_no, comida, restaurante, motivo FROM restaurante_cambio WHERE fecha = ?",
                 (_iso(fecha),)).fetchall()}
+
+
+# ---------------------------------------------------------------------------
+# Régimen de comidas, para el salonero
+# ---------------------------------------------------------------------------
+
+TEXTO_REGIMEN = {
+    "PENSION_COMPLETA":     "comidas incluidas",
+    "DESAYUNO_CENA":        "solo desayuno y cena",
+    "SOLO_DESAYUNO":        "solo desayuno",
+    "COMEDOR_TRABAJADORES": "come en el comedor de trabajadores",
+}
+
+
+def texto_regimen(regimen):
+    """Cómo se le dice al salonero. Sin dato se deja vacío: no es lo mismo que no tener."""
+    return TEXTO_REGIMEN.get(regimen or "", "")
+
+
+def incluye_comida(regimen, comida):
+    """Si esta comida en concreto le corresponde al huésped.
+
+    Devuelve None cuando el PDF no dijo el régimen, que no es lo mismo que un "no":
+    es "no se sabe", y en pantalla se muestra distinto para que nadie le niegue el
+    almuerzo a alguien por un dato que el reporte no traía.
+    """
+    from importer import COMIDAS_DE_REGIMEN
+    if not regimen or regimen not in COMIDAS_DE_REGIMEN:
+        return None
+    clave = "almuerzo" if comida == "almuerzo" else "cena"
+    return COMIDAS_DE_REGIMEN[regimen][clave]
 
 
 def _filtro_privada(prefijo=""):
@@ -352,6 +383,10 @@ def distribuir(conn, fecha):
                 "hora": horas.get(r["conf_no"]) if comida == "cena" else None,
                 "fijo": fijo[1] if fijo else None,
                 "manual": (r["conf_no"], comida.upper()) in manuales,
+                # Para el salonero: qué trae pagado y si ESTA comida le corresponde.
+                "regimen": r.get("regimen"),
+                "regimen_texto": texto_regimen(r.get("regimen")),
+                "incluye_esta_comida": incluye_comida(r.get("regimen"), comida),
             })
         return out
 
