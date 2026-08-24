@@ -95,6 +95,14 @@
   /* Fila con cambios sin guardar */
   tr.sin-guardar { background:#FFF8DC !important; box-shadow:inset 3px 0 0 #E5A93B; }
 
+  /* Habitaciones que viajan juntas: la etiqueta va junto al número de cuarto y el
+     color es estable por grupo, así se reconocen entre filas sin leer nada. */
+  .chip-grupo { display:inline-block; color:#fff; font-size:10px; font-weight:600;
+    padding:2px 7px; border-radius:var(--r-pill); letter-spacing:.2px; cursor:pointer;
+    white-space:nowrap; vertical-align:middle; max-width:190px; overflow:hidden;
+    text-overflow:ellipsis; }
+  .chip-grupo:active { opacity:.75; }
+
   /* Línea del día: la jornada del lodge se organiza por horas de salida, así que
      se dibuja el día completo de 5:45 a 20:30 con los tours en su hora real. */
   .jornada { position:relative; margin:4px 0 2px; }
@@ -271,7 +279,13 @@
       border: none; border-bottom: 1px solid #F1EFE8;
       padding: 7px 12px; text-align: left; font-size: 13px;
       display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+      /* Si el dato es largo —el nombre de un grupo, por ejemplo— baja de línea en vez
+         de desbordar la tarjeta. */
+      flex-wrap: wrap;
     }
+    /* La etiqueta de grupo dentro de la tarjeta: cabe completa y se toca cómodo */
+    .chip-grupo { max-width: 100%; padding: 4px 9px; font-size: 10.5px;
+      -webkit-tap-highlight-color: transparent; }
     table tr td:last-child { border-bottom: none; }
     table td::before {
       content: attr(data-etiqueta);
@@ -496,7 +510,14 @@ const FILTRO_DE_PANTALLA = ["dashboard", "reservas", "agenda", "transporte", "si
                             "amenidades", "restaurantes", "analitica", "resumen",
                             null, null, null, "publicacion"];
 
-function irAPantalla(indice) {
+async function irAPantalla(indice) {
+  // Los grupos se releen al cambiar de pantalla: una importación de PDF nueva puede
+  // haber vinculado habitaciones, y la etiqueta tiene que reflejarlo.
+  await cargarGrupos();
+  _irAPantalla(indice);
+}
+
+function _irAPantalla(indice) {
   // Abrir desde el menú siempre lleva al día de hoy. Filtrar otra fecha DENTRO de la
   // pantalla no pasa por aquí, así que se respeta mientras se esté trabajando ahí:
   // ni el refresco automático ni un guardado devuelven la vista al día de hoy.
@@ -564,7 +585,7 @@ function showApp() {
   const primera = aplicarPermisos();
   // Se entra por irAPantalla para que la primera pantalla también abra en el día de
   // hoy, aunque la sesión se haya iniciado con la página abierta desde ayer.
-  irAPantalla(primera >= 0 ? primera : 0);
+  irAPantalla(primera >= 0 ? primera : 0);   // trae también los grupos
   iniciarRefrescoAutomatico();
 }
 
@@ -585,6 +606,92 @@ function avisar(texto, esError, tipo) {
   clearTimeout(_avisoTimer);
   // El aviso de cambio de otra persona dura menos: solo hace falta enterarse.
   _avisoTimer = setTimeout(() => el.classList.remove("visible"), tipo === "ajeno" ? 1800 : 2600);
+}
+
+// ---------- Habitaciones que viajan juntas ----------
+// Grupos de agencia y familias con varios cuartos. Es informativo: la fila no se mueve
+// ni se esconde, porque la operación es por habitación —housekeeping prepara el cuarto
+// 03, el salonero sienta al 12—. Lo que se agrega es la RELACIÓN, visible donde sea que
+// aparezca la habitación, con el mismo color para las del mismo grupo.
+let GRUPOS = {};
+
+async function cargarGrupos() {
+  try {
+    GRUPOS = await (await fetchAuth(`${API}/api/grupos`)).json();
+  } catch (e) { GRUPOS = {}; }
+}
+
+// Un color estable por grupo, sacado de su clave: así las habitaciones del mismo grupo
+// se reconocen de un vistazo y el color no cambia al recargar.
+const COLORES_GRUPO = ["#5B7C99", "#8A6D5B", "#6B8E7B", "#8E6B85", "#94804A", "#5E7A6B"];
+function colorGrupo(clave) {
+  let suma = 0;
+  for (const c of clave) suma = (suma + c.charCodeAt(0)) % 9973;
+  return COLORES_GRUPO[suma % COLORES_GRUPO.length];
+}
+
+// La etiqueta que se pone al lado de la habitación. Se le pasa el número de reserva.
+function etiquetaGrupo(confNo) {
+  const g = GRUPOS[confNo];
+  if (!g) return "";
+  const color = colorGrupo(g.clave);
+  const aviso = g.confirmado ? "" : " ·  sin confirmar";
+  return ` <span class="chip-grupo" style="background:${color};"
+      onclick="verGrupo('${confNo}'); event.stopPropagation();"
+      title="Toca para ver las habitaciones de este grupo">
+      ${g.etiqueta} · ${g.habitaciones} hab.${aviso}</span>`;
+}
+
+function verGrupo(confNo) {
+  const g = GRUPOS[confNo];
+  if (!g) return;
+  const color = colorGrupo(g.clave);
+  const origen = g.origen === "bloque"
+    ? "Van juntas según el código de bloque del PMS."
+    : "Vínculo detectado en las notas del PDF.";
+  const fondo = document.createElement("div");
+  fondo.className = "modal-fondo"; fondo.id = "modal-grupo";
+  fondo.onclick = (e) => { if (e.target === fondo) fondo.remove(); };
+  fondo.innerHTML = `<div class="modal-caja" style="max-width:560px;">
+    <div class="modal-encabezado">
+      <div>
+        <p class="title">${g.etiqueta}</p>
+        <p class="subtitle">${g.habitaciones} habitaciones · ${g.pax} pax · ${origen}</p>
+      </div>
+      <button class="btn" onclick="document.getElementById('modal-grupo').remove()">Cerrar</button>
+    </div>
+    <div class="modal-cuerpo">
+      ${!g.confirmado ? `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:9px 12px;margin:0 0 10px;font-size:12.5px;">
+        Este vínculo lo detectó el sistema al leer las notas${g.confianza ? ` (confianza ${g.confianza})` : ""}
+        y <strong>nadie lo ha confirmado todavía</strong>. Mientras siga así, se muestra
+        pero conviene revisarlo.
+        ${puedeEscribir("reservas") && g.grupo_id ? `<br>
+          <button class="btn" style="margin-top:8px;" onclick="confirmarGrupoDesdePanel(${g.grupo_id}, true)">Sí, viajan juntas</button>
+          <button class="btn" onclick="confirmarGrupoDesdePanel(${g.grupo_id}, false)">No, desvincular</button>` : ""}
+      </div>` : ""}
+      <table>
+        <tr><th>Hab.</th><th>Huésped</th><th>Pax</th><th>Estadía</th></tr>
+        ${g.miembros.map(m => `<tr style="box-shadow:inset 3px 0 0 ${color};">
+          <td><strong>${m.room_no || "—"}</strong></td>
+          <td>${m.nombre}</td>
+          <td>${m.pax}</td>
+          <td>${m.arr_date} – ${m.dep_date || "?"}</td>
+        </tr>`).join("")}
+      </table>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">
+        El reparto de restaurantes nunca separa a estas habitaciones.
+      </p>
+    </div></div>`;
+  document.body.appendChild(fondo);
+}
+
+async function confirmarGrupoDesdePanel(grupoId, confirmar) {
+  await fetchAuth(`${API}/api/grupos/${grupoId}/confirmar?confirmar=${confirmar}`, { method: "POST" });
+  document.getElementById("modal-grupo")?.remove();
+  avisar(confirmar ? "Grupo confirmado" : "Grupo desvinculado");
+  await cargarGrupos();
+  const cargar = cargadoresPantalla()[window._pantallaActiva];
+  if (cargar) cargar();
 }
 
 // ---------- App en el teléfono ----------
@@ -1209,7 +1316,7 @@ async function loadReservas(fecha, desde, hasta) {
         ${rows.map(r => { const e = estadoReserva(r); return `
           <tr class="${e.clase}">
             <td><a href="#" onclick="verDetalleReserva('${r.conf_no}'); return false;" style="color:var(--forest);font-weight:600;text-decoration:underline;cursor:pointer;">${r.conf_no}</a></td>
-            <td>${r.room_no}</td>
+            <td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td>
             <td>${r.nombre_principal}</td>
             <td>${r.arr_date} – ${r.dep_date}</td>
             <td>${r.adl + r.chl}</td>
@@ -1727,8 +1834,8 @@ async function loadTransporte(fecha, desde, hasta) {
     ? `${r.hora_efectiva}${r.hora_origen === "del PDF" ? ""
         : ` <span style="font-size:10px;color:var(--muted);">${r.hora_origen}</span>`}`
     : `<span style="color:var(--warn-text);">${r.hora_origen}</span>`;
-  const filaE = r => `<tr><td>${r.arr_date}</td><td>${r.room_no}</td><td>${r.nombre_principal}</td><td>${r.punto_entrada||"-"}</td><td>${celdaHora(r)}</td><td>${r.adl+r.chl}</td></tr>`;
-  const filaS = r => `<tr><td>${r.dep_date}</td><td>${r.room_no}</td><td>${r.nombre_principal}</td><td>${r.punto_salida||"-"}</td><td>${celdaHora(r)}</td><td>${r.adl+r.chl}</td></tr>`;
+  const filaE = r => `<tr><td>${r.arr_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${r.punto_entrada||"-"}</td><td>${celdaHora(r)}</td><td>${r.adl+r.chl}</td></tr>`;
+  const filaS = r => `<tr><td>${r.dep_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${r.punto_salida||"-"}</td><td>${celdaHora(r)}</td><td>${r.adl+r.chl}</td></tr>`;
   app.innerHTML = `
     <div class="card">
       <div class="header">
@@ -1975,7 +2082,7 @@ async function loadAmenidades(fecha, desdeNuevo, hastaNuevo, estadoNuevo) {
           ${lista.map(a => `
             <tr class="${a.estado === 'HECHA' ? 'fila-salio' : ''}">
               <td>${a.arr_date}</td>
-              <td>${a.room_no}</td>
+              <td>${a.room_no}${etiquetaGrupo(a.conf_no)}</td>
               <td>${a.nombre_principal}</td>
               <td><span class="badge badge-tour">${a.amenidad}</span>${a.origen === 'MANUAL' ? ' <span style="font-size:10px;color:var(--muted);">(manual)</span>' : ''}</td>
               <td style="font-size:12px;color:var(--muted);">${a.detalle ? `<strong style="color:var(--text);">${a.detalle}</strong><br>` : ''}${a.tarea}</td>
@@ -2237,7 +2344,7 @@ function detalleRegimen() {
       <table>
         <tr><th>Hab.</th><th>Huésped</th><th>Pax</th><th></th></tr>
         ${lista.map(x => `<tr class="${x.tipo === 'ENTRA' ? 'fila-entra' : ''}">
-          <td><strong>${x.room_no || '—'}</strong></td>
+          <td><strong>${x.room_no || '—'}</strong>${etiquetaGrupo(x.conf_no)}</td>
           <td>${x.nombre}</td>
           <td>${x.pax}</td>
           <td>${x.tipo === 'ENTRA' ? '<span class="badge badge-warn">entra</span>' : ''}</td>
@@ -2334,7 +2441,7 @@ function detalleRest(cual) {
       <tr><th>Hab.</th><th>Huésped</th><th>Pax</th><th>Noche</th><th>${esCena ? "Cena" : "Almuerzo"}</th><th></th>
         ${esCena ? "<th>Hora reservada</th>" : ""}${puedeEscribir("restaurantes") ? "<th></th>" : ""}</tr>
       ${lista.map(x => `<tr class="${x.tipo === 'ENTRA' ? 'fila-entra' : ''}">
-        <td><strong>${x.room_no || '—'}</strong></td>
+        <td><strong>${x.room_no || '—'}</strong>${etiquetaGrupo(x.conf_no)}</td>
         <td>${x.nombre}${x.grupo ? ' <span class="badge badge-tour">grupo</span>' : ''}</td>
         <td>${x.pax}</td>
         <td style="font-size:11.5px;color:var(--muted);">${x.noche_estadia || 1} de ${x.noches}</td>
@@ -2662,7 +2769,7 @@ async function loadResumenOperacion(fecha) {
       <table>
         <tr><th>Hab.</th><th>Huésped</th><th>Detalle</th></tr>
         ${d.restricciones_cocina.map(x => `<tr class="fila-sale">
-          <td><strong>${x.room_no}</strong></td><td>${x.nombre_principal}</td>
+          <td><strong>${x.room_no}</strong>${etiquetaGrupo(x.conf_no)}</td><td>${x.nombre_principal}</td>
           <td><strong>${x.detalle || x.amenidad}</strong>${x.detalle ? `<br><span style="font-size:11px;color:var(--muted);">${x.tarea}</span>` : ''}</td>
         </tr>`).join("")}
       </table>
@@ -2675,7 +2782,7 @@ async function loadResumenOperacion(fecha) {
       <table>
         <tr><th>Hab.</th><th>Huésped</th><th>Amenidad</th><th>Tarea</th><th>Área</th></tr>
         ${d.amenidades.map(x => `<tr>
-          <td><strong>${x.room_no}</strong></td><td>${x.nombre_principal}</td>
+          <td><strong>${x.room_no}</strong>${etiquetaGrupo(x.conf_no)}</td><td>${x.nombre_principal}</td>
           <td><span class="badge badge-tour">${x.amenidad}</span></td>
           <td style="font-size:12px;">${x.detalle || x.tarea}</td>
           <td style="font-size:12px;">${x.area_responsable}</td>
@@ -2729,7 +2836,7 @@ function detalleResumen(campo) {
         ${campo === "en_casa" ? "<th>Sale</th>" : ""}
       </tr>
       ${lista.map(x => `<tr>
-        <td><strong>${x.room_no}</strong></td><td>${x.nombre_principal}</td>
+        <td><strong>${x.room_no}</strong>${etiquetaGrupo(x.conf_no)}</td><td>${x.nombre_principal}</td>
         <td>${(x.adl||0)+(x.chl||0)}</td>
         ${esIngreso ? `<td>${x.punto_entrada || '—'}</td><td>${x.vuelo_entrada || '—'}</td><td>${x.hora_vuelo_entrada || x.arr_time || '—'}</td>` : ""}
         ${esSalida ? `<td>${x.punto_salida || '—'}</td><td>${x.vuelo_salida || '—'}</td><td>${x.hora_vuelo_salida || '—'}</td>` : ""}
@@ -3161,7 +3268,7 @@ async function loadPublicacion(fechaNueva, filtroNuevo) {
       <table>
         <tr><th>Hab.</th><th>Movimiento</th><th>Huésped</th><th>Estadía</th><th>Idioma</th><th></th></tr>
         ${d.detalle.map(h => `<tr class="${claseFila(h.movimiento, h.huesped)}">
-          <td><strong>${h.room_no}</strong></td>
+          <td><strong>${h.room_no}</strong>${etiquetaGrupo(h.conf_no)}</td>
           <td>${movTxt[h.movimiento] || "—"}</td>
           <td>${h.huesped || '<span style="color:var(--muted);">sin ocupante</span>'}</td>
           <td>${h.arr_date ? `${h.arr_date} – ${h.dep_date || "?"}` : "—"}</td>

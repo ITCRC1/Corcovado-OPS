@@ -227,24 +227,26 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     # --- Movimiento de huéspedes ---
+    # conf_no viene en las cuatro listas para poder marcar en pantalla las habitaciones
+    # que viajan juntas (grupos de agencia y familias con varios cuartos).
     ingresos = lista(
-        """SELECT room_no, nombre_principal, adl, chl, arr_time, punto_entrada,
+        """SELECT conf_no, room_no, nombre_principal, adl, chl, arr_time, punto_entrada,
                   vuelo_entrada, hora_vuelo_entrada, nota_ingreso, notas_libres
            FROM reserva WHERE arr_date = ? AND res_status != 'CANCELADA'
            ORDER BY CAST(room_no AS INTEGER)""", (dd,))
     salidas = lista(
-        """SELECT room_no, nombre_principal, adl, chl, punto_salida,
+        """SELECT conf_no, room_no, nombre_principal, adl, chl, punto_salida,
                   vuelo_salida, hora_vuelo_salida, nota_salida
            FROM reserva WHERE dep_date = ? AND res_status != 'CANCELADA'
            ORDER BY CAST(room_no AS INTEGER)""", (dd,))
     desayunos = lista(
-        f"""SELECT room_no, nombre_principal, adl, chl FROM reserva
+        f"""SELECT conf_no, room_no, nombre_principal, adl, chl FROM reserva
            WHERE res_status != 'CANCELADA' AND (
              dep_date = ? OR ({sql_fecha('arr_date')} < ?
                               AND (dep_date IS NULL OR {sql_fecha('dep_date')} >= ?)))
            ORDER BY CAST(room_no AS INTEGER)""", (dd, yy, yy))
     en_casa = lista(
-        f"""SELECT room_no, nombre_principal, adl, chl, punto_salida, dep_date FROM reserva
+        f"""SELECT conf_no, room_no, nombre_principal, adl, chl, punto_salida, dep_date FROM reserva
            WHERE res_status != 'CANCELADA' AND (
              arr_date = ? OR ({sql_fecha('arr_date')} < ?
                               AND (dep_date IS NULL OR {sql_fecha('dep_date')} > ?)))
@@ -583,11 +585,12 @@ def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: di
         cond_s = f"{sql_fecha('dep_date')} BETWEEN ? AND ?"
         params_e = params_s = (yymmdd(desde), yymmdd(hasta))
     entradas = conn.execute(
-        f"SELECT room_no, nombre_principal, punto_entrada, arr_time, hora_vuelo_entrada, adl, chl, arr_date FROM reserva WHERE {cond_e}",
+        # conf_no viene para poder marcar en pantalla si esa habitación viaja con otras.
+        f"SELECT conf_no, room_no, nombre_principal, punto_entrada, arr_time, hora_vuelo_entrada, adl, chl, arr_date FROM reserva WHERE {cond_e}",
         params_e,
     ).fetchall()
     salidas = conn.execute(
-        f"SELECT room_no, nombre_principal, punto_salida, hora_vuelo_salida, adl, chl, dep_date FROM reserva WHERE {cond_s}",
+        f"SELECT conf_no, room_no, nombre_principal, punto_salida, hora_vuelo_salida, adl, chl, dep_date FROM reserva WHERE {cond_s}",
         params_s,
     ).fetchall()
     conn.close()
@@ -1787,6 +1790,29 @@ def descargar_itinerario(conf_no: str, user: dict = Depends(exige("reservas"))):
     nombre = (datos["nombre_bienvenida"] or conf_no).replace(" ", "_").replace("&", "y")
     return Response(content=buf.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": f'attachment; filename="Itinerary_{nombre}.pdf"'})
+
+
+@app.get("/api/grupos")
+def grupos_del_sistema(user: dict = Depends(exige(
+        "dashboard", "reservas", "agenda", "transporte", "amenidades", "restaurantes",
+        "resumen", "publicacion"))):
+    """Qué reservas viajan juntas, para marcarlo donde se vea la habitación.
+
+    Es informativo: una sola consulta, indexada por número de reserva, que cada pantalla
+    pide una vez y usa para poner la etiqueta de grupo en sus filas. Así no hay que
+    agregar el dato a cada endpoint, y todas las pantallas dicen lo mismo.
+
+    Alcanza con tener acceso a cualquiera de las pantallas que muestran habitaciones,
+    porque son las que ponen la etiqueta. Devuelve nombres de huéspedes, así que no se
+    deja con solo tener sesión: alguien con acceso únicamente a Analítica o a Catálogo
+    no tiene por qué leer la lista de reservas.
+    """
+    import grupos as _grupos
+    conn = get_connection()
+    try:
+        return _grupos.resumen(conn)
+    finally:
+        conn.close()
 
 
 @app.get("/api/itinerarios/estados")

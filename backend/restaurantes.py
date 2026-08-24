@@ -37,6 +37,8 @@ restaurante, así se autocorrige cuando una noche no se pudo cumplir.
 
 import datetime
 
+import grupos
+
 TERRA = "Terra Kitchen"
 # Antes se llamaba "Vitrales". El nombre viejo quedó guardado en los cambios manuales,
 # en el histórico de rotación y en los restaurantes fijos de estadía, así que init_db
@@ -89,11 +91,10 @@ def _reservas_del_dia(conn, fecha):
             continue
         r["pax"] = (r["adl"] or 0) + (r["chl"] or 0)
         r["noches"] = (sale - llega).days if sale else 1
-        # La clave de grupo: el grupo detectado por notas, o el código de bloque
-        # del PMS, o la reserva sola si no pertenece a ninguno.
-        r["clave_grupo"] = (f"g{r['grupo_id']}" if r["grupo_id"]
-                            else (f"b{r['block_code']}" if r["block_code"]
-                                  else f"r{r['conf_no']}"))
+        # La clave de grupo vive en grupos.py: es la MISMA que usan las pantallas para
+        # mostrar que varias habitaciones viajan juntas. Si aquí se separaran de otra
+        # forma, el comedor y la pantalla se contradirían.
+        r["clave_grupo"] = grupos.clave_de(r)
         if llega == fecha:
             r["tipo"] = "ENTRA"
             r["noche_estadia"] = 1
