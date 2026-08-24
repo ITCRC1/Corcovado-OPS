@@ -2861,6 +2861,11 @@ async function loadImportarPDF() {
       </div>
       <div id="pdf-preview"></div>
     </div>
+    <div class="card" id="opera-card">
+      <p class="title">Conexión directa con Opera Cloud</p>
+      <p class="subtitle">Las reservas entran solas, sin PDF de por medio</p>
+      <div id="opera-estado"><p class="empty">Consultando…</p></div>
+    </div>
     <div class="card" id="buzon-card">
       <p class="title">Importación automática</p>
       <p class="subtitle">Para no tener que descargar el reporte a mano</p>
@@ -2868,7 +2873,146 @@ async function loadImportarPDF() {
     </div>
   `;
   document.getElementById("pdf-input").addEventListener("change", handlePdfUpload);
+  pintarEstadoOpera();
   pintarEstadoBuzon();
+}
+
+// ---------- OPERA CLOUD ----------
+
+// Todo lo que viene del servidor se escapa antes de meterlo en la página: los detalles
+// de error de Opera son texto que llega de Oracle, y no puede convertirse en etiquetas.
+function escHtml(v) {
+  return String(v == null ? "" : v).replace(/[&<>"']/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+const TEXTO_CICLO_OPERA = {
+  OK: ["badge-ok", "al día"],
+  SIN_CONEXION: ["badge-warn", "sin conexión con Opera"],
+  SIN_CONFIGURAR: ["badge-warn", "falta configurar"],
+  SIN_RESERVAS: ["badge-tour", "no llegaron reservas"],
+  ERROR: ["badge-warn", "error"],
+  "nunca ejecutado": ["badge-tour", "todavía no ha corrido"],
+};
+
+async function pintarEstadoOpera() {
+  const caja = document.getElementById("opera-estado");
+  if (!caja) return;
+  let d;
+  try {
+    d = await (await fetchAuth(`${API}/api/opera/estado`)).json();
+  } catch (e) { caja.innerHTML = `<p class="empty">No se pudo consultar.</p>`; return; }
+
+  if (!d.configurado) {
+    caja.innerHTML = `
+      <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:12px 14px;font-size:13px;">
+        <p style="margin:0 0 6px;font-weight:600;">Todavía no está conectado</p>
+        <p style="margin:0;">Cuando esté configurado, el sistema le pide las reservas a Opera
+        cada media hora y las carga solo: mismos tours, mismos grupos y mismas entradas del
+        SINAC que con el PDF. El PDF sigue funcionando igual, por si acaso.</p>
+        <p style="margin:8px 0 0;font-size:12px;">Falta definir en el servidor:
+        ${d.faltantes.map(v => `<strong>${escHtml(v)}</strong>`).join(", ")}.</p>
+        <p style="margin:8px 0 0;font-size:12px;">Esos datos salen de la ficha de la
+        aplicación en OHIP. Se ponen como variables de entorno en Railway — nunca dentro
+        del sistema, para que no queden guardados en ningún archivo.</p>
+      </div>`;
+    return;
+  }
+
+  const c = d.config, u = d.ultimo_ciclo;
+  const [clase, texto] = TEXTO_CICLO_OPERA[u.resultado] || ["badge-tour", u.resultado];
+  caja.innerHTML = `
+    <div style="background:${c.activo ? "var(--ok-bg)" : "var(--warn-bg)"};color:${c.activo ? "var(--ok-text)" : "var(--warn-text)"};border-radius:var(--r-sm);padding:11px 13px;font-size:13px;margin-bottom:12px;">
+      ${c.activo
+        ? `Encendida · consulta Opera cada <strong>${c.intervalo_minutos}</strong> minutos`
+        : `<strong>Apagada</strong> · la conexión funciona, pero no está trayendo nada todavía`}
+      <br>Ventana: del <strong>${escHtml(d.ventana.desde)}</strong> al
+      <strong>${escHtml(d.ventana.hasta)}</strong>
+      (${c.dias_atras} día(s) atrás y ${c.dias_adelante} adelante)
+    </div>
+
+    <p style="font-weight:600;font-size:13px;margin:0 0 6px;">Último intento</p>
+    <p style="font-size:13px;margin:0 0 14px;">
+      <span class="badge ${clase}">${escHtml(texto)}</span>
+      ${u.ultimo_intento ? ` · ${escHtml(u.ultimo_intento.replace("T", " "))}` : ""}
+      ${u.resultado === "OK" ? `<br>${u.reservas_cargadas} reservas cargadas${u.descartadas ? ` · ${u.descartadas} descartadas` : ""}` : ""}
+      ${u.detalle ? `<br><span style="font-size:11.5px;color:var(--muted);">${escHtml(u.detalle.slice(0, 200))}</span>` : ""}
+      ${u.completo === false ? `<br><span style="font-size:11.5px;color:var(--muted);">La descarga vino incompleta, así que no se canceló ninguna reserva.</span>` : ""}
+    </p>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn" onclick="operaProbar()">Probar la conexión</button>
+      <button class="btn" onclick="operaVistaPrevia()">Ver qué llegaría</button>
+      <button class="btn btn-primary" onclick="operaSincronizar()">Sincronizar ahora</button>
+      <button class="btn" onclick="operaEncender(${c.activo ? "false" : "true"})">
+        ${c.activo ? "Apagar la sincronización" : "Encender la sincronización"}
+      </button>
+    </div>
+    <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0;">
+      Antes de encenderla conviene usar <strong>Ver qué llegaría</strong>: eso descarga de
+      Opera y muestra lo que entraría, sin guardar nada.
+    </p>
+    <div id="opera-resultado"></div>`;
+}
+
+function operaTrabajando(mensaje) {
+  const caja = document.getElementById("opera-resultado") || document.getElementById("opera-estado");
+  if (caja) caja.innerHTML = `<div class="trabajando"><div class="giro"></div><p>${escHtml(mensaje)}</p></div>`;
+}
+
+async function operaProbar() {
+  operaTrabajando("Autenticando contra Opera…");
+  const r = await (await fetchAuth(`${API}/api/opera/probar`, { method: "POST" })).json();
+  if (r.estado === "OK") avisar("Conexión correcta con Opera Cloud");
+  else if (r.estado === "SIN_CONFIGURAR") avisar("Faltan credenciales: " + r.faltantes.join(", "), true);
+  else avisar("No se pudo conectar: " + (r.detalle || ""), true);
+  pintarEstadoOpera();
+}
+
+async function operaVistaPrevia() {
+  operaTrabajando("Consultando Opera… (no se guarda nada)");
+  const r = await (await fetchAuth(`${API}/api/opera/vista-previa`, { method: "POST" })).json();
+  pintarEstadoOpera();
+  const caja = document.getElementById("opera-resultado");
+  if (!caja) return;
+  if (r.estado !== "VISTA_PREVIA") {
+    avisar(r.mensaje || r.detalle || "No se pudo consultar Opera", true);
+    return;
+  }
+  caja.innerHTML = `
+    <p style="font-weight:600;font-size:13px;margin:16px 0 6px;">
+      Esto es lo que entraría (todavía no se guardó nada)
+    </p>
+    <pre style="background:var(--sand);border:1px solid var(--border);border-radius:var(--r-sm);
+                padding:12px;font-size:11.5px;overflow-x:auto;white-space:pre;">${escHtml(r.diagnostico)}</pre>
+    <p style="font-size:11.5px;color:var(--muted);margin:6px 0 0;">
+      Si algún campo aparece vacío en TODAS las reservas, es que ese dato viene con otro
+      nombre en esta propiedad y hay que ajustarlo. Avísale a quien lleva el sistema.
+    </p>`;
+}
+
+async function operaSincronizar() {
+  operaTrabajando("Trayendo reservas de Opera…");
+  const r = await (await fetchAuth(`${API}/api/opera/sincronizar`, { method: "POST" })).json();
+  if (r.estado === "OK") {
+    // No hace falta recargar esta pantalla: fetchAuth ya avisó del cambio de datos,
+    // y las demás pantallas se ponen al día solas cuando se entra a ellas.
+    avisar(`${r.reservas_cargadas} reservas cargadas desde Opera`);
+  } else {
+    avisar(r.mensaje || r.detalle || "No se pudo sincronizar", true);
+  }
+  pintarEstadoOpera();
+}
+
+async function operaEncender(activo) {
+  const res = await fetchAuth(`${API}/api/opera/config`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ activo }),
+  });
+  const r = await res.json();
+  if (!res.ok) { avisar(r.detail || "No se pudo guardar", true); return; }
+  avisar(activo ? "Sincronización encendida" : "Sincronización apagada");
+  pintarEstadoOpera();
 }
 
 const TEXTO_ESTADO_BUZON = {

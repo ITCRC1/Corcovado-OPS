@@ -1,9 +1,10 @@
 """
 Conexión con Opera Cloud (Oracle Hospitality) a través de OHIP.
 
-Estado: HERRAMIENTA DE DESCUBRIMIENTO. Todavía no alimenta el sistema — sirve para
-autenticarse, traer las reservas de unos días y ver con qué forma exacta llegan los
-datos. El mapeo de campos se hace después, contra respuestas reales.
+Este módulo es la puerta de entrada: autentica, trae las reservas de un rango de
+fechas y ofrece una herramienta de descubrimiento para ver con qué forma exacta
+llegan los datos. La traducción al formato del lodge la hace opera_mapeo.py y el
+ciclo automático lo lleva opera_sync.py.
 
 Las rutas y los nombres de parámetros de abajo son los habituales de OHIP, pero
 cada instalación puede diferir según versión y módulos contratados. Si algo falla,
@@ -205,23 +206,104 @@ def _cabeceras(token):
     }
 
 
-def traer_reservas(desde, hasta, limite=200, fetch=None):
-    """Reservas cuya llegada cae en el rango (fechas en formato AAAA-MM-DD).
+def traer_reservas(desde, hasta, limite=200, fetch=None, desplazamiento=0):
+    """Una página de reservas cuya llegada cae en el rango (fechas AAAA-MM-DD).
 
     Gestiona el token por su cuenta: reutiliza el vigente y lo renueva si hace falta.
     """
-    params = urllib.parse.urlencode({
+    campos = {
         "arrivalStartDate": desde,
         "arrivalEndDate": hasta,
         "limit": limite,
         "fetchInstructions": ",".join(fetch or FETCH_INSTRUCTIONS),
-    })
-    url = f"{BASE_URL}{RUTA_RESERVAS.format(hotel=HOTEL_ID)}?{params}"
+    }
+    if desplazamiento:
+        campos["offset"] = desplazamiento
+    url = f"{BASE_URL}{RUTA_RESERVAS.format(hotel=HOTEL_ID)}?{urllib.parse.urlencode(campos)}"
 
     def peticion(token):
         return _pedir(urllib.request.Request(url, headers=_cabeceras(token)))
 
     return _con_reintento(peticion)
+
+
+# Tope de páginas. Es un freno de seguridad, no un límite esperado: con 20 páginas de
+# 200 se cubren 4.000 reservas, muy por encima de cualquier ventana normal del lodge.
+# Existe para que un error de Oracle en la paginación (una página que se repite sola)
+# no deje el proceso girando para siempre.
+MAX_PAGINAS = 20
+
+
+def _lista_de_reservas(respuesta):
+    """Saca la lista de reservas de la respuesta, sea cual sea su envoltorio.
+
+    OHIP la envuelve distinto según la versión ('reservations.reservationInfo',
+    'reservationInfo', a veces una lista pelada). Se prueban las formas conocidas en
+    vez de dar una por segura, porque equivocarse aquí no da error: da cero reservas,
+    que es mucho peor —parecería que el hotel está vacío.
+    """
+    if isinstance(respuesta, list):
+        return respuesta
+    if not isinstance(respuesta, dict):
+        return []
+    for camino in (("reservations", "reservationInfo"), ("reservations", "reservation"),
+                   ("reservationInfo",), ("reservation",), ("items",)):
+        nodo = respuesta
+        for paso in camino:
+            nodo = nodo.get(paso) if isinstance(nodo, dict) else None
+            if nodo is None:
+                break
+        if isinstance(nodo, list):
+            return nodo
+        if isinstance(nodo, dict):
+            return [nodo]
+    return []
+
+
+def traer_todas_las_reservas(desde, hasta, limite=200, fetch=None):
+    """Todas las reservas del rango, recorriendo las páginas.
+
+    Devuelve (reservas, completo). El segundo valor dice si se pudo garantizar que
+    la descarga trajo TODO el rango. Importa mucho: quien llama usa ese dato para
+    decidir si puede cancelar las reservas que no vinieron en el lote. Con una lista
+    parcial, "no vino" no significa "cancelada", significa "falta" — y cancelarlas
+    borraría de la agenda a huéspedes que sí llegan.
+    """
+    reservas = []
+    vistas = set()
+    completo = False
+    desplazamiento = 0
+
+    for _ in range(MAX_PAGINAS):
+        respuesta = traer_reservas(desde, hasta, limite=limite, fetch=fetch,
+                                   desplazamiento=desplazamiento)
+        pagina = _lista_de_reservas(respuesta)
+        nuevas = 0
+        for r in pagina:
+            # Si Opera repite una reserva entre páginas, se queda una sola vez.
+            clave = _identificador(r)
+            if clave and clave in vistas:
+                continue
+            if clave:
+                vistas.add(clave)
+            reservas.append(r)
+            nuevas += 1
+
+        if len(pagina) < limite or nuevas == 0:
+            completo = True
+            break
+        desplazamiento += len(pagina)
+
+    return reservas, completo
+
+
+def _identificador(reserva):
+    """Número de confirmación, para no repetir reservas entre páginas."""
+    try:
+        import opera_mapeo
+        return opera_mapeo.numero_de_confirmacion(reserva)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------

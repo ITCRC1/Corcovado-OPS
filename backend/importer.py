@@ -203,7 +203,19 @@ def build_group_sets(reservas):
 
 
 def build_review_batch(pdf_path):
-    reservas = parse_reservations(pdf_path)
+    """Lote de revisión a partir del PDF del PMS."""
+    return build_review_batch_desde_reservas(parse_reservations(pdf_path))
+
+
+def build_review_batch_desde_reservas(reservas):
+    """Aplica las reglas del lodge a una lista de reservas ya extraídas.
+
+    Está separado de build_review_batch para que Opera Cloud entre por el mismo
+    camino que el PDF. Lo que cambia entre una fuente y otra es de dónde salen los
+    datos, no las reglas: los tours, los grupos, las entradas del SINAC y las
+    amenidades se deciden igual vengan de donde vengan. Si esto estuviera duplicado,
+    una corrección hecha para el PDF no llegaría a las reservas de Opera.
+    """
     for r in reservas:
         r["tours_detectados"] = cross_reference_tours(r["adicionales_raw"])
         r["grupo_link"] = detect_group_link(r)

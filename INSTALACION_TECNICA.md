@@ -67,6 +67,45 @@ El servidor queda escuchando en `0.0.0.0:8000` y sirve tanto la API como el fron
 | `HOTEL_SYNC_TOKEN` | — | Secreto compartido entre estaciones. Sin él la sincronización queda apagada |
 | `HOTEL_CORS_ORIGINS` | — | Orígenes extra permitidos, separados por coma. Vacío = solo el propio dominio |
 
+#### Opera Cloud (OHIP)
+
+Sin estas variables la conexión con Opera queda apagada y el sistema funciona igual con
+el PDF. Los valores salen de la ficha de la aplicación en el portal de OHIP. **Se
+definen como variables de entorno, nunca dentro del sistema**: así no quedan escritas en
+la base de datos ni viajan en un respaldo.
+
+| Variable | En la ficha de OHIP | Obligatoria |
+|---|---|---|
+| `OPERA_BASE_URL` | Gateway URL | Sí |
+| `OPERA_APP_KEY` | App Key | Sí |
+| `OPERA_CLIENT_ID` | Client ID | Sí |
+| `OPERA_CLIENT_SECRET` | Client Secret | Sí |
+| `OPERA_HOTEL_ID` | Código del hotel en Opera | Sí |
+| `OPERA_SCOPE` | Scope | Solo si OHIP lo entregó |
+| `OPERA_ENTERPRISE_ID` | Enterprise ID | Solo si OHIP lo entregó |
+| `OPERA_GRANT_TYPE` | Authentication Scheme | Solo si la deducción automática falla |
+| `OPERA_USER` / `OPERA_PASSWORD` | Usuario de integración | Solo con esquema `password` |
+
+El esquema de autenticación se deduce solo: si hay `OPERA_USER` y `OPERA_PASSWORD` se
+usa `password`, y si no `client_credentials`. `OPERA_GRANT_TYPE` sirve para forzarlo
+cuando la propiedad usa otro.
+
+El resto de la configuración —encendido, cada cuántos minutos y qué ventana de fechas—
+se maneja desde la pantalla **Importar**, y se guarda en `config_opera.json` dentro de
+la carpeta de datos. No hace falta redesplegar para encenderla o apagarla.
+
+Herramientas de línea de comandos, para ajustar el mapeo contra la respuesta real:
+
+```bash
+python backend/opera_cloud.py probar                          # ¿autentica?
+python backend/opera_cloud.py descubrir 2026-08-10 2026-08-12 # ¿qué campos llegan?
+python backend/opera_sync.py preview                          # ¿qué entraría? (no guarda)
+```
+
+`descubrir` deja dos archivos en `data/opera_muestras/`: la respuesta completa —que
+**trae datos de huéspedes y no se sube a ningún lado**— y un `estructura_….txt` con solo
+los nombres y tipos de campo, que sí se puede compartir para corregir el mapeo.
+
 Ejemplo para un servidor:
 
 ```bash
@@ -202,12 +241,30 @@ desde otro dominio; nunca poner `*` en una instalación expuesta a internet.
 publica hacia internet, ponerlo detrás de un proxy inverso (nginx, Caddy) con TLS —
 Railway ya lo hace por su cuenta.
 
-**9. Salida a internet:** el sistema no hace ninguna conexión saliente, salvo que se
-configure la sincronización entre estaciones. No depende de ningún servicio externo.
+**9. Salida a internet:** por omisión el sistema no hace ninguna conexión saliente. Solo
+las hace si se configura una de estas tres, y cada una queda apagada mientras falten sus
+variables: la sincronización entre estaciones, el buzón de correo y Opera Cloud. Ninguna
+es necesaria para operar: sin ellas el sistema funciona igual importando el PDF a mano.
 
 **10. Nada de la carpeta de datos se sube al repositorio** (`.gitignore`): contiene
 la base con los datos de huéspedes. Los reportes del PMS en PDF y las hojas de cálculo
-también quedan excluidos.
+también quedan excluidos, igual que las muestras crudas de Opera
+(`data/opera_muestras/`), que traen nombres de huéspedes tal como los devuelve Oracle.
+
+**13. Credenciales de Opera Cloud.** Viven únicamente en variables de entorno: no se
+guardan en la base, no se escriben en ningún archivo de configuración y no se muestran
+en pantalla. La API de estado devuelve solo los **nombres** de las variables que faltan,
+nunca sus valores, ni siquiera a un usuario con todos los permisos. El token de acceso
+que devuelve Oracle se guarda en memoria y se renueva solo; nunca toca el disco, así que
+no puede filtrarse por un respaldo. Las cuatro rutas `/api/opera/*` exigen sesión con
+permiso sobre la pantalla *Importar*.
+
+**14. Opera nunca cancela reservas por dudas.** Al cargar un lote, el sistema marca como
+canceladas las reservas del rango que Opera ya no reporta. Eso solo se aplica si se pudo
+comprobar que la descarga vino completa; si la paginación quedó a medias o hubo un
+corte, se cargan las reservas nuevas y **no se cancela ninguna**. Una reserva que falta
+por un error de red no es una reserva cancelada, y sacar de la agenda a un huésped que
+sí llega es un fallo mucho más caro que dejar una cancelada de más.
 
 **12. Recuperar el acceso si nadie puede entrar.** En cada arranque el sistema
 comprueba que exista al menos una cuenta de Recepción **activa**. Si no la hay —porque
@@ -276,14 +333,21 @@ Corcovado-OPS/
 │   ├── schema.sql           Esquema
 │   ├── auth.py              Autenticación y roles
 │   ├── pdf_parser.py        Extracción del PDF del PMS
+│   ├── buzon_pdf.py         Recoge el PDF de un buzón de correo
+│   ├── opera_cloud.py       Conexión con Opera Cloud (OHIP): token y descarga
+│   ├── opera_mapeo.py       Traduce el JSON de Opera al formato del sistema
+│   ├── opera_sync.py        Ciclo automático de sincronización con Opera
 │   ├── importer.py          Reglas de negocio de la importación
 │   ├── loader.py            Carga a la base
 │   ├── validations.py       Capacidades y conflictos de asignación
+│   ├── grupos.py            Vínculos entre reservas que viajan juntas
+│   ├── restaurantes.py      Turnos y cambios de comidas
 │   ├── exports.py           Reportes en Excel y PDF
 │   ├── itinerario.py        Generación del itinerario del huésped
+│   ├── catalogo_itinerario.py  Actividades que se ofrecen al huésped
 │   ├── traducciones.py      Catálogo de idiomas
-│   ├── qr_huesped.py        Página pública por código QR
 │   ├── qr_huesped.py        Página pública por QR y enlaces por habitación
+│   ├── publicador.py        Publicación de las páginas de huésped
 │   └── sync_engine.py       Sincronización Sierpe ↔ Drake
 ├── frontend/
 │   ├── index.html           Toda la interfaz

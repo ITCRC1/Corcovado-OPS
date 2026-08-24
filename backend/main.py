@@ -16,7 +16,18 @@ from validations import (validar_todos_los_tours, validar_tour_asignado,
 import auth
 
 app = FastAPI(title="Sistema de Operación Hotelera - Sierpe/Drake")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# El sistema sirve su propia pantalla desde esta misma dirección (ver el app.mount del
+# final), así que el navegador nunca hace una petición de origen cruzado y no hace falta
+# permitir ninguno. Antes estaba en "*", que le daba permiso a cualquier página de
+# internet para llamar a esta API con la sesión del usuario abierta.
+#
+# Solo se abre si HOTEL_CORS_ORIGINS lo pide, separando las direcciones por coma. Hace
+# falta únicamente si algún día la pantalla se sirve desde otro dominio.
+_origenes = [o.strip() for o in (os.environ.get("HOTEL_CORS_ORIGINS") or "").split(",") if o.strip()]
+if _origenes:
+    app.add_middleware(CORSMiddleware, allow_origins=_origenes,
+                       allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/api/salud")
 def salud():
@@ -990,8 +1001,14 @@ def sync_ahora(user: dict = Depends(exige("usuarios", escribir=True))):
     return sync_engine.intentar_sincronizar()
 
 
+# Estas dos las llama la OTRA estación, no una persona, así que no llevan sesión de
+# usuario: se identifican con el secreto compartido HOTEL_SYNC_TOKEN. Sin esa variable
+# quedan apagadas (404), que es lo correcto ahora que el sistema corre en un solo
+# servidor: si no hay una segunda estación con la que sincronizar, no hay motivo para
+# tener abierta una puerta que lee todas las reservas y escribe en la base.
 @app.get("/api/sync/pending")
-def sync_pending():
+def sync_pending(x_sync_token: str = Header(None)):
+    sync_engine.exigir_token(x_sync_token)
     conn = get_connection()
     cfg = sync_engine.load_sync_config()
     changes = sync_engine.get_pending_changes(conn, cfg.get("nombre_estacion"))
@@ -1000,11 +1017,92 @@ def sync_pending():
 
 
 @app.post("/api/sync/apply")
-async def sync_apply(payload: dict):
+async def sync_apply(payload: dict, x_sync_token: str = Header(None)):
+    sync_engine.exigir_token(x_sync_token)
     conn = get_connection()
     aplicados = sync_engine.apply_remote_changes(conn, payload.get("changes", []))
     conn.close()
     return {"aplicados": aplicados}
+
+
+# ---------- OPERA CLOUD (traer reservas del PMS automáticamente) ----------
+import opera_sync
+
+# El hilo arranca siempre, esté o no configurado: por dentro comprueba en cada vuelta
+# y no hace nada hasta que haya credenciales y alguien lo encienda desde la pantalla.
+# Así encender la sincronización no obliga a reiniciar el servidor.
+opera_sync.iniciar_en_segundo_plano()
+
+
+@app.get("/api/opera/estado")
+def opera_estado(user: dict = Depends(exige("importar"))):
+    """Cómo va la conexión con Opera, para la pantalla de Importar."""
+    cfg = opera_sync.cargar_config()
+    desde, hasta = opera_sync.ventana(cfg)
+    faltan = opera_sync.faltantes()
+    return {
+        "configurado": not faltan,
+        # Solo los NOMBRES de las variables que faltan. Los valores son credenciales y
+        # no salen nunca del servidor, ni siquiera hacia un usuario con permisos.
+        "faltantes": faltan,
+        "config": cfg,
+        "ventana": {"desde": desde, "hasta": hasta},
+        "ultimo_ciclo": opera_sync.estado(),
+    }
+
+
+@app.post("/api/opera/config")
+async def opera_config(payload: dict, user: dict = Depends(exige("importar", escribir=True))):
+    """Guarda el encendido, el intervalo y la ventana de fechas.
+
+    Se aceptan solo esos cuatro valores y se acotan a rangos con sentido: esta
+    configuración la escribe una pantalla, y un intervalo de 0 minutos o una ventana de
+    tres años dejarían al sistema llamando a Opera sin parar.
+    """
+    cfg = opera_sync.cargar_config()
+    if "activo" in payload:
+        cfg["activo"] = bool(payload["activo"])
+    for clave, minimo, maximo in (("intervalo_minutos", 5, 1440),
+                                  ("dias_atras", 0, 30),
+                                  ("dias_adelante", 1, 365)):
+        if clave in payload:
+            try:
+                cfg[clave] = max(minimo, min(int(payload[clave]), maximo))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"{clave} debe ser un número")
+    opera_sync.guardar_config(cfg)
+    return {"guardado": True, "config": cfg}
+
+
+@app.post("/api/opera/probar")
+def opera_probar(user: dict = Depends(exige("importar", escribir=True))):
+    """Comprueba que las credenciales sirven, sin tocar la base."""
+    import opera_cloud
+    faltan = opera_sync.faltantes()
+    if faltan:
+        return {"estado": "SIN_CONFIGURAR", "faltantes": faltan}
+    try:
+        opera_cloud.obtener_token()
+    except Exception as e:
+        return {"estado": "FALLO", "detalle": str(e).splitlines()[0][:300]}
+    return {"estado": "OK", "esquema": opera_cloud.tipo_de_autenticacion()}
+
+
+@app.post("/api/opera/vista-previa")
+def opera_vista_previa(user: dict = Depends(exige("importar", escribir=True))):
+    """Descarga de Opera y muestra qué llegaría, SIN escribir nada en la base.
+
+    Es el paso previo obligado antes de encender la sincronización: los nombres de
+    campo de OHIP cambian entre instalaciones, y así se ve si algún dato viene vacío
+    antes de que entre a la operación.
+    """
+    return opera_sync.sincronizar(cargar=False)
+
+
+@app.post("/api/opera/sincronizar")
+def opera_sincronizar(user: dict = Depends(exige("importar", escribir=True))):
+    """Ejecuta un ciclo completo ahora mismo, sin esperar al automático."""
+    return opera_sync.sincronizar(cargar=True)
 
 
 @app.get("/api/usuarios")
