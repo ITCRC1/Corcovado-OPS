@@ -189,6 +189,9 @@
   nav { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
   nav button { font-size: calc(var(--t-sm) * var(--escala)); padding: 8px 14px; border-radius: var(--r-sm); border: 1px solid var(--border); background: white; cursor: pointer; color: var(--text); }
   nav button.active { background: var(--forest); color: white; border-color: var(--forest); }
+  /* En computadora se lee el nombre completo. El corto es solo para la barra del
+     celular, y hay que ocultarlo aquí o el botón muestra los dos ("Reservas Reservas"). */
+  nav button .corto { display: none; }
   .empty { color: var(--muted); font-size: calc(var(--t-sm) * var(--escala));
     padding: 26px 12px; text-align: center; }
   .empty::before { content:""; display:block; width:112px; height:76px; margin:0 auto 10px;
