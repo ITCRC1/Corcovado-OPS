@@ -281,6 +281,22 @@ CREATE TABLE IF NOT EXISTS sync_log (
     creado_en TEXT DEFAULT (datetime('now'))
 );
 
+-- Reportes del PMS que llegaron por correo y se importaron solos.
+-- Queda todo anotado, lo importado y lo rechazado: una importación automática que
+-- falla en silencio es peor que no tenerla.
+CREATE TABLE IF NOT EXISTS importacion_buzon (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recibido_en TEXT DEFAULT (datetime('now')),
+    remitente TEXT,
+    asunto TEXT,
+    archivo TEXT,
+    -- Huella del contenido: evita importar dos veces el mismo reporte reenviado.
+    huella TEXT,
+    reservas INTEGER DEFAULT 0,
+    estado TEXT NOT NULL,   -- IMPORTADO | IGNORADO | REPETIDO | ERROR
+    detalle TEXT
+);
+
 -- Perfiles de permisos que arma el propio hotel. Antes estaban escritos en el código,
 -- así que agregar uno nuevo ("Salonero", "Housekeeping") exigía cambiar el programa.
 CREATE TABLE IF NOT EXISTS perfil_permisos (

@@ -742,6 +742,69 @@ async def pdf_confirm(file: UploadFile = File(...), user: dict = Depends(exige("
             "alertas_generadas": len(alertas), "publicacion": publicacion}
 
 
+@app.get("/api/buzon/estado")
+def buzon_estado(user: dict = Depends(exige("importar"))):
+    """Cómo viene funcionando la importación automática del reporte del PMS."""
+    import buzon_pdf
+    conn = get_connection()
+    try:
+        return buzon_pdf.resumen_estado(conn)
+    finally:
+        conn.close()
+
+
+@app.post("/api/buzon/revisar")
+def buzon_revisar(user: dict = Depends(exige("importar", escribir=True))):
+    """Mira el buzón ahora mismo, sin esperar el turno del reloj.
+
+    Sirve para el día que alguien reenvía el reporte a mano y quiere verlo ya.
+    """
+    import buzon_pdf
+    if not buzon_pdf.configurado():
+        raise HTTPException(
+            status_code=400,
+            detail=("El buzón no está configurado. Hacen falta las variables "
+                    "BUZON_HOST, BUZON_USUARIO y BUZON_CLAVE en el servidor."))
+    return buzon_pdf.revisar(get_connection)
+
+
+def _revisar_buzon_periodicamente():
+    """Revisa el buzón cada cierto tiempo, en segundo plano.
+
+    Se arranca solo si el buzón está configurado, así que en una instalación sin correo
+    —o en las pruebas— este hilo no existe y nadie intenta conectarse a nada.
+    """
+    import time as _time
+    import buzon_pdf
+    # Un momento de gracia al arrancar: primero que el servidor quede sirviendo.
+    _time.sleep(45)
+    while True:
+        try:
+            r = buzon_pdf.revisar(get_connection)
+            if r.get("importados"):
+                print(f"[buzón] {r['importados']} reporte(s) importado(s), "
+                      f"{r['reservas']} reservas")
+            elif r.get("fallo"):
+                print(f"[buzón] no se pudo revisar: {r['fallo']}")
+        except Exception as e:
+            # Una caída del correo no puede tumbar el sistema: se reintenta después.
+            print(f"[buzón] error inesperado: {type(e).__name__}: {e}")
+        _time.sleep(buzon_pdf.MINUTOS * 60)
+
+
+def _arrancar_buzon():
+    import threading
+    import buzon_pdf
+    if not buzon_pdf.configurado():
+        return
+    threading.Thread(target=_revisar_buzon_periodicamente, daemon=True).start()
+    print(f"[buzón] importación automática activa: {buzon_pdf.USUARIO} "
+          f"cada {buzon_pdf.MINUTOS} min")
+
+
+_arrancar_buzon()
+
+
 def _publicar_en_segundo_plano():
     """Se mantiene por compatibilidad: ya no hay nada que publicar.
 

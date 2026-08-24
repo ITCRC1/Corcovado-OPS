@@ -2849,7 +2849,7 @@ function detalleResumen(campo) {
 }
 
 // ---------- IMPORTAR PDF ----------
-function loadImportarPDF() {
+async function loadImportarPDF() {
   setActive(9);
   const app = document.getElementById("app");
   app.innerHTML = `
@@ -2861,8 +2861,85 @@ function loadImportarPDF() {
       </div>
       <div id="pdf-preview"></div>
     </div>
+    <div class="card" id="buzon-card">
+      <p class="title">Importación automática</p>
+      <p class="subtitle">Para no tener que descargar el reporte a mano</p>
+      <div id="buzon-estado"><p class="empty">Consultando…</p></div>
+    </div>
   `;
   document.getElementById("pdf-input").addEventListener("change", handlePdfUpload);
+  pintarEstadoBuzon();
+}
+
+const TEXTO_ESTADO_BUZON = {
+  IMPORTADO: ["badge-ok", "importado"],
+  IGNORADO: ["badge-warn", "no era el reporte"],
+  REPETIDO: ["badge-tour", "repetido"],
+  ERROR: ["badge-warn", "error"],
+};
+
+async function pintarEstadoBuzon() {
+  const caja = document.getElementById("buzon-estado");
+  if (!caja) return;
+  let d;
+  try {
+    d = await (await fetchAuth(`${API}/api/buzon/estado`)).json();
+  } catch (e) { caja.innerHTML = `<p class="empty">No se pudo consultar.</p>`; return; }
+
+  if (!d.configurado) {
+    caja.innerHTML = `
+      <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:12px 14px;font-size:13px;">
+        <p style="margin:0 0 6px;font-weight:600;">Todavía no está activada</p>
+        <p style="margin:0;">Cuando esté configurada, el reporte llega solo a un buzón de correo
+        y el sistema lo importa sin que nadie descargue nada. Sirve igual si OPERA lo envía
+        programado o si alguien reenvía el correo a mano.</p>
+        <p style="margin:8px 0 0;font-size:12px;">Hace falta definir en el servidor
+        <strong>BUZON_HOST</strong>, <strong>BUZON_USUARIO</strong> y
+        <strong>BUZON_CLAVE</strong> (y opcionalmente BUZON_REMITENTE para aceptar solo los
+        correos de OPERA).</p>
+      </div>`;
+    return;
+  }
+
+  const u = d.ultima_importacion;
+  caja.innerHTML = `
+    <div style="background:var(--ok-bg);color:var(--ok-text);border-radius:var(--r-sm);padding:11px 13px;font-size:13px;margin-bottom:12px;">
+      Activa · revisa <strong>${d.buzon}</strong> cada ${d.cada_minutos} minutos
+      ${d.remitente_filtrado ? `· solo correos de <strong>${d.remitente_filtrado}</strong>` : ""}
+      ${u ? `<br>Última importación: <strong>${u.recibido_en}</strong> — ${u.reservas} reservas (${u.archivo})`
+          : "<br>Todavía no ha entrado ningún reporte."}
+    </div>
+    <button class="btn btn-primary" onclick="revisarBuzonAhora()">Revisar el buzón ahora</button>
+    <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0;">
+      Reimportar es seguro: se conservan los guías y botes que ya asignó recepción.
+    </p>
+    ${d.historial.length ? `
+      <p style="font-weight:600;font-size:13px;margin:16px 0 6px;">Últimos reportes recibidos</p>
+      <table>
+        <tr><th>Cuándo</th><th>Archivo</th><th>Reservas</th><th>Resultado</th><th>Detalle</th></tr>
+        ${d.historial.map(h => {
+          const [clase, texto] = TEXTO_ESTADO_BUZON[h.estado] || ["badge-tour", h.estado];
+          return `<tr>
+            <td>${h.recibido_en}</td>
+            <td>${h.archivo || "—"}</td>
+            <td>${h.reservas || "—"}</td>
+            <td><span class="badge ${clase}">${texto}</span></td>
+            <td style="font-size:11.5px;color:var(--muted);">${h.detalle ? h.detalle.slice(0, 140) : ""}</td>
+          </tr>`;
+        }).join("")}
+      </table>` : ""}`;
+}
+
+async function revisarBuzonAhora() {
+  const caja = document.getElementById("buzon-estado");
+  caja.innerHTML = `<div class="trabajando"><div class="giro"></div><p>Revisando el buzón…</p></div>`;
+  const res = await fetchAuth(`${API}/api/buzon/revisar`, { method: "POST" });
+  const r = await res.json();
+  if (!res.ok) { avisar(r.detail || "No se pudo revisar", true); pintarEstadoBuzon(); return; }
+  if (r.fallo) avisar("No se pudo entrar al buzón: " + r.fallo, true);
+  else if (r.importados) avisar(`${r.importados} reporte(s) · ${r.reservas} reservas importadas`);
+  else avisar(r.correos ? "Sin reportes nuevos que importar" : "No hay correos nuevos");
+  pintarEstadoBuzon();
 }
 
 async function handlePdfUpload(e) {
