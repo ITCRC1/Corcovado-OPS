@@ -458,27 +458,15 @@ def entradas_sinac(desde: str = None, hasta: str = None, user: dict = Depends(ex
     conn.close()
 
     # Se buscan las reservas que tienen ese tour en esa fecha, para saber a quiénes
-    # corresponde cada entrada. La relación sale de los tours asignados.
+    # corresponde cada entrada. La relación sale de los tours asignados, y quién
+    # corresponde a quién lo define sinac.py: la limpieza de entradas sin dueño usa esa
+    # misma regla, y cuando no coincidían sobrevivían entradas fantasma.
+    import sinac
     conn = get_connection()
     hoy = datetime.date.today()
     for r in rows:
-        # Se listan solo las reservas que corresponden a ESTA entrada: las que comparten
-        # el mismo número de confirmación, o las que no tienen ninguno cuando la entrada
-        # está pendiente de comprar. Sin este filtro se mezclarían reservas ya cubiertas
-        # por otra entrada del mismo tour y fecha.
-        if r["conf_entrada"]:
-            cond_conf, param_conf = "ta.conf_entrada_sinac = ?", (r["conf_entrada"],)
-        else:
-            cond_conf, param_conf = "ta.conf_entrada_sinac IS NULL", ()
-        reservas_rel = conn.execute(
-            f"""SELECT DISTINCT res.conf_no, res.room_no, res.nombre_principal, res.adl, res.chl
-               FROM tour_asignado ta JOIN reserva res ON res.conf_no = ta.conf_no
-               WHERE ta.tour_codigo = ? AND ta.fecha = ? AND {cond_conf}
-                 AND res.res_status != 'CANCELADA'
-               ORDER BY res.room_no""",
-            (r["tour_codigo"], r["fecha"]) + param_conf,
-        ).fetchall()
-        r["reservas"] = [dict(x) for x in reservas_rel]
+        reservas_rel = sinac.reservas_de(conn, r["tour_codigo"], r["fecha"], r["conf_entrada"])
+        r["reservas"] = reservas_rel
         r["pax_huespedes"] = sum(x["adl"] + x["chl"] for x in reservas_rel)
         # Sin reservas detrás, la fila salía con todo en cero y sin habitación, y parecía
         # una entrada por comprar. Se marca para que la pantalla explique qué pasó: son
@@ -968,6 +956,10 @@ def cambios(user: dict = Depends(current_user)):
       · amenidad_tarea, alerta — cuántas hay y cuántas están cerradas.
       · restaurantes  — cambios de mesa y horas de cena; la hora se suma en número
                         ('19:30' → 1930) porque cambiar la hora no cambia el total.
+      · entrada_sinac — cuántas hay. Hace falta contarlas aparte porque los disparadores
+                        solo anotan altas y modificaciones: cuando el sistema BORRA
+                        entradas duplicadas o sin dueño, sync_log no se mueve y una
+                        pantalla abierta seguía mostrando filas que ya no existen.
     """
     conn = get_connection()
     fila = conn.execute("""
@@ -981,7 +973,8 @@ def cambios(user: dict = Depends(current_user)):
                (SELECT COUNT(*)                          FROM restaurante_cambio)  AS rest_cambios,
                (SELECT COUNT(*)                          FROM restaurante_hora)    AS rest_horas,
                (SELECT COALESCE(SUM(CAST(REPLACE(COALESCE(hora, '0'), ':', '') AS INTEGER)), 0)
-                  FROM restaurante_hora)                                           AS rest_suma
+                  FROM restaurante_hora)                                           AS rest_suma,
+               (SELECT COUNT(*)                          FROM entrada_sinac)        AS sinac
     """).fetchone()
     conn.close()
     # Se manda también la versión del sistema, aprovechando que esta consulta ya va y

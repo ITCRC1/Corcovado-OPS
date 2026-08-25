@@ -157,9 +157,18 @@ def _arreglar_entradas_sinac(conn):
     conn.execute(
         """CREATE UNIQUE INDEX IF NOT EXISTS idx_entrada_sinac_unica
            ON entrada_sinac (tour_codigo, fecha, IFNULL(conf_entrada, ''))""")
+
+    # Y las que quedaron sin dueño se limpian aquí también, no solo al importar un PDF:
+    # las que ya están en la base tienen que desaparecer al arrancar, sin obligar a
+    # nadie a volver a subir el reporte para que la pantalla se vea bien.
+    import sinac
+    sin_duenio, anotadas = sinac.limpiar_huerfanas(conn)
+
     conn.commit()
     if borradas:
         print(f"Entradas SINAC duplicadas unificadas: se quitaron {borradas}")
+    if sin_duenio or anotadas:
+        print(f"Entradas SINAC sin reservas: {sin_duenio} borradas, {anotadas} anotadas")
     return borradas
 
 

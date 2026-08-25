@@ -230,30 +230,16 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                  e["estado"], nota))
 
     # Entradas que quedaron sin ninguna reserva detrás: pasa cuando el reporte
-    # actualizado mueve el tour de día o cancela la reserva. Antes se quedaban ahí para
-    # siempre y en pantalla aparecían como filas en cero, sin habitación ni huésped, que
-    # parecían entradas por comprar cuando no lo eran.
+    # actualizado mueve el tour de día, cancela la reserva, o cuando se compra la
+    # entrada de un grupo y la vieja "sin comprar" se queda sin nadie. Antes se
+    # quedaban ahí para siempre y en pantalla aparecían como filas en cero, sin
+    # habitación ni huésped, que parecían entradas por comprar cuando no lo eran.
     #
     # Se limpian solo si este reporte trajo reservas: con un PDF vacío o mal leído no se
     # borra nada.
     if confs_en_pdf:
-        huerfanas = cur.execute(
-            """SELECT id, estado, tour_codigo, fecha FROM entrada_sinac e
-               WHERE NOT EXISTS (
-                 SELECT 1 FROM tour_asignado ta JOIN reserva r ON r.conf_no = ta.conf_no
-                 WHERE ta.tour_codigo = e.tour_codigo AND ta.fecha = e.fecha
-                   AND r.res_status != 'CANCELADA')""").fetchall()
-        for h in huerfanas:
-            if h["estado"] == "COMPRADA":
-                # Ya se pagó: no se borra. Se avisa, porque es una entrada comprada que
-                # se quedó sin nadie asignado y alguien tiene que revisar qué pasó.
-                cur.execute(
-                    "UPDATE entrada_sinac SET nota = ? WHERE id = ?",
-                    ("Comprada pero sin reservas asignadas: el tour cambió de fecha o la "
-                     "reserva se canceló. Revisar si la entrada se puede reutilizar.",
-                     h["id"]))
-            else:
-                cur.execute("DELETE FROM entrada_sinac WHERE id = ?", (h["id"],))
+        import sinac
+        sinac.limpiar_huerfanas(conn)
 
     conn.commit()
 
