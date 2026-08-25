@@ -198,16 +198,62 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                     (mensaje,),
                 )
 
+    # --- Entradas del SINAC ---
+    # Se busca la existente y se ACTUALIZA, en vez de insertar de nuevo. Antes se usaba
+    # INSERT OR REPLACE confiando en la restricción de la tabla, pero en SQLite dos NULL
+    # no se consideran iguales: las entradas pendientes de comprar —las que no tienen
+    # número de confirmación— se duplicaban en cada reimportación del reporte.
+    # Además, reemplazar la fila le cambiaba el id, y ese id es el que referencian los
+    # avisos y el botón de "marcar comprada".
     for e in batch["entradas_sinac"]:
-        cur.execute(
-            """INSERT OR REPLACE INTO entrada_sinac
-               (tour_codigo, fecha, conf_entrada, pax_total_grupo, estado, nota)
-               VALUES (?,?,?,?,?,?)""",
-            (
-                e["tour"], e["fecha"], e["conf_entrada"], e["pax_total_grupo"], e["estado"],
-                "Contradicción detectada en notas — revisar antes de confirmar" if e["estado"] == "VER_NOTA" else None,
-            ),
-        )
+        nota = ("Contradicción detectada en notas — revisar antes de confirmar"
+                if e["estado"] == "VER_NOTA" else None)
+        previa = cur.execute(
+            """SELECT id, estado FROM entrada_sinac
+               WHERE tour_codigo = ? AND fecha = ?
+                 AND IFNULL(conf_entrada,'') = IFNULL(?,'')""",
+            (e["tour"], e["fecha"], e["conf_entrada"])).fetchone()
+        if previa:
+            # Una compra que recepción ya registró no se pisa: el reporte no sabe que
+            # alguien fue al SINAC y la pagó.
+            estado = "COMPRADA" if previa["estado"] == "COMPRADA" else e["estado"]
+            cur.execute(
+                """UPDATE entrada_sinac SET pax_total_grupo = ?, estado = ?, nota = ?
+                   WHERE id = ?""",
+                (e["pax_total_grupo"], estado, nota, previa["id"]))
+        else:
+            cur.execute(
+                """INSERT INTO entrada_sinac
+                   (tour_codigo, fecha, conf_entrada, pax_total_grupo, estado, nota)
+                   VALUES (?,?,?,?,?,?)""",
+                (e["tour"], e["fecha"], e["conf_entrada"], e["pax_total_grupo"],
+                 e["estado"], nota))
+
+    # Entradas que quedaron sin ninguna reserva detrás: pasa cuando el reporte
+    # actualizado mueve el tour de día o cancela la reserva. Antes se quedaban ahí para
+    # siempre y en pantalla aparecían como filas en cero, sin habitación ni huésped, que
+    # parecían entradas por comprar cuando no lo eran.
+    #
+    # Se limpian solo si este reporte trajo reservas: con un PDF vacío o mal leído no se
+    # borra nada.
+    if confs_en_pdf:
+        huerfanas = cur.execute(
+            """SELECT id, estado, tour_codigo, fecha FROM entrada_sinac e
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM tour_asignado ta JOIN reserva r ON r.conf_no = ta.conf_no
+                 WHERE ta.tour_codigo = e.tour_codigo AND ta.fecha = e.fecha
+                   AND r.res_status != 'CANCELADA')""").fetchall()
+        for h in huerfanas:
+            if h["estado"] == "COMPRADA":
+                # Ya se pagó: no se borra. Se avisa, porque es una entrada comprada que
+                # se quedó sin nadie asignado y alguien tiene que revisar qué pasó.
+                cur.execute(
+                    "UPDATE entrada_sinac SET nota = ? WHERE id = ?",
+                    ("Comprada pero sin reservas asignadas: el tour cambió de fecha o la "
+                     "reserva se canceló. Revisar si la entrada se puede reutilizar.",
+                     h["id"]))
+            else:
+                cur.execute("DELETE FROM entrada_sinac WHERE id = ?", (h["id"],))
 
     conn.commit()
 

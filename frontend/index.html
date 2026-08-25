@@ -1933,12 +1933,21 @@ async function loadEntradas(desde, hasta) {
         <div class="stat" onclick="detalleSinac('OK')"><p class="stat-label">Ya compradas</p><p class="stat-value" style="color:var(--ok-text);">${compradas}</p></div>
       </div>
       <div id="sinac-detalle"></div>
+      ${rows.some(e => e.huerfana) ? `
+        <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:11px 13px;margin-bottom:12px;font-size:12.5px;">
+          <p style="margin:0 0 4px;font-weight:600;">⚠ ${rows.filter(e => e.huerfana).length} entrada(s) comprada(s) sin reservas asignadas</p>
+          <p style="margin:0;">Se pagaron y después el tour cambió de fecha o la reserva se canceló,
+          así que ya no le corresponden a nadie. Aparecen marcadas <strong>sin reservas</strong>
+          en la tabla. Revisá si se pueden reutilizar antes de comprar otra.</p>
+        </div>` : ""}
       <table>
         <tr><th>Fecha tour</th><th>Actividad</th><th>Reservas</th><th>Pax + guía</th><th>Comprar antes de</th><th>Plazo</th><th>Conf.</th><th>Estado</th>${puedeEscribir("sinac") ? "<th></th>" : ""}</tr>
         ${rows.map(e => `
           <tr class="${colorUrg[e.urgencia] || ''}">
             <td>${e.fecha}</td><td>${e.tour_codigo}</td>
-            <td style="font-size:12px;">${(e.reservas && e.reservas.length) ? e.reservas.map(x => `Hab.${x.room_no} ${x.nombre_principal.split(",")[0]}`).join("<br>") : "—"}</td>
+            <td style="font-size:12px;">${(e.reservas && e.reservas.length)
+                ? e.reservas.map(x => `Hab.${x.room_no} ${x.nombre_principal.split(",")[0]}`).join("<br>")
+                : `<span class="badge badge-warn" style="font-size:10px;">sin reservas</span>`}</td>
             <td><strong>${e.pax_total_grupo}</strong><br><span style="font-size:11px;color:var(--muted);">${e.pax_huespedes || 0} pax + guía</span></td>
             <td>${e.fecha_limite_compra || "—"}</td>
             <td><strong>${textoUrg(e)}</strong></td>

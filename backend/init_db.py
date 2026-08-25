@@ -104,7 +104,63 @@ def _migrar(conn):
     _renombrar_restaurante(conn, "Vitrales", "Bar el Bosque")
     _materializar_permisos(conn)
     _sembrar_perfiles(conn)
+    _arreglar_entradas_sinac(conn)
     return agregadas
+
+
+def _arreglar_entradas_sinac(conn):
+    """Quita las entradas del SINAC duplicadas y evita que vuelvan a aparecer.
+
+    La tabla declaraba UNIQUE(tour_codigo, fecha, conf_entrada), pero en SQLite dos
+    valores NULL NO se consideran iguales. Y justamente las entradas pendientes de
+    comprar son las que no tienen número de confirmación: cada vez que se reimportaba
+    el reporte de llegadas se insertaba otra copia de cada una.
+
+    Se corrige en dos pasos:
+      1. Se juntan las que ya están duplicadas, conservando la comprada si hay alguna
+         —una entrada ya pagada no se puede perder— y el pax más alto registrado.
+      2. Se crea un índice único que trata la ausencia de número como un valor más,
+         así la base misma impide que vuelva a pasar.
+
+    El índice se crea aquí y no en el esquema a propósito: en una base que ya tiene
+    duplicados, crearlo antes de limpiarlos falla y el sistema no arrancaría.
+    """
+    existentes = {r[1] for r in conn.execute("PRAGMA table_info(entrada_sinac)")}
+    if not existentes:
+        return 0
+
+    grupos_dup = conn.execute(
+        """SELECT tour_codigo, fecha, IFNULL(conf_entrada,'') AS conf, COUNT(*) AS n
+           FROM entrada_sinac
+           GROUP BY tour_codigo, fecha, IFNULL(conf_entrada,'')
+           HAVING n > 1""").fetchall()
+
+    borradas = 0
+    for g in grupos_dup:
+        filas = conn.execute(
+            """SELECT id, estado, pax_total_grupo, nota FROM entrada_sinac
+               WHERE tour_codigo = ? AND fecha = ? AND IFNULL(conf_entrada,'') = ?
+               ORDER BY id""", (g["tour_codigo"], g["fecha"], g["conf"])).fetchall()
+        # Se conserva la comprada si existe; si no, la más antigua (su id es la que
+        # referencian los avisos y el botón de marcar).
+        compradas = [f for f in filas if f["estado"] == "COMPRADA"]
+        queda = (compradas or filas)[0]
+        pax = max((f["pax_total_grupo"] or 0) for f in filas)
+        nota = next((f["nota"] for f in filas if f["nota"]), None)
+        conn.execute("UPDATE entrada_sinac SET pax_total_grupo = ?, nota = ? WHERE id = ?",
+                     (pax, nota, queda["id"]))
+        for f in filas:
+            if f["id"] != queda["id"]:
+                conn.execute("DELETE FROM entrada_sinac WHERE id = ?", (f["id"],))
+                borradas += 1
+
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_entrada_sinac_unica
+           ON entrada_sinac (tour_codigo, fecha, IFNULL(conf_entrada, ''))""")
+    conn.commit()
+    if borradas:
+        print(f"Entradas SINAC duplicadas unificadas: se quitaron {borradas}")
+    return borradas
 
 
 def _materializar_permisos(conn):

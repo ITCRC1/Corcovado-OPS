@@ -469,6 +469,12 @@ def entradas_sinac(desde: str = None, hasta: str = None, user: dict = Depends(ex
         ).fetchall()
         r["reservas"] = [dict(x) for x in reservas_rel]
         r["pax_huespedes"] = sum(x["adl"] + x["chl"] for x in reservas_rel)
+        # Sin reservas detrás, la fila salía con todo en cero y sin habitación, y parecía
+        # una entrada por comprar. Se marca para que la pantalla explique qué pasó: son
+        # entradas ya compradas que se quedaron sin nadie porque el tour cambió de fecha
+        # o la reserva se canceló. Las pendientes en esa situación ya se limpian al
+        # importar, así que aquí solo deberían quedar compradas.
+        r["huerfana"] = not reservas_rel
 
         try:
             fecha_tour = datetime.date.fromisoformat(r["fecha"])
