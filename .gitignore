@@ -1,5 +1,5 @@
 # Datos y configuración: NUNCA deben subirse al repositorio.
-# Contienen datos de huéspedes y el token de publicación de Netlify.
+# Contienen datos de huéspedes y secretos de la instalación.
 data/
 *.db
 *.db-wal
@@ -7,7 +7,10 @@ data/
 config_publicacion.json
 config_qr.json
 sync_config.json
+config_opera.json
 cache_itinerarios/
+# Respuestas crudas de Opera Cloud guardadas por "opera_cloud.py descubrir":
+# traen nombres y datos de huéspedes tal como los devuelve Oracle.
 opera_muestras/
 
 # Reportes del PMS y hojas de cálculo. Traen nombres, fechas y datos personales
