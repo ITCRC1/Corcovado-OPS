@@ -17,6 +17,22 @@ Este módulo existe para que haya UNA definición y todas las pantallas digan lo
 """
 
 
+import unicodedata
+
+
+def apellido_de(nombre_principal):
+    """'Lopez Martinez, Ana' -> 'LOPEZ MARTINEZ'.
+
+    El reporte escribe el nombre como 'Apellidos, Nombre'. Se compara sin tildes y sin
+    espacios de más porque el mismo apellido llega escrito de las dos formas. Vive aquí
+    porque es parte de reconocer quién viaja con quién.
+    """
+    base = (nombre_principal or "").split(",")[0]
+    sin_tildes = "".join(c for c in unicodedata.normalize("NFKD", base)
+                         if not unicodedata.combining(c))
+    return " ".join(sin_tildes.upper().split())
+
+
 def clave_de(reserva):
     """Identifica el grupo de una reserva. Las que comparten clave viajan juntas.
 
@@ -78,7 +94,12 @@ def resumen(conn, conf_nos=None):
             confirmado, confianza = True, None
         else:
             origen = "vinculo"
-            etiqueta = f"Vinculadas con hab. {primero['room_no']}"
+            # Si todas comparten apellido es una familia y se dice así: al salonero le
+            # sirve más "Familia Mora" que "Vinculadas con hab. 21".
+            apellidos = {apellido_de(m["nombre_principal"]) for m in miembros}
+            etiqueta = (f"Familia {next(iter(apellidos)).title()}"
+                        if len(apellidos) == 1 and next(iter(apellidos))
+                        else f"Vinculadas con hab. {primero['room_no']}")
             confirmado = bool(primero.get("confirmado_por_recepcion"))
             confianza = primero.get("confianza")
 

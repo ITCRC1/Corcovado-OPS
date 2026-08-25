@@ -32,7 +32,6 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
     conn = get_connection()
     cur = conn.cursor()
 
-    grupo_cache = {}
     confs_en_pdf = []
     fechas_en_pdf = set()
 
@@ -41,18 +40,21 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
         confs_en_pdf.append(r["conf_no"])
         if r.get("arr_date"):
             fechas_en_pdf.add(r["arr_date"])
-        link = r.get("grupo_link")
-        grupo_id = None
-        if link:
-            referencias = link.get("referencias_conf_no") or []
-            key = referencias[0] if referencias else r["conf_no"]
-            if key not in grupo_cache:
-                cur.execute(
-                    "INSERT INTO grupo (conf_no_principal, origen_vinculo, confianza, confirmado_por_recepcion) VALUES (?,?,?,0)",
-                    (key, "texto_explicito" if link["tipo"] == "ALTA" else "coincidencia_nombre", link["tipo"]),
-                )
-                grupo_cache[key] = cur.lastrowid
-            grupo_id = grupo_cache[key]
+
+        # El grupo NO se arma desde la nota del reporte. Un texto escrito a mano no une
+        # habitaciones solo: se propone en Reservas y recepción decide (sugerencias.py).
+        # Antes se armaba aquí, y salía mal: el grupo se le ponía a la reserva que TRAÍA
+        # la nota y no a la nombrada, así que quedaba un grupo de una sola habitación
+        # que ninguna pantalla mostraba.
+        #
+        # Lo único que se conserva es la decisión ya tomada: si recepción confirmó el
+        # grupo, el reporte no la pisa. Sin esto, cada importación borraría el trabajo
+        # de recepción, porque la reserva se reescribe entera.
+        previo = cur.execute(
+            """SELECT r.grupo_id AS gid, g.confirmado_por_recepcion AS confirmado
+               FROM reserva r LEFT JOIN grupo g ON g.id = r.grupo_id
+               WHERE r.conf_no = ?""", (r["conf_no"],)).fetchone()
+        grupo_id = previo["gid"] if previo and previo["confirmado"] else None
 
         cur.execute(
             """INSERT OR REPLACE INTO reserva (conf_no, grupo_id, room_no, nombre_principal, company_travel_agent,
@@ -240,6 +242,12 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
     if confs_en_pdf:
         import sinac
         sinac.limpiar_huerfanas(conn)
+
+    # Con las reservas ya guardadas se buscan las habitaciones que podrían ser familia
+    # o venir juntas, para que recepción las tenga listas para revisar apenas termina
+    # de subir el reporte.
+    import sugerencias
+    sugerencias.detectar(conn)
 
     conn.commit()
 

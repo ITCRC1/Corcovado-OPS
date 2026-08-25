@@ -146,6 +146,24 @@ CREATE TABLE IF NOT EXISTS tour_asignado (
     creado_en TEXT DEFAULT (datetime('now'))
 );
 
+-- Sospechas de que varias habitaciones son familia o vienen juntas.
+-- El sistema no las une solo: las propone y recepción decide. La clave es la lista de
+-- números de reserva ordenada, para que una sospecha descartada NO vuelva a preguntarse
+-- en cada importación del reporte —si vuelve, en dos semanas nadie le hace caso.
+CREATE TABLE IF NOT EXISTS sugerencia_grupo (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    clave TEXT NOT NULL UNIQUE,
+    conf_nos TEXT NOT NULL,          -- JSON con los números de reserva involucrados
+    motivo TEXT NOT NULL,            -- 'nota_rsv' | 'nota_hab' | 'apellido' | 'manual'
+    detalle TEXT,                    -- qué se vio: el texto de la nota, el apellido
+    confianza TEXT NOT NULL DEFAULT 'MEDIA',   -- ALTA | MEDIA
+    estado TEXT NOT NULL DEFAULT 'PENDIENTE',  -- PENDIENTE | CONFIRMADA | DESCARTADA
+    grupo_id INTEGER REFERENCES grupo(id),
+    creado_en TEXT DEFAULT (datetime('now')),
+    resuelto_en TEXT,
+    resuelto_por TEXT
+);
+
 -- Entradas SINAC (deduplicadas por tour+fecha+conf_entrada)
 CREATE TABLE IF NOT EXISTS entrada_sinac (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

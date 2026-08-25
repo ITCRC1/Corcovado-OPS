@@ -651,7 +651,7 @@ function verGrupo(confNo) {
   const color = colorGrupo(g.clave);
   const origen = g.origen === "bloque"
     ? "Van juntas según el código de bloque del PMS."
-    : "Vínculo detectado en las notas del PDF.";
+    : (g.confirmado ? "Ligadas por recepción." : "Vínculo detectado en las notas del PDF.");
   const fondo = document.createElement("div");
   fondo.className = "modal-fondo"; fondo.id = "modal-grupo";
   fondo.onclick = (e) => { if (e.target === fondo) fondo.remove(); };
@@ -684,6 +684,11 @@ function verGrupo(confNo) {
       <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">
         El reparto de restaurantes nunca separa a estas habitaciones.
       </p>
+      ${g.confirmado && g.grupo_id && puedeEscribir("reservas") ? `
+        <p style="margin-top:10px;">
+          <button class="btn" onclick="confirmarGrupoDesdePanel(${g.grupo_id}, false)"
+            title="Las habitaciones vuelven a ser independientes">Deshacer grupo</button>
+        </p>` : ""}
     </div></div>`;
   document.body.appendChild(fondo);
 }
@@ -1295,6 +1300,10 @@ async function loadReservas(fecha, desde, hasta) {
   // después de que recepción lo editó a mano.
   let estadosItin = {};
   try { estadosItin = await (await fetchAuth(`${API}/api/itinerarios/estados`)).json(); } catch (e) {}
+  // Habitaciones que podrían ser familia. El sistema no las une solo: las propone acá.
+  let sugerencias = [];
+  try { sugerencias = await (await fetchAuth(`${API}/api/grupos/sugerencias`)).json(); } catch (e) {}
+  window._reservasEnPantalla = rows;
   const app = document.getElementById("app");
   app.innerHTML = `
     <div class="card">
@@ -1312,8 +1321,32 @@ async function loadReservas(fecha, desde, hasta) {
           <button class="btn" onclick="loadReservas(null, document.getElementById('res-desde').value, document.getElementById('res-hasta').value)">Ver rango</button>
           <button class="btn" onclick="descargar('reservas', {desde:'${desde}', hasta:'${hasta}'}, 'xlsx')">⬇ Excel</button>
           <button class="btn" onclick="descargar('reservas', {desde:'${desde}', hasta:'${hasta}'}, 'pdf')">⬇ PDF</button>
+          ${puedeEscribir("reservas") ? `<button class="btn" onclick="abrirLigarHabitaciones()">🔗 Ligar habitaciones</button>` : ""}
         </div>
       </div>
+      ${sugerencias.length ? `
+        <div class="detail-panel" style="margin-bottom:12px;">
+          <p style="font-weight:600;margin:0 0 3px;">Posibles familias o grupos — ${sugerencias.length} por revisar</p>
+          <p style="font-size:11.5px;color:var(--muted);margin:0 0 10px;">
+            El sistema sospecha que estas habitaciones vienen juntas, pero no las une solo.
+            Al confirmarlas quedan ligadas en todas las pantallas, no se separan en el
+            comedor y comparten la hora de cena.
+          </p>
+          ${sugerencias.map(s => `
+            <div style="border:1px solid var(--linea);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:8px;">
+              <p style="margin:0 0 4px;font-size:13px;">
+                ${s.miembros.map(m => `<strong>Hab. ${m.room_no || "—"}</strong> ${m.nombre.split(",")[0]}`).join(" &nbsp;·&nbsp; ")}
+                <span class="badge ${s.confianza === "ALTA" ? "badge-ok" : "badge-warn"}" style="margin-left:6px;">${s.confianza === "ALTA" ? "muy probable" : "por revisar"}</span>
+              </p>
+              <p style="margin:0 0 8px;font-size:11.5px;color:var(--muted);">
+                ${s.motivo_texto}${s.detalle ? `: «${s.detalle}»` : ""} · ${s.pax} pax en total
+              </p>
+              ${puedeEscribir("reservas") ? `
+                <button class="btn" onclick="responderSugerencia(${s.id}, true)">Sí, son grupo</button>
+                <button class="btn" onclick="responderSugerencia(${s.id}, false)">No son grupo</button>`
+              : `<span style="font-size:11.5px;color:var(--muted);">Lo confirma recepción.</span>`}
+            </div>`).join("")}
+        </div>` : ""}
       <table>
         <tr><th>N° Reserva</th><th>Hab.</th><th>Huésped</th><th>Fechas</th><th>Pax</th><th>Estatus</th><th>Grupo</th><th>Itinerario</th></tr>
         ${rows.map(r => { const e = estadoReserva(r); return `
@@ -1357,6 +1390,68 @@ async function loadReservas(fecha, desde, hasta) {
       </div>` : ""}
     </div>
   `;
+}
+
+// ---------- Posibles familias ----------
+// El sistema sospecha; recepción decide. Lo que se descarta no se vuelve a preguntar,
+// para que la lista no se llene de lo mismo y termine ignorándose.
+async function responderSugerencia(id, esGrupo) {
+  const res = await fetchAuth(
+    `${API}/api/grupos/sugerencias/${id}/${esGrupo ? "confirmar" : "descartar"}`,
+    { method: "POST" });
+  if (!res.ok) {
+    avisar((await res.json()).detail || "No se pudo guardar", true);
+    loadReservas();
+    return;
+  }
+  avisar(esGrupo ? "Quedaron ligadas como grupo" : "Descartado: no se vuelve a preguntar");
+  await cargarGrupos();
+  loadReservas();
+}
+
+function abrirLigarHabitaciones() {
+  const rows = window._reservasEnPantalla || [];
+  const fondo = document.createElement("div");
+  fondo.className = "modal-fondo"; fondo.id = "modal-ligar";
+  fondo.onclick = (e) => { if (e.target === fondo) fondo.remove(); };
+  fondo.innerHTML = `<div class="modal-caja" style="max-width:520px;">
+    <div class="modal-encabezado">
+      <div>
+        <p class="title">Ligar habitaciones</p>
+        <p class="subtitle">Marcá las que vienen juntas. Quedan como un grupo confirmado.</p>
+      </div>
+      <button class="btn" onclick="document.getElementById('modal-ligar').remove()">Cerrar</button>
+    </div>
+    <div class="modal-cuerpo">
+      ${rows.length ? rows.map(r => `
+        <label style="display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;cursor:pointer;">
+          <input type="checkbox" class="ligar-hab" value="${r.conf_no}">
+          <span><strong>Hab. ${r.room_no || "—"}</strong> ${r.nombre_principal}
+            <span style="color:var(--muted);font-size:11.5px;">${r.arr_date} – ${r.dep_date}</span></span>
+        </label>`).join("")
+      : `<p class="empty">No hay reservas en pantalla. Cambiá las fechas y volvé a intentar.</p>`}
+      <p style="margin-top:12px;">
+        <button class="btn" onclick="ligarHabitaciones()">Ligar como grupo</button>
+      </p>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:6px;">
+        Solo aparecen las reservas del rango que estás viendo. Si falta una, ampliá las fechas.
+      </p>
+    </div></div>`;
+  document.body.appendChild(fondo);
+}
+
+async function ligarHabitaciones() {
+  const conf_nos = [...document.querySelectorAll(".ligar-hab:checked")].map(x => x.value);
+  if (conf_nos.length < 2) { avisar("Marcá al menos dos habitaciones", true); return; }
+  const res = await fetchAuth(`${API}/api/grupos/ligar`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conf_nos }),
+  });
+  if (!res.ok) { avisar((await res.json()).detail || "No se pudo ligar", true); return; }
+  document.getElementById("modal-ligar")?.remove();
+  avisar(`${conf_nos.length} habitaciones ligadas como grupo`);
+  await cargarGrupos();
+  loadReservas();
 }
 
 async function confirmarGrupo(grupoId, confirmar) {

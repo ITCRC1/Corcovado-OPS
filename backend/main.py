@@ -894,15 +894,94 @@ def asignar_guia_bote(tour_id: int, guia: str = None, bote: str = None, user: di
 
 @app.post("/api/grupos/{grupo_id}/confirmar")
 def confirmar_grupo(grupo_id: int, confirmar: bool = True, user: dict = Depends(exige("reservas", escribir=True))):
+    """Confirma un grupo, o lo deshace si confirmar=false."""
+    import sugerencias
     conn = get_connection()
     if confirmar:
         conn.execute("UPDATE grupo SET confirmado_por_recepcion = 1 WHERE id = ?", (grupo_id,))
     else:
-        conn.execute("UPDATE reserva SET grupo_id = NULL WHERE grupo_id = ?", (grupo_id,))
-        conn.execute("DELETE FROM grupo WHERE id = ?", (grupo_id,))
+        # Deshacerlo también descarta la sospecha que lo originó: si alguien lo separó
+        # es porque estaba mal, y volver a proponérselo mañana sería discutirle.
+        sugerencias.deshacer(conn, grupo_id, user.get("username"))
     conn.commit()
     conn.close()
     return {"status": "ok"}
+
+
+@app.get("/api/grupos/sugerencias")
+def grupos_sugerencias(user: dict = Depends(exige("reservas"))):
+    """Habitaciones que podrían ser familia o venir juntas, para que recepción decida.
+
+    Se recalcula al pedirla —igual que el congelado de restaurantes— para que aparezcan
+    también las que surgen de un cambio hecho a mano y no solo de la última importación.
+    """
+    import sugerencias
+    conn = get_connection()
+    try:
+        sugerencias.detectar(conn)
+        conn.commit()
+        return sugerencias.pendientes(conn)
+    finally:
+        conn.close()
+
+
+@app.post("/api/grupos/sugerencias/{sugerencia_id}/confirmar")
+def confirmar_sugerencia(sugerencia_id: int,
+                         user: dict = Depends(exige("reservas", escribir=True))):
+    """Sí son familia: quedan ligadas con todo lo que eso implica."""
+    import sugerencias
+    conn = get_connection()
+    try:
+        grupo_id = sugerencias.confirmar(conn, sugerencia_id, user.get("username"))
+        if grupo_id is None:
+            raise HTTPException(status_code=404, detail="Esa sugerencia ya fue contestada")
+        conn.commit()
+    finally:
+        conn.close()
+    # El itinerario del huésped y el reparto del comedor cambian con el grupo.
+    _publicar_en_segundo_plano()
+    return {"status": "ok", "grupo_id": grupo_id}
+
+
+@app.post("/api/grupos/sugerencias/{sugerencia_id}/descartar")
+def descartar_sugerencia(sugerencia_id: int,
+                         user: dict = Depends(exige("reservas", escribir=True))):
+    """No son familia. No se vuelve a preguntar."""
+    import sugerencias
+    conn = get_connection()
+    sugerencias.descartar(conn, sugerencia_id, user.get("username"))
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/api/grupos/ligar")
+def ligar_habitaciones(payload: dict, user: dict = Depends(exige("reservas", escribir=True))):
+    """Liga habitaciones a mano, cuando el sistema no lo sospechó.
+
+    Hace falta porque recepción se entera de cosas que el reporte no dice: la familia
+    que llamó por teléfono, los dos cuartos que reservaron por separado.
+    """
+    import sugerencias
+    conf_nos = [str(c).strip() for c in (payload.get("conf_nos") or []) if str(c).strip()]
+    if len(set(conf_nos)) < 2:
+        raise HTTPException(status_code=400,
+                            detail="Hay que elegir al menos dos habitaciones")
+    conn = get_connection()
+    try:
+        existen = {r["conf_no"] for r in conn.execute(
+            f"SELECT conf_no FROM reserva WHERE conf_no IN ({','.join('?' * len(conf_nos))})",
+            conf_nos)}
+        faltan = [c for c in conf_nos if c not in existen]
+        if faltan:
+            raise HTTPException(status_code=400,
+                                detail=f"No existe la reserva {', '.join(faltan)}")
+        grupo_id = sugerencias.ligar(conn, conf_nos, motivo="manual")
+        conn.commit()
+    finally:
+        conn.close()
+    _publicar_en_segundo_plano()
+    return {"status": "ok", "grupo_id": grupo_id}
 
 
 @app.post("/api/reservas/{conf_no}/guia")
@@ -974,7 +1053,8 @@ def cambios(user: dict = Depends(current_user)):
                (SELECT COUNT(*)                          FROM restaurante_hora)    AS rest_horas,
                (SELECT COALESCE(SUM(CAST(REPLACE(COALESCE(hora, '0'), ':', '') AS INTEGER)), 0)
                   FROM restaurante_hora)                                           AS rest_suma,
-               (SELECT COUNT(*)                          FROM entrada_sinac)        AS sinac
+               (SELECT COUNT(*)                          FROM entrada_sinac)        AS sinac,
+               (SELECT COUNT(*) FROM sugerencia_grupo WHERE estado = 'PENDIENTE')   AS sug_grupo
     """).fetchone()
     conn.close()
     # Se manda también la versión del sistema, aprovechando que esta consulta ya va y

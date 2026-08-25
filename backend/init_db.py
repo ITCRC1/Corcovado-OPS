@@ -105,7 +105,34 @@ def _migrar(conn):
     _materializar_permisos(conn)
     _sembrar_perfiles(conn)
     _arreglar_entradas_sinac(conn)
+    _limpiar_grupos_sueltos(conn)
     return agregadas
+
+
+def _limpiar_grupos_sueltos(conn):
+    """Grupos de una sola habitación, que no son grupos.
+
+    Los creaba la importación al leer 'Viene con rsv 594008465': le ponía el grupo a la
+    reserva que TRAÍA la nota y no a la nombrada, así que quedaba un grupo de uno solo
+    que ninguna pantalla mostraba —piden dos habitaciones o más—. Ahora esos vínculos se
+    proponen y los confirma recepción, así que estos restos solo estorban.
+
+    Se tocan únicamente los que nadie confirmó: si recepción ya dijo que sí, se respeta
+    aunque haya quedado con una sola habitación (la otra pudo cancelarse).
+    """
+    if not {r[1] for r in conn.execute("PRAGMA table_info(grupo)")}:
+        return 0
+    sueltos = [r[0] for r in conn.execute(
+        """SELECT g.id FROM grupo g
+           WHERE g.confirmado_por_recepcion = 0
+             AND (SELECT COUNT(*) FROM reserva r WHERE r.grupo_id = g.id) < 2""")]
+    for gid in sueltos:
+        conn.execute("UPDATE reserva SET grupo_id = NULL WHERE grupo_id = ?", (gid,))
+        conn.execute("DELETE FROM grupo WHERE id = ?", (gid,))
+    if sueltos:
+        conn.commit()
+        print(f"Grupos de una sola habitación eliminados: {len(sueltos)}")
+    return len(sueltos)
 
 
 def _arreglar_entradas_sinac(conn):
