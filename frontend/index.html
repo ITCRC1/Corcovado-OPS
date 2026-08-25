@@ -2449,6 +2449,12 @@ function detalleRest(cual) {
       ⚠ <strong>${sinComida.length} habitación(es)</strong> con ${esCena ? "la cena" : "el almuerzo"} NO incluido:
       ${sinComida.map(x => `hab. ${x.room_no || "—"} (${x.regimen_texto})`).join(" · ")}.
       Se les cobra aparte.</div>` : ""}
+    ${esCena && lista.some(x => x.grupo) && puedeEscribir("restaurantes") ? `
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin:0 0 9px;cursor:pointer;">
+        <input type="checkbox" id="hora-toda-la-mesa" checked>
+        <span>Al poner una hora, aplicarla a todo el grupo
+          <span style="color:var(--muted);">— destildá esto para partir una mesa en dos turnos</span></span>
+      </label>` : ""}
     <table>
       <tr><th>Hab.</th><th>Huésped</th><th>Pax</th><th>Noche</th><th>${esCena ? "Cena" : "Almuerzo"}</th><th></th>
         ${esCena ? "<th>Hora reservada</th>" : ""}${puedeEscribir("restaurantes") ? "<th></th>" : ""}</tr>
@@ -2461,14 +2467,15 @@ function detalleRest(cual) {
         <td>${x.tipo === 'ENTRA' ? '<span class="badge badge-warn">entra</span>' : ''}
             ${x.fijo ? `<span class="badge badge-tour">${x.fijo}</span>` : ''}
             ${x.manual ? '<span class="badge badge-ok">cambio manual</span>' : ''}</td>
-        ${esCena ? `<td><input type="time" value="${x.hora || ''}"
+        ${esCena ? `<td><input type="time" value="${x.hora || ''}" data-hora="${x.conf_no}"
             onchange="guardarHoraMesa('${d.fecha}','${x.conf_no}',this.value)"
+            title="${x.grupo ? 'Va en grupo: la hora se le pone también al resto del grupo' : 'Hora de la mesa'}"
             style="font-size:11.5px;padding:2px 4px;width:96px;" ${puedeEscribir("restaurantes")?'':'disabled'}></td>` : ""}
         ${puedeEscribir("restaurantes") ? `<td>${x.fijo && x.fijo.includes('privada') ? '<span style="font-size:11px;color:var(--muted);">fija</span>'
           : `<button class="btn" onclick="cambiarRestaurante('${d.fecha}','${x.conf_no}','${comida}','${destino}')">A ${destino.split(' ')[0]}</button>`}</td>` : ""}
       </tr>`).join("")}
     </table>
-    ${esCena ? '<p style="font-size:11px;color:var(--muted);margin-top:8px;">La hora de cada mesa la registra el salonero en la mañana.</p>' : ""}
+    ${esCena ? '<p style="font-size:11px;color:var(--muted);margin-top:8px;">La hora de cada mesa la registra el salonero en la mañana. Las habitaciones marcadas <span class="badge badge-tour">grupo</span> comparten mesa: al poner la hora a una, se le pone al resto del grupo.</p>' : ""}
   </div>`;
 }
 
@@ -2484,11 +2491,31 @@ async function cambiarRestaurante(fecha, confNo, comida, restaurante) {
 }
 
 async function guardarHoraMesa(fecha, confNo, hora) {
-  await fetchAuth(`${API}/api/restaurantes/hora`, {
+  // Destildar la casilla del panel es partir la mesa: se guarda solo esta habitación.
+  const todos = document.getElementById("hora-toda-la-mesa");
+  const res = await fetchAuth(`${API}/api/restaurantes/hora`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fecha, conf_no: confNo, hora }),
+    body: JSON.stringify({ fecha, conf_no: confNo, hora,
+                           solo_esta: !!(todos && !todos.checked) }),
   });
-  avisar(hora ? `Mesa a las ${hora}` : "Hora borrada");
+  if (!res.ok) { avisar("No se pudo guardar la hora", true); return; }
+  const d = await res.json();
+
+  // Las habitaciones del grupo se actualizan aquí mismo, sin recargar la pantalla: si
+  // el panel se cerrara en cada hora que escribe, el salonero tendría que volver a
+  // abrirlo para la mesa siguiente.
+  (d.grupo || []).forEach(c => document.querySelectorAll(`input[data-hora="${c.conf_no}"]`)
+    .forEach(i => { i.value = d.hora || ""; }));
+
+  // Un solo cartel: avisar() reutiliza el mismo elemento, así que dos seguidos se pisan
+  // y el salonero solo alcanzaría a leer el segundo.
+  const habs = (d.grupo || []).map(c => c.room_no || "?").join(", ");
+  const exc = (d.excepciones || []).map(c => `hab. ${c.room_no || "?"} sigue a las ${c.hora}`);
+  let msg = hora ? `Mesa a las ${hora}` : "Hora borrada";
+  if (habs) msg += ` — también la hab. ${habs} del grupo`;
+  // Una hora distinta puesta a mano no se pisa; se avisa para que sea una decisión.
+  if (exc.length) msg += `. Sin cambiar: ${exc.join(", ")}`;
+  avisar(msg, exc.length > 0);
 }
 
 async function abrirCenaPrivada(fecha, confNo) {

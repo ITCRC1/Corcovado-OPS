@@ -2611,18 +2611,76 @@ def restaurantes_quitar_cambio(fecha: str, conf_no: str, comida: str = "CENA",
     return {"status": "ok"}
 
 
+def _hora_guardada(conn, fecha, conf_no):
+    fila = conn.execute("SELECT hora FROM restaurante_hora WHERE fecha=? AND conf_no=?",
+                        (fecha, conf_no)).fetchone()
+    return (dict(fila)["hora"] or None) if fila else None
+
+
+def _guardar_hora_mesa(conn, fecha, conf_no, hora):
+    """Guarda la hora de una mesa, o la borra si viene vacía.
+
+    Vaciar la casilla en pantalla es quitar la reserva de mesa, así que se borra la
+    fila en vez de dejarla en blanco: una hora vacía guardada y una hora sin poner
+    tendrían que significar lo mismo, y guardándola ya no se sabría cuál es cuál.
+    """
+    if hora:
+        conn.execute(
+            """INSERT INTO restaurante_hora (fecha, conf_no, hora) VALUES (?,?,?)
+               ON CONFLICT(fecha, conf_no) DO UPDATE SET hora = excluded.hora""",
+            (fecha, conf_no, hora))
+    else:
+        conn.execute("DELETE FROM restaurante_hora WHERE fecha=? AND conf_no=?",
+                     (fecha, conf_no))
+
+
 @app.post("/api/restaurantes/hora")
 def restaurantes_hora(payload: dict, user: dict = Depends(current_user)):
-    """Hora reservada de la mesa. La registra el salonero en la mañana."""
+    """Hora reservada de la mesa. La registra el salonero en la mañana.
+
+    Si la reserva viaja en grupo o en familia, la hora se le pone también al resto de
+    las habitaciones del grupo que cenan esa noche: el reparto ya las sienta juntas,
+    así que ponerle la hora a una y dejar las otras en blanco solo servía para que la
+    cocina viera cuatro mesas donde hay una. Borrar la hora se propaga igual.
+
+    Lo único que no se toca es la habitación a la que alguien le puso a mano una hora
+    distinta: eso es una excepción deliberada —el abuelo que baja más temprano— y el
+    sistema no está para deshacerla sin avisar. Se devuelve en 'excepciones' para que
+    la pantalla lo diga y el salonero decida.
+
+    Con 'solo_esta' se guarda únicamente esa habitación. Hace falta porque una mesa
+    grande a veces se parte en dos turnos, y si el grupo arrastrara siempre no habría
+    forma de darle otra hora a una sola habitación.
+    """
     auth.requiere_permiso(user, "restaurantes")
+    import restaurantes as rest
+    fecha = payload.get("fecha")
+    conf_no = payload.get("conf_no")
+    hora = (payload.get("hora") or "").strip() or None
+    if not (fecha and conf_no):
+        raise HTTPException(status_code=400, detail="Faltan la fecha o la reserva")
+
     conn = get_connection()
-    conn.execute(
-        """INSERT INTO restaurante_hora (fecha, conf_no, hora) VALUES (?,?,?)
-           ON CONFLICT(fecha, conf_no) DO UPDATE SET hora = excluded.hora""",
-        (payload.get("fecha"), payload.get("conf_no"), payload.get("hora")))
-    conn.commit()
-    conn.close()
-    return {"status": "ok"}
+    try:
+        # La hora que tenía ANTES sirve para saber quién estaba sincronizado con ella:
+        # si un compañero la tenía igual, venía siguiendo al grupo y se le actualiza.
+        anterior = _hora_guardada(conn, fecha, conf_no)
+        _guardar_hora_mesa(conn, fecha, conf_no, hora)
+
+        aplicadas, excepciones = [], []
+        companeros = [] if payload.get("solo_esta") else rest.companeros_de_mesa(
+            conn, fecha, conf_no)
+        for c in companeros:
+            suya = _hora_guardada(conn, fecha, c["conf_no"])
+            if suya and suya != anterior and suya != hora:
+                excepciones.append(dict(c, hora=suya))
+                continue
+            _guardar_hora_mesa(conn, fecha, c["conf_no"], hora)
+            aplicadas.append(c)
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "hora": hora, "grupo": aplicadas, "excepciones": excepciones}
 
 
 @app.post("/api/restaurantes/cena-privada")

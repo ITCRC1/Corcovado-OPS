@@ -240,6 +240,32 @@ def _pax(bloques):
     return sum(b["pax"] for b in bloques)
 
 
+def companeros_de_mesa(conn, fecha, conf_no):
+    """Las otras reservas que esa noche se sientan con esta por ser del mismo grupo.
+
+    El reparto nunca separa a un grupo ni a una familia (ver _agrupar): las ocho
+    habitaciones de una agencia caen siempre en el mismo restaurante. Si comparten
+    mesa, comparten hora, así que el salonero pone la hora una vez y le sirve para
+    todas. Se usa la MISMA clave de grupo que el reparto, para que no pueda pasar que
+    la hora se copie a un conjunto de habitaciones distinto del que se sienta junto.
+
+    Solo se devuelve a quien cena esa noche: un compañero de grupo que salió en la
+    mañana no tiene mesa que reservar, y el que llega mañana tampoco.
+    """
+    if isinstance(fecha, str):
+        fecha = datetime.date.fromisoformat(fecha)
+    entradas, en_casa, _ = _reservas_del_dia(conn, fecha)
+    cenan = entradas + en_casa
+    yo = next((r for r in cenan if r["conf_no"] == conf_no), None)
+    # Clave que empieza con 'r' = la reserva va sola, no hay grupo que sincronizar.
+    if not yo or yo["clave_grupo"].startswith("r"):
+        return []
+    return [{"conf_no": r["conf_no"], "room_no": r["room_no"],
+             "nombre": r["nombre_principal"]}
+            for r in cenan
+            if r["clave_grupo"] == yo["clave_grupo"] and r["conf_no"] != conf_no]
+
+
 def distribuir(conn, fecha):
     """Devuelve la distribución de almuerzo y cena para esa fecha.
 
