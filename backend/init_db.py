@@ -11,12 +11,33 @@ DB_PATH = os.path.join(_data_dir, "hotel.db")
 SCHEMA_PATH = os.path.join(_resource_dir, "schema.sql")
 
 
+_wal_puesto = False
+
+
 def get_connection():
+    global _wal_puesto
     conn = sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 10000")
+    # El modo WAL queda escrito en el propio archivo de la base: se pone UNA vez y
+    # sobrevive a los reinicios. Antes se pedía en cada conexión —y hay unas 170 por
+    # ronda de pantalla—, y cada una tomaba un bloqueo momentáneo del archivo para
+    # confirmar algo que ya estaba puesto.
+    if not _wal_puesto:
+        conn.execute("PRAGMA journal_mode = WAL")
+        _wal_puesto = True
+    # Caché de páginas por conexión (16 MB). Es lo que evita volver al disco al recorrer
+    # la misma tabla varias veces dentro de una sola petición.
+    conn.execute("PRAGMA cache_size = -16000")
+    # Los ORDER BY y los GROUP BY grandes se resuelven en memoria en vez de escribir
+    # un archivo temporal en el volumen.
+    conn.execute("PRAGMA temp_store = MEMORY")
+    # Con WAL, NORMAL no espera a que el disco confirme cada commit. Un corte de luz
+    # del servidor puede costar las últimas transacciones; una caída del programa, no
+    # (el WAL se recupera igual). Es el ajuste recomendado para WAL y el que más rinde
+    # al importar un PDF, que son cientos de escrituras seguidas.
+    conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 
@@ -88,6 +109,104 @@ COLUMNAS_NUEVAS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Índices
+# ---------------------------------------------------------------------------
+# La base no tenía ninguno (solo el UNIQUE de entrada_sinac, que está por corrección
+# y no por velocidad), así que cada consulta por fecha, por reserva o por habitación
+# leía la tabla entera. No se nota con pocos datos: se nota cada mes que pasa.
+#
+# Van aquí y no en schema.sql porque schema.sql se ejecuta con CREATE TABLE IF NOT
+# EXISTS y no vuelve a correr sobre una base que ya existe; esto sí corre en cada
+# arranque, así que una base vieja también los recibe.
+
+
+def _iso_de(columna):
+    """La expresión con que el sistema reordena 'DD-MM-YY' a 'YY-MM-DD' para comparar.
+
+    TIENE que ser idéntica, carácter por carácter, a la que generan main.sql_fecha() y
+    qr_huesped.sql_fecha(): SQLite solo usa un índice por expresión cuando la consulta
+    trae exactamente la misma expresión. Si alguien cambia una de las dos, el índice
+    deja de servir en silencio y todo vuelve a escanear la tabla.
+    """
+    return (f"(substr({columna},7,2)||'-'||substr({columna},4,2)"
+            f"||'-'||substr({columna},1,2))")
+
+
+INDICES = [
+    # --- reserva ---
+    # Igualdad exacta sobre el texto 'DD-MM-YY': quién entra y quién sale ese día.
+    ("idx_reserva_arr_date", "CREATE INDEX IF NOT EXISTS idx_reserva_arr_date ON reserva (arr_date)"),
+    ("idx_reserva_dep_date", "CREATE INDEX IF NOT EXISTS idx_reserva_dep_date ON reserva (dep_date)"),
+    # Rangos de fechas. Sin estos, pedir un mes de reservas recorre toda la historia.
+    ("idx_reserva_arr_iso",
+     f"CREATE INDEX IF NOT EXISTS idx_reserva_arr_iso ON reserva ({_iso_de('arr_date')})"),
+    ("idx_reserva_dep_iso",
+     f"CREATE INDEX IF NOT EXISTS idx_reserva_dep_iso ON reserva ({_iso_de('dep_date')})"),
+    # El que más se usa de todos: la página del huésped busca "quién ocupa esta
+    # habitación hoy" y se consulta una vez por habitación en cada carga.
+    ("idx_reserva_room_arr",
+     f"CREATE INDEX IF NOT EXISTS idx_reserva_room_arr ON reserva (room_no, {_iso_de('arr_date')})"),
+    ("idx_reserva_grupo", "CREATE INDEX IF NOT EXISTS idx_reserva_grupo ON reserva (grupo_id)"),
+    # --- tours ---
+    ("idx_tour_asig_fecha", "CREATE INDEX IF NOT EXISTS idx_tour_asig_fecha ON tour_asignado (fecha)"),
+    ("idx_tour_asig_conf", "CREATE INDEX IF NOT EXISTS idx_tour_asig_conf ON tour_asignado (conf_no)"),
+    ("idx_tour_asig_tour_fecha",
+     "CREATE INDEX IF NOT EXISTS idx_tour_asig_tour_fecha ON tour_asignado (tour_codigo, fecha)"),
+    # --- el resto de los JOIN por número de reserva ---
+    ("idx_huesped_conf", "CREATE INDEX IF NOT EXISTS idx_huesped_conf ON huesped (conf_no)"),
+    ("idx_amenidad_conf", "CREATE INDEX IF NOT EXISTS idx_amenidad_conf ON amenidad_tarea (conf_no)"),
+    ("idx_amenidad_fecha", "CREATE INDEX IF NOT EXISTS idx_amenidad_fecha ON amenidad_tarea (fecha)"),
+    ("idx_amenidad_estado", "CREATE INDEX IF NOT EXISTS idx_amenidad_estado ON amenidad_tarea (estado)"),
+    ("idx_entrada_sinac_fecha", "CREATE INDEX IF NOT EXISTS idx_entrada_sinac_fecha ON entrada_sinac (fecha)"),
+    ("idx_alerta_resuelto", "CREATE INDEX IF NOT EXISTS idx_alerta_resuelto ON alerta (resuelto)"),
+    ("idx_sugerencia_estado",
+     "CREATE INDEX IF NOT EXISTS idx_sugerencia_estado ON sugerencia_grupo (estado)"),
+    # --- sync_log ---
+    # Los nueve disparadores de schema.sql hacen 'SELECT MAX(version) FROM sync_log' en
+    # CADA alta y CADA modificación. Sin índice eso recorre la tabla, y sync_log no se
+    # purga nunca: importar un PDF era más lento cada mes. Medido: 48 veces más rápido.
+    ("idx_sync_log_version", "CREATE INDEX IF NOT EXISTS idx_sync_log_version ON sync_log (version)"),
+    ("idx_sync_log_pendiente",
+     "CREATE INDEX IF NOT EXISTS idx_sync_log_pendiente ON sync_log (sincronizado)"),
+    # No se indexa restaurante_historico(fecha): su clave primaria (fecha, conf_no) ya
+    # sirve las consultas por fecha. Un índice más ahí solo costaría escrituras.
+]
+
+
+def _crear_indices(conn):
+    """Crea los índices que falten. Idempotente, y no puede impedir el arranque.
+
+    Cada índice va por separado a propósito: si uno falla —una versión de SQLite sin
+    índices por expresión, una tabla que todavía no existe— se anota y se sigue con los
+    demás. Un sistema sin un índice va lento; un sistema que no arranca no sirve.
+    """
+    creados, fallos = [], []
+    existentes = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index'")}
+    for nombre, sql in INDICES:
+        if nombre in existentes:
+            continue
+        try:
+            conn.execute(sql)
+            creados.append(nombre)
+        except sqlite3.Error as e:
+            fallos.append(f"{nombre} ({e})")
+    if creados:
+        conn.commit()
+        # Con los índices recién puestos, el planificador todavía no sabe cuántas filas
+        # hay en cada uno. ANALYZE se lo dice, y solo se paga cuando se crearon.
+        try:
+            conn.execute("ANALYZE")
+            conn.commit()
+        except sqlite3.Error:
+            pass
+        print(f"Índices creados: {len(creados)} ({', '.join(creados)})")
+    if fallos:
+        print("AVISO: no se pudieron crear estos índices: " + "; ".join(fallos))
+    return creados
+
+
 def _migrar(conn):
     """Agrega las columnas que falten. Es idempotente: se puede correr siempre."""
     agregadas = []
@@ -106,6 +225,9 @@ def _migrar(conn):
     _sembrar_perfiles(conn)
     _arreglar_entradas_sinac(conn)
     _limpiar_grupos_sueltos(conn)
+    _purgar_sesiones(conn)
+    # Al final, con las tablas ya creadas y los duplicados ya limpios.
+    _crear_indices(conn)
     return agregadas
 
 
@@ -226,6 +348,18 @@ def _materializar_permisos(conn):
     conn.commit()
     print(f"Permisos materializados desde el rol en {len(filas)} usuario(s)")
     return len(filas)
+
+
+def _purgar_sesiones(conn):
+    """Quita las sesiones vencidas al arrancar. No hace nada si nadie encendió el
+    vencimiento (HOTEL_SESION_HORAS), que es el caso por omisión."""
+    try:
+        import auth
+    except ImportError:
+        return 0
+    if not {r[1] for r in conn.execute("PRAGMA table_info(sesion)")}:
+        return 0          # la tabla aún no existe
+    return auth.purgar_sesiones_vencidas(conn)
 
 
 def _sembrar_perfiles(conn):

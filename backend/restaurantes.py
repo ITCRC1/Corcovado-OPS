@@ -73,39 +73,73 @@ def _iso(f):
 # Lectura de los datos que ya tiene el sistema
 # ---------------------------------------------------------------------------
 
-def _reservas_del_dia(conn, fecha):
-    """Clasifica las reservas de esa fecha en entradas, en casa y salidas.
+def _reservas_base(conn, cache=None):
+    """Las reservas vivas, ya con su fecha convertida y su clave de grupo calculada.
 
-    Se apoya en los datos que el sistema ya carga del PDF: no hay que llenar
-    ninguna hoja aparte.
+    Esto es lo que costaba caro: cada día que se quería repartir volvía a leer la tabla
+    de reservas COMPLETA y a convertir de texto a fecha las dos fechas de cada una. Mirar
+    un mes en la pantalla de régimen eran 30 lecturas de toda la tabla; la página que ve
+    el huésped al escanear su QR hacía una por cada noche de su estadía.
+
+    Con `cache` (un diccionario cualquiera que pase el llamante) se lee UNA vez y se
+    reutiliza. El alcance lo decide quien llama, a propósito: así nadie se queda con datos
+    viejos sin haberlo pedido. Se guardan solo las reservas —nunca el histórico ni los
+    cambios manuales— porque congelar_dias_pasados() escribe en el histórico mientras
+    recorre los días, y una copia de eso sí quedaría desactualizada.
+
+    Las filas se devuelven como plantillas de solo lectura: quien las use hace su propia
+    copia, porque _reservas_del_dia() les agrega campos distintos según el día.
     """
-    filas = [dict(r) for r in conn.execute(
+    if cache is not None and "base" in cache:
+        return cache["base"]
+
+    base = []
+    for fila in conn.execute(
         """SELECT conf_no, room_no, nombre_principal, adl, chl, arr_date, dep_date,
                   grupo_id, block_code, forzar_restaurante, regimen
-           FROM reserva WHERE res_status != 'CANCELADA'""").fetchall()]
-
-    entradas, en_casa, salidas = [], [], []
-    for r in filas:
+           FROM reserva WHERE res_status != 'CANCELADA'""").fetchall():
+        r = dict(fila)
         llega, sale = _a_fecha(r["arr_date"]), _a_fecha(r["dep_date"])
         if not llega:
-            continue
+            continue          # sin fecha de llegada no se puede ubicar: se descarta
         r["pax"] = (r["adl"] or 0) + (r["chl"] or 0)
         r["noches"] = (sale - llega).days if sale else 1
         # La clave de grupo vive en grupos.py: es la MISMA que usan las pantallas para
         # mostrar que varias habitaciones viajan juntas. Si aquí se separaran de otra
         # forma, el comedor y la pantalla se contradirían.
         r["clave_grupo"] = grupos.clave_de(r)
+        base.append((r, llega, sale))
+
+    if cache is not None:
+        cache["base"] = base
+    return base
+
+
+def _reservas_del_dia(conn, fecha, cache=None):
+    """Clasifica las reservas de esa fecha en entradas, en casa y salidas.
+
+    Se apoya en los datos que el sistema ya carga del PDF: no hay que llenar
+    ninguna hoja aparte.
+    """
+    entradas, en_casa, salidas = [], [], []
+    for plantilla, llega, sale in _reservas_base(conn, cache):
+        # Solo se copia lo que este día usa. Los campos que se agregan abajo dependen de
+        # la fecha, así que cada día necesita su propia copia y no se puede tocar la
+        # plantilla compartida.
         if llega == fecha:
+            r = dict(plantilla)
             r["tipo"] = "ENTRA"
             r["noche_estadia"] = 1
             r["noches_restantes"] = (sale - fecha).days if sale else 1
             entradas.append(r)
         elif sale and llega < fecha < sale:
+            r = dict(plantilla)
             r["tipo"] = "EN_CASA"
             r["noche_estadia"] = (fecha - llega).days + 1
             r["noches_restantes"] = (sale - fecha).days
             en_casa.append(r)
         elif sale == fecha:
+            r = dict(plantilla)
             r["tipo"] = "SALE"
             salidas.append(r)
     return entradas, en_casa, salidas
@@ -266,15 +300,18 @@ def companeros_de_mesa(conn, fecha, conf_no):
             if r["clave_grupo"] == yo["clave_grupo"] and r["conf_no"] != conf_no]
 
 
-def distribuir(conn, fecha):
+def distribuir(conn, fecha, cache=None):
     """Devuelve la distribución de almuerzo y cena para esa fecha.
 
     No guarda nada: la asignación se calcula cada vez a partir de las reservas,
     los cambios manuales y el histórico. Solo las excepciones se persisten.
+
+    `cache` es opcional y solo evita releer la tabla de reservas cuando se piden varios
+    días seguidos (ver _reservas_base). No cambia el resultado de ningún día.
     """
     if isinstance(fecha, str):
         fecha = datetime.date.fromisoformat(fecha)
-    entradas, en_casa, salidas = _reservas_del_dia(conn, fecha)
+    entradas, en_casa, salidas = _reservas_del_dia(conn, fecha, cache)
     hist = _historial(conn, fecha)
     manuales = _cambios_manuales(conn, fecha)
     privadas = _cenas_privadas(conn, fecha)
@@ -467,8 +504,12 @@ def congelar_dias_pasados(conn, hasta=None):
 
     guardados = 0
     d = desde
+    # Una sola lectura de reservas para todos los días que falten congelar. El histórico
+    # NO se guarda en caché: es justo lo que este bucle va escribiendo, y cada día tiene
+    # que ver lo que dejó el anterior.
+    cache = {}
     while d < hoy:
-        dist = distribuir(conn, d)
+        dist = distribuir(conn, d, cache)
         for lugar, restaurante in ((dist["cena"]["terra_kitchen"], TERRA),
                                    (dist["cena"]["bar_el_bosque"], BOSQUE)):
             for x in lugar:
@@ -495,9 +536,10 @@ def avisos_anticipados(conn, dias=30, desde=None):
     """
     inicio = desde or datetime.date.today()
     problemas = []
+    cache = {}          # una lectura de reservas para los 30 días, no 30 lecturas
     for i in range(dias):
         f = inicio + datetime.timedelta(days=i)
-        entradas, en_casa, _ = _reservas_del_dia(conn, f)
+        entradas, en_casa, _ = _reservas_del_dia(conn, f, cache)
         total = sum(r["pax"] for r in entradas + en_casa)
         if not total:
             continue

@@ -259,9 +259,14 @@ def comidas_de(conn, reserva, idioma="en"):
     fin = sale or llega
     cn = reserva["conf_no"]
     salida, d = [], llega
+    # Una sola lectura de reservas para todas las noches de la estadía. Esta es la ruta
+    # que recorre el celular del huésped al escanear su código: antes releía la tabla de
+    # reservas completa una vez por noche, así que una estadía de una semana eran siete
+    # recorridos de toda la historia, con el internet del lodge de por medio.
+    cache = {}
     while d < fin and len(salida) < 12:
         try:
-            dist = rest.distribuir(conn, d)
+            dist = rest.distribuir(conn, d, cache)
         except Exception:
             break
 

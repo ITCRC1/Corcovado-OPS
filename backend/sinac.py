@@ -33,6 +33,55 @@ def reservas_de(conn, tour_codigo, fecha, conf_entrada):
         (tour_codigo, fecha, conf_entrada or "")).fetchall()]
 
 
+def reservas_de_varias(conn, entradas):
+    """Lo mismo que reservas_de(), pero para muchas entradas en una sola consulta.
+
+    La pantalla del SINAC llamaba a reservas_de() una vez por fila, así que una lista de
+    450 entradas eran 450 consultas, cada una recorriendo tour_asignado entero. Aquí se
+    pide todo junto y se reparte por (tour, fecha, número de entrada).
+
+    `entradas` es una lista de (tour_codigo, fecha, conf_entrada). Devuelve un
+    diccionario con esa misma terna como clave —el número ausente normalizado a cadena
+    vacía, igual que MISMA_ENTRADA— y la lista de reservas como valor. La regla de
+    emparejado y el orden por habitación son los mismos que en reservas_de().
+    """
+    claves = {(t, f, c or "") for t, f, c in entradas}
+    salida = {k: [] for k in claves}
+    if not claves:
+        return salida
+
+    # Se filtra por tour y fecha en la base (que es lo que un índice puede aprovechar) y
+    # el número de entrada se empareja en Python: meterlo en el WHERE exigiría una
+    # condición por fila y volvería a ser una consulta por entrada.
+    tours = sorted({k[0] for k in claves})
+    fechas = sorted({k[1] for k in claves})
+    filas = []
+    for i in range(0, len(tours), 200):
+        lote_t = tours[i:i + 200]
+        for j in range(0, len(fechas), 200):
+            lote_f = fechas[j:j + 200]
+            filas += conn.execute(
+                f"""SELECT DISTINCT ta.tour_codigo, ta.fecha,
+                           IFNULL(ta.conf_entrada_sinac,'') AS conf_ent,
+                           r.conf_no, r.room_no, r.nombre_principal, r.adl, r.chl
+                    FROM tour_asignado ta JOIN reserva r ON r.conf_no = ta.conf_no
+                    WHERE ta.tour_codigo IN ({','.join('?' * len(lote_t))})
+                      AND ta.fecha IN ({','.join('?' * len(lote_f))})
+                      AND r.res_status != 'CANCELADA'
+                    ORDER BY CAST(r.room_no AS INTEGER)""",
+                lote_t + lote_f).fetchall()
+
+    for f in filas:
+        clave = (f["tour_codigo"], f["fecha"], f["conf_ent"])
+        if clave in salida:
+            salida[clave].append({
+                "conf_no": f["conf_no"], "room_no": f["room_no"],
+                "nombre_principal": f["nombre_principal"],
+                "adl": f["adl"], "chl": f["chl"],
+            })
+    return salida
+
+
 NOTA_HUERFANA = ("Comprada pero sin reservas asignadas: el tour cambió de fecha o la "
                  "reserva se canceló. Revisar si la entrada se puede reutilizar.")
 

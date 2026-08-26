@@ -84,7 +84,19 @@ El sistema pide iniciar sesión.
 Para agregar, desactivar o cambiar la contraseña de un usuario, entra con una
 cuenta de **Recepción** y usa la pantalla **"Usuarios"** dentro del sistema —
 no hace falta tocar la base de datos directamente. Las contraseñas deben tener
-al menos 10 caracteres, y la sesión caduca a las 12 horas.
+al menos 10 caracteres.
+
+**La sesión no caduca, salvo que se pida.** De fábrica, quien inicia sesión queda
+dentro hasta que aprieta "salir" — así ha funcionado siempre. Para ponerle vencimiento
+se define `HOTEL_SESION_HORAS` en el servidor (por ejemplo `12`), y a partir de ahí una
+sesión más vieja que ese plazo deja de servir y hay que volver a entrar.
+
+Viene apagado a propósito: encenderlo cierra la sesión a quien esté a media tarea, y el
+plazo hay que elegirlo pensando en el turno. Un turno de recepción de 6 a 18 no aguanta
+un vencimiento de 8 horas.
+
+Con el vencimiento apagado, si un celular se pierde con la sesión abierta la forma de
+cortar el acceso es **desactivar ese usuario** desde la pantalla Usuarios.
 
 
 ## Reportes descargables (Excel y PDF)
@@ -132,7 +144,7 @@ Servicio → *Variables*:
 |---|---|---|
 | `HOTEL_ADMIN_PASSWORD` | contraseña de la primera cuenta (mínimo 10 caracteres) | **Sí** |
 | `HOTEL_ADMIN_USER` | nombre de esa cuenta (por defecto `recepcion`) | No |
-| `HOTEL_SESION_HORAS` | horas que dura la sesión (por defecto `12`) | No |
+| `HOTEL_SESION_HORAS` | horas que dura la sesión. Sin definir, **no vence** | No |
 
 `PORT` y `HOTEL_DATA_DIR` los ponen Railway y el `Dockerfile`: no hay que tocarlos.
 
@@ -220,6 +232,15 @@ se revisa la vista previa y se confirma.
 
 ## Qué falta (siguientes pasos del proyecto)
 
+- **Decidir el plazo de sesión.** El vencimiento ya está implementado y apagado
+  (`HOTEL_SESION_HORAS`). Lo que falta es la decisión del hotel: cuántas horas, mirando
+  los turnos de recepción. Mientras esté apagado, los tokens no vencen.
+- **Purga del registro de sincronización.** La tabla `sync_log` anota cada cambio y no
+  se vacía nunca. Ya no hace lento el sistema (tiene índice) y el espacio no aprieta
+  —unos 80 bytes por fila—, así que no es urgente. Y hay que hacerlo con cuidado: esa
+  tabla es también el reloj que usa `sync_engine` para resolver conflictos entre Sierpe
+  y Drake (`MAX(creado_en)` por registro), así que borrar historia vieja cambiaría quién
+  gana un conflicto si algún día se enciende la sincronización.
 - Respaldo automático programado de la base de datos.
 - Bloqueo optimista: hoy, si dos personas editan el mismo registro a la vez, gana
   la última que guarda, sin aviso.

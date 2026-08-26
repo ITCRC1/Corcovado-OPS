@@ -14,6 +14,46 @@ from fastapi import Header, HTTPException
 PBKDF2_ITERATIONS = 200_000
 
 
+# ---------------------------------------------------------------------------
+# Vencimiento de la sesión
+# ---------------------------------------------------------------------------
+# Hasta ahora un token no vencía nunca: se guardaba al ingresar y valía hasta que
+# alguien apretara "salir". El manual decía que caducaba a las 12 horas y documentaba
+# esta variable, pero nadie la leía.
+#
+# Ahora la variable existe de verdad, y viene APAGADA: sin definirla, las sesiones se
+# comportan exactamente como siempre. Se enciende cuando el hotel quiera, poniendo
+# HOTEL_SESION_HORAS en el servidor.
+#
+# Se deja apagada a propósito en vez de fijar 12 horas: encenderla cierra la sesión a
+# quien esté a media tarea, y ese plazo hay que elegirlo pensando en el turno del
+# personal —un turno de recepción que empieza a las 6 y termina a las 18 no aguanta un
+# vencimiento de 8 horas— no en lo que decía el manual.
+
+def _horas_de_sesion():
+    """Cuántas horas vale un token. 0 significa que no vence, como funcionó siempre.
+
+    Un valor mal escrito no impide arrancar: se avisa en el registro y se queda apagado.
+    Dejar al hotel sin poder entrar por un error de tecleo en una variable sería peor
+    que no tener vencimiento.
+    """
+    crudo = (os.environ.get("HOTEL_SESION_HORAS") or "").strip()
+    if not crudo:
+        return 0
+    try:
+        horas = int(crudo)
+    except ValueError:
+        print(f"AVISO: HOTEL_SESION_HORAS='{crudo}' no es un número entero de horas. "
+              "Las sesiones seguirán sin vencer.")
+        return 0
+    if horas <= 0:
+        return 0
+    return horas
+
+
+SESION_HORAS = _horas_de_sesion()
+
+
 def hash_password(password, salt=None):
     salt = salt or secrets.token_hex(16)
     h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), PBKDF2_ITERATIONS)
@@ -83,17 +123,51 @@ def crear_sesion(conn, usuario_id):
     return token
 
 
+# permisos_json tiene que venir aquí: es lo que se consulta en CADA petición para
+# decidir qué puede hacer el usuario. Sin esta columna, permisos_de() no encontraba nada
+# y caía en los permisos del rol, así que lo configurado en la pantalla de Usuarios se
+# guardaba pero no se aplicaba nunca.
+_SQL_SESION = (
+    "SELECT u.id, u.username, u.nombre_completo, u.rol, u.permisos_json FROM sesion s"
+    " JOIN usuario u ON u.id = s.usuario_id WHERE s.token = ? AND u.activo = 1")
+
+
 def usuario_por_token(conn, token):
-    row = conn.execute(
-        # permisos_json tiene que venir aquí: es lo que se consulta en CADA petición
-        # para decidir qué puede hacer el usuario. Sin esta columna, permisos_de() no
-        # encontraba nada y caía en los permisos del rol, así que lo configurado en la
-        # pantalla de Usuarios se guardaba pero no se aplicaba nunca.
-        """SELECT u.id, u.username, u.nombre_completo, u.rol, u.permisos_json FROM sesion s
-           JOIN usuario u ON u.id = s.usuario_id WHERE s.token = ? AND u.activo = 1""",
-        (token,),
-    ).fetchone()
+    """El usuario dueño de ese token, o None si no vale.
+
+    Con el vencimiento apagado se ejecuta exactamente la misma consulta de siempre. La
+    condición de la fecha solo se agrega cuando el hotel encendió HOTEL_SESION_HORAS, así
+    que por omisión no hay ni un cambio de comportamiento.
+
+    La comparación se hace dentro de la base y no en Python: 'creado_en' lo escribe
+    SQLite con datetime('now'), que va en UTC, y datetime('now', '-N hours') también.
+    Restando en Python habría que adivinar la zona horaria del servidor, y en Railway no
+    es la del hotel.
+    """
+    if SESION_HORAS:
+        row = conn.execute(_SQL_SESION + " AND s.creado_en > datetime('now', ?)",
+                           (token, f"-{SESION_HORAS} hours")).fetchone()
+    else:
+        row = conn.execute(_SQL_SESION, (token,)).fetchone()
     return dict(row) if row else None
+
+
+def purgar_sesiones_vencidas(conn):
+    """Borra los tokens que ya no sirven. Con el vencimiento apagado no borra nada.
+
+    Sin esto la tabla de sesiones crecería para siempre, con una fila por cada ingreso
+    de cada persona desde el primer día. Corre al arrancar, que es suficiente: las
+    vencidas ya no dan acceso aunque sigan guardadas.
+    """
+    if not SESION_HORAS:
+        return 0
+    cur = conn.execute("DELETE FROM sesion WHERE creado_en <= datetime('now', ?)",
+                       (f"-{SESION_HORAS} hours",))
+    borradas = cur.rowcount or 0
+    if borradas:
+        conn.commit()
+        print(f"Sesiones vencidas eliminadas: {borradas}")
+    return borradas
 
 
 def get_current_user(authorization: str = Header(None), get_connection=None):

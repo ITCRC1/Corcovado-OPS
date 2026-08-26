@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from init_db import get_connection
 import os
@@ -28,6 +29,44 @@ _origenes = [o.strip() for o in (os.environ.get("HOTEL_CORS_ORIGINS") or "").spl
 if _origenes:
     app.add_middleware(CORSMiddleware, allow_origins=_origenes,
                        allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# Comprimir lo que se manda al navegador. No cambia ni un dato: el navegador lo
+# descomprime antes de que la página lo vea, y solo se aplica si el navegador dice que
+# lo acepta. Es la mejora que más se nota desde el lodge, donde el internet es lento:
+# la pantalla completa pasa de unos 215 KB a unos 45, y una lista larga de reservas
+# baja bastante más que eso.
+#
+# El mínimo de 1 KB deja fuera las respuestas cortas, donde comprimir cuesta más de lo
+# que ahorra.
+#
+# Nivel 6 y no el 9 que trae puesto de fábrica: el 9 aprieta un 2% más y cuesta el doble
+# de tiempo del servidor. Medido en la pantalla completa, que es la respuesta más grande:
+# con nivel 9 la petición tardaba 15 ms más de lo que tardaba sin comprimir nada. El 6
+# es el que usan los servidores web por norma, por esta misma razón.
+
+# Las fotos y las tipografías ya vienen comprimidas de fábrica. Comprimirlas otra vez no
+# ahorra nada: el JPG del itinerario medía 305.207 bytes y salía en 305.275 —sesenta y
+# ocho bytes MÁS— después de gastar el tiempo de apretarlo. Se dejan pasar tal cual.
+YA_COMPRIMIDO = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".woff", ".woff2",
+                 ".zip", ".gz", ".pdf", ".xlsx", ".mp4", ".ico")
+
+
+class _GZipSaltandoBinarios(GZipMiddleware):
+    """Como la compresión normal, pero sin tocar lo que ya viene comprimido.
+
+    La decisión se toma con la dirección pedida, antes de generar la respuesta, así que
+    no cambia ni un byte de lo que se entrega: solo evita el trabajo inútil.
+    """
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and \
+                scope.get("path", "").lower().endswith(YA_COMPRIMIDO):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
+app.add_middleware(_GZipSaltandoBinarios, minimum_size=1024, compresslevel=6)
 
 @app.get("/api/salud")
 def salud():
@@ -113,6 +152,34 @@ def yymmdd(iso_date):
     """Convierte '2026-08-01' a '26-08-01', el formato que produce sql_fecha()."""
     y, m, d = iso_date.split("-")
     return f"{y[2:]}-{m}-{d}"
+
+
+def en_lotes(valores, tam=400):
+    """Parte una lista para consultarla con 'IN (?,?,...)' sin pasarse del límite.
+
+    SQLite topa la cantidad de parámetros de una consulta (999 en las versiones viejas).
+    Varias pantallas piden TODAS las reservas sin filtro de fecha, así que la lista puede
+    ser de miles: sin trocear, la consulta fallaría justo en el hotel que más datos tiene.
+    """
+    valores = list(valores)
+    for i in range(0, len(valores), tam):
+        yield valores[i:i + tam]
+
+
+def agrupar_por(conn, sql, claves, columna="conf_no"):
+    """Ejecuta 'sql' (que debe traer un 'IN ({marcas})') por lotes y agrupa el resultado.
+
+    Reemplaza el patrón de "una consulta por fila" que tenían varias pantallas: se pide
+    todo de una vez y se reparte en Python, que es lo mismo pero sin ir y venir a la
+    base una vez por reserva.
+    """
+    salida = {}
+    for lote in en_lotes(claves):
+        marcas = ",".join("?" * len(lote))
+        for fila in conn.execute(sql.format(marcas=marcas), lote).fetchall():
+            d = dict(fila)
+            salida.setdefault(d.pop(columna), []).append(d)
+    return salida
 
 
 def reserva_resumen(row):
@@ -299,21 +366,44 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
            ORDER BY tc.horario_inicio""", (fecha,))
 
     # --- Cocina: restricciones alimentarias de quienes están en el hotel ---
+    # El filtro por habitación se hace en la base, no en Python. Antes se traía la tabla
+    # de amenidades COMPLETA (con su JOIN a reservas) y se descartaba casi todo aquí.
+    # El resultado es el mismo: 'room_no IN (...)' deja fuera los nulos igual que hacía
+    # el 'in' de Python. Con la lista vacía no se consulta nada, porque 'IN ()' no es
+    # SQL válido y de todas formas no habría nada que mostrar.
+    # El 'ORDER BY a.id' no está por gusto: antes estas filas salían en el orden en que
+    # se recorría amenidad_tarea, y al meter el filtro en el WHERE el planificador podría
+    # decidir empezar por reservas y devolverlas en otro orden. Se deja escrito para que
+    # la hoja del día siga listando lo mismo en el mismo orden. 'id' es el rowid de la
+    # tabla, o sea exactamente el orden que salía antes.
+    def por_habitacion(sql, habitaciones):
+        salida = []
+        for lote in en_lotes(sorted(h for h in habitaciones if h is not None)):
+            marcas = ",".join("?" * len(lote))
+            salida += lista(sql.format(marcas=marcas), lote)
+        salida.sort(key=lambda x: x["_orden"])
+        for x in salida:
+            del x["_orden"]          # es solo para ordenar, no es parte del dato
+        return salida
+
     habitaciones_en_casa = {x["room_no"] for x in en_casa} | {x["room_no"] for x in desayunos}
-    restricciones = [x for x in lista(
-        """SELECT r.room_no, r.nombre_principal, a.amenidad, a.detalle, a.tarea, a.estado
+    restricciones = por_habitacion(
+        """SELECT a.id AS _orden, r.room_no, r.nombre_principal, a.amenidad, a.detalle,
+                  a.tarea, a.estado
            FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
-           WHERE a.area_responsable = 'Cocina'""")
-        if x["room_no"] in habitaciones_en_casa]
+           WHERE a.area_responsable = 'Cocina' AND r.room_no IN ({marcas})
+           ORDER BY a.id""",
+        habitaciones_en_casa)
 
     # --- Amenidades a preparar para quienes llegan ese día ---
     habitaciones_ingresan = {x["room_no"] for x in ingresos}
-    amenidades = [x for x in lista(
-        """SELECT r.room_no, r.nombre_principal, a.amenidad, a.detalle, a.tarea,
-                  a.area_responsable, a.estado
+    amenidades = por_habitacion(
+        """SELECT a.id AS _orden, r.room_no, r.nombre_principal, a.amenidad, a.detalle,
+                  a.tarea, a.area_responsable, a.estado
            FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
-           WHERE a.estado = 'PENDIENTE'""")
-        if x["room_no"] in habitaciones_ingresan]
+           WHERE a.estado = 'PENDIENTE' AND r.room_no IN ({marcas})
+           ORDER BY a.id""",
+        habitaciones_ingresan)
 
     # Se calcula ANTES de cerrar la conexión. Estaba dentro del return, o sea después
     # del close, así que siempre fallaba por dentro y _restaurantes_resumen devolvía
@@ -367,20 +457,29 @@ def ocupacion(desde: str, hasta: str, user: dict = Depends(exige("analitica"))):
         except (ValueError, AttributeError):
             return None
 
+    # Las fechas de cada reserva se convierten UNA vez, no una vez por cada día del
+    # rango. Antes, un rango de tres meses sobre 780 reservas hacía 140.000 conversiones
+    # de texto a fecha, todas repetidas. Las reservas sin fecha de llegada se descartan
+    # aquí mismo, igual que antes las descartaba el 'continue'.
+    preparadas = []
+    for r in reservas:
+        llega = a_fecha(r["arr_date"])
+        if not llega:
+            continue
+        preparadas.append((llega, a_fecha(r["dep_date"]), r["room_no"],
+                           (r["adl"] or 0) + (r["chl"] or 0)))
+
     inicio, fin = datetime.date.fromisoformat(desde), datetime.date.fromisoformat(hasta)
     dias = []
     dia = inicio
     while dia <= fin:
         habitaciones, pax, entran, salen = set(), 0, 0, 0
-        for r in reservas:
-            llega, sale = a_fecha(r["arr_date"]), a_fecha(r["dep_date"])
-            if not llega:
-                continue
+        for llega, sale, room_no, personas in preparadas:
             # Se cuenta ocupada la noche que el huésped duerme ahí: desde su llegada
             # hasta el día antes de su salida.
             if llega <= dia and (sale is None or dia < sale):
-                habitaciones.add(r["room_no"])
-                pax += (r["adl"] or 0) + (r["chl"] or 0)
+                habitaciones.add(room_no)
+                pax += personas
             if llega == dia:
                 entran += 1
             if sale == dia:
@@ -432,14 +531,20 @@ def reservas(desde: str = None, hasta: str = None, user: dict = Depends(exige("r
     query += " ORDER BY r.arr_date, r.room_no"
     rows = conn.execute(query, params).fetchall()
 
+    # Las amenidades de todas las reservas en UNA consulta, en vez de una consulta por
+    # reserva. Con 780 reservas eran 781 consultas; ahora son 2. El orden dentro de cada
+    # reserva se mantiene igual que antes: 'id' es el rowid de amenidad_tarea, que es el
+    # orden en que las devolvía la consulta de una sola reserva.
+    por_reserva = agrupar_por(
+        conn,
+        """SELECT conf_no, amenidad, tarea, area_responsable, estado
+           FROM amenidad_tarea WHERE conf_no IN ({marcas}) ORDER BY id""",
+        [r["conf_no"] for r in rows])
+
     result = []
     for r in rows:
         d = dict(r)
-        amenidades = conn.execute(
-            "SELECT amenidad, tarea, area_responsable, estado FROM amenidad_tarea WHERE conf_no = ?",
-            (r["conf_no"],),
-        ).fetchall()
-        d["amenidades"] = [dict(a) for a in amenidades]
+        d["amenidades"] = por_reserva.get(r["conf_no"], [])
         result.append(d)
     conn.close()
     return result
@@ -455,17 +560,21 @@ def entradas_sinac(desde: str = None, hasta: str = None, user: dict = Depends(ex
         params = (desde, hasta)
     query += " ORDER BY fecha"
     rows = [dict(r) for r in conn.execute(query, params).fetchall()]
-    conn.close()
 
     # Se buscan las reservas que tienen ese tour en esa fecha, para saber a quiénes
     # corresponde cada entrada. La relación sale de los tours asignados, y quién
     # corresponde a quién lo define sinac.py: la limpieza de entradas sin dueño usa esa
     # misma regla, y cuando no coincidían sobrevivían entradas fantasma.
+    #
+    # Se piden todas juntas: antes era una consulta por entrada, y además se abría una
+    # SEGUNDA conexión a la base para hacerlo. Ahora una consulta y una conexión.
     import sinac
-    conn = get_connection()
+    relacionadas = sinac.reservas_de_varias(
+        conn, [(r["tour_codigo"], r["fecha"], r["conf_entrada"]) for r in rows])
     hoy = datetime.date.today()
     for r in rows:
-        reservas_rel = sinac.reservas_de(conn, r["tour_codigo"], r["fecha"], r["conf_entrada"])
+        reservas_rel = relacionadas.get(
+            (r["tour_codigo"], r["fecha"], r["conf_entrada"] or ""), [])
         r["reservas"] = reservas_rel
         r["pax_huespedes"] = sum(x["adl"] + x["chl"] for x in reservas_rel)
         # Sin reservas detrás, la fila salía con todo en cero y sin habitación, y parecía
@@ -589,13 +698,19 @@ def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: di
         cond_e = f"{sql_fecha('arr_date')} BETWEEN ? AND ?"
         cond_s = f"{sql_fecha('dep_date')} BETWEEN ? AND ?"
         params_e = params_s = (yymmdd(desde), yymmdd(hasta))
+    # El 'ORDER BY rowid' conserva el orden que esta pantalla ha mostrado siempre.
+    # Estas dos consultas no ordenaban nada, así que las filas salían en el orden en que
+    # se recorría la tabla, que es el orden en que se importaron. Al haber índice de
+    # fechas, el motor las devolvería ordenadas por fecha de salida: el mismo contenido,
+    # pero la lista de Transporte aparecería en otra secuencia. Se deja escrito el orden
+    # de antes para no cambiar lo que ve recepción.
     entradas = conn.execute(
         # conf_no viene para poder marcar en pantalla si esa habitación viaja con otras.
-        f"SELECT conf_no, room_no, nombre_principal, punto_entrada, arr_time, hora_vuelo_entrada, adl, chl, arr_date FROM reserva WHERE {cond_e}",
+        f"SELECT conf_no, room_no, nombre_principal, punto_entrada, arr_time, hora_vuelo_entrada, adl, chl, arr_date FROM reserva WHERE {cond_e} ORDER BY rowid",
         params_e,
     ).fetchall()
     salidas = conn.execute(
-        f"SELECT conf_no, room_no, nombre_principal, punto_salida, hora_vuelo_salida, adl, chl, dep_date FROM reserva WHERE {cond_s}",
+        f"SELECT conf_no, room_no, nombre_principal, punto_salida, hora_vuelo_salida, adl, chl, dep_date FROM reserva WHERE {cond_s} ORDER BY rowid",
         params_s,
     ).fetchall()
     conn.close()
@@ -2346,15 +2461,29 @@ def buscar(q: str, user: dict = Depends(exige("reservas"))):
         (num_hab, like, like, like, like, like, num_hab),
     ).fetchall()
 
+    # Los acompañantes y la cuenta de tours de los 40 resultados, en dos consultas en vez
+    # de dos por resultado (eran hasta 80 por búsqueda, y la búsqueda se dispara mientras
+    # se teclea). El orden de los acompañantes se conserva: 'id' es el rowid de huesped,
+    # que es el orden en que los devolvía la consulta de una sola reserva.
+    confs_res = [dict(f)["conf_no"] for f in filas]
+    acomp_por_conf = agrupar_por(
+        conn,
+        """SELECT conf_no, nombre_completo FROM huesped
+           WHERE conf_no IN ({marcas}) ORDER BY id""", confs_res)
+    tours_por_conf = {}
+    for lote in en_lotes(confs_res):
+        marcas = ",".join("?" * len(lote))
+        for x in conn.execute(
+            f"""SELECT conf_no, COUNT(*) c FROM tour_asignado
+                WHERE conf_no IN ({marcas}) GROUP BY conf_no""", lote).fetchall():
+            tours_por_conf[x["conf_no"]] = x["c"]
+
     hoy = datetime.date.today()
     resultados = []
     for f in filas:
         d = dict(f)
-        acompanantes = [dict(x)["nombre_completo"] for x in conn.execute(
-            "SELECT nombre_completo FROM huesped WHERE conf_no = ?", (d["conf_no"],))]
-        tours = conn.execute(
-            "SELECT COUNT(*) c FROM tour_asignado WHERE conf_no = ?", (d["conf_no"],)
-        ).fetchone()["c"]
+        acompanantes = [x["nombre_completo"] for x in acomp_por_conf.get(d["conf_no"], [])]
+        tours = tours_por_conf.get(d["conf_no"], 0)
 
         # Estado respecto a hoy, para ubicar rápido de qué reserva se trata
         def a_fecha(dd):
@@ -2824,8 +2953,12 @@ def restaurantes_regimen(fecha: str = None, desde: str = None, hasta: str = None
     try:
         dias, totales = [], {}
         d = inicio
+        # Las reservas se leen una sola vez para todo el rango. Antes era una lectura de
+        # la tabla completa por cada día: pedir tres meses eran 92 recorridos de toda la
+        # historia de reservas. El tope de 92 días sigue puesto igual.
+        cache = {}
         while d <= fin:
-            entradas, en_casa, _ = rest._reservas_del_dia(conn, d)
+            entradas, en_casa, _ = rest._reservas_del_dia(conn, d, cache)
             categorias = {}
             for r in entradas + en_casa:
                 clave = r.get("regimen") or "SIN_DATO"
@@ -2888,25 +3021,38 @@ INDEX_PATH = os.path.join(frontend_dir, "index.html")
 # qué versión se cargó: si el navegador tiene una copia vieja, el sello de la página y
 # el del servidor no coinciden y el propio sistema lo avisa.
 
+_version_cache = None
+
+
 def _version_sistema():
     """Fecha del archivo más nuevo entre el frontend y el backend, en UTC.
 
     La hora se devuelve en ISO para que la muestre el navegador en la hora de quien
     mira, y no en la del servidor (que en Railway va en UTC).
+
+    Se calcula UNA vez por proceso. Los archivos del programa no cambian mientras el
+    programa corre —un despliegue arranca un proceso nuevo, y ahí se vuelve a calcular—,
+    así que el resultado es el mismo. Lo que se evita es el precio de averiguarlo: son
+    siete consultas al disco, y /api/cambios las pedía en cada sondeo. Con seis
+    pestañas abiertas eran 420 consultas al disco por minuto, en reposo, sobre el
+    volumen de red del servidor, para responder siempre lo mismo.
     """
-    rutas = [INDEX_PATH] + [os.path.join(os.path.dirname(__file__), f)
-                            for f in ("main.py", "restaurantes.py", "publicador.py",
-                                      "itinerario.py", "importer.py", "loader.py")]
-    reciente = 0.0
-    for r in rutas:
-        try:
-            reciente = max(reciente, os.path.getmtime(r))
-        except OSError:
-            continue
-    sello = datetime.datetime.fromtimestamp(
-        reciente, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    commit = (os.environ.get("RAILWAY_GIT_COMMIT_SHA") or "")[:7]
-    return {"version": sello, "commit": commit}
+    global _version_cache
+    if _version_cache is None:
+        rutas = [INDEX_PATH] + [os.path.join(os.path.dirname(__file__), f)
+                                for f in ("main.py", "restaurantes.py", "publicador.py",
+                                          "itinerario.py", "importer.py", "loader.py")]
+        reciente = 0.0
+        for r in rutas:
+            try:
+                reciente = max(reciente, os.path.getmtime(r))
+            except OSError:
+                continue
+        sello = datetime.datetime.fromtimestamp(
+            reciente, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        commit = (os.environ.get("RAILWAY_GIT_COMMIT_SHA") or "")[:7]
+        _version_cache = {"version": sello, "commit": commit}
+    return _version_cache
 
 
 @app.get("/api/version")
@@ -2915,7 +3061,24 @@ def version():
     return _version_sistema()
 
 
-_index_cache = {"version": None, "html": None}
+_index_cache = {"version": None, "html": None, "gz": None}
+
+
+def _index_comprimido():
+    """La pantalla completa, ya comprimida y guardada.
+
+    Es la respuesta más grande del sistema (unos 215 KB) y la primera que espera
+    cualquiera que entra. Comprimirla en cada petición cuesta unos 8 ms de servidor
+    siempre para el mismo resultado, porque el archivo no cambia mientras el programa
+    corre. Comprimida una sola vez, se entrega la cuarta parte de los bytes sin gastar
+    nada: sale más rápido que antes de comprimir, no solo más liviana.
+    """
+    _index_con_version()          # deja el html y la versión al día
+    if _index_cache["gz"] is None:
+        import gzip as _gzip
+        _index_cache["gz"] = _gzip.compress(
+            _index_cache["html"].encode("utf-8"), compresslevel=6)
+    return _index_cache["gz"]
 
 
 def _index_con_version():
@@ -2934,6 +3097,7 @@ def _index_con_version():
         marca = f'<meta name="version-sistema" content="{v["version"]}" data-commit="{v["commit"]}">'
         _index_cache["html"] = html.replace("<!--VERSION-->", marca)
         _index_cache["version"] = v["version"]
+        _index_cache["gz"] = None      # cambió la página: hay que volver a comprimirla
     return _index_cache["html"]
 
 
@@ -2964,14 +3128,36 @@ def service_worker():
 
 @app.get("/", response_class=HTMLResponse)
 @app.get("/index.html", response_class=HTMLResponse)
-def index():
+def index(accept_encoding: str = Header(None)):
     """Entrega la aplicación con el sello de versión dentro.
 
     Va antes del montaje de archivos estáticos, así que gana sobre él; el resto de
     los archivos (fuentes, fotos, logo) los sigue sirviendo el montaje de abajo.
+
+    Si el navegador acepta contenido comprimido se le manda la copia ya comprimida. Al
+    venir con Content-Encoding puesto, la compresión general del sistema la deja pasar
+    tal cual en vez de comprimirla otra vez. Y si no lo acepta —un navegador viejo, o
+    alguna herramienta— recibe el HTML de siempre.
     """
-    return HTMLResponse(content=_index_con_version(),
-                        headers={"Cache-Control": "no-cache, must-revalidate"})
+    cabeceras = {"Cache-Control": "no-cache, must-revalidate",
+                 "Vary": "Accept-Encoding"}
+    if "gzip" in (accept_encoding or "").lower():
+        return Response(content=_index_comprimido(), media_type="text/html; charset=utf-8",
+                        headers={**cabeceras, "Content-Encoding": "gzip"})
+    return HTMLResponse(content=_index_con_version(), headers=cabeceras)
+
+
+# Un mes. Las fuentes y las fotos no cambian nunca en la práctica, y el programa de
+# servicio (sw.js) ya las guarda en el teléfono sin fecha de vencimiento, así que este
+# plazo no agrega ningún riesgo nuevo: es el mismo que ya corre la app instalada, y más
+# corto. Lo que arregla es el navegador del mostrador, que hasta ahora volvía a preguntar
+# por las ocho tipografías y las siete imágenes —1,8 MB en quince peticiones— en cada
+# carga de la pantalla.
+#
+# Si algún día hay que cambiar una fuente o una foto, hay que darle OTRO nombre de
+# archivo; con el mismo nombre, a quien ya la tenga le puede seguir apareciendo la
+# anterior hasta un mes.
+CACHE_ASSETS = "public, max-age=2592000"
 
 
 class _FrontendSinCache(StaticFiles):
@@ -2989,6 +3175,9 @@ class _FrontendSinCache(StaticFiles):
             (respuesta.headers.get("content-type") or "").startswith("text/html")
         if es_html:
             respuesta.headers["Cache-Control"] = "no-cache, must-revalidate"
+        elif respuesta.status_code == 200 and path.replace("\\", "/").startswith("assets/"):
+            # Solo lo de assets/: es lo único que se puede dar por inmutable.
+            respuesta.headers["Cache-Control"] = CACHE_ASSETS
         return respuesta
 
 

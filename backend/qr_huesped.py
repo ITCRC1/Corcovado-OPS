@@ -76,11 +76,18 @@ def ocupante_actual(conn, room_no, fecha=None, dias_adelante=2):
         return f"(substr({col},7,2)||'-'||substr({col},4,2)||'-'||substr({col},1,2))"
 
     objetivo = f"{y[2:]}-{m}-{d}"
+    # El 'rowid' del desempate: si la misma habitación tiene DOS reservas activas que
+    # empiezan el mismo día —no debería pasar, pero pasa cuando se duplica una reserva o
+    # se mueve a alguien de cuarto sin cerrar la anterior—, el 'ORDER BY' de la fecha
+    # sola no decide cuál gana, y el motor devolvía una cualquiera de las dos: la que
+    # saliera según cómo hubiera recorrido la tabla. Con el índice de habitación esa
+    # elección arbitraria habría cambiado, y el QR del cuarto mostraría al otro huésped.
+    # Se fija en la más antigua, que es la que venía saliendo, y así deja de ser azar.
     fila = conn.execute(
         f"""SELECT * FROM reserva
             WHERE room_no = ? AND res_status != 'CANCELADA'
               AND {sql_fecha('arr_date')} <= ? AND {sql_fecha('dep_date')} >= ?
-            ORDER BY {sql_fecha('arr_date')} DESC LIMIT 1""",
+            ORDER BY {sql_fecha('arr_date')} DESC, rowid ASC LIMIT 1""",
         (room_no, objetivo, objetivo),
     ).fetchone()
     if fila:
@@ -94,7 +101,7 @@ def ocupante_actual(conn, room_no, fecha=None, dias_adelante=2):
         f"""SELECT * FROM reserva
             WHERE room_no = ? AND res_status != 'CANCELADA'
               AND {sql_fecha('arr_date')} > ? AND {sql_fecha('arr_date')} <= ?
-            ORDER BY {sql_fecha('arr_date')} ASC LIMIT 1""",
+            ORDER BY {sql_fecha('arr_date')} ASC, rowid ASC LIMIT 1""",
         (room_no, objetivo, tope),
     ).fetchone()
     return dict(fila) if fila else None
