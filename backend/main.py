@@ -1179,6 +1179,44 @@ def cambios(user: dict = Depends(current_user)):
             "version_sistema": _version_sistema()["version"]}
 
 
+# ---------------------------------------------------------------------------
+# Puerta del portal del huésped
+# ---------------------------------------------------------------------------
+# El portal del huésped es OTRO sistema, con su propia base y su propio despliegue. Lo
+# único que necesita de aquí es poder comprobar que una reserva existe, para que el
+# huésped que se registra en su celular sea de verdad un huésped.
+#
+# Va aquí, con las rutas de sincronización, porque es de la misma naturaleza: la llama
+# otra máquina, no una persona, así que se identifica con un secreto compartido y no con
+# una sesión de usuario. Y como esas, si no hay secreto definido queda apagada (404): una
+# puerta que lee datos de huéspedes no debe quedar abierta en una instalación que no la
+# usa. Toda la lógica está en portal.py, que solo LEE la base.
+
+@app.post("/api/portal/verificar")
+async def portal_verificar(payload: dict, x_portal_token: str = Header(None)):
+    """Comprueba una reserva por número + apellido + fecha de llegada.
+
+    Responde {"encontrada": false} para cualquier fallo, sin decir en qué campo falló:
+    distinguir 'ese número no existe' de 'el apellido no coincide' le confirmaría a un
+    extraño que el número es bueno.
+    """
+    import portal as _portal
+    if not _portal.habilitado():
+        raise HTTPException(status_code=404,
+                            detail="El portal del huésped no está habilitado")
+    if not _portal.token_valido(x_portal_token):
+        raise HTTPException(status_code=401, detail="Token de portal inválido")
+
+    conn = get_connection()
+    try:
+        return _portal.verificar(conn,
+                                 payload.get("conf_no"),
+                                 payload.get("apellido"),
+                                 payload.get("llegada"))
+    finally:
+        conn.close()
+
+
 @app.get("/api/sync/estado")
 def sync_estado(user: dict = Depends(exige("usuarios"))):
     conn = get_connection()
