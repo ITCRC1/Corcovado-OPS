@@ -9,3 +9,6 @@ qrcode==8.0
 # de forma indirecta; se declara explícita para que una versión futura de esas
 # librerías no deje al sistema sin poder arrancar.
 pillow==11.0.0
+# Avisos al celular. El sistema arranca igual si falta —las notificaciones quedan
+# apagadas y lo dice en la pantalla—, pero se declara para que estén disponibles.
+pywebpush==2.5.0

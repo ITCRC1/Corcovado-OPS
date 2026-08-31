@@ -12,7 +12,7 @@ Sistema local para la operación diaria de Sierpe y Drake. Funciona sin internet
 | **Agenda de tours** | Asignar guía y bote, dividir salidas en grupos, con aviso de conflictos de horario |
 | **Transporte** | Entradas y salidas por Sierpe o Drake, con horas de vuelo |
 | **Entradas SINAC** | Control de compra con 15 días de anticipación, por urgencia |
-| **Amenidades** | Tareas por área (cocina, housekeeping, recepción), incluidas alergias |
+| **Amenidades** | Tareas por área (cocina, housekeeping, recepción), incluidas alergias. Cada una con el día en que hay que tenerla lista |
 | **Analítica** | Uso de botes y guías, movimiento por punto y ocupación del periodo |
 | **Resumen operación** | La hoja del día para todos los departamentos |
 | **Importar PDF** | Cargar el reporte "Arrivals: Detailed" del PMS |
@@ -99,6 +99,86 @@ Con el vencimiento apagado, si un celular se pierde con la sesión abierta la fo
 cortar el acceso es **desactivar ese usuario** desde la pantalla Usuarios.
 
 
+## El día de cada amenidad
+
+Cada amenidad lleva el día en que hay que tenerla lista, y se puede cambiar desde la
+pantalla **Amenidades** con el selector de la columna *"Para el día"*. Solo se aceptan
+días dentro de la estadía del huésped: una tarea puesta en un día en que no está no le
+aparecería a nadie.
+
+- **Se pone sola en el día de llegada**, tanto al importar el PDF como al agregar un
+  requerimiento a mano. El sofá cama, la cuna, la decoración y la canasta de frutas
+  tienen que estar antes del check-in.
+- **La cena privada es la excepción y se deja sin día a propósito.** El reporte avisa que
+  existe pero casi nunca dice qué noche. Ponerle la llegada sería inventarlo, y apagaría
+  el aviso de *"contratadas sin noche asignada"* que es lo que hace que recepción
+  pregunte.
+
+**Al ponerle la noche a una cena privada, aparece sola en la hoja de Restaurantes** de
+esa noche, fija en Bar el Bosque y contando para sus 45 lugares. Es el mismo dato, así
+que no hay nada que sincronizar. Funciona igual desde Amenidades que desde el botón
+*"Elegir noche"* de Restaurantes.
+
+
+## Avisos al celular
+
+El personal puede recibir una notificación en el teléfono cuando aparece un requerimiento
+nuevo, como cualquier otra app. **Vienen apagados**: se encienden poniendo dos llaves en
+el servidor.
+
+```
+python backend/generar_llaves_push.py
+```
+
+Eso imprime `HOTEL_PUSH_PRIVADA` y `HOTEL_PUSH_PUBLICA` para poner en las variables del
+servicio, más `HOTEL_PUSH_CONTACTO` con un correo del hotel. **Se generan una sola vez:**
+si se cambian, todos los celulares dejan de recibir y cada persona tiene que volver a
+activarlos.
+
+Después, cada persona los activa desde la pantalla **Amenidades**, con el botón
+*"Activar en este aparato"*. Hay un botón **Probar** al lado, porque activar esto tiene
+varios pasos que pueden fallar por separado y conviene comprobarlo en el momento.
+
+⚠️ **En iPhone solo funciona si la app está agregada a la pantalla de inicio.** En una
+pestaña de Safari, Apple no entrega notificaciones y no hay forma de evitarlo. En Android
+funcionan también desde el navegador. La pantalla lo dice cuando detecta ese caso.
+
+**Qué avisa, y a quién:**
+
+| Cuándo | Qué manda |
+|---|---|
+| Alguien agrega un requerimiento a mano | Un aviso, a todos menos a quien lo escribió |
+| Se importa el reporte del PMS | **Un solo aviso** con el total pendiente para hoy y mañana |
+| Cada mañana (6:00 por defecto, `HOTEL_PUSH_HORA_REPASO`) | El repaso de lo pendiente para hoy |
+
+Le llegan a **todo el personal activo**, sin mirar permisos: los de solo lectura y
+también quien no tenga la pantalla de Amenidades. En un equipo pequeño, quien tiene que
+preparar algo tiene que enterarse, tenga o no ese botón en el sistema. Solo se excluye a
+quien hizo el cambio (nadie recibe aviso de lo que acaba de escribir) y a los usuarios
+**desactivados**.
+
+Los permisos siguen mandando en lo que cada quien puede ver y hacer dentro del sistema.
+Lo que no gobiernan es a quién le suena el teléfono.
+
+Dos consecuencias que conviene tener claras:
+
+- **El texto del aviso lleva datos del huésped** (*"Hab. 12 · Restricción alimentaria"*,
+  que además es dato de salud), así que ese texto lo lee todo el personal.
+- Si alguien sin acceso a Amenidades toca el aviso, **la app no lo lleva ahí**: le dice
+  que esa pantalla no es para su usuario. Sin eso vería una pantalla en blanco y parecería
+  que el sistema falla, cuando es su permiso.
+
+Para volver a limitarlo por permisos, se cambia una sola función:
+`destinatarios_amenidades()` en `backend/notificaciones.py`.
+
+Del reporte del PMS sale **un aviso, no uno por amenidad**: treinta notificaciones
+seguidas hacen que la persona silencie la app el primer día, y entonces tampoco recibiría
+la que sí importaba.
+
+Sin señal el aviso no se pierde: se queda en cola en los servidores de Google o Apple y
+entra cuando el teléfono vuelve a tener datos.
+
+
 ## Reportes descargables (Excel y PDF)
 
 Reservas, Agenda de tours, Transporte, Entradas SINAC, Analítica y Resumen de
@@ -145,6 +225,10 @@ Servicio → *Variables*:
 | `HOTEL_ADMIN_PASSWORD` | contraseña de la primera cuenta (mínimo 10 caracteres) | **Sí** |
 | `HOTEL_ADMIN_USER` | nombre de esa cuenta (por defecto `recepcion`) | No |
 | `HOTEL_SESION_HORAS` | horas que dura la sesión. Sin definir, **no vence** | No |
+| `HOTEL_PUSH_PRIVADA` · `HOTEL_PUSH_PUBLICA` | avisos al celular. Sin ellas quedan apagados | No |
+| `HOTEL_PUSH_CONTACTO` | correo de contacto que piden Google y Apple | No |
+| `HOTEL_PUSH_HORA_REPASO` | hora del repaso diario (por defecto `6`) | No |
+| `HOTEL_PORTAL_TOKEN` | secreto para el portal del huésped. Sin él, esa puerta no existe | No |
 
 `PORT` y `HOTEL_DATA_DIR` los ponen Railway y el `Dockerfile`: no hay que tocarlos.
 

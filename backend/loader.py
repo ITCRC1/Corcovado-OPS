@@ -2,6 +2,26 @@
 from init_db import get_connection
 
 
+def _iso_de_ddmmyy(valor):
+    """'05-08-26' -> '2026-08-05'. None si no tiene esa forma.
+
+    Las fechas de la reserva se guardan como 'DD-MM-YY', pero amenidad_tarea.fecha va
+    en ISO (es la que compara la pantalla de restaurantes). Se convierte aquí y se
+    devuelve None ante cualquier cosa rara, para que un dato torcido del PDF no deje
+    una amenidad con una fecha inventada.
+    """
+    try:
+        d, m, y = str(valor).strip().split("-")
+        if len(y) != 2 or not (d.isdigit() and m.isdigit() and y.isdigit()):
+            return None
+        dia, mes = int(d), int(m)
+        if not (1 <= dia <= 31 and 1 <= mes <= 12):
+            return None
+        return f"20{y}-{mes:02d}-{dia:02d}"
+    except (ValueError, AttributeError):
+        return None
+
+
 def _filas_fuera_de_estadia(filas, arr_date, dep_date):
     """Actividades cuya fecha quedó fuera de la estadía del huésped. Pasa cuando
     recepción agregó algo a mano y después la reserva se movió de fechas."""
@@ -125,27 +145,43 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
         # Solo se borran las detectadas del PDF; las agregadas a mano por recepción se conservan.
         cur.execute("DELETE FROM amenidad_tarea WHERE conf_no = ? AND origen = 'PDF'", (r["conf_no"],))
 
+        # La fecha en que hay que tener lista la amenidad. Por omisión, el día de
+        # llegada: el sofá cama, la cuna, la decoración, la canasta de frutas y la
+        # tarjeta de bienvenida tienen que estar puestas ANTES del check-in, y a cocina
+        # la alergia le sirve saberla antes de que el huésped se siente a comer.
+        #
+        # La CENA PRIVADA es la excepción, y se deja sin fecha a propósito: el PDF avisa
+        # que existe pero casi nunca dice qué noche. Ponerle la llegada sería inventarle
+        # un día, y además apagaría el aviso de "contratadas sin noche asignada" que hoy
+        # es lo que hace que recepción pregunte y lo confirme. Un dato inventado es peor
+        # que un dato faltante que alguien está vigilando.
+        llegada_iso = _iso_de_ddmmyy(r.get("arr_date"))
+        import restaurantes as _rest
+
         for amenidad in r.get("amenidades_detectadas", []):
             catalog_row = cur.execute(
                 "SELECT nombre, tarea_automatica, area_responsable FROM amenidad_catalogo WHERE nombre = ?",
                 (amenidad,),
             ).fetchone()
             if catalog_row:
-                cur.execute(
-                    "INSERT INTO amenidad_tarea (conf_no, amenidad, tarea, area_responsable) VALUES (?,?,?,?)",
-                    (r["conf_no"], catalog_row["nombre"], catalog_row["tarea_automatica"], catalog_row["area_responsable"]),
-                )
+                nombre = catalog_row["nombre"]
+                tarea = catalog_row["tarea_automatica"]
+                area = catalog_row["area_responsable"]
             else:
                 # Detectada en el PDF pero sin fila en el catálogo (porque se renombró,
                 # se borró, o la base es anterior a esa amenidad). Antes se descartaba
                 # en silencio y nadie se enteraba de que el huésped la tenía pedida.
                 # Se guarda igual, con una tarea genérica, para que alguien la vea.
-                cur.execute(
-                    "INSERT INTO amenidad_tarea (conf_no, amenidad, tarea, area_responsable) VALUES (?,?,?,?)",
-                    (r["conf_no"], amenidad,
-                     f"Revisar con recepción: el PDF menciona «{amenidad}» y no está en el catálogo",
-                     "Recepción"),
-                )
+                nombre = amenidad
+                tarea = (f"Revisar con recepción: el PDF menciona «{amenidad}» "
+                         "y no está en el catálogo")
+                area = "Recepción"
+            fecha = None if _rest.es_cena_privada(nombre, tarea) else llegada_iso
+            cur.execute(
+                """INSERT INTO amenidad_tarea (conf_no, amenidad, tarea, area_responsable, fecha)
+                   VALUES (?,?,?,?,?)""",
+                (r["conf_no"], nombre, tarea, area, fecha),
+            )
 
         for g in r["rooming"]:
             cur.execute(

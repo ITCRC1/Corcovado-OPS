@@ -221,6 +221,26 @@ def _filtro_privada(prefijo=""):
             f"OR {p}amenidad LIKE '%private%dinner%')")
 
 
+def es_cena_privada(amenidad, tarea=None):
+    """La MISMA regla que _filtro_privada, pero en Python.
+
+    Hace falta porque al importar el PDF hay que decidir en Python si una amenidad es
+    cena privada, y ahí no se puede usar SQL. Las dos versiones tienen que decir lo
+    mismo: si esta reconociera algo que la de SQL no —o al revés—, una cena privada
+    quedaría fechada sola sin aparecer en el comedor, o al contrario.
+
+    Por eso están pegadas una a la otra: quien cambie una ve la otra.
+    """
+    a = (amenidad or "").lower()
+    t = (tarea or "").lower()
+    if "privada" in a or "privada" in t:
+        return True
+    # 'private dinner', 'private  dinner', 'private in-villa dinner'...
+    if "private" in a and "dinner" in a and a.index("private") < a.index("dinner"):
+        return True
+    return False
+
+
 def _cenas_privadas(conn, fecha):
     """Reservas con cena privada declarada esa noche. Van fijas a Bar el Bosque."""
     return {dict(r)["conf_no"] for r in conn.execute(

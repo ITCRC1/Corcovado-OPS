@@ -88,3 +88,58 @@ self.addEventListener("fetch", (evento) => {
       )))
   );
 });
+
+/* ---------- Avisos al celular ----------
+ *
+ * El aviso llega aquí aunque la app esté cerrada: es la única forma de que un
+ * requerimiento nuevo llegue a un teléfono que está en el bolsillo.
+ *
+ * En iPhone esto solo funciona si la app está agregada a la pantalla de inicio. En una
+ * pestaña de Safari, Apple no entrega nada. En Android funciona igual desde el navegador.
+ *
+ * La 'etiqueta' agrupa: dos avisos con la misma se reemplazan en vez de apilarse, así el
+ * repaso de la mañana no deja siete notificaciones viejas encima.
+ */
+self.addEventListener("push", (evento) => {
+  let d = {};
+  try {
+    d = evento.data ? evento.data.json() : {};
+  } catch (e) {
+    // Si el aviso llega con algo que no se entiende, se muestra algo antes que nada:
+    // una notificación en blanco es mejor que un aviso perdido en silencio.
+    d = { titulo: "Corcovado", cuerpo: "Hay algo nuevo en el sistema." };
+  }
+  evento.waitUntil(
+    self.registration.showNotification(d.titulo || "Corcovado", {
+      body: d.cuerpo || "",
+      icon: "/assets/icono-192.png",
+      badge: "/assets/icono-192.png",
+      tag: d.etiqueta || "corcovado",
+      renotify: true,
+      data: { pantalla: d.pantalla, ...(d.datos || {}) },
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (evento) => {
+  evento.notification.close();
+  const pantalla = (evento.notification.data || {}).pantalla;
+  const destino = pantalla !== undefined && pantalla !== null
+    ? `/?pantalla=${pantalla}` : "/";
+  evento.waitUntil(
+    // Si el sistema ya está abierto en alguna ventana, se usa esa en vez de abrir otra:
+    // dos pestañas del mismo sistema abiertas es justo lo que confunde a la gente.
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((abiertas) => {
+      for (const c of abiertas) {
+        if (c.url.includes(self.location.origin)) {
+          c.focus();
+          if (pantalla !== undefined && pantalla !== null && "postMessage" in c) {
+            c.postMessage({ tipo: "ir-a-pantalla", pantalla });
+          }
+          return;
+        }
+      }
+      return self.clients.openWindow(destino);
+    })
+  );
+});

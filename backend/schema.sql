@@ -329,6 +329,29 @@ CREATE TABLE IF NOT EXISTS config_estacion (
     valor TEXT
 );
 
+-- Celulares y computadoras que pidieron recibir notificaciones.
+--
+-- Cada aparato de cada persona guarda una fila: alguien con celular y computadora tiene
+-- dos, y las dos son válidas. La 'endpoint' es la dirección que da el navegador para
+-- llegar a ese aparato (de los servidores de Google, Apple o Mozilla, según el
+-- navegador) y es la que identifica la suscripción, así que es la clave.
+--
+-- Las filas se borran solas cuando el servidor de notificaciones responde que ese
+-- aparato ya no existe (la persona desinstaló la app o borró los datos del navegador).
+-- Sin eso, la tabla se llenaría de aparatos muertos y cada aviso intentaría enviarles.
+CREATE TABLE IF NOT EXISTS suscripcion_push (
+    endpoint TEXT PRIMARY KEY,
+    usuario_id INTEGER REFERENCES usuario(id),
+    p256dh TEXT NOT NULL,          -- llave pública del aparato, para cifrarle el aviso
+    auth TEXT NOT NULL,            -- secreto del aparato, parte del mismo cifrado
+    aparato TEXT,                  -- para que la persona reconozca cuál es cuál
+    creado_en TEXT DEFAULT (datetime('now')),
+    ultimo_envio TEXT,
+    fallos INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_suscripcion_usuario ON suscripcion_push (usuario_id);
+
 -- ============================================================
 -- Triggers: cada cambio en las tablas sincronizables se anota
 -- automáticamente en sync_log, usando el nombre de estación

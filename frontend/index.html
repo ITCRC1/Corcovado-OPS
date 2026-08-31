@@ -590,6 +590,9 @@ function showApp() {
   // hoy, aunque la sesión se haya iniciado con la página abierta desde ayer.
   irAPantalla(primera >= 0 ? primera : 0);   // trae también los grupos
   iniciarRefrescoAutomatico();
+  // Si se entró desde un aviso del celular, se va a esa pantalla. Va después de abrir la
+  // primera para que, si no tiene permiso a la pedida, quede en una válida.
+  aplicarPantallaPedida();
 }
 
 // ---------- Aviso flotante de confirmación ----------
@@ -719,6 +722,52 @@ if ("serviceWorker" in navigator) {
       // sin señal. No vale la pena molestar a nadie con este error.
     });
   });
+  // Al tocar un aviso, si el sistema ya estaba abierto el programa de servicio manda
+  // aquí a qué pantalla ir, en vez de abrir otra ventana.
+  navigator.serviceWorker.addEventListener("message", (e) => {
+    if (e.data && e.data.tipo === "ir-a-pantalla") irAPantallaDesdeAviso(e.data.pantalla);
+  });
+}
+
+// A qué pantalla ir cuando lo pide un aviso. Si todavía no hay sesión, se guarda y se
+// aplica al entrar: si no, el aviso llevaría a la pantalla de ingreso y se perdería.
+//
+// OJO: esto NO reemplaza a irAPantalla() —la de la barra de navegación—, la LLAMA. Esa
+// además reinicia el filtro de fechas de la pantalla y relee los grupos, y perder eso
+// dejaría los trece botones del menú abriendo en la fecha que estuviera puesta.
+let _pantallaPendiente = null;
+
+function irAPantallaDesdeAviso(n) {
+  n = parseInt(n, 10);
+  if (isNaN(n)) return;
+  if (!TOKEN) { _pantallaPendiente = n; return; }
+  // Los avisos le llegan a todo el personal, tenga o no esa pantalla. Si no la tiene,
+  // no se navega: la pantalla no cargaría (el servidor le responde 403) y se quedaría
+  // en blanco, pareciendo que la app falla cuando en realidad es su permiso. El aviso
+  // ya cumplió su trabajo con el texto.
+  const clave = CLAVE_PANTALLA[n];
+  if (clave && !puedeVer(clave)) {
+    avisar("Ese aviso es de una pantalla a la que tu usuario no tiene acceso");
+    return;
+  }
+  irAPantalla(n);
+}
+
+function aplicarPantallaPedida() {
+  // Del aviso ya abierto en esta ventana, o de la dirección con que se abrió.
+  let n = _pantallaPendiente;
+  _pantallaPendiente = null;
+  if (n === null) {
+    const p = new URLSearchParams(location.search).get("pantalla");
+    if (p !== null) {
+      n = parseInt(p, 10);
+      // Se limpia la dirección: si se queda, cada recarga vuelve a esa pantalla y ya no
+      // se puede navegar a otra sin borrarla a mano.
+      const limpia = location.pathname + location.hash;
+      history.replaceState({}, document.title, limpia);
+    }
+  }
+  if (n !== null && !isNaN(n)) irAPantallaDesdeAviso(n);
 }
 
 // En el teléfono las tablas se dibujan como tarjetas, y cada dato necesita su etiqueta.
@@ -2144,6 +2193,9 @@ async function loadAmenidades(fecha, desdeNuevo, hastaNuevo, estadoNuevo) {
   const qs = new URLSearchParams({ desde, hasta });
   if (estado) qs.append("estado", estado);
   const rows = await (await fetchAuth(`${API}/api/amenidades?${qs}`)).json();
+  // El estado de los avisos se pide una sola vez por sesión: no cambia entre recargas
+  // de la pantalla y el refresco automático la vuelve a dibujar cada pocos segundos.
+  if (_avisosEstado === null) await cargarEstadoAvisos();
   const pend = rows.filter(a => a.estado === "PENDIENTE").length;
   const hechas = rows.filter(a => a.estado === "HECHA").length;
 
@@ -2176,6 +2228,7 @@ async function loadAmenidades(fecha, desdeNuevo, hastaNuevo, estadoNuevo) {
         </div>
       </div>
       <div id="form-amenidad"></div>
+      ${panelAvisos()}
       <div class="stats" style="grid-template-columns:repeat(3,1fr);">
         <div class="stat" style="cursor:default;"><p class="stat-label">Total</p><p class="stat-value">${rows.length}</p></div>
         <div class="stat" style="cursor:default;"><p class="stat-label">Pendientes</p><p class="stat-value" style="color:var(--warn-text);">${pend}</p></div>
@@ -2185,13 +2238,14 @@ async function loadAmenidades(fecha, desdeNuevo, hastaNuevo, estadoNuevo) {
       ${rows.length ? Object.entries(porArea).map(([area, lista]) => `
         <p style="font-weight:600;font-size:14px;margin:16px 0 6px;color:var(--forest);">${area} (${lista.length})</p>
         <table>
-          <tr><th>Llegada</th><th>Hab.</th><th>Huésped</th><th>Amenidad</th><th>Tarea</th><th>Estado</th>${puedeEscribir("amenidades")?"<th></th>":""}</tr>
+          <tr><th>Llegada</th><th>Hab.</th><th>Huésped</th><th>Amenidad</th><th>Para el día</th><th>Tarea</th><th>Estado</th>${puedeEscribir("amenidades")?"<th></th>":""}</tr>
           ${lista.map(a => `
             <tr class="${a.estado === 'HECHA' ? 'fila-salio' : ''}">
               <td>${a.arr_date}</td>
               <td>${a.room_no}${etiquetaGrupo(a.conf_no)}</td>
               <td>${a.nombre_principal}</td>
               <td><span class="badge badge-tour">${a.amenidad}</span>${a.origen === 'MANUAL' ? ' <span style="font-size:10px;color:var(--muted);">(manual)</span>' : ''}</td>
+              <td>${celdaFechaAmenidad(a)}</td>
               <td style="font-size:12px;color:var(--muted);">${a.detalle ? `<strong style="color:var(--text);">${a.detalle}</strong><br>` : ''}${a.tarea}</td>
               <td><span class="badge ${a.estado === 'HECHA' ? 'badge-ok' : 'badge-warn'}">${a.estado}</span></td>
               ${puedeEscribir("amenidades") ? `<td><button class="btn" onclick="marcarAmenidad(${a.id}, '${a.estado === 'HECHA' ? 'PENDIENTE' : 'HECHA'}')">${a.estado === 'HECHA' ? 'Reabrir' : 'Marcar hecha'}</button>${a.origen === 'MANUAL' ? `<button class="btn" onclick="eliminarAmenidad(${a.id})">Eliminar</button>` : ''}</td>` : ""}
@@ -2223,9 +2277,15 @@ function mostrarFormAmenidad() {
           <option>Cocina</option><option>Housekeeping</option><option>Recepción</option>
           <option>Bar/Bodega</option><option>Gerencia/Recepción</option><option>Recepción/Operaciones</option>
         </select>
+        <input type="date" id="na-fecha" title="Día en que hay que tenerla lista" style="width:150px;">
         <button class="btn btn-primary" onclick="crearAmenidad()">Guardar</button>
         <button class="btn" onclick="document.getElementById('form-amenidad').innerHTML=''">Cancelar</button>
       </div>
+      <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0;">
+        Si dejas la fecha vacía se pone el <strong>día de llegada</strong>, que es cuando
+        hay que tener listas casi todas. La <strong>cena privada</strong> se deja sin día
+        a propósito: se le pone después, cuando el huésped diga qué noche — y ahí aparece
+        sola en la hoja de restaurantes.</p>
       <div id="na-error" style="color:var(--danger-text);font-size:12px;margin-top:6px;"></div>
     </div>`;
 }
@@ -2239,10 +2299,195 @@ async function crearAmenidad() {
   };
   if (!payload.conf_no) { document.getElementById("na-error").textContent = "Indica el número de reserva."; return; }
   payload.tarea = payload.detalle || payload.amenidad;
+  // Solo se manda la fecha si la escribieron. Si no viene el campo, el servidor aplica
+  // su regla: día de llegada, o sin día si es cena privada.
+  const fechaElegida = document.getElementById("na-fecha").value;
+  if (fechaElegida) payload.fecha = fechaElegida;
   const res = await fetchAuth(`${API}/api/amenidades`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
   });
   if (!res.ok) { document.getElementById("na-error").textContent = (await res.json()).detail; return; }
+  loadAmenidades();
+}
+
+// ---------- Avisos al celular ----------
+// Activar esto tiene varios pasos que pueden fallar por separado: el navegador tiene que
+// soportarlo, la persona tiene que dar permiso, el servidor tiene que tener las llaves,
+// y en iPhone la app tiene que estar en la pantalla de inicio. Por eso cada paso avisa
+// exactamente qué falta, en vez de un "no se pudo activar" que no dice nada.
+let _avisosEstado = null;
+
+function avisosSoportados() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+// ¿Está la app instalada en la pantalla de inicio? En iPhone es la condición para que
+// Apple entregue avisos; en Android no hace falta. Se reutiliza la comprobación que ya
+// usa el aviso de instalación, para que no se separen.
+const appInstalada = estaInstalada;
+
+function esIOS() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent)
+      || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+// La llave pública viene en base64 de URL y el navegador la pide en bytes.
+function bytesDeBase64Url(b64) {
+  const relleno = "=".repeat((4 - (b64.length % 4)) % 4);
+  const normal = (b64 + relleno).replace(/-/g, "+").replace(/_/g, "/");
+  const crudo = atob(normal);
+  return Uint8Array.from([...crudo].map(c => c.charCodeAt(0)));
+}
+
+function nombreDeAparato() {
+  const ua = navigator.userAgent;
+  const sistema = /iPhone|iPad/.test(ua) ? "iPhone/iPad"
+    : /Android/.test(ua) ? "Android"
+    : /Mac/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : "Otro";
+  return `${sistema}${appInstalada() ? " (app instalada)" : " (navegador)"}`;
+}
+
+async function cargarEstadoAvisos() {
+  try {
+    _avisosEstado = await (await fetchAuth(`${API}/api/avisos/estado`)).json();
+  } catch (e) { _avisosEstado = null; }
+  return _avisosEstado;
+}
+
+async function activarAvisos() {
+  const est = _avisosEstado || await cargarEstadoAvisos();
+  if (!est || !est.activo) {
+    avisar(est?.motivo || "Los avisos no están configurados en el servidor.", true);
+    return;
+  }
+  if (!avisosSoportados()) {
+    avisar("Este navegador no puede recibir avisos.", true);
+    return;
+  }
+  // El caso que más va a pasar, y el que más confunde si no se explica.
+  if (esIOS() && !appInstalada()) {
+    avisar("En iPhone hay que agregar la app a la pantalla de inicio primero", true);
+    return;
+  }
+  const permiso = await Notification.requestPermission();
+  if (permiso !== "granted") {
+    avisar("No diste permiso para los avisos. Se puede cambiar en los ajustes del navegador.", true);
+    return;
+  }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const suscripcion = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: bytesDeBase64Url(est.clave_publica),
+    });
+    const res = await fetchAuth(`${API}/api/avisos/suscribir`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ suscripcion: suscripcion.toJSON(), aparato: nombreDeAparato() }),
+    });
+    if (!res.ok) { avisar((await res.json()).detail, true); return; }
+    avisar("Avisos activados en este aparato");
+    await cargarEstadoAvisos();
+    loadAmenidades();
+  } catch (e) {
+    avisar(`No se pudo activar: ${e.message}`, true);
+  }
+}
+
+async function desactivarAvisos() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const s = await reg.pushManager.getSubscription();
+    if (s) {
+      await fetchAuth(`${API}/api/avisos/baja`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endpoint: s.endpoint }),
+      });
+      await s.unsubscribe();
+    }
+    avisar("Avisos desactivados en este aparato");
+    await cargarEstadoAvisos();
+    loadAmenidades();
+  } catch (e) { avisar(`No se pudo desactivar: ${e.message}`, true); }
+}
+
+async function probarAviso() {
+  const res = await fetchAuth(`${API}/api/avisos/prueba`, { method: "POST" });
+  if (!res.ok) { avisar((await res.json()).detail, true); return; }
+  avisar("Aviso de prueba enviado — debería llegarte en un momento");
+}
+
+function panelAvisos() {
+  const est = _avisosEstado;
+  if (!est) return "";
+  if (!est.activo) {
+    return `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:9px 12px;margin:0 0 12px;font-size:12.5px;">
+      🔔 Los avisos al celular no están configurados. ${est.motivo || ""}</div>`;
+  }
+  const mios = est.mis_aparatos || [];
+  const soporta = avisosSoportados();
+  const faltaInstalar = esIOS() && !appInstalada();
+  return `
+    <div style="background:var(--surface-2, var(--warn-bg));border-radius:var(--r-sm);padding:10px 12px;margin:0 0 12px;font-size:12.5px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <span>🔔 <strong>Avisos al celular</strong></span>
+      ${mios.length
+        ? `<span style="color:var(--muted);">activos en ${mios.length} aparato(s): ${mios.map(a => a.aparato || "sin nombre").join(", ")}</span>
+           <button class="btn" onclick="probarAviso()">Probar</button>
+           <button class="btn" onclick="desactivarAvisos()">Desactivar aquí</button>`
+        : (!soporta
+            ? `<span style="color:var(--muted);">Este navegador no puede recibirlos.</span>`
+            : faltaInstalar
+              ? `<span style="color:var(--warn-text);">En iPhone hay que agregar la app a la pantalla de inicio para poder recibirlos.</span>`
+              : `<button class="btn btn-primary" onclick="activarAvisos()">Activar en este aparato</button>`)}
+      ${!est.puede_recibir ? `<span style="color:var(--muted);">${est.motivo || ""}</span>` : ""}
+    </div>`;
+}
+
+// ---------- El día de cada amenidad ----------
+// El selector queda acotado a la estadía del huésped, así que no se puede elegir un día
+// en que no está. Antes esto solo existía para la cena privada, en la pantalla de
+// Restaurantes, y solo permitía asignarle la noche que se estuviera viendo.
+//
+// Es el MISMO campo que lee la hoja de restaurantes: al ponerle la noche a una cena
+// privada aquí, aparece sola en el comedor de esa noche, fija en Bar el Bosque.
+function celdaFechaAmenidad(a) {
+  if (!puedeEscribir("amenidades")) {
+    return a.fecha
+      ? `<span style="font-size:12px;">${a.fecha}</span>`
+      : `<span style="font-size:11px;color:var(--warn-text);">sin día</span>`;
+  }
+  const aviso = a.es_cena_privada && !a.fecha
+    ? `<br><span style="font-size:10.5px;color:var(--warn-text);">sin noche no llega al comedor</span>`
+    : (a.es_cena_privada
+        ? `<br><span style="font-size:10.5px;color:var(--muted);">va a Bar el Bosque esa noche</span>`
+        : "");
+  return `
+    <input type="date" value="${a.fecha || ""}"
+      min="${a.estadia_desde || ""}" max="${a.estadia_hasta || ""}"
+      onchange="guardarFechaAmenidad(${a.id}, this.value)"
+      title="Día en que hay que tenerla lista. Solo dentro de la estadía (${a.estadia_desde || "?"} a ${a.estadia_hasta || "?"})."
+      style="font-size:11.5px;padding:2px 4px;width:124px;">
+    ${a.fecha ? `<button class="btn" title="Quitar el día"
+        onclick="guardarFechaAmenidad(${a.id}, '')"
+        style="font-size:10px;padding:1px 5px;margin-left:3px;">×</button>` : ""}
+    ${aviso}`;
+}
+
+async function guardarFechaAmenidad(id, fecha) {
+  const res = await fetchAuth(`${API}/api/amenidades/${id}/fecha`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fecha: fecha || null }),
+  });
+  if (!res.ok) {
+    // El servidor explica qué pasó ("esa fecha es después de que el huésped se vaya"),
+    // así que se muestra tal cual en vez de un "error" que no ayuda.
+    avisar((await res.json()).detail, true);
+    loadAmenidades();
+    return;
+  }
+  const d = await res.json();
+  avisar(d.fecha
+    ? (d.es_cena_privada ? `Cena privada la noche del ${d.fecha}` : `Para el ${d.fecha}`)
+    : "Día quitado");
   loadAmenidades();
 }
 
@@ -2395,7 +2640,8 @@ async function loadRestaurantes(fecha) {
               <span style="font-size:11px;color:var(--muted);">(${p.arr_date} – ${p.dep_date})</span>
               ${p.detalle ? `<br><span style="font-size:11.5px;">${p.detalle}</span>` : ""}
               ${puedeEscribir("restaurantes") ? `<button class="btn" style="margin-left:6px;"
-                  onclick="abrirCenaPrivada('${F.fecha}', '${p.conf_no}')">Es esta noche</button>` : ""}
+                  onclick="abrirCenaPrivada('${F.fecha}', '${p.conf_no}', '${p.arr_date}', '${p.dep_date}')"
+                  title="Elegir cuál de las noches de su estadía">Elegir noche</button>` : ""}
             </p>`).join("")}
         </div>` : ""}
 
@@ -2613,37 +2859,58 @@ async function guardarHoraMesa(fecha, confNo, hora) {
   avisar(msg, exc.length > 0);
 }
 
-async function abrirCenaPrivada(fecha, confNo) {
+// '28-08-26' -> '2026-08-28'. Las fechas de la reserva llegan en el formato del reporte
+// y el selector de fecha del navegador necesita ISO.
+function isoDeDDMMYY(texto) {
+  const p = String(texto || "").split("-");
+  if (p.length !== 3 || p[2].length !== 2) return "";
+  return `20${p[2]}-${p[1]}-${p[0]}`;
+}
+
+async function abrirCenaPrivada(fecha, confNo, arrDate, depDate) {
   const d = window._restData;
   const enCasa = [...d.cena.terra_kitchen, ...d.cena.bar_el_bosque];
   // Si se entra desde una cena contratada sin noche, ya viene elegido el huésped.
   const opciones = enCasa.map(x => `<option value="${x.conf_no}" ${x.conf_no === confNo ? "selected" : ""}>Hab. ${x.room_no} · ${x.nombre}</option>`).join("");
+  // Ahora se puede ELEGIR la noche. Antes esta ventana asignaba siempre la fecha que se
+  // estuviera viendo en la pantalla, así que para poner la cena en la tercera noche de la
+  // estadía había que navegar hasta esa noche primero. El rango se acota a la estadía
+  // cuando se conoce (al entrar desde una cena sin noche asignada); si no, el servidor
+  // lo comprueba igual y lo dice.
+  const min = isoDeDDMMYY(arrDate), max = isoDeDDMMYY(depDate);
   const fondo = document.createElement("div");
   fondo.className = "modal-fondo"; fondo.id = "modal-cp";
   fondo.innerHTML = `<div class="modal-caja" style="max-width:520px;">
     <div class="modal-encabezado"><p class="title">Marcar cena privada</p>
       <button class="btn" onclick="document.getElementById('modal-cp').remove()">Cerrar</button></div>
     <div class="modal-cuerpo">
-      <p style="font-size:13px;color:var(--muted);">Noche del ${fecha}. La cena privada se sirve
-        en la piscina y queda fija en Bar el Bosque, contando para su capacidad.</p>
+      <p style="font-size:13px;color:var(--muted);">La cena privada se sirve en la piscina
+        y queda fija en Bar el Bosque, contando para su capacidad.</p>
       <select id="cp-conf" style="width:100%;margin:8px 0;">${opciones}</select>
-      <input type="text" id="cp-detalle" placeholder="Detalle (opcional): aniversario, decoración…" style="width:100%;">
+      <label style="display:block;font-size:12px;color:var(--muted);margin:10px 0 4px;">
+        Noche de la cena${min && max ? ` (entre ${min} y ${max})` : ""}</label>
+      <input type="date" id="cp-fecha" value="${fecha}"
+        ${min ? `min="${min}"` : ""} ${max ? `max="${max}"` : ""} style="width:100%;">
+      <input type="text" id="cp-detalle" placeholder="Detalle (opcional): aniversario, decoración…" style="width:100%;margin-top:8px;">
       <div style="margin-top:12px;">
-        <button class="btn btn-primary" onclick="guardarCenaPrivada('${fecha}')">Guardar</button>
+        <button class="btn btn-primary" onclick="guardarCenaPrivada()">Guardar</button>
       </div>
     </div></div>`;
   document.body.appendChild(fondo);
 }
 
-async function guardarCenaPrivada(fecha) {
+async function guardarCenaPrivada() {
   const conf_no = document.getElementById("cp-conf").value;
+  const fecha = document.getElementById("cp-fecha").value;
   const detalle = document.getElementById("cp-detalle").value.trim();
-  await fetchAuth(`${API}/api/restaurantes/cena-privada`, {
+  if (!fecha) { avisar("Elige la noche de la cena", true); return; }
+  const res = await fetchAuth(`${API}/api/restaurantes/cena-privada`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ fecha, conf_no, detalle }),
   });
+  if (!res.ok) { avisar((await res.json()).detail, true); return; }
   document.getElementById("modal-cp")?.remove();
-  avisar("Cena privada marcada");
+  avisar(`Cena privada la noche del ${fecha}`);
   loadRestaurantes();
 }
 

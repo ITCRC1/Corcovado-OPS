@@ -857,9 +857,37 @@ async def pdf_confirm(file: UploadFile = File(...), user: dict = Depends(exige("
     # páginas con sus PDF y sube unos 13 MB, y con el internet del lodge eso puede
     # tardar minutos. No tiene por qué hacer esperar a recepción.
     publicacion = _publicar_en_segundo_plano()
+    _avisar_amenidades_del_reporte()
 
     return {"status": "ok", "reservas_cargadas": len(batch["reservas"]),
             "alertas_generadas": len(alertas), "publicacion": publicacion}
+
+
+def _avisar_amenidades_del_reporte():
+    """UN aviso con el total de amenidades pendientes para hoy y mañana.
+
+    Uno solo, no uno por amenidad: un reporte puede traer treinta, y treinta
+    notificaciones seguidas hacen que la persona silencie la app el primer día — y
+    entonces tampoco recibe la que sí importaba.
+
+    Nunca levanta: la importación ya terminó bien y un aviso no puede estropearla.
+    """
+    try:
+        import notificaciones as notif
+        if not notif.habilitado():
+            return
+        conn = get_connection()
+        try:
+            hoy = datetime.date.today()
+            de_hoy = notif.pendientes_para(conn, hoy.isoformat())
+            de_manana = notif.pendientes_para(
+                conn, (hoy + datetime.timedelta(days=1)).isoformat())
+            notif.aviso_amenidades_importadas(conn, len(de_hoy) + len(de_manana),
+                                              para_manana=len(de_manana))
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[avisos] no se pudo avisar tras la importación: {type(e).__name__}: {e}")
 
 
 @app.get("/api/buzon/estado")
@@ -923,6 +951,21 @@ def _arrancar_buzon():
 
 
 _arrancar_buzon()
+
+
+def _arrancar_avisos():
+    """Enciende el repaso diario de amenidades, si las notificaciones están configuradas.
+
+    Como el buzón: si no hay llaves, este hilo no existe y nadie intenta enviar nada.
+    """
+    try:
+        import notificaciones as notif
+        notif.arrancar()
+    except Exception as e:
+        print(f"[avisos] no se pudieron arrancar: {type(e).__name__}: {e}")
+
+
+_arrancar_avisos()
 
 
 def _publicar_en_segundo_plano():
@@ -1177,6 +1220,103 @@ def cambios(user: dict = Depends(current_user)):
     # actualizado mientras alguien tenía el sistema abierto.
     return {"version": "-".join(str(v) for v in tuple(fila)),
             "version_sistema": _version_sistema()["version"]}
+
+
+# ---------------------------------------------------------------------------
+# Avisos al celular
+# ---------------------------------------------------------------------------
+# Apagados si no están las llaves (HOTEL_PUSH_PRIVADA y HOTEL_PUSH_PUBLICA), igual que
+# la sincronización y la puerta del portal. Ver notificaciones.py.
+
+@app.get("/api/avisos/estado")
+def avisos_estado(user: dict = Depends(current_user)):
+    """Si los avisos están configurados, y qué le falta a quien pregunta.
+
+    Devuelve también la llave pública, que es lo que el navegador necesita para poder
+    suscribirse, y cuántos aparatos tiene ya registrados esta persona.
+    """
+    import notificaciones as notif
+    est = notif.estado()
+    conn = get_connection()
+    try:
+        est["mis_aparatos"] = notif.suscripciones_de(conn, user["id"])
+        # Los avisos van a todo el personal, sin mirar permisos: fue una decisión del
+        # hotel. Quien tiene que preparar algo se entera, tenga o no esa pantalla.
+        est["puede_recibir"] = True
+        # Aun así se le dice si no podrá abrir la pantalla al tocar el aviso, para que
+        # no parezca que la app falla cuando en realidad es su permiso.
+        est["abre_amenidades"] = auth.puede(user, "amenidades")
+    finally:
+        conn.close()
+    if est["activo"] and not est["abre_amenidades"]:
+        est["motivo"] = ("Recibirás los avisos, pero tu usuario no tiene acceso a la "
+                         "pantalla Amenidades, así que al tocarlos no se abrirá.")
+    return est
+
+
+@app.post("/api/avisos/suscribir")
+async def avisos_suscribir(payload: dict, user: dict = Depends(current_user)):
+    """Registra este aparato para recibir avisos."""
+    import notificaciones as notif
+    if not notif.habilitado():
+        raise HTTPException(status_code=503,
+                            detail="Los avisos al celular no están configurados.")
+    conn = get_connection()
+    try:
+        ok, problema = notif.guardar_suscripcion(
+            conn, user["id"], payload.get("suscripcion"), payload.get("aparato"))
+        if not ok:
+            raise HTTPException(status_code=400, detail=problema)
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/api/avisos/baja")
+async def avisos_baja(payload: dict, user: dict = Depends(current_user)):
+    """Quita este aparato. Solo puede quitar los suyos."""
+    import notificaciones as notif
+    endpoint = (payload or {}).get("endpoint")
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="Falta la dirección del aparato.")
+    conn = get_connection()
+    try:
+        suya = conn.execute(
+            "SELECT 1 FROM suscripcion_push WHERE endpoint = ? AND usuario_id = ?",
+            (endpoint, user["id"])).fetchone()
+        if not suya:
+            raise HTTPException(status_code=404, detail="Ese aparato no es tuyo.")
+        notif.borrar_suscripcion(conn, endpoint)
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/api/avisos/prueba")
+def avisos_prueba(user: dict = Depends(current_user)):
+    """Se manda un aviso a sí mismo.
+
+    Existe porque activar las notificaciones tiene varios pasos que pueden fallar en
+    silencio —el permiso del navegador, la app instalada en el iPhone, las llaves del
+    servidor—. Sin un botón de prueba, la persona no sabe si quedó activo hasta que pase
+    algo de verdad, y si no pasa nada no sabe si es que no hay avisos o que no funciona.
+    """
+    import notificaciones as notif
+    if not notif.habilitado():
+        raise HTTPException(status_code=503,
+                            detail="Los avisos al celular no están configurados.")
+    conn = get_connection()
+    try:
+        aparatos = notif.suscripciones_de(conn, user["id"])
+    finally:
+        conn.close()
+    if not aparatos:
+        raise HTTPException(
+            status_code=400,
+            detail="Este aparato todavía no está activado para recibir avisos.")
+    notif.enviar_a_uno(user["id"], "Prueba de aviso",
+                       "Si ves esto, los avisos funcionan en este aparato.")
+    return {"status": "ok", "aparatos": len(aparatos)}
 
 
 # ---------------------------------------------------------------------------
@@ -1754,8 +1894,11 @@ def detalle_reserva(conf_no: str, user: dict = Depends(exige("reservas"))):
            WHERE ta.conf_no = ? ORDER BY ta.fecha, tc.horario_inicio""",
         (conf_no,),
     ).fetchall()
+    # 'id' y 'fecha' vienen para que el detalle de la reserva también pueda poner el día
+    # de una amenidad, sin obligar a ir a la pantalla de Amenidades.
     amenidades = conn.execute(
-        "SELECT amenidad, tarea, area_responsable, estado FROM amenidad_tarea WHERE conf_no = ?",
+        """SELECT id, amenidad, tarea, area_responsable, estado, fecha
+           FROM amenidad_tarea WHERE conf_no = ? ORDER BY id""",
         (conf_no,),
     ).fetchall()
     # Reservas del mismo grupo (si aplica)
@@ -1822,27 +1965,145 @@ def grupos_disponibles(fecha: str, tour_codigo: str, user: dict = Depends(exige(
     return [dict(r) for r in rows]
 
 
+def _noches_de_estadia(reserva):
+    """Las noches en que el huésped está en el hotel, en ISO.
+
+    Sirve para dos cosas: acotar el selector de fecha en la pantalla, y comprobar que
+    nadie le ponga a una amenidad una fecha en la que el huésped no está — que es el
+    error fácil de cometer y el que hace que la tarea no le aparezca a nadie.
+
+    Se incluye el día de llegada y el de salida. La cena privada solo tiene sentido en
+    una noche que duerme aquí, pero el desayuno del día de salida y la canasta del día
+    de llegada también son tareas, así que el rango va de punta a punta.
+    """
+    llegada = sql_fecha_py(reserva["arr_date"]) if reserva["arr_date"] else ""
+    salida = sql_fecha_py(reserva["dep_date"]) if reserva["dep_date"] else ""
+    return llegada, (salida or llegada)
+
+
+def _revisar_fecha_amenidad(conn, conf_no, fecha):
+    """Devuelve (fecha_normalizada, error). Una fecha vacía es válida: significa
+    'todavía no se sabe qué día', que es el estado normal de una cena privada recién
+    importada."""
+    if fecha in (None, "", "null"):
+        return None, None
+    try:
+        iso = datetime.date.fromisoformat(str(fecha).strip()).isoformat()
+    except (ValueError, AttributeError):
+        return None, "La fecha no tiene el formato año-mes-día."
+    r = conn.execute("SELECT arr_date, dep_date FROM reserva WHERE conf_no = ?",
+                     (conf_no,)).fetchone()
+    if not r:
+        return None, "No existe una reserva con ese número."
+    llegada, salida = _noches_de_estadia(r)
+    if llegada and iso < llegada:
+        return None, f"Esa fecha es antes de que el huésped llegue ({llegada})."
+    if salida and iso > salida:
+        return None, f"Esa fecha es después de que el huésped se vaya ({salida})."
+    return iso, None
+
+
 @app.post("/api/amenidades")
 async def crear_amenidad_manual(payload: dict, user: dict = Depends(exige("amenidades", escribir=True))):
     """Permite a recepción/gerencia agregar un requerimiento del huésped que no venía
-    en el PDF: alergias reportadas por teléfono, preferencias, peticiones especiales."""
+    en el PDF: alergias reportadas por teléfono, preferencias, peticiones especiales.
+
+    La fecha es opcional. Si no viene, se pone la de llegada —que es cuando hay que
+    tener listas casi todas las amenidades—, salvo en la cena privada, que se deja sin
+    fecha para que recepción confirme la noche. Es la misma regla que usa la importación
+    del PDF, y vive en restaurantes.es_cena_privada() para que no se separen.
+    """
     if not payload.get("conf_no") or not payload.get("amenidad"):
         raise HTTPException(status_code=400, detail="Falta la reserva o la descripción")
     conn = get_connection()
-    existe = conn.execute("SELECT 1 FROM reserva WHERE conf_no = ?", (payload["conf_no"],)).fetchone()
-    if not existe:
+    try:
+        r = conn.execute("SELECT arr_date, dep_date FROM reserva WHERE conf_no = ?",
+                         (payload["conf_no"],)).fetchone()
+        if not r:
+            raise HTTPException(status_code=404,
+                                detail="No existe una reserva con ese número")
+
+        amenidad = payload["amenidad"]
+        tarea = payload.get("tarea") or amenidad
+        import restaurantes as _rest
+
+        if "fecha" in payload:
+            fecha, problema = _revisar_fecha_amenidad(conn, payload["conf_no"],
+                                                      payload.get("fecha"))
+            if problema:
+                raise HTTPException(status_code=400, detail=problema)
+        elif _rest.es_cena_privada(amenidad, tarea):
+            fecha = None
+        else:
+            fecha, _ = _noches_de_estadia(r)
+            fecha = fecha or None
+
+        area = payload.get("area_responsable") or "Recepción"
+        conn.execute(
+            """INSERT INTO amenidad_tarea (conf_no, amenidad, detalle, tarea,
+                                           area_responsable, origen, fecha)
+               VALUES (?,?,?,?,?,'MANUAL',?)""",
+            (payload["conf_no"], amenidad, payload.get("detalle"), tarea, area, fecha),
+        )
+        conn.commit()
+
+        # Aviso al celular de los demás. Va después del commit: si el aviso fallara, la
+        # amenidad ya está guardada. Y no le llega a quien la acaba de escribir.
+        try:
+            import notificaciones as notif
+            hab = conn.execute("SELECT room_no FROM reserva WHERE conf_no = ?",
+                               (payload["conf_no"],)).fetchone()
+            notif.aviso_amenidad_nueva(
+                conn,
+                {"room_no": hab["room_no"] if hab else None, "amenidad": amenidad,
+                 "fecha": fecha, "area_responsable": area},
+                quien_la_creo=user.get("id"))
+        except Exception as e:
+            # Un aviso que no sale no puede hacer fallar el guardado.
+            print(f"[avisos] no se pudo avisar de la amenidad nueva: {type(e).__name__}: {e}")
+    finally:
         conn.close()
-        raise HTTPException(status_code=404, detail="No existe una reserva con ese número")
-    conn.execute(
-        """INSERT INTO amenidad_tarea (conf_no, amenidad, detalle, tarea, area_responsable, origen)
-           VALUES (?,?,?,?,?,'MANUAL')""",
-        (payload["conf_no"], payload["amenidad"], payload.get("detalle"),
-         payload.get("tarea") or payload["amenidad"],
-         payload.get("area_responsable") or "Recepción"),
-    )
-    conn.commit()
-    conn.close()
-    return {"status": "ok"}
+    return {"status": "ok", "fecha": fecha}
+
+
+@app.post("/api/amenidades/{amenidad_id}/fecha")
+async def cambiar_fecha_amenidad(amenidad_id: int, payload: dict,
+                                 user: dict = Depends(exige("amenidades", escribir=True))):
+    """Pone, cambia o quita el día de una amenidad — cualquiera, no solo la cena privada.
+
+    Antes esto solo se podía hacer con la cena privada y desde la pantalla de
+    Restaurantes, que además solo permitía asignarle la noche que se estuviera viendo:
+    para ponerla en la tercera noche había que navegar hasta esa noche primero.
+
+    Escribe el MISMO campo que lee la hoja de restaurantes (amenidad_tarea.fecha), así
+    que una cena privada fechada desde aquí aparece sola en el comedor de esa noche, fija
+    en Bar el Bosque y contando para su capacidad. No hay nada que sincronizar.
+    """
+    conn = get_connection()
+    try:
+        fila = conn.execute(
+            """SELECT a.id, a.conf_no, a.amenidad, a.tarea, r.arr_date, r.dep_date
+               FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
+               WHERE a.id = ?""", (amenidad_id,)).fetchone()
+        if not fila:
+            raise HTTPException(status_code=404, detail="No existe esa amenidad")
+
+        fecha, problema = _revisar_fecha_amenidad(conn, fila["conf_no"],
+                                                  payload.get("fecha"))
+        if problema:
+            raise HTTPException(status_code=400, detail=problema)
+
+        conn.execute("UPDATE amenidad_tarea SET fecha = ? WHERE id = ?",
+                     (fecha, amenidad_id))
+        conn.commit()
+        llegada, salida = _noches_de_estadia(fila)
+    finally:
+        conn.close()
+
+    import restaurantes as _rest
+    return {"status": "ok", "fecha": fecha,
+            "es_cena_privada": _rest.es_cena_privada(fila["amenidad"], fila["tarea"]),
+            "llegada": llegada, "salida": salida}
 
 
 @app.delete("/api/amenidades/{amenidad_id}")
@@ -1869,7 +2130,11 @@ def listar_amenidades(desde: str = None, hasta: str = None, estado: str = None,
     """Lista las amenidades a preparar, filtradas por la fecha de llegada del huésped
     (que es cuando normalmente hay que tenerlas listas)."""
     conn = get_connection()
-    query = f"""SELECT a.id, a.amenidad, a.tarea, a.area_responsable, a.estado, a.origen, a.detalle,
+    # 'a.fecha' es el día en que hay que tener lista la amenidad, y es el MISMO campo que
+    # lee la hoja de restaurantes para las cenas privadas. Viene aquí para que la pantalla
+    # pueda mostrarlo y cambiarlo sin tener que ir a Restaurantes.
+    query = f"""SELECT a.id, a.amenidad, a.tarea, a.area_responsable, a.estado, a.origen,
+                       a.detalle, a.fecha,
                        r.conf_no, r.room_no, r.nombre_principal, r.arr_date, r.dep_date
                 FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no"""
     condiciones, params = [], []
@@ -1884,7 +2149,18 @@ def listar_amenidades(desde: str = None, hasta: str = None, estado: str = None,
     query += f" ORDER BY {sql_fecha('r.arr_date')}, r.room_no"
     rows = conn.execute(query, params).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+
+    # El rango de la estadía en ISO, para acotar el selector de fecha en la pantalla y
+    # que nadie pueda elegir un día en que el huésped no está. Y si es cena privada, para
+    # que la pantalla lo señale: es la única cuya fecha cambia el comedor.
+    import restaurantes as _rest
+    salida = []
+    for r in rows:
+        d = dict(r)
+        d["estadia_desde"], d["estadia_hasta"] = _noches_de_estadia(r)
+        d["es_cena_privada"] = _rest.es_cena_privada(d["amenidad"], d["tarea"])
+        salida.append(d)
+    return salida
 
 
 @app.post("/api/amenidades/{amenidad_id}/estado")
@@ -2933,6 +3209,17 @@ def restaurantes_cena_privada(payload: dict, user: dict = Depends(current_user))
     auth.requiere_permiso(user, "restaurantes")
     conf_no, fecha = payload.get("conf_no"), payload.get("fecha")
     conn = get_connection()
+    # Se comprueba que la noche caiga dentro de la estadía. Antes esta ventana asignaba
+    # siempre la fecha que se estuviera viendo en la pantalla, así que el caso no podía
+    # darse; ahora que la noche se elige, sí puede — y una cena privada puesta en un día
+    # en que el huésped no está no le aparece a nadie, ni a cocina ni al comedor.
+    # Es la misma comprobación que usa la pantalla de Amenidades, en un solo lugar.
+    if not payload.get("quitar"):
+        fecha, problema = _revisar_fecha_amenidad(conn, conf_no, fecha)
+        if problema or not fecha:
+            conn.close()
+            raise HTTPException(status_code=400,
+                                detail=problema or "Falta la noche de la cena.")
     if payload.get("quitar"):
         conn.execute(
             "UPDATE amenidad_tarea SET fecha = NULL WHERE conf_no = ? AND fecha = ? "
