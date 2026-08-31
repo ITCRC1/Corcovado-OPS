@@ -17,7 +17,11 @@
  * sirven del teléfono, porque pesan y no cambian.
  */
 
-const VERSION = "cwl-v1";
+// Se sube el número cuando cambia lo que este archivo hace, no en cada despliegue: al
+// activarse, borra todas las copias guardadas que no empiecen por esta versión. Se subió
+// a v2 al agregarle el manejo de avisos, para que ningún teléfono se quede con la copia
+// anterior de la pantalla.
+const VERSION = "cwl-v2";
 const CACHE_ESTATICO = `${VERSION}-estatico`;   // fuentes, imágenes, iconos
 const CACHE_PAGINAS = `${VERSION}-paginas`;     // el HTML y las respuestas de datos
 

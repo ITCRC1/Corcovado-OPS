@@ -2376,6 +2376,24 @@ async function activarAvisos() {
   }
   try {
     const reg = await navigator.serviceWorker.ready;
+
+    // Si este navegador ya tenía una suscripción, se cancela antes de crear la nueva.
+    // Hace falta de verdad: el navegador ata la suscripción a la llave del servidor, y
+    // si las llaves cambiaron —o quedó una de una prueba anterior— se niega a crear otra
+    // con un error que habla de 'applicationServerKey' y no dice qué hacer. Cancelar y
+    // volver a suscribir es lo que lo resuelve, y es lo que va a pasar en el hotel el día
+    // que se regeneren las llaves.
+    const previa = await reg.pushManager.getSubscription();
+    if (previa) {
+      try {
+        await fetchAuth(`${API}/api/avisos/baja`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ endpoint: previa.endpoint }),
+        });
+      } catch (e) { /* si la de antes no estaba en el servidor, da igual */ }
+      await previa.unsubscribe();
+    }
+
     const suscripcion = await reg.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: bytesDeBase64Url(est.clave_publica),
@@ -2389,7 +2407,18 @@ async function activarAvisos() {
     await cargarEstadoAvisos();
     loadAmenidades();
   } catch (e) {
-    avisar(`No se pudo activar: ${e.message}`, true);
+    // Los mensajes del navegador son técnicos y en inglés. Se traducen los que se
+    // repiten, para que la persona sepa qué hacer en vez de leer un error de programador.
+    const t = String(e && e.message || e);
+    let claro = t;
+    if (/applicationServerKey|different|already exists/i.test(t)) {
+      claro = "Este navegador tenía una activación anterior. Recarga la página (Ctrl+F5) y vuelve a intentarlo.";
+    } else if (/permission|denied|NotAllowed/i.test(t)) {
+      claro = "El navegador tiene bloqueados los avisos para este sitio. Se cambia en el candado de la barra de direcciones.";
+    } else if (/push service|AbortError|registration/i.test(t)) {
+      claro = "El navegador no pudo contactar su servicio de avisos. Revisa la conexión y vuelve a intentarlo.";
+    }
+    avisar(`No se pudo activar: ${claro}`, true);
   }
 }
 
