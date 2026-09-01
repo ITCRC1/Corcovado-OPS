@@ -116,8 +116,35 @@ aparecería a nadie.
 
 **Al ponerle la noche a una cena privada, aparece sola en la hoja de Restaurantes** de
 esa noche, fija en Bar el Bosque y contando para sus 45 lugares. Es el mismo dato, así
-que no hay nada que sincronizar. Funciona igual desde Amenidades que desde el botón
-*"Elegir noche"* de Restaurantes.
+que no hay nada que sincronizar.
+
+**Las cenas privadas se registran en Amenidades**, con el resto de requerimientos del
+huésped. En Restaurantes ya no hay botón para crearlas —era una segunda puerta a lo
+mismo, y dos puertas es como se separan los datos—, pero sí queda el botón
+*"Elegir noche"* para asignarle el día a una que vino sin él: ese problema se nota en el
+comedor y ahí tiene que poder resolverse.
+
+
+## Alergias en la pantalla de Restaurantes
+
+La pantalla de Restaurantes tiene una tarjeta **Alergias** (junto a Full board) con las
+restricciones alimentarias de **todo el que come esa noche**. Se resalta en ámbar cuando
+hay alguna.
+
+Se muestran **por estadía, no por fecha**: una alergia no es de un día. Si se filtrara
+por la fecha de la amenidad aparecería solo el día que el huésped llega, que es justo
+cuando menos falta hace — la cocina necesita saberla **cada noche** que esa persona se
+sienta a comer. Quien sale ese día no aparece: el bote va de madrugada.
+
+El reconocimiento es **deliberadamente generoso**: busca palabras de alergia, dieta e
+intolerancia en el nombre, la tarea y el detalle, en español y en inglés. Así entra
+también la que recepción anotó como *"Preferencia del huésped"* con
+*"alérgico a mariscos"* en el detalle. La razón: una alergia que no se muestra puede
+mandar a alguien al hospital; una fila de más solo estorba un poco.
+
+La cena privada queda fuera aunque sea de cocina — tiene su propio sitio en la pantalla,
+y mezclarlas escondería lo que ahí importa. Las alergias solo se **consultan** desde
+Restaurantes; se anotan en Amenidades.
 
 
 ## Avisos al celular

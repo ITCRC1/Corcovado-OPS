@@ -3062,12 +3062,21 @@ def guardar_permisos(user_id: int, payload: dict,
 
 @app.get("/api/restaurantes")
 def restaurantes_dia(fecha: str, user: dict = Depends(exige("restaurantes"))):
-    """Distribución de almuerzo y cena de esa fecha."""
+    """Distribución de almuerzo y cena de esa fecha, con las alergias de quien come."""
     import restaurantes as rest
     conn = get_connection()
     try:
         rest.congelar_dias_pasados(conn)
         datos = rest.distribuir(conn, fecha)
+        # Las restricciones alimentarias se calculan AQUÍ y no dentro de distribuir(),
+        # a propósito: distribuir() también lo usa la página que ve el huésped al
+        # escanear su QR, una vez por cada noche de su estadía. Meterle esta consulta
+        # ahí le cargaría al huésped un trabajo que solo le sirve a la cocina.
+        #
+        # Se reutiliza la lista de comensales que distribuir() ya calculó, así que esto
+        # no vuelve a leer las reservas: es una sola consulta más.
+        comen = datos["cena"]["terra_kitchen"] + datos["cena"]["bar_el_bosque"]
+        datos["restricciones"] = rest.restricciones_del_dia(conn, fecha, comen)
     finally:
         conn.close()
     return datos

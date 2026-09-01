@@ -2629,7 +2629,7 @@ async function loadRestaurantes(fecha) {
         Diferencia: ${c.diferencia} pax · ${c.dentro_margen ? "dentro del margen de 4 ✓" : "fuera del margen de 4"}
       </p>
 
-      <div class="stats" style="grid-template-columns:repeat(5,1fr);margin-top:16px;">
+      <div class="stats" style="grid-template-columns:repeat(6,1fr);margin-top:16px;">
         <div class="stat" onclick="detalleRest('cena_tk')"><p class="stat-label">Cena · Terra Kitchen</p><p class="stat-value">${c.pax_tk}</p></div>
         <div class="stat" onclick="detalleRest('cena_bosque')"><p class="stat-label">Cena · Bar el Bosque</p><p class="stat-value">${c.pax_bosque}</p></div>
         <div class="stat" onclick="detalleRest('alm_tk')"><p class="stat-label">Almuerzo · Terra Kitchen</p><p class="stat-value">${a.pax_tk}</p></div>
@@ -2637,6 +2637,11 @@ async function loadRestaurantes(fecha) {
         <div class="stat" onclick="detalleRest('regimen')"><p class="stat-label">Full board</p>
           <p class="stat-value">${paxFullBoard(d)}</p>
           <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${habsFullBoard(d)} hab. de ${enCasaHoy(d).length}</p></div>
+        <div class="stat" onclick="detalleRest('alergias')"
+             style="${(d.restricciones || []).length ? 'border-color:var(--warn-text);' : ''}">
+          <p class="stat-label">Alergias</p>
+          <p class="stat-value" style="${(d.restricciones || []).length ? 'color:var(--warn-text);' : ''}">${(d.restricciones || []).length}</p>
+          <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${(d.restricciones || []).length ? "revisar antes de servir" : "ninguna esta noche"}</p></div>
       </div>
       <div id="rest-detalle"></div>
     </div>
@@ -2674,7 +2679,11 @@ async function loadRestaurantes(fecha) {
             </p>`).join("")}
         </div>` : ""}
 
-      ${puedeEscribir("restaurantes") ? `<button class="btn" style="margin-top:12px;" onclick="abrirCenaPrivada('${F.fecha}')">Marcar cena privada</button>` : ""}
+      ${puedeEscribir("restaurantes") ? `
+        <p style="margin:12px 0 0;font-size:12px;color:var(--muted);">
+          Las cenas privadas se registran en <strong>Amenidades</strong>, junto con el
+          resto de requerimientos del huésped. Aquí se les elige la noche y se ven las
+          de esta fecha.</p>` : ""}
     </div>
   `;
 }
@@ -2705,6 +2714,52 @@ const NOMBRE_REGIMEN = {
   COMEDOR_TRABAJADORES: "Come en el comedor de trabajadores",
   SIN_DATO: "El PDF no indicó el régimen",
 };
+
+// Las restricciones alimentarias de quien come esta noche.
+//
+// Se muestran POR ESTADÍA, no por la fecha de la amenidad: una alergia no es de un día.
+// Si se filtrara por fecha aparecería solo el día que el huésped llega, que es justo
+// cuando menos falta hace — la cocina necesita saberla cada noche que se sienta a comer.
+function detalleAlergias() {
+  const d = window._restData;
+  const panel = document.getElementById("rest-detalle");
+  const lista = d.restricciones || [];
+  if (!lista.length) {
+    panel.innerHTML = `<div class="detail-panel">
+      <p style="margin:0;">Nadie de los que comen esta noche tiene una restricción anotada.</p>
+      <p style="margin:6px 0 0;font-size:12px;color:var(--muted);">
+        Se anotan desde <strong>Amenidades</strong>, o llegan en el reporte del PMS. Si un
+        huésped avisa por teléfono, agrégala ahí y aparece aquí de inmediato.</p>
+    </div>`;
+    return;
+  }
+  // Agrupadas por habitación: una misma mesa puede tener dos restricciones distintas y
+  // al salonero le sirve verlas juntas, no repartidas por la lista.
+  const porHab = {};
+  lista.forEach(x => { (porHab[x.conf_no] = porHab[x.conf_no] || []).push(x); });
+
+  panel.innerHTML = `<div class="detail-panel">
+    <p style="margin:0 0 4px;font-weight:600;color:var(--warn-text);">
+      ⚠ ${lista.length} restricción(es) entre quienes comen esta noche</p>
+    <p style="margin:0 0 10px;font-size:12px;color:var(--muted);">
+      Aplican toda la estadía, no solo el día que se anotaron. Revisar antes de servir.</p>
+    <table>
+      <tr><th>Hab.</th><th>Huésped</th><th>Restricción</th><th>Detalle</th><th>Estado</th></tr>
+      ${Object.values(porHab).map(grupo => grupo.map((x, i) => `
+        <tr>
+          <td>${i === 0 ? `<strong>${x.room_no || "—"}</strong>${etiquetaGrupo(x.conf_no)}` : ""}</td>
+          <td>${i === 0 ? `${x.nombre || "—"}${x.tipo === "ENTRA" ? ' <span class="badge badge-warn" style="font-size:10px;">entra hoy</span>' : ""}` : ""}</td>
+          <td><span class="badge badge-warn">${x.amenidad || "Restricción"}</span></td>
+          <td style="font-size:12.5px;">${x.detalle
+              ? `<strong>${x.detalle}</strong>`
+              : `<span style="color:var(--muted);">sin detalle — revisar la reserva</span>`}</td>
+          <td><span class="badge ${x.estado === 'HECHA' ? 'badge-ok' : 'badge-warn'}">${x.estado}</span></td>
+        </tr>`).join("")).join("")}
+    </table>
+    <p style="margin:10px 0 0;font-size:12px;color:var(--muted);">
+      Se anotan desde <strong>Amenidades</strong>. Aquí solo se consultan.</p>
+  </div>`;
+}
 
 function detalleRegimen() {
   const d = window._restData;
@@ -2785,6 +2840,7 @@ function detalleRest(cual) {
 
   // El régimen no es un restaurante: se agrupa por lo que trae pagado el huésped.
   if (cual === "regimen") { detalleRegimen(); return; }
+  if (cual === "alergias") { detalleAlergias(); return; }
 
   const mapa = {
     cena_tk: ["Cena en Terra Kitchen", d.cena.terra_kitchen, "CENA", "Bar el Bosque"],

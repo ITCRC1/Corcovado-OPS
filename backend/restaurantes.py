@@ -241,6 +241,94 @@ def es_cena_privada(amenidad, tarea=None):
     return False
 
 
+# Palabras por las que se reconoce una restricción alimentaria.
+#
+# La lista es GENEROSA a propósito, y esa es la decisión importante: una alergia que no
+# se muestra puede mandar a alguien al hospital; una fila de más solo estorba un poco.
+# Ante la duda, se muestra.
+#
+# Van en español y en inglés porque el reporte del PMS llega en inglés y recepción
+# escribe en español, así que las dos formas conviven en la misma tabla.
+PALABRAS_RESTRICCION = (
+    "alergi", "alérgi", "alerg", "allerg",
+    "restricc", "restrict", "dietary", "diet",
+    "intoleran", "celia", "celíac", "gluten",
+    "vegan", "vegetarian", "vegetarian",
+    "lactosa", "lactose", "marisco", "shellfish", "nuez", "nuts", "maní", "peanut",
+    "kosher", "halal", "sin azúcar", "sugar free", "diabet",
+)
+
+
+def es_restriccion_alimentaria(amenidad, tarea=None, detalle=None):
+    """Si esta amenidad es algo que la cocina TIENE que saber antes de servir.
+
+    Mira el nombre, la tarea y el detalle: recepción a veces escribe la amenidad como
+    "Preferencia del huésped" y pone "alérgico a mariscos" en el detalle, y esa también
+    tiene que aparecer.
+
+    La cena privada queda fuera aunque sea de cocina: tiene su propio sitio en la
+    pantalla y mezclarlas escondería lo que aquí importa.
+    """
+    if es_cena_privada(amenidad, tarea):
+        return False
+    texto = " ".join(str(x or "") for x in (amenidad, tarea, detalle)).lower()
+    return any(p in texto for p in PALABRAS_RESTRICCION)
+
+
+def restricciones_del_dia(conn, fecha, distribucion=None, cache=None):
+    """Las restricciones alimentarias de todo el que come ese día.
+
+    NO se filtra por la fecha de la amenidad, y es deliberado: una alergia no es de un
+    día, es de toda la estadía. Filtrarla por fecha la mostraría solo el día que el
+    huésped llega, que es justo cuando menos falta hace — lo que la cocina necesita es
+    saberla cada noche que esa persona se sienta a comer.
+
+    Quien sale ese día no aparece: el bote se va de madrugada y no desayuna aquí. Es el
+    mismo criterio que usa el reparto de mesas.
+    """
+    if isinstance(fecha, str):
+        fecha = datetime.date.fromisoformat(fecha)
+    if distribucion is None:
+        entradas, en_casa, _ = _reservas_del_dia(conn, fecha, cache)
+        comen = entradas + en_casa
+    else:
+        # Se reutiliza lo que ya calculó distribuir(), para no releer las reservas.
+        comen = distribucion
+    por_conf = {r["conf_no"]: r for r in comen}
+    if not por_conf:
+        return []
+
+    salida = []
+    for i in range(0, len(por_conf), 400):
+        lote = list(por_conf)[i:i + 400]
+        marcas = ",".join("?" * len(lote))
+        for f in conn.execute(
+            f"""SELECT a.id, a.conf_no, a.amenidad, a.tarea, a.detalle, a.estado,
+                       a.area_responsable
+                FROM amenidad_tarea a
+                WHERE a.conf_no IN ({marcas}) ORDER BY a.id""", lote).fetchall():
+            d = dict(f)
+            if not es_restriccion_alimentaria(d["amenidad"], d["tarea"], d["detalle"]):
+                continue
+            r = por_conf[d["conf_no"]]
+            salida.append({
+                "conf_no": d["conf_no"],
+                "room_no": r.get("room_no"),
+                # Los dos nombres del campo conviven: las filas crudas de
+                # _reservas_del_dia() traen 'nombre_principal', y las que ya pasaron por
+                # distribuir() traen 'nombre'. Esta función se llama con las dos.
+                "nombre": r.get("nombre_principal") or r.get("nombre"),
+                "pax": r.get("pax"),
+                "amenidad": d["amenidad"],
+                "detalle": d["detalle"],
+                "tarea": d["tarea"],
+                "estado": d["estado"],
+                "tipo": r.get("tipo"),
+            })
+    salida.sort(key=lambda x: int(x["room_no"]) if (x["room_no"] or "").isdigit() else 999)
+    return salida
+
+
 def _cenas_privadas(conn, fecha):
     """Reservas con cena privada declarada esa noche. Van fijas a Bar el Bosque."""
     return {dict(r)["conf_no"] for r in conn.execute(
