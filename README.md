@@ -12,12 +12,12 @@ Sistema local para la operación diaria de Sierpe y Drake. Funciona sin internet
 | **Agenda de tours** | Asignar guía y bote, dividir salidas en grupos, con aviso de conflictos de horario |
 | **Transporte** | Entradas y salidas por Sierpe o Drake, con horas de vuelo |
 | **Entradas SINAC** | Control de compra con 15 días de anticipación, por urgencia |
-| **Amenidades** | Tareas por área (cocina, housekeeping, recepción), incluidas alergias. Cada una con el día en que hay que tenerla lista |
+| **Amenidades** | Tareas por área (cocina, housekeeping, recepción), incluidas alergias. Cada una con el día en que hay que tenerla lista, y con la descripción editable |
 | **Analítica** | Uso de botes y guías, movimiento por punto y ocupación del periodo |
 | **Resumen operación** | La hoja del día para todos los departamentos |
 | **Importar PDF** | Cargar el reporte "Arrivals: Detailed" del PMS |
 | **Usuarios** | Crear y administrar accesos |
-| **Catálogo** | Guías, botes y tours del hotel |
+| **Catálogo** | Guías, botes y tours del hotel. Se pueden corregir sin tener que crear uno nuevo |
 | **Publicación** | Publicar los itinerarios que ven los huéspedes por código QR |
 
 ## Atajos y detalles de uso
@@ -49,6 +49,61 @@ El botón **Quitar** deshace todo: el tour sale de la operación y la entrada de
 se recalcula. Si esa entrada ya estaba comprada no se borra, se avisa para gestionarla.
 Y si el itinerario fue editado a mano, el sistema no borra filas por su cuenta: avisa
 para que recepción revise cuál corresponde.
+
+## Corregir una amenidad
+
+En **Amenidades**, cada fila tiene el botón **Editar** en la columna de la tarea. Se
+corrigen dos cosas:
+
+- **Detalle** — lo particular de este huésped: *"sin gluten y sin mariscos"*.
+- **Tarea** — la instrucción que lee el área: *"AVISAR A COCINA antes del check-in"*.
+
+Sirve para cuando el huésped llama y cambia lo pedido. Antes había que agregar un
+requerimiento nuevo al lado, y quedaban dos filas diciendo cosas distintas de lo mismo.
+
+El **nombre** de la amenidad (la etiqueta azul) no se edita a propósito: es lo que el
+sistema usa para reconocer una cena privada y para no perder lo corregido al reimportar.
+Si de verdad es otra cosa, se desactiva esta y se agrega la correcta.
+
+Una amenidad tocada a mano queda con una marca ✎.
+
+## Lo hecho a mano NO se pierde al reimportar el PDF
+
+Reimportar el reporte de una reserva **borra y rehace** sus amenidades y sus tours. Esto
+se conserva:
+
+| Trabajo hecho a mano | ¿Sobrevive? |
+|---|---|
+| El día que se le puso a una amenidad (la noche de la cena privada) | sí |
+| El detalle y la tarea corregidos | sí |
+| Las amenidades ya marcadas como hechas | sí |
+| Los requerimientos agregados a mano | sí |
+| Los tours agregados desde el itinerario | sí |
+| Guía, bote y grupo asignados a un tour | sí |
+
+Si el reporte nuevo trae un tour que ya se había agregado a mano, **no se duplica**: pasa
+a contarse como del reporte.
+
+Lo que el reporte **sí** vuelve a escribir son los datos de la reserva (fechas, pax,
+habitación, vuelos): ahí manda el PMS.
+
+## Corregir el catálogo
+
+En **Catálogo**, cada guía, bote y tour tiene el botón **Editar** en su fila. Antes solo
+se podía crear y desactivar, así que para cambiar la capacidad de un bote o arreglar un
+nombre había que desactivar el viejo y crear uno nuevo — y eso parte la historia en dos:
+los tours ya asignados siguen apuntando al viejo, y la Analítica cuenta al mismo guía
+como dos personas.
+
+**Renombrar arrastra todo lo que apuntaba al nombre viejo**: los tours asignados, las
+entradas del SINAC, los guías sugeridos en las reservas y los tours privados que usaban
+ese código como base. Al guardar, el sistema dice cuántos registros movió.
+
+Dos campos del tour pesan más que los demás:
+
+- **Entrada SINAC** — es la marca por la que el sistema crea sola la entrada al parque
+  cuando el tour se agrega a una reserva. Marcarla aquí alcanza; no hay que tocar código.
+- **Máx. pax/guía** — es el número con que la Agenda avisa de sobrecupo.
 
 ## Al actualizar a una versión nueva
 

@@ -1642,6 +1642,162 @@ def estado_tour(codigo: str, activo: bool, user: dict = Depends(exige("catalogo"
     return {"status": "ok"}
 
 
+# ---------- EDITAR LO QUE YA ESTÁ EN EL CATÁLOGO ----------
+#
+# Hasta ahora del catálogo solo se podía crear y desactivar. Para corregir la capacidad
+# de un bote, el horario de un tour o un nombre mal escrito había que desactivar el
+# viejo y crear uno nuevo — y eso parte la historia en dos: los tours ya asignados
+# siguen apuntando al viejo, y la analítica cuenta al mismo guía como dos personas.
+#
+# Dónde queda escrito el nombre de cada cosa. El nombre ES la llave primaria, así que
+# renombrar no es un UPDATE: hay claves foráneas activas (PRAGMA foreign_keys = ON) y
+# columnas de texto suelto que también lo guardan. Si esta lista se queda corta, un
+# renombre deja tours huérfanos, así que va aquí, a la vista, y no repartida.
+REFERENCIAS_CATALOGO = {
+    "guia": [("tour_asignado", "guia_nombre"),
+             # Sin clave foránea, pero guarda el nombre igual: es el guía que el reporte
+             # sugiere y el que recepción confirma.
+             ("reserva", "guia_sugerido")],
+    "bote": [("tour_asignado", "bote_nombre")],
+    "tour": [("tour_asignado", "tour_codigo"),
+             ("entrada_sinac", "tour_codigo"),
+             # Un tour privado apunta al normal equivalente por su código.
+             ("tour_catalogo", "tour_base")],
+}
+
+
+def _renombrar_en_catalogo(conn, tipo, tabla, llave, viejo, nuevo):
+    """Cambia la llave de una fila del catálogo arrastrando todo lo que la referencia.
+
+    No es un UPDATE de la fila: con las claves foráneas encendidas, cambiar el padre
+    antes que los hijos lo rechaza la base. El orden es crear la fila nueva, mover a los
+    hijos, y recién ahí borrar la vieja — así en ningún momento hay un tour apuntando a
+    un guía que no existe.
+
+    Devuelve cuántos registros quedaron apuntando al nombre nuevo, para poder decírselo
+    a quien hizo el cambio: renombrar un guía con 40 tours asignados no es lo mismo que
+    renombrar uno recién creado.
+    """
+    columnas = [r[1] for r in conn.execute(f"PRAGMA table_info({tabla})")]
+    fila = dict(conn.execute(f"SELECT * FROM {tabla} WHERE {llave} = ?", (viejo,)).fetchone())
+    fila[llave] = nuevo
+    marcas = ",".join("?" for _ in columnas)
+    conn.execute(f"INSERT INTO {tabla} ({','.join(columnas)}) VALUES ({marcas})",
+                 [fila[c] for c in columnas])
+
+    movidos = 0
+    for tabla_hija, columna in REFERENCIAS_CATALOGO[tipo]:
+        cur = conn.execute(
+            f"UPDATE {tabla_hija} SET {columna} = ? WHERE {columna} = ?", (nuevo, viejo))
+        movidos += cur.rowcount or 0
+
+    conn.execute(f"DELETE FROM {tabla} WHERE {llave} = ?", (viejo,))
+    return movidos
+
+
+def _editar_catalogo(tipo, tabla, llave, valor, payload, campos):
+    """El tronco común de los tres editores: existe, no choca, se aplica, se avisa."""
+    nuevo = (payload.get(llave) or "").strip()
+    if llave == "codigo":
+        nuevo = nuevo.upper()
+
+    conn = get_connection()
+    try:
+        actual = conn.execute(f"SELECT * FROM {tabla} WHERE {llave} = ?", (valor,)).fetchone()
+        if not actual:
+            raise HTTPException(status_code=404, detail="No existe en el catálogo")
+
+        renombrado, movidos = False, 0
+        if nuevo and nuevo != valor:
+            choca = conn.execute(
+                f"SELECT 1 FROM {tabla} WHERE {llave} = ? COLLATE NOCASE", (nuevo,)).fetchone()
+            if choca:
+                raise HTTPException(status_code=400, detail=f"Ya existe «{nuevo}» en el catálogo")
+            movidos = _renombrar_en_catalogo(conn, tipo, tabla, llave, valor, nuevo)
+            renombrado, valor = True, nuevo
+
+        cambios, params = [], []
+        for campo, transformar in campos.items():
+            if campo not in payload:
+                continue          # lo que no se manda, no se toca
+            cambios.append(f"{campo} = ?")
+            params.append(transformar(payload[campo]))
+        if cambios:
+            params.append(valor)
+            conn.execute(f"UPDATE {tabla} SET {', '.join(cambios)} WHERE {llave} = ?", params)
+
+        conn.commit()
+        resultado = dict(conn.execute(
+            f"SELECT * FROM {tabla} WHERE {llave} = ?", (valor,)).fetchone())
+    finally:
+        conn.close()
+
+    aviso = None
+    if renombrado:
+        aviso = (f"Renombrado. {movidos} registro(s) que lo mencionaban quedaron "
+                 f"apuntando al nombre nuevo." if movidos
+                 else "Renombrado. No había nada asignado a ese nombre.")
+    return {"status": "ok", tipo: resultado, "renombrado": renombrado,
+            "registros_movidos": movidos, "aviso": aviso}
+
+
+def _texto(v):
+    return (str(v).strip() or None) if v is not None else None
+
+
+def _si_no(v):
+    return 1 if v else 0
+
+
+def _entero(v):
+    try:
+        return int(v) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+@app.post("/api/catalogo/guia/{nombre}/editar")
+async def editar_guia(nombre: str, payload: dict,
+                      user: dict = Depends(exige("catalogo", escribir=True))):
+    """Corrige un guía: su nombre y si es externo."""
+    return _editar_catalogo("guia", "guia", "nombre", nombre, payload,
+                            {"es_externo": _si_no})
+
+
+@app.post("/api/catalogo/bote/{nombre}/editar")
+async def editar_bote(nombre: str, payload: dict,
+                      user: dict = Depends(exige("catalogo", escribir=True))):
+    """Corrige un bote: nombre, capacidad y si lo maneja el hotel.
+
+    La capacidad es la que usan las alertas de sobrecupo, así que corregirla aquí
+    corrige de inmediato lo que la Agenda avisa.
+    """
+    return _editar_catalogo("bote", "bote", "nombre", nombre, payload,
+                            {"capacidad_max": _entero,
+                             "gestionado_por_hotel": _si_no})
+
+
+@app.post("/api/catalogo/tour/{codigo}/editar")
+async def editar_tour(codigo: str, payload: dict,
+                      user: dict = Depends(exige("catalogo", escribir=True))):
+    """Corrige un tour: nombre, horarios, capacidad por guía y qué requiere.
+
+    'requiere_entrada_sinac' es el que más pesa: es la marca por la que el sistema crea
+    sola la entrada al parque cuando se agrega el tour a una reserva. Marcarla aquí
+    alcanza para que un tour nuevo empiece a generarla, sin tocar el código.
+    """
+    if "max_pax_guia" in payload and not _entero(payload["max_pax_guia"]):
+        raise HTTPException(
+            status_code=400,
+            detail="El máximo de pasajeros por guía tiene que ser un número mayor que 0.")
+    return _editar_catalogo(
+        "tour", "tour_catalogo", "codigo", codigo.upper(), payload,
+        {"nombre": _texto, "horario_inicio": _texto, "horario_fin": _texto,
+         "horario_alterno_inicio": _texto, "horario_alterno_fin": _texto,
+         "max_pax_guia": _entero, "requiere_entrada_sinac": _si_no,
+         "requiere_bote": _si_no, "es_privado": _si_no, "tour_base": _texto})
+
+
 from fastapi.responses import Response
 import exports
 
@@ -2106,8 +2262,12 @@ async def cambiar_fecha_amenidad(amenidad_id: int, payload: dict,
         if problema:
             raise HTTPException(status_code=400, detail=problema)
 
-        conn.execute("UPDATE amenidad_tarea SET fecha = ? WHERE id = ?",
-                     (fecha, amenidad_id))
+        # 'editado_a_mano' marca que este día lo puso una persona y no el reporte. Lo
+        # usa el importador para no pisarlo en la siguiente carga del PDF: sin la marca,
+        # la noche que recepción le asignó a una cena privada volvía a quedar vacía.
+        conn.execute(
+            "UPDATE amenidad_tarea SET fecha = ?, editado_a_mano = 1 WHERE id = ?",
+            (fecha, amenidad_id))
         conn.commit()
         llegada, salida = _noches_de_estadia(fila)
     finally:
@@ -2117,6 +2277,67 @@ async def cambiar_fecha_amenidad(amenidad_id: int, payload: dict,
     return {"status": "ok", "fecha": fecha,
             "es_cena_privada": _rest.es_cena_privada(fila["amenidad"], fila["tarea"]),
             "llegada": llegada, "salida": salida}
+
+
+@app.post("/api/amenidades/{amenidad_id}/texto")
+async def cambiar_texto_amenidad(amenidad_id: int, payload: dict,
+                                 user: dict = Depends(exige("amenidades", escribir=True))):
+    """Cambia la descripción de una amenidad: el detalle y la tarea.
+
+    Hasta ahora de una amenidad solo se podía cambiar el día. El texto venía del catálogo
+    y no se tocaba, así que cuando el huésped llamaba para decir que la alergia era
+    también a la lactosa, o que la decoración era de aniversario y no de cumpleaños, no
+    había dónde escribirlo: había que agregar un requerimiento nuevo al lado y quedaban
+    dos filas diciendo cosas distintas de lo mismo.
+
+    · El DETALLE es lo particular de este huésped ("sin gluten y sin mariscos").
+    · La TAREA es la instrucción para el área ("AVISAR A COCINA antes del check-in").
+
+    Se puede editar cualquiera, venga del PDF o agregada a mano. Queda marcada como
+    editada para que la siguiente importación del reporte no la pise.
+    """
+    detalle = (payload.get("detalle") or "").strip() or None
+    tarea = (payload.get("tarea") or "").strip()
+
+    conn = get_connection()
+    try:
+        fila = conn.execute(
+            "SELECT id, amenidad, tarea, detalle FROM amenidad_tarea WHERE id = ?",
+            (amenidad_id,)).fetchone()
+        if not fila:
+            raise HTTPException(status_code=404, detail="No existe esa amenidad")
+        # La tarea es obligatoria: es lo que lee el área responsable en su hoja del día, y
+        # una fila en blanco ahí es una tarea que nadie hace. Si la borran, se cae al
+        # detalle y, si tampoco hay, al nombre de la amenidad.
+        if not tarea:
+            tarea = detalle or fila["amenidad"]
+
+        import restaurantes as _rest
+        antes_privada = _rest.es_cena_privada(fila["amenidad"], fila["tarea"])
+        despues_privada = _rest.es_cena_privada(fila["amenidad"], tarea)
+
+        conn.execute(
+            """UPDATE amenidad_tarea SET detalle = ?, tarea = ?, editado_a_mano = 1
+               WHERE id = ?""", (detalle, tarea, amenidad_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Cambiar el texto puede cambiar lo que ESTA amenidad es: la hoja de restaurantes
+    # reconoce la cena privada por las palabras del nombre y de la tarea. Si al reescribir
+    # se le quita la palabra, la cena deja de aparecer en el comedor esa noche — y eso hay
+    # que decirlo en el momento, no descubrirlo cuando el huésped se siente a cenar.
+    aviso = None
+    if antes_privada and not despues_privada:
+        aviso = ("Al cambiar el texto esta amenidad dejó de reconocerse como cena "
+                 "privada, así que ya no aparecerá en la hoja de restaurantes. Si sigue "
+                 "siendo una cena privada, deja la palabra «privada» en la tarea.")
+    elif despues_privada and not antes_privada:
+        aviso = ("Con el texto nuevo esta amenidad pasa a contarse como cena privada y "
+                 "aparecerá en la hoja de restaurantes de la noche que tenga asignada.")
+
+    return {"status": "ok", "detalle": detalle, "tarea": tarea,
+            "es_cena_privada": despues_privada, "aviso": aviso}
 
 
 @app.delete("/api/amenidades/{amenidad_id}")
@@ -2147,7 +2368,7 @@ def listar_amenidades(desde: str = None, hasta: str = None, estado: str = None,
     # lee la hoja de restaurantes para las cenas privadas. Viene aquí para que la pantalla
     # pueda mostrarlo y cambiarlo sin tener que ir a Restaurantes.
     query = f"""SELECT a.id, a.amenidad, a.tarea, a.area_responsable, a.estado, a.origen,
-                       a.detalle, a.fecha,
+                       a.detalle, a.fecha, a.editado_a_mano,
                        r.conf_no, r.room_no, r.nombre_principal, r.arr_date, r.dep_date
                 FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no"""
     # LA FECHA POR LA QUE SE FILTRA es la de la amenidad si la tiene, y la de llegada del
@@ -2315,10 +2536,15 @@ async def agregar_tour(payload: dict,
         if pax < 1:
             pax = 1
 
+        # origen='MANUAL' es lo que lo salva de la siguiente importación del reporte: el
+        # importador borra y rehace los tours de la reserva desde el PDF, y este no está
+        # en el PDF. Sin la marca, el tour que recepción le prometió al huésped
+        # desaparecía en la siguiente carga, sin aviso.
         cur = conn.execute(
             """INSERT INTO tour_asignado
-                 (conf_no, fecha, tour_codigo, pax, guia_nombre, bote_nombre, grupo_operativo)
-               VALUES (?,?,?,?,?,?,?)""",
+                 (conf_no, fecha, tour_codigo, pax, guia_nombre, bote_nombre,
+                  grupo_operativo, origen)
+               VALUES (?,?,?,?,?,?,?,'MANUAL')""",
             (conf_no, fecha, codigo, pax,
              payload.get("guia") or None, payload.get("bote") or None,
              (payload.get("grupo") or "A").upper()[:2]))

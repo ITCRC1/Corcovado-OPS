@@ -106,6 +106,10 @@ COLUMNAS_NUEVAS = [
     ("usuario", "permisos_json", "TEXT"),
     ("amenidad_tarea", "fecha", "TEXT"),
     ("reserva", "regimen", "TEXT"),
+    # Las dos que protegen el trabajo hecho a mano de la siguiente importación del PDF.
+    # Ver los comentarios en schema.sql y en loader.py.
+    ("amenidad_tarea", "editado_a_mano", "INTEGER NOT NULL DEFAULT 0"),
+    ("tour_asignado", "origen", "TEXT NOT NULL DEFAULT 'PDF'"),
 ]
 
 

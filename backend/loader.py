@@ -140,8 +140,31 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                 asignaciones_previas[(prev["fecha"], prev["tour_codigo"])] = datos_prev
                 asignaciones_por_tour.setdefault(prev["tour_codigo"], []).append(datos_prev)
 
+        # Lo que recepción hizo a mano sobre las amenidades del reporte: el día que les
+        # puso, el texto que corrigió y si ya están hechas. Se guarda ANTES de borrarlas
+        # porque enseguida se regeneran desde el PDF, y sin esto ese trabajo se perdía en
+        # silencio: la noche que recepción le había asignado a una cena privada volvía a
+        # quedar vacía, y la amenidad que housekeeping ya había marcado hecha volvía a
+        # aparecer pendiente. Medido: se perdía en la primera reimportación.
+        #
+        # Se guarda por nombre de amenidad porque es lo único estable entre una
+        # importación y la siguiente —la fila se borra, así que el id no sirve—. Si la
+        # misma reserva trae dos veces la misma amenidad, se restauran en orden.
+        trabajo_previo = {}
+        for prev in cur.execute(
+            """SELECT amenidad, fecha, detalle, tarea, estado, editado_a_mano
+               FROM amenidad_tarea WHERE conf_no = ? AND origen = 'PDF' ORDER BY id""",
+            (r["conf_no"],),
+        ).fetchall():
+            if prev["editado_a_mano"] or prev["estado"] != "PENDIENTE":
+                trabajo_previo.setdefault(prev["amenidad"], []).append(dict(prev))
+
         cur.execute("DELETE FROM huesped WHERE conf_no = ?", (r["conf_no"],))
-        cur.execute("DELETE FROM tour_asignado WHERE conf_no = ?", (r["conf_no"],))
+        # Los tours agregados a mano desde el itinerario NO están en el reporte, así que
+        # regenerar desde el PDF los borraría. Se conservan: el huésped ya los tiene
+        # prometidos y la operación ya les asignó guía y bote.
+        cur.execute("DELETE FROM tour_asignado WHERE conf_no = ? "
+                    "AND IFNULL(origen, 'PDF') <> 'MANUAL'", (r["conf_no"],))
         # Solo se borran las detectadas del PDF; las agregadas a mano por recepción se conservan.
         cur.execute("DELETE FROM amenidad_tarea WHERE conf_no = ? AND origen = 'PDF'", (r["conf_no"],))
 
@@ -177,10 +200,27 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                          "y no está en el catálogo")
                 area = "Recepción"
             fecha = None if _rest.es_cena_privada(nombre, tarea) else llegada_iso
+            detalle = None
+            estado = "PENDIENTE"
+            editado = 0
+            # Lo que recepción ya había hecho sobre esta misma amenidad manda sobre lo
+            # que dice el reporte: el reporte no sabe qué noche se acordó la cena, ni que
+            # la alergia resultó ser también a la lactosa, ni que la cuna ya está puesta.
+            guardado = trabajo_previo.get(nombre)
+            if guardado:
+                p = guardado.pop(0)
+                estado = p["estado"]
+                if p["editado_a_mano"]:
+                    editado = 1
+                    fecha = p["fecha"]
+                    detalle = p["detalle"]
+                    tarea = p["tarea"] or tarea
             cur.execute(
-                """INSERT INTO amenidad_tarea (conf_no, amenidad, tarea, area_responsable, fecha)
-                   VALUES (?,?,?,?,?)""",
-                (r["conf_no"], nombre, tarea, area, fecha),
+                """INSERT INTO amenidad_tarea (conf_no, amenidad, detalle, tarea,
+                                               area_responsable, fecha, estado,
+                                               editado_a_mano)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (r["conf_no"], nombre, detalle, tarea, area, fecha, estado, editado),
             )
 
         for g in r["rooming"]:
@@ -199,10 +239,28 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                 if pendientes_tour:
                     asignacion = pendientes_tour.pop(0)
             guia_prev, bote_prev, grupo_prev = asignacion or (None, None, "A")
+            # Si recepción ya lo había agregado a mano y ahora el reporte lo trae, es el
+            # MISMO tour: se le cambia el origen en vez de insertar otro. Sin esto la
+            # reserva quedaría con el tour dos veces —dos veces en la agenda, doble pax
+            # en la entrada del parque—, que es la trampa de conservar los manuales.
+            ya_manual = cur.execute(
+                """SELECT id FROM tour_asignado
+                   WHERE conf_no = ? AND fecha = ? AND tour_codigo = ?
+                     AND IFNULL(origen,'PDF') = 'MANUAL'""",
+                (r["conf_no"], a["fecha"], a["tour"]),
+            ).fetchone()
+            if ya_manual:
+                cur.execute(
+                    """UPDATE tour_asignado SET origen = 'PDF', pax = ?,
+                           conf_entrada_sinac = COALESCE(conf_entrada_sinac, ?)
+                       WHERE id = ?""",
+                    (r["adl"] + r["chl"], a.get("conf_entrada"), ya_manual["id"]))
+                continue
             cur.execute(
                 """INSERT INTO tour_asignado
-                   (conf_no, fecha, tour_codigo, pax, conf_entrada_sinac, guia_nombre, bote_nombre, grupo_operativo)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                   (conf_no, fecha, tour_codigo, pax, conf_entrada_sinac, guia_nombre,
+                    bote_nombre, grupo_operativo, origen)
+                   VALUES (?,?,?,?,?,?,?,?,'PDF')""",
                 (r["conf_no"], a["fecha"], a["tour"], r["adl"] + r["chl"],
                  a.get("conf_entrada"), guia_prev, bote_prev, grupo_prev),
             )

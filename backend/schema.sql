@@ -143,6 +143,10 @@ CREATE TABLE IF NOT EXISTS tour_asignado (
     -- está dividido, grupo_operativo queda como 'A' por defecto.
     grupo_operativo TEXT NOT NULL DEFAULT 'A',
     dividido_de_id INTEGER,  -- id del registro original del que se dividió
+    -- 'PDF' | 'MANUAL'. Al reimportar, los tours de la reserva se borran y se rehacen
+    -- desde el reporte. Los agregados a mano desde el itinerario no están en el reporte,
+    -- así que sin esta marca desaparecían en la siguiente importación.
+    origen TEXT NOT NULL DEFAULT 'PDF',
     creado_en TEXT DEFAULT (datetime('now'))
 );
 
@@ -193,6 +197,11 @@ CREATE TABLE IF NOT EXISTS amenidad_tarea (
     -- avisa que existe pero casi nunca dice el día, así que recepción lo confirma
     -- desde la pantalla de restaurantes.
     fecha TEXT,
+    -- Marca de que recepción tocó esta amenidad (le puso día, o le cambió el texto).
+    -- Al reimportar el PDF las amenidades se borran y se vuelven a generar, y sin esta
+    -- marca ese trabajo se perdía en silencio: la noche que recepción le había puesto a
+    -- una cena privada volvía a quedar vacía. Con la marca, el importador la respeta.
+    editado_a_mano INTEGER NOT NULL DEFAULT 0,
     creado_en TEXT DEFAULT (datetime('now'))
 );
 

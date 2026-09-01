@@ -1039,6 +1039,14 @@ function puedeVer(pantalla) {
 }
 function puedeEscribir(pantalla) { return PERMISOS[pantalla] === "escribir"; }
 
+// Para el texto que escribe una persona y luego se mete en el HTML de una tabla. Sin
+// esto, una descripción con un < o un & rompe la fila donde va — y quien la escribió no
+// entiende por qué la pantalla se ve rara.
+function escaparHTML(t) {
+  return String(t == null ? "" : t)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 function aplicarPermisos() {
   const botones = document.querySelectorAll("nav button");
   botones.forEach((b, i) => {
@@ -1082,7 +1090,11 @@ function notasHtml(r) {
 }
 
 function hayCambiosSinGuardar() {
-  return window._agendaSinGuardar && window._agendaSinGuardar.size > 0;
+  if (window._agendaSinGuardar && window._agendaSinGuardar.size > 0) return true;
+  // Una descripción de amenidad a medio escribir. Sin esto, el refresco automático
+  // —que corre cada pocos segundos— borraba lo tecleado a mitad de frase.
+  if (document.querySelector('[id^="am-tar-"]')) return true;
+  return false;
 }
 
 function setActive(i) {
@@ -2405,6 +2417,9 @@ async function loadAmenidades(fecha, desdeNuevo, hastaNuevo, estadoNuevo) {
   const qs = new URLSearchParams({ desde, hasta });
   if (estado) qs.append("estado", estado);
   const rows = await (await fetchAuth(`${API}/api/amenidades?${qs}`)).json();
+  // Se guardan para poder abrir el editor de la descripción con los valores actuales sin
+  // volver a pedirlos, y para poder cancelar y dejar la celda como estaba.
+  window._amenidades = rows;
   // El estado de los avisos se guarda para no pedirlo en cada refresco (esta pantalla se
   // vuelve a dibujar cada pocos segundos), pero SOLO cuando ya están funcionando.
   //
@@ -2463,7 +2478,7 @@ async function loadAmenidades(fecha, desdeNuevo, hastaNuevo, estadoNuevo) {
               <td>${a.nombre_principal}</td>
               <td><span class="badge badge-tour">${a.amenidad}</span>${a.origen === 'MANUAL' ? ' <span style="font-size:10px;color:var(--muted);">(manual)</span>' : ''}</td>
               <td>${celdaFechaAmenidad(a)}</td>
-              <td style="font-size:12px;color:var(--muted);">${a.detalle ? `<strong style="color:var(--text);">${a.detalle}</strong><br>` : ''}${a.tarea}</td>
+              <td style="font-size:12px;color:var(--muted);" id="am-txt-${a.id}">${celdaTextoAmenidad(a)}</td>
               <td><span class="badge ${a.estado === 'HECHA' ? 'badge-ok' : 'badge-warn'}">${a.estado}</span></td>
               ${puedeEscribir("amenidades") ? `<td><button class="btn" onclick="marcarAmenidad(${a.id}, '${a.estado === 'HECHA' ? 'PENDIENTE' : 'HECHA'}')">${a.estado === 'HECHA' ? 'Reabrir' : 'Marcar hecha'}</button>${a.origen === 'MANUAL' ? `<button class="btn" onclick="eliminarAmenidad(${a.id})">Eliminar</button>` : ''}</td>` : ""}
             </tr>`).join("")}
@@ -2716,6 +2731,70 @@ function celdaFechaAmenidad(a) {
         onclick="guardarFechaAmenidad(${a.id}, '')"
         style="font-size:10px;padding:1px 5px;margin-left:3px;">×</button>` : ""}
     ${aviso}`;
+}
+
+/* ---------- La descripción de la amenidad, editable ----------
+ *
+ * Antes de una amenidad solo se podía cambiar el día. El texto venía del catálogo y no
+ * se tocaba, así que cuando el huésped llamaba para decir que la alergia era también a
+ * la lactosa, o que la decoración era de aniversario y no de cumpleaños, no había dónde
+ * escribirlo: había que agregar un requerimiento nuevo al lado, y quedaban dos filas
+ * diciendo cosas distintas de lo mismo.
+ *
+ * Son dos campos porque son dos cosas distintas, y el área responsable lee la segunda:
+ *   · DETALLE — lo particular de este huésped: "sin gluten y sin mariscos"
+ *   · TAREA   — la instrucción: "AVISAR A COCINA antes del check-in"
+ */
+function celdaTextoAmenidad(a) {
+  const marca = a.editado_a_mano
+    ? ` <span style="font-size:10px;color:var(--muted);" title="Editado a mano. El reporte no lo pisa.">✎</span>`
+    : "";
+  const texto = `${a.detalle ? `<strong style="color:var(--text);">${escaparHTML(a.detalle)}</strong><br>` : ""}${escaparHTML(a.tarea || "")}${marca}`;
+  if (!puedeEscribir("amenidades")) return texto;
+  return `${texto}
+    <button class="btn" onclick="editarTextoAmenidad(${a.id})" title="Cambiar la descripción"
+      style="font-size:10px;padding:1px 5px;margin-left:4px;">Editar</button>`;
+}
+
+function editarTextoAmenidad(id) {
+  const a = (window._amenidades || []).find(x => x.id === id);
+  if (!a) return;
+  const celda = document.getElementById(`am-txt-${id}`);
+  if (!celda) return;
+  celda.innerHTML = `
+    <input type="text" id="am-det-${id}" value="${(a.detalle || "").replace(/"/g, "&quot;")}"
+      placeholder="Detalle (ej: sin gluten y sin mariscos)"
+      style="width:100%;font-size:11.5px;padding:3px 4px;margin-bottom:3px;">
+    <input type="text" id="am-tar-${id}" value="${(a.tarea || "").replace(/"/g, "&quot;")}"
+      placeholder="Tarea para ${escaparHTML(a.area_responsable || "el área")}"
+      style="width:100%;font-size:11.5px;padding:3px 4px;">
+    <div style="margin-top:4px;">
+      <button class="btn btn-primary" onclick="guardarTextoAmenidad(${id})"
+        style="font-size:10px;padding:2px 7px;">Guardar</button>
+      <button class="btn" onclick="document.getElementById('am-txt-${id}').innerHTML = celdaTextoAmenidad((window._amenidades||[]).find(x=>x.id===${id}))"
+        style="font-size:10px;padding:2px 7px;">Cancelar</button>
+    </div>`;
+  const primero = document.getElementById(`am-det-${id}`);
+  if (primero) primero.focus();
+}
+
+async function guardarTextoAmenidad(id) {
+  const detalle = document.getElementById(`am-det-${id}`).value.trim();
+  const tarea = document.getElementById(`am-tar-${id}`).value.trim();
+  const res = await fetchAuth(`${API}/api/amenidades/${id}/texto`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ detalle, tarea }),
+  });
+  if (!res.ok) {
+    avisar((await res.json()).detail || "No se pudo guardar", true);
+    return;
+  }
+  const d = await res.json();
+  // El aviso importa: reescribir el texto puede sacar una cena privada de la hoja de
+  // restaurantes, y eso hay que verlo ahora y no la noche de la cena.
+  if (d.aviso) alert(d.aviso);
+  avisar("Descripción actualizada");
+  loadAmenidades();
 }
 
 async function guardarFechaAmenidad(id, fecha) {
@@ -4312,6 +4391,10 @@ async function descargarHojaQR() {
 async function loadCatalogoAdmin() {
   setActive(11);
   const cat = await (await fetchAuth(`${API}/api/catalogo?todos=true`)).json();
+  // Se guarda para poder abrir el editor de una fila con sus valores actuales. Se busca
+  // por posición y no por nombre: el nombre puede llevar comillas o acentos, y meterlo
+  // dentro de un onclick es justo donde eso rompe.
+  window._catalogo = cat;
   const app = document.getElementById("app");
   app.innerHTML = `
     <div class="card">
@@ -4319,13 +4402,7 @@ async function loadCatalogoAdmin() {
       <div id="form-guia"></div>
       <table>
         <tr><th>Nombre</th><th>Externo</th><th>Estado</th><th></th></tr>
-        ${cat.guias.map(g => `
-          <tr>
-            <td>${g.nombre}</td>
-            <td>${g.es_externo ? "Sí" : "No"}</td>
-            <td><span class="badge ${g.activo ? 'badge-ok' : 'badge-warn'}">${g.activo ? 'Activo' : 'Inactivo'}</span></td>
-            <td><button class="btn" onclick="toggleCatalogo('guia','${g.nombre}',${g.activo ? 'false' : 'true'})">${g.activo ? 'Desactivar' : 'Activar'}</button></td>
-          </tr>`).join("")}
+        ${cat.guias.map((g, i) => `<tr id="cat-guia-${i}">${filaGuiaHTML(g, i)}</tr>`).join("")}
       </table>
     </div>
 
@@ -4334,35 +4411,175 @@ async function loadCatalogoAdmin() {
       <div id="form-bote"></div>
       <table>
         <tr><th>Nombre</th><th>Capacidad máx.</th><th>Gestionado por el hotel</th><th>Estado</th><th></th></tr>
-        ${cat.botes.map(b => `
-          <tr>
-            <td>${b.nombre}</td>
-            <td>${b.capacidad_max ?? "—"}</td>
-            <td>${b.gestionado_por_hotel ? "Sí" : "No"}</td>
-            <td><span class="badge ${b.activo ? 'badge-ok' : 'badge-warn'}">${b.activo ? 'Activo' : 'Inactivo'}</span></td>
-            <td><button class="btn" onclick="toggleCatalogo('bote','${b.nombre}',${b.activo ? 'false' : 'true'})">${b.activo ? 'Desactivar' : 'Activar'}</button></td>
-          </tr>`).join("")}
+        ${cat.botes.map((b, i) => `<tr id="cat-bote-${i}">${filaBoteHTML(b, i)}</tr>`).join("")}
       </table>
     </div>
 
     <div class="card">
       <div class="header"><p class="title">Catálogo — Tours</p><button class="btn btn-primary" onclick="mostrarFormTour()">+ Nuevo tour</button></div>
       <div id="form-tour"></div>
+      <p class="subtitle" style="margin:0 0 10px;">
+        «Entrada SINAC» es lo que hace que el sistema genere sola la entrada al parque
+        cuando el tour se le agrega a una reserva. «Máx. pax/guía» es el número con que
+        avisa de sobrecupo en la Agenda.</p>
       <table>
         <tr><th>Código</th><th>Nombre</th><th>Horario</th><th>Máx. pax/guía</th><th>Entrada SINAC</th><th>Estado</th><th></th></tr>
-        ${cat.tours.map(t => `
-          <tr>
-            <td>${t.codigo}</td>
-            <td>${t.nombre}</td>
-            <td>${t.horario_inicio || "-"} – ${t.horario_fin || "-"}</td>
-            <td>${t.max_pax_guia}</td>
-            <td>${t.requiere_entrada_sinac ? "Sí" : "No"}</td>
-            <td><span class="badge ${t.activo ? 'badge-ok' : 'badge-warn'}">${t.activo ? 'Activo' : 'Inactivo'}</span></td>
-            <td><button class="btn" onclick="toggleCatalogo('tour','${t.codigo}',${t.activo ? 'false' : 'true'})">${t.activo ? 'Desactivar' : 'Activar'}</button></td>
-          </tr>`).join("")}
+        ${cat.tours.map((t, i) => `<tr id="cat-tour-${i}">${filaTourHTML(t, i)}</tr>`).join("")}
       </table>
     </div>
   `;
+}
+
+/* ---------- Editar lo que ya está en el catálogo ----------
+ *
+ * Antes solo se podía crear y desactivar. Para corregir la capacidad de un bote o un
+ * nombre mal escrito había que desactivar el viejo y crear uno nuevo, y eso parte la
+ * historia en dos: los tours ya asignados siguen apuntando al viejo y la analítica
+ * cuenta al mismo guía como dos personas.
+ *
+ * Se edita en la propia fila, no en un cuadro aparte: son dos o tres campos y así se ve
+ * el resto de la tabla mientras se corrige.
+ */
+function botonesFila(tipo, i, activo) {
+  if (!puedeEscribir("catalogo")) return "";
+  // Se pasa la POSICIÓN y no el nombre: un nombre con comilla o acento metido dentro de
+  // un onclick rompe el atributo, y esa fila se queda sin botones sin decir por qué.
+  return `<button class="btn" onclick="editarFilaCatalogo('${tipo}', ${i})">Editar</button>
+    <button class="btn" onclick="alternarCatalogo('${tipo}', ${i})">${activo ? "Desactivar" : "Activar"}</button>`;
+}
+
+function alternarCatalogo(tipo, i) {
+  const cfg = EDITOR_CATALOGO[tipo];
+  const item = (window._catalogo || {})[cfg.lista][i];
+  if (!item) return;
+  toggleCatalogo(tipo, encodeURIComponent(item[cfg.llave]), item.activo ? "false" : "true");
+}
+
+function insigniaEstado(activo) {
+  return `<span class="badge ${activo ? "badge-ok" : "badge-warn"}">${activo ? "Activo" : "Inactivo"}</span>`;
+}
+
+function filaGuiaHTML(g, i) {
+  return `<td>${escaparHTML(g.nombre)}</td>
+    <td>${g.es_externo ? "Sí" : "No"}</td>
+    <td>${insigniaEstado(g.activo)}</td>
+    <td>${botonesFila("guia", i, g.activo)}</td>`;
+}
+
+function filaBoteHTML(b, i) {
+  return `<td>${escaparHTML(b.nombre)}</td>
+    <td>${b.capacidad_max ?? "—"}</td>
+    <td>${b.gestionado_por_hotel ? "Sí" : "No"}</td>
+    <td>${insigniaEstado(b.activo)}</td>
+    <td>${botonesFila("bote", i, b.activo)}</td>`;
+}
+
+function filaTourHTML(t, i) {
+  return `<td>${escaparHTML(t.codigo)}</td>
+    <td>${escaparHTML(t.nombre)}</td>
+    <td>${t.horario_inicio || "-"} – ${t.horario_fin || "-"}</td>
+    <td>${t.max_pax_guia}</td>
+    <td>${t.requiere_entrada_sinac ? "Sí" : "No"}</td>
+    <td>${insigniaEstado(t.activo)}</td>
+    <td>${botonesFila("tour", i, t.activo)}</td>`;
+}
+
+// Cada tipo declara qué se edita y cómo se vuelve a dibujar. Tenerlo en un solo sitio
+// evita tres editores casi iguales que después se desincronizan.
+const EDITOR_CATALOGO = {
+  guia: {
+    lista: "guias", llave: "nombre", volver: filaGuiaHTML,
+    campos: (g) => [
+      { id: "nombre", etiqueta: "Nombre", tipo: "texto", valor: g.nombre, ancho: 170 },
+      { id: "es_externo", etiqueta: "Es externo", tipo: "si_no", valor: g.es_externo },
+    ],
+  },
+  bote: {
+    lista: "botes", llave: "nombre", volver: filaBoteHTML,
+    campos: (b) => [
+      { id: "nombre", etiqueta: "Nombre", tipo: "texto", valor: b.nombre, ancho: 150 },
+      { id: "capacidad_max", etiqueta: "Capacidad", tipo: "numero", valor: b.capacidad_max, ancho: 80 },
+      { id: "gestionado_por_hotel", etiqueta: "Del hotel", tipo: "si_no", valor: b.gestionado_por_hotel },
+    ],
+  },
+  tour: {
+    lista: "tours", llave: "codigo", volver: filaTourHTML,
+    campos: (t) => [
+      { id: "codigo", etiqueta: "Código", tipo: "texto", valor: t.codigo, ancho: 80 },
+      { id: "nombre", etiqueta: "Nombre", tipo: "texto", valor: t.nombre, ancho: 190 },
+      { id: "horario_inicio", etiqueta: "Empieza", tipo: "texto", valor: t.horario_inicio, ancho: 70 },
+      { id: "horario_fin", etiqueta: "Termina", tipo: "texto", valor: t.horario_fin, ancho: 70 },
+      { id: "max_pax_guia", etiqueta: "Máx. pax/guía", tipo: "numero", valor: t.max_pax_guia, ancho: 70 },
+      { id: "requiere_entrada_sinac", etiqueta: "Entrada SINAC", tipo: "si_no", valor: t.requiere_entrada_sinac },
+      { id: "requiere_bote", etiqueta: "Lleva bote", tipo: "si_no", valor: t.requiere_bote },
+    ],
+  },
+};
+
+function editarFilaCatalogo(tipo, i) {
+  const cfg = EDITOR_CATALOGO[tipo];
+  const item = (window._catalogo || {})[cfg.lista][i];
+  const fila = document.getElementById(`cat-${tipo}-${i}`);
+  if (!item || !fila) return;
+  const campos = cfg.campos(item).map(c => {
+    const id = `ed-${tipo}-${i}-${c.id}`;
+    if (c.tipo === "si_no") {
+      return `<label style="font-size:11.5px;white-space:nowrap;">
+        <input type="checkbox" id="${id}" ${c.valor ? "checked" : ""}> ${c.etiqueta}</label>`;
+    }
+    return `<label style="font-size:10.5px;color:var(--muted);display:block;">${c.etiqueta}
+      <input type="${c.tipo === "numero" ? "number" : "text"}" id="${id}"
+        value="${c.valor == null ? "" : String(c.valor).replace(/"/g, "&quot;")}"
+        style="display:block;width:${c.ancho}px;font-size:11.5px;padding:2px 4px;"></label>`;
+  }).join("");
+  // Ocupa la fila entera: son varios campos y repartidos por columna no caben.
+  const columnas = fila.children.length;
+  fila.innerHTML = `<td colspan="${columnas}">
+    <div class="filterbar" style="flex-wrap:wrap;align-items:flex-end;gap:10px;">
+      ${campos}
+      <button class="btn btn-primary" onclick="guardarFilaCatalogo('${tipo}', ${i})">Guardar</button>
+      <button class="btn" onclick="cancelarFilaCatalogo('${tipo}', ${i})">Cancelar</button>
+    </div>
+    <div id="ed-${tipo}-${i}-error" style="color:var(--danger-text);font-size:11.5px;margin-top:4px;"></div>
+  </td>`;
+}
+
+function cancelarFilaCatalogo(tipo, i) {
+  const cfg = EDITOR_CATALOGO[tipo];
+  const item = (window._catalogo || {})[cfg.lista][i];
+  const fila = document.getElementById(`cat-${tipo}-${i}`);
+  if (item && fila) fila.innerHTML = cfg.volver(item, i);
+}
+
+async function guardarFilaCatalogo(tipo, i) {
+  const cfg = EDITOR_CATALOGO[tipo];
+  const item = (window._catalogo || {})[cfg.lista][i];
+  if (!item) return;
+  const payload = {};
+  cfg.campos(item).forEach(c => {
+    const el = document.getElementById(`ed-${tipo}-${i}-${c.id}`);
+    if (!el) return;
+    payload[c.id] = c.tipo === "si_no" ? el.checked : el.value.trim();
+  });
+
+  const error = document.getElementById(`ed-${tipo}-${i}-error`);
+  const clave = encodeURIComponent(item[cfg.llave]);
+  const res = await fetchAuth(`${API}/api/catalogo/${tipo}/${clave}/editar`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    if (error) error.textContent = (await res.json()).detail || "No se pudo guardar";
+    return;
+  }
+  const d = await res.json();
+  // Renombrar arrastra los tours, las entradas del parque y los guías ya asignados. Se
+  // dice cuántos se movieron: no es lo mismo renombrar un guía recién creado que uno
+  // con cuarenta salidas encima.
+  if (d.aviso) avisar(d.aviso);
+  else avisar("Catálogo actualizado");
+  CATALOGO = null;      // la copia que usan las otras pantallas quedó vieja
+  loadCatalogoAdmin();
 }
 
 function mostrarFormGuia() {
