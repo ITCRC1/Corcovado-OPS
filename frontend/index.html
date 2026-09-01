@@ -2744,7 +2744,7 @@ function detalleAlergias() {
     <p style="margin:0 0 10px;font-size:12px;color:var(--muted);">
       Aplican toda la estadía, no solo el día que se anotaron. Revisar antes de servir.</p>
     <table>
-      <tr><th>Hab.</th><th>Huésped</th><th>Restricción</th><th>Detalle</th><th>Estado</th></tr>
+      <tr><th>Hab.</th><th>Huésped</th><th>Restricción</th><th>Detalle</th><th>Estado</th>${puedeEscribir("restaurantes") || puedeEscribir("amenidades") ? "<th></th>" : ""}</tr>
       ${Object.values(porHab).map(grupo => grupo.map((x, i) => `
         <tr>
           <td>${i === 0 ? `<strong>${x.room_no || "—"}</strong>${etiquetaGrupo(x.conf_no)}` : ""}</td>
@@ -2753,12 +2753,31 @@ function detalleAlergias() {
           <td style="font-size:12.5px;">${x.detalle
               ? `<strong>${x.detalle}</strong>`
               : `<span style="color:var(--muted);">sin detalle — revisar la reserva</span>`}</td>
-          <td><span class="badge ${x.estado === 'HECHA' ? 'badge-ok' : 'badge-warn'}">${x.estado}</span></td>
+          <td><span class="badge ${x.estado === 'HECHA' ? 'badge-ok' : 'badge-warn'}">${x.estado === 'HECHA' ? 'AVISADA' : 'PENDIENTE'}</span></td>
+          ${puedeEscribir("restaurantes") || puedeEscribir("amenidades") ? `<td>
+            <button class="btn" onclick="marcarRestriccion(${x.id}, '${x.estado === 'HECHA' ? 'PENDIENTE' : 'HECHA'}')"
+              title="${x.estado === 'HECHA' ? 'Volver a marcarla como pendiente' : 'Cocina ya está enterada de esta restricción'}">
+              ${x.estado === 'HECHA' ? 'Reabrir' : 'Marcar avisada'}</button></td>` : ""}
         </tr>`).join("")).join("")}
     </table>
     <p style="margin:10px 0 0;font-size:12px;color:var(--muted);">
-      Se anotan desde <strong>Amenidades</strong>. Aquí solo se consultan.</p>
+      «Avisada» significa que cocina ya lo sabe, no que la restricción desapareció:
+      sigue en pie toda la estadía y se seguirá mostrando cada noche.
+      Se anotan y se editan desde <strong>Amenidades</strong>.</p>
   </div>`;
+}
+
+async function marcarRestriccion(id, estado) {
+  const res = await fetchAuth(`${API}/api/restaurantes/restriccion/${id}/estado`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ estado }),
+  });
+  if (!res.ok) { avisar((await res.json()).detail, true); return; }
+  avisar(estado === "HECHA" ? "Cocina avisada" : "Marcada como pendiente otra vez");
+  // Se recarga la pantalla y se vuelve a abrir el tab, para no perder de vista la lista
+  // que la persona estaba revisando.
+  await loadRestaurantes();
+  detalleAlergias();
 }
 
 function detalleRegimen() {

@@ -2137,16 +2137,26 @@ def listar_amenidades(desde: str = None, hasta: str = None, estado: str = None,
                        a.detalle, a.fecha,
                        r.conf_no, r.room_no, r.nombre_principal, r.arr_date, r.dep_date
                 FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no"""
+    # LA FECHA POR LA QUE SE FILTRA es la de la amenidad si la tiene, y la de llegada del
+    # huésped si no. Antes se filtraba SIEMPRE por la llegada, y eso tenía un efecto que
+    # se notó en cuanto las amenidades pudieron tener día propio: una cena privada movida
+    # a la tercera noche no aparecía esa noche, sino el día que el huésped llegó. Quien la
+    # buscaba para cambiarla no la encontraba donde tenía sentido buscarla.
+    #
+    # 'substr(a.fecha, 3)' pasa '2026-09-03' a '26-09-03', que es el formato en que
+    # sql_fecha() deja las fechas de la reserva. Sin eso se compararían dos formatos
+    # distintos y el filtro no encontraría nada.
+    FECHA_EFECTIVA = f"COALESCE(substr(a.fecha, 3), {sql_fecha('r.arr_date')})"
     condiciones, params = [], []
     if desde and hasta:
-        condiciones.append(f"{sql_fecha('r.arr_date')} BETWEEN ? AND ?")
+        condiciones.append(f"{FECHA_EFECTIVA} BETWEEN ? AND ?")
         params += [yymmdd(desde), yymmdd(hasta)]
     if estado in ("PENDIENTE", "HECHA"):
         condiciones.append("a.estado = ?")
         params.append(estado)
     if condiciones:
         query += " WHERE " + " AND ".join(condiciones)
-    query += f" ORDER BY {sql_fecha('r.arr_date')}, r.room_no"
+    query += f" ORDER BY {FECHA_EFECTIVA}, r.room_no"
     rows = conn.execute(query, params).fetchall()
     conn.close()
 
@@ -3080,6 +3090,48 @@ def restaurantes_dia(fecha: str, user: dict = Depends(exige("restaurantes"))):
     finally:
         conn.close()
     return datos
+
+
+@app.post("/api/restaurantes/restriccion/{amenidad_id}/estado")
+async def restaurantes_marcar_restriccion(
+        amenidad_id: int, payload: dict,
+        user: dict = Depends(exige("restaurantes", "amenidades", escribir=True))):
+    """Marca una restricción alimentaria como atendida, desde la pantalla de Restaurantes.
+
+    POR QUÉ NO SE USA /api/amenidades/{id}/estado: ese endpoint exige permiso de escritura
+    en Amenidades, y quien está montando las mesas puede tener solo Restaurantes —un
+    perfil de salonero, por ejemplo—. Con el endpoint de Amenidades vería la alergia en su
+    pantalla y no podría tocarla, que es exactamente lo que pasaba.
+
+    POR QUÉ NO SE AMPLÍA EL OTRO en vez de crear este: ampliarlo dejaría a un usuario de
+    solo Restaurantes marcando cualquier amenidad —sofás cama, cunas, decoraciones— desde
+    la API. Aquí se comprueba que la amenidad SEA una restricción alimentaria antes de
+    tocarla, así que el permiso queda acotado a lo que esa persona sí maneja.
+    """
+    estado = (payload or {}).get("estado")
+    if estado not in ("PENDIENTE", "HECHA"):
+        raise HTTPException(status_code=400, detail="Estado inválido")
+
+    import restaurantes as rest
+    conn = get_connection()
+    try:
+        fila = conn.execute(
+            "SELECT id, amenidad, tarea, detalle FROM amenidad_tarea WHERE id = ?",
+            (amenidad_id,)).fetchone()
+        if not fila:
+            raise HTTPException(status_code=404, detail="No existe esa amenidad")
+        if not rest.es_restriccion_alimentaria(fila["amenidad"], fila["tarea"],
+                                              fila["detalle"]):
+            raise HTTPException(
+                status_code=403,
+                detail=("Desde Restaurantes solo se pueden marcar las restricciones "
+                        "alimentarias. El resto se maneja en Amenidades."))
+        conn.execute("UPDATE amenidad_tarea SET estado = ? WHERE id = ?",
+                     (estado, amenidad_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "estado": estado}
 
 
 @app.post("/api/restaurantes/cambiar")

@@ -312,6 +312,9 @@ def restricciones_del_dia(conn, fecha, distribucion=None, cache=None):
                 continue
             r = por_conf[d["conf_no"]]
             salida.append({
+                # El id viene para que la pantalla pueda marcarla como avisada sin tener
+                # que ir a buscarla a Amenidades.
+                "id": d["id"],
                 "conf_no": d["conf_no"],
                 "room_no": r.get("room_no"),
                 # Los dos nombres del campo conviven: las filas crudas de
