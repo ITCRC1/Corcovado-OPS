@@ -612,7 +612,12 @@ def entradas_sinac(desde: str = None, hasta: str = None, user: dict = Depends(ex
 @app.get("/api/tours/agenda")
 def agenda(fecha: str = None, desde: str = None, hasta: str = None, user: dict = Depends(exige("agenda"))):
     conn = get_connection()
-    query = """SELECT ta.*, r.nombre_principal, r.room_no, tc.horario_inicio, tc.horario_fin, tc.max_pax_guia
+    # arr_date y dep_date vienen para poder acotar el selector de fecha de cada tour a la
+    # estadía del huésped, y para señalar los que quedaron fuera de ella. Pasa con las
+    # actividades que el reporte no fecha —NW, pajareo, GTT— donde el día se deduce y
+    # puede caer en un día en que el huésped ni siquiera está en el lodge.
+    query = """SELECT ta.*, r.nombre_principal, r.room_no, r.arr_date, r.dep_date,
+                      tc.horario_inicio, tc.horario_fin, tc.max_pax_guia
                FROM tour_asignado ta
                JOIN reserva r ON r.conf_no = ta.conf_no
                JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo"""
@@ -633,12 +638,20 @@ def agenda(fecha: str = None, desde: str = None, hasta: str = None, user: dict =
         # Se agrupa solo por reserva: los tours de un mismo huésped pueden estar en
         # fechas distintas, y cada uno lleva su propia fecha editable.
         key = r["conf_no"]
+        llegada, salida = _noches_de_estadia(r)
         entry = {"id": r["id"], "tour_codigo": r["tour_codigo"], "fecha": r["fecha"],
                  "guia_nombre": r["guia_nombre"], "bote_nombre": r["bote_nombre"],
                  "horario_inicio": r["horario_inicio"], "horario_fin": r["horario_fin"],
-                 "grupo_operativo": r.get("grupo_operativo", "A")}
+                 "grupo_operativo": r.get("grupo_operativo", "A"),
+                 # Un tour en un día en que el huésped no está en el lodge no lo puede
+                 # hacer nadie. Se marca para que salte a la vista en la agenda en vez de
+                 # descubrirse el día del tour, cuando ya no hay nada que hacer.
+                 "fuera_de_estadia": bool(
+                     llegada and salida and r["fecha"]
+                     and not (llegada <= r["fecha"] <= salida))}
         if key not in agrupado:
-            agrupado[key] = {**r, "tours": [entry]}
+            agrupado[key] = {**r, "tours": [entry],
+                             "estadia_desde": llegada, "estadia_hasta": salida}
             orden.append(key)
         else:
             agrupado[key]["tours"].append(entry)
@@ -2247,6 +2260,29 @@ def cambiar_fecha_tour(tour_id: int, fecha: str, user: dict = Depends(exige("age
         conn.close()
         raise HTTPException(status_code=404, detail="Tour no encontrado")
     ta = dict(ta)
+
+    # El tour tiene que caer dentro de la estadía. Antes no se comprobaba, y con las
+    # actividades que el reporte no fecha —NW, pajareo, GTT— el día se deduce y puede
+    # quedar fuera: un tour agendado para un día en que el huésped no está no lo puede
+    # hacer nadie, y no se descubre hasta que llega ese día.
+    #
+    # Se permite MOVERLO SIEMPRE QUE ENTRE en la estadía, aunque hoy esté fuera: así uno
+    # que quedó mal colocado se puede arreglar, que es justo para lo que hace falta esto.
+    est = conn.execute("SELECT arr_date, dep_date FROM reserva WHERE conf_no = ?",
+                       (ta["conf_no"],)).fetchone()
+    if est:
+        llegada, salida = _noches_de_estadia(est)
+        if llegada and fecha < llegada:
+            conn.close()
+            raise HTTPException(
+                status_code=400,
+                detail=f"El huésped llega el {llegada}: no puede tener un tour antes.")
+        if salida and fecha > salida:
+            conn.close()
+            raise HTTPException(
+                status_code=400,
+                detail=f"El huésped se va el {salida}: no puede tener un tour después.")
+
     fecha_anterior = ta["fecha"]
     if fecha_anterior == fecha:
         conn.close()

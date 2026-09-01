@@ -1854,6 +1854,7 @@ async function loadAgenda(fecha, desde, hasta) {
           <p style="margin:0 0 6px;font-weight:600;">⚠ ${conflictos.length} conflicto${conflictos.length>1?'s':''} de asignación</p>
           ${conflictos.map(x => `<p style="margin:0 0 3px;">${x.mensaje}</p>`).join("")}
         </div>` : ""}
+      ${resumenPorTour(rows)}
       ${rows.length ? `
       <table>
         <tr><th>Huésped / Hab.</th><th>Tour</th><th>Fecha del tour</th><th>Grupo</th><th>Guía</th><th>Bote</th><th>Pax</th>${puedeEscribir("agenda") ? "<th></th>" : ""}</tr>
@@ -1862,9 +1863,13 @@ async function loadAgenda(fecha, desde, hasta) {
             ${i === 0 ? `<td rowspan="${r.tours.length}">${r.nombre_principal} · ${r.room_no}</td>` : ''}
             <td>${t.tour_codigo}</td>
             <td>${puedeEscribir("agenda")
-              ? `<input type="date" value="${t.fecha || r.fecha}" style="font-size:11.5px;padding:3px 5px;width:130px;"
-                   onchange="cambiarFechaTour(${t.id}, this.value, '${t.fecha || r.fecha}')">`
-              : (t.fecha || r.fecha)}</td>
+              ? `<input type="date" value="${t.fecha || r.fecha}"
+                   min="${r.estadia_desde || ""}" max="${r.estadia_hasta || ""}"
+                   title="Solo dentro de la estadía: ${r.estadia_desde || "?"} a ${r.estadia_hasta || "?"}"
+                   style="font-size:11.5px;padding:3px 5px;width:130px;${t.fuera_de_estadia ? 'border:2px solid var(--danger-text);' : ''}"
+                   onchange="cambiarFechaTour(${t.id}, this.value, '${t.fecha || r.fecha}')">
+                 ${t.fuera_de_estadia ? `<br><span style="font-size:10.5px;color:var(--danger-text);">fuera de la estadía — ponle un día</span>` : ""}`
+              : `${t.fecha || r.fecha}${t.fuera_de_estadia ? ' <span style="font-size:10.5px;color:var(--danger-text);">(fuera de la estadía)</span>' : ""}`}</td>
             <td>${puedeEscribir("agenda") ? `<select id="gr-${t.id}" onchange="cambiarGrupo(${t.id}, this.value)" style="width:60px;">
                 ${["A","B","C","D"].map(g => `<option value="${g}" ${(t.grupo_operativo||"A")===g?"selected":""}>${g}</option>`).join("")}
               </select>` : (t.grupo_operativo || "A")}</td>
@@ -1880,6 +1885,58 @@ async function loadAgenda(fecha, desde, hasta) {
       </p>` : `<p class="empty">No hay tours para esta fecha.<small>Si esperabas alguno, revisa que el PDF de reservas esté importado y que la fecha sea la correcta.</small></p>`}
     </div>
   `;
+}
+
+// Cuántas salidas hay de cada tour, con su pax y lo que falta por asignar.
+//
+// Se cuenta aquí y no en el servidor a propósito: la pantalla ya tiene todos los tours
+// cargados, así que sumarlos no cuesta una consulta más ni cambia la API. Y así el
+// resumen siempre cuadra con la tabla de abajo, porque sale de los mismos datos.
+//
+// El pax se cuenta por RESERVA, no por tour: una reserva de 3 personas que va al mismo
+// tour cuenta 3, no 1. Es lo que hace falta para saber si cabe en el bote.
+function resumenPorTour(rows) {
+  const porTour = {};
+  let fueraTotal = 0;
+  rows.forEach(r => r.tours.forEach(t => {
+    const k = t.tour_codigo || "—";
+    const x = porTour[k] = porTour[k] || {
+      codigo: k, salidas: 0, pax: 0, sinGuia: 0, sinBote: 0, fuera: 0,
+      horario: t.horario_inicio,
+    };
+    x.salidas += 1;
+    x.pax += r.pax || 0;
+    if (!t.guia_nombre) x.sinGuia += 1;
+    if (!t.bote_nombre) x.sinBote += 1;
+    if (t.fuera_de_estadia) { x.fuera += 1; fueraTotal += 1; }
+  }));
+  const lista = Object.values(porTour).sort((a, b) =>
+    (a.horario || "99:99").localeCompare(b.horario || "99:99") || a.codigo.localeCompare(b.codigo));
+  if (!lista.length) return "";
+
+  const totalPax = lista.reduce((s, x) => s + x.pax, 0);
+  const totalSalidas = lista.reduce((s, x) => s + x.salidas, 0);
+
+  return `
+    <div style="margin-bottom:14px;">
+      <p style="font-weight:600;font-size:13px;margin:0 0 8px;">
+        Por tipo de tour · ${totalSalidas} salida${totalSalidas === 1 ? "" : "s"} · ${totalPax} pax
+        ${fueraTotal ? `<span style="color:var(--danger-text);font-weight:600;"> · ${fueraTotal} fuera de la estadía</span>` : ""}
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">
+        ${lista.map(x => `
+          <div style="border:1px solid var(--linea, #d8d8d0);border-radius:8px;padding:8px 11px;min-width:120px;
+                      ${x.fuera ? 'border-color:var(--danger-text);' : ''}">
+            <p style="margin:0;font-weight:600;font-size:12.5px;">${x.codigo}
+              ${x.horario ? `<span style="font-weight:400;color:var(--muted);font-size:11px;">${x.horario}</span>` : ""}</p>
+            <p style="margin:2px 0 0;font-size:17px;font-weight:600;">${x.pax} <span style="font-size:11px;font-weight:400;color:var(--muted);">pax</span></p>
+            <p style="margin:1px 0 0;font-size:11px;color:var(--muted);">${x.salidas} reserva${x.salidas === 1 ? "" : "s"}</p>
+            ${x.sinGuia || x.sinBote ? `<p style="margin:3px 0 0;font-size:10.5px;color:var(--warn-text);">
+              ${x.sinGuia ? `${x.sinGuia} sin guía` : ""}${x.sinGuia && x.sinBote ? " · " : ""}${x.sinBote ? `${x.sinBote} sin bote` : ""}</p>` : ""}
+            ${x.fuera ? `<p style="margin:3px 0 0;font-size:10.5px;color:var(--danger-text);">${x.fuera} fuera de la estadía</p>` : ""}
+          </div>`).join("")}
+      </div>
+    </div>`;
 }
 
 async function cambiarFechaTour(tourId, fecha, fechaAnterior) {
