@@ -8,7 +8,7 @@ Sistema local para la operación diaria de Sierpe y Drake. Funciona sin internet
 | Pantalla | Para qué sirve |
 |---|---|
 | **Dashboard** | El día de hoy: quién entra, sale y está en casa, tours, alertas y la preparación de mañana |
-| **Reservas** | Listado con colores por estado, búsqueda, detalle completo e itinerario de cada huésped |
+| **Reservas** | Listado con colores por estado, búsqueda, detalle completo e itinerario de cada huésped. Desde el itinerario se le agregan o quitan tours, y quedan cargados en la operación |
 | **Agenda de tours** | Asignar guía y bote, dividir salidas en grupos, con aviso de conflictos de horario |
 | **Transporte** | Entradas y salidas por Sierpe o Drake, con horas de vuelo |
 | **Entradas SINAC** | Control de compra con 15 días de anticipación, por urgencia |
@@ -28,6 +28,27 @@ Sistema local para la operación diaria de Sierpe y Drake. Funciona sin internet
 - Cada pantalla recuerda **su propia fecha**, sin afectar a las demás
 - Las tarjetas de totales **despliegan el detalle** al tocarlas y lo ocultan al segundo toque
 - Los botones se pintan de azul al tocarlos, y aparece un aviso al guardar
+
+## Agregar un tour que no venía en el reporte
+
+Cuando el huésped decide un tour ya estando en el lodge, se agrega **desde su
+itinerario**: Reservas → botón del itinerario → *Tours de la reserva* → **+ Agregar
+tour**. La fecha solo admite días de la estadía.
+
+No es una fila de texto: el tour queda **cargado en la operación**. Aparece en la
+Agenda del día, cuenta para la capacidad de guía y de bote (con las mismas alertas que
+los del reporte), sale en el Resumen de operación y en el Dashboard, entra en los
+reportes de Excel y PDF, y el huésped lo ve al escanear su código QR. Si el tour
+necesita entrada al parque, **se crea sola** y avisa si el plazo de 15 días ya pasó.
+
+Antes esto no existía: un tour escrito a mano en el itinerario era solo texto. El
+huésped lo tenía prometido y la operación no se enteraba — sin guía, sin bote y sin
+entrada—, y se descubría el día del tour.
+
+El botón **Quitar** deshace todo: el tour sale de la operación y la entrada del parque
+se recalcula. Si esa entrada ya estaba comprada no se borra, se avisa para gestionarla.
+Y si el itinerario fue editado a mano, el sistema no borra filas por su cuenta: avisa
+para que recepción revise cuál corresponde.
 
 ## Al actualizar a una versión nueva
 

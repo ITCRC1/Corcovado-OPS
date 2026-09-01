@@ -1530,7 +1530,12 @@ function estadoReserva(r) {
 }
 
 async function abrirItinerario(confNo) {
-  const d = await (await fetchAuth(`${API}/api/reservas/${confNo}/itinerario`)).json();
+  // El catálogo se pide una sola vez por sesión: no cambia mientras alguien edita un
+  // itinerario, y se usa en cada apertura del cuadro.
+  const [d] = await Promise.all([
+    fetchAuth(`${API}/api/reservas/${confNo}/itinerario`).then(r => r.json()),
+    cargarToursDisponibles(),
+  ]);
   window._itin = d;
   const modal = document.createElement("div");
   modal.className = "modal-fondo";
@@ -1577,6 +1582,8 @@ async function abrirItinerario(confNo) {
         <strong>Falta completar:</strong><br>${d.avisos.join("<br>")}
       </div>` : ""}
 
+      <div class="modal-seccion" id="it-tours">${seccionToursItinerario(d)}</div>
+
       <div class="modal-seccion">
         <h4>Itinerario — puedes editar cualquier campo</h4>
         <table style="font-size:12px;" id="it-tabla">
@@ -1593,6 +1600,154 @@ async function abrirItinerario(confNo) {
       </div>
     </div>`;
   document.body.appendChild(modal);
+}
+
+/* ---------- Tours de la reserva, desde el itinerario ----------
+ *
+ * POR QUÉ ESTÁ AQUÍ Y NO SOLO EN LA AGENDA: hasta ahora un tour solo podía nacer del
+ * reporte del PMS. Si recepción le agregaba uno al itinerario escribiendo una fila, eso
+ * era texto y nada más: el huésped lo veía prometido en su código QR y la operación no
+ * se enteraba —sin guía, sin bote, sin contar para la capacidad, sin entrada del parque—.
+ * Se descubría el día del tour.
+ *
+ * Agregarlo desde aquí crea el tour de verdad, así que aparece en la Agenda, en el
+ * Resumen de operación, en la Analítica y en los reportes, y pasa por las mismas
+ * validaciones de capacidad que los del reporte. La fila del itinerario la escribe el
+ * sistema sola, con el texto del catálogo.
+ */
+let _toursDisponibles = null;
+
+async function cargarToursDisponibles() {
+  if (_toursDisponibles) return _toursDisponibles;
+  try {
+    const res = await fetchAuth(`${API}/api/tours/disponibles`);
+    if (!res.ok) return (_toursDisponibles = []);
+    _toursDisponibles = await res.json();
+  } catch (e) {
+    _toursDisponibles = [];
+  }
+  return _toursDisponibles;
+}
+
+function seccionToursItinerario(d) {
+  const tours = d.tours_reserva || [];
+  const puede = (_toursDisponibles || []).length > 0;
+  const yaTiene = new Set(tours.map(t => `${t.tour_codigo}|${t.fecha}`));
+  const fuera = (f) => (d.estadia_desde && f < d.estadia_desde)
+                    || (d.estadia_hasta && f > d.estadia_hasta);
+
+  const lista = tours.length
+    ? `<table style="font-size:12px;margin-bottom:10px;">
+         <tr><th style="width:110px;">Fecha</th><th>Tour</th><th style="width:60px;">Pax</th><th style="width:80px;"></th></tr>
+         ${tours.map(t => `<tr${fuera(t.fecha) ? ' style="background:var(--warn-bg);"' : ""}>
+           <td>${t.fecha}${fuera(t.fecha) ? ' <span title="Fuera de la estadía">⚠</span>' : ""}</td>
+           <td>${(t.nombre || t.tour_codigo).replace(/\n/g, " ")}</td>
+           <td>${t.pax}</td>
+           <td><button class="btn" onclick="quitarTourReserva(${t.id}, '${d.conf_no}')">Quitar</button></td>
+         </tr>`).join("")}
+       </table>`
+    : `<p style="font-size:12px;color:var(--muted);margin:0 0 10px;">Esta reserva no tiene tours cargados.</p>`;
+
+  if (!puede) {
+    return `<h4>Tours de la reserva</h4>${lista}
+      <p style="font-size:11px;color:var(--muted);margin:0;">
+        No se pudo cargar el catálogo de tours, así que no se pueden agregar desde aquí.</p>`;
+  }
+
+  return `<h4>Tours de la reserva</h4>
+    ${lista}
+    <div class="filterbar" style="align-items:flex-end;">
+      <div>
+        <label style="display:block;font-size:11px;color:var(--muted);">Tour</label>
+        <select id="it-tour-cod" style="width:260px;">
+          <option value="">Elegir tour…</option>
+          ${(_toursDisponibles || []).map(t =>
+            `<option value="${t.codigo}">${(t.nombre || t.codigo).replace(/\n/g, " ")}${t.requiere_entrada_sinac ? " · requiere entrada" : ""}</option>`).join("")}
+        </select>
+      </div>
+      <div>
+        <label style="display:block;font-size:11px;color:var(--muted);">Fecha</label>
+        <input type="date" id="it-tour-fecha" value="${d.estadia_desde || ""}"
+               min="${d.estadia_desde || ""}" max="${d.estadia_hasta || ""}" style="width:160px;">
+      </div>
+      <button class="btn btn-primary" onclick="agregarTourReserva('${d.conf_no}')">+ Agregar tour</button>
+    </div>
+    <p style="font-size:11px;color:var(--muted);margin:8px 0 0;">
+      El tour se agrega a la operación: entra en la Agenda del día, cuenta para la
+      capacidad de guía y bote, y genera su entrada del parque si la necesita.
+      La fecha solo puede ser un día de la estadía${d.estadia_desde ? ` (${d.estadia_desde} a ${d.estadia_hasta})` : ""}.
+    </p>
+    <div id="it-tour-avisos"></div>`;
+}
+
+async function agregarTourReserva(confNo) {
+  const codigo = document.getElementById("it-tour-cod").value;
+  const fecha = document.getElementById("it-tour-fecha").value;
+  if (!codigo) { avisar("Elegí primero el tour", true); return; }
+  if (!fecha) { avisar("Falta la fecha del tour", true); return; }
+
+  const res = await fetchAuth(`${API}/api/tours/agenda`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conf_no: confNo, tour_codigo: codigo, fecha }),
+  });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    avisar(e.detail || "No se pudo agregar el tour", true);
+    return;
+  }
+  const d = await res.json();
+
+  // Lo que hay que decirle a recepción AHORA, no cuando abra otra pantalla.
+  const avisos = [];
+  if (d.sinac && !d.sinac.a_tiempo) {
+    avisos.push(`La entrada al parque de este tour se pedía hasta el ${d.sinac.fecha_limite} `
+              + `(${Math.abs(d.sinac.dias_para_limite)} día(s) tarde). Confirmá el cupo con el SINAC antes de prometerlo.`);
+  }
+  if (d.itinerario === "requiere revisión manual") {
+    avisos.push("El itinerario fue editado a mano: revisá que el tour nuevo quedara bien.");
+  }
+  (d.alertas || []).forEach(a => avisos.push(a));
+
+  let msg = "Tour agregado a la operación";
+  if (d.sinac && d.sinac.a_tiempo) msg += " · entrada del parque pendiente de comprar";
+  avisar(msg);
+
+  // Se vuelve a abrir para que la tabla del itinerario muestre la fila nueva.
+  const modal = document.getElementById("modal-itin");
+  if (modal) modal.remove();
+  await abrirItinerario(confNo);
+  const panel = document.getElementById("it-tour-avisos");
+  if (panel && avisos.length) {
+    panel.innerHTML = `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12px;">${avisos.map(a => `⚠ ${a}`).join("<br>")}</div>`;
+  }
+  if (typeof loadAgenda === "function" && document.getElementById("ag-alertas")) loadAgenda();
+}
+
+async function quitarTourReserva(tourId, confNo) {
+  if (!confirm("Se quita este tour de la operación: deja de contar para la capacidad "
+             + "y para la entrada del parque. ¿Continuar?")) return;
+  const res = await fetchAuth(`${API}/api/tours/agenda/${tourId}`, { method: "DELETE" });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    avisar(e.detail || "No se pudo quitar el tour", true);
+    return;
+  }
+  const d = await res.json();
+  avisar("Tour quitado");
+  const modal = document.getElementById("modal-itin");
+  if (modal) modal.remove();
+  await abrirItinerario(confNo);
+  const avisos = [];
+  if (d.aviso_sinac) avisos.push(d.aviso_sinac);
+  if (d.itinerario === "requiere revisión manual") {
+    avisos.push("El itinerario fue editado a mano: quitá también la fila de este tour antes de enviarlo.");
+  }
+  const panel = document.getElementById("it-tour-avisos");
+  if (panel && avisos.length) {
+    panel.innerHTML = `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12px;">${avisos.map(a => `⚠ ${a}`).join("<br>")}</div>`;
+  }
+  if (typeof loadAgenda === "function" && document.getElementById("ag-alertas")) loadAgenda();
 }
 
 function filaItinerarioHTML(f, i) {

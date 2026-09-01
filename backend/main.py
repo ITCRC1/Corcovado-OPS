@@ -2239,6 +2239,257 @@ def _guardar_itinerario(conn, conf_no, nombre, filas, editado=0, aviso=None, idi
     )
 
 
+@app.post("/api/tours/agenda")
+async def agregar_tour(payload: dict,
+                       user: dict = Depends(exige("agenda", "reservas", escribir=True))):
+    """Agrega un tour a una reserva, con todo lo que eso arrastra.
+
+    POR QUÉ HACÍA FALTA: hasta ahora los tours SOLO podían nacer del reporte del PMS —
+    'INSERT INTO tour_asignado' existía en un único sitio, el importador—. Si recepción
+    le agregaba un tour al itinerario del huésped, eso era nada más texto: el huésped lo
+    veía prometido en su código QR y la operación no se enteraba. Nadie le asignaba guía
+    ni bote, no contaba para la capacidad, y si el tour necesitaba entrada al parque,
+    nadie la compraba. Se descubría el día del tour.
+
+    Este endpoint crea el tour DE VERDAD, así que aparece en la Agenda, en el Resumen de
+    operación, en la Analítica y en los reportes, y pasa por las mismas validaciones de
+    capacidad que los del reporte.
+
+    Se permite desde Agenda o desde Reservas: el itinerario se edita desde Reservas, y es
+    justo ahí donde recepción decide agregar un tour hablando con el huésped.
+    """
+    conf_no = (payload.get("conf_no") or "").strip()
+    codigo = (payload.get("tour_codigo") or "").strip()
+    fecha = (payload.get("fecha") or "").strip()
+    if not conf_no or not codigo or not fecha:
+        raise HTTPException(status_code=400,
+                            detail="Faltan la reserva, el tour o la fecha.")
+    try:
+        datetime.date.fromisoformat(fecha)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Fecha inválida (usa AAAA-MM-DD)")
+
+    conn = get_connection()
+    try:
+        r = conn.execute(
+            "SELECT conf_no, room_no, adl, chl, arr_date, dep_date, res_status "
+            "FROM reserva WHERE conf_no = ?", (conf_no,)).fetchone()
+        if not r:
+            raise HTTPException(status_code=404, detail="No existe esa reserva")
+        if (r["res_status"] or "").upper() == "CANCELADA":
+            raise HTTPException(status_code=400,
+                                detail="Esa reserva está cancelada.")
+
+        tc = conn.execute(
+            "SELECT * FROM tour_catalogo WHERE codigo = ?", (codigo,)).fetchone()
+        if not tc:
+            raise HTTPException(status_code=404, detail="Ese tour no está en el catálogo")
+        if not tc["activo"]:
+            raise HTTPException(status_code=400,
+                                detail=f"El tour {codigo} está desactivado en el catálogo.")
+
+        # Dentro de la estadía, igual que al mover uno existente.
+        llegada, salida = _noches_de_estadia(r)
+        if llegada and fecha < llegada:
+            raise HTTPException(
+                status_code=400,
+                detail=f"El huésped llega el {llegada}: no puede tener un tour antes.")
+        if salida and fecha > salida:
+            raise HTTPException(
+                status_code=400,
+                detail=f"El huésped se va el {salida}: no puede tener un tour después.")
+
+        repetido = conn.execute(
+            "SELECT id FROM tour_asignado WHERE conf_no = ? AND tour_codigo = ? AND fecha = ?",
+            (conf_no, codigo, fecha)).fetchone()
+        if repetido:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Esa reserva ya tiene {codigo} ese día.")
+
+        pax = payload.get("pax")
+        try:
+            pax = int(pax) if pax not in (None, "") else (r["adl"] or 0) + (r["chl"] or 0)
+        except (TypeError, ValueError):
+            pax = (r["adl"] or 0) + (r["chl"] or 0)
+        if pax < 1:
+            pax = 1
+
+        cur = conn.execute(
+            """INSERT INTO tour_asignado
+                 (conf_no, fecha, tour_codigo, pax, guia_nombre, bote_nombre, grupo_operativo)
+               VALUES (?,?,?,?,?,?,?)""",
+            (conf_no, fecha, codigo, pax,
+             payload.get("guia") or None, payload.get("bote") or None,
+             (payload.get("grupo") or "A").upper()[:2]))
+        tour_id = cur.lastrowid
+
+        # La entrada al parque. Se usa la marca del CATÁLOGO y no una lista escrita en el
+        # código: así un tour nuevo que requiera entrada la genera solo con marcarlo ahí.
+        sinac = None
+        if tc["requiere_entrada_sinac"]:
+            # El pax total se recalcula sumando a todos los que van a ese tour ese día sin
+            # número de entrada, en vez de arrastrar una cuenta: así queda bien aunque
+            # antes hubiera quedado mal.
+            total = conn.execute(
+                """SELECT COALESCE(SUM(ta.pax), 0) t FROM tour_asignado ta
+                   JOIN reserva r2 ON r2.conf_no = ta.conf_no
+                   WHERE ta.tour_codigo = ? AND ta.fecha = ?
+                     AND IFNULL(ta.conf_entrada_sinac,'') = ''
+                     AND r2.res_status != 'CANCELADA'""",
+                (codigo, fecha)).fetchone()["t"]
+            previa = conn.execute(
+                """SELECT id, estado FROM entrada_sinac
+                   WHERE tour_codigo = ? AND fecha = ? AND IFNULL(conf_entrada,'') = ''""",
+                (codigo, fecha)).fetchone()
+            if previa:
+                conn.execute("UPDATE entrada_sinac SET pax_total_grupo = ? WHERE id = ?",
+                             (total, previa["id"]))
+            else:
+                conn.execute(
+                    """INSERT INTO entrada_sinac
+                         (tour_codigo, fecha, conf_entrada, pax_total_grupo, estado)
+                       VALUES (?,?,NULL,?,'SIN_COMPRAR')""", (codigo, fecha, total))
+            limite = datetime.date.fromisoformat(fecha) - datetime.timedelta(days=15)
+            dias = (limite - datetime.date.today()).days
+            sinac = {"pax_total": total, "fecha_limite": limite.isoformat(),
+                     "dias_para_limite": dias, "a_tiempo": dias >= 0}
+
+        conn.commit()
+
+        # El itinerario del huésped, para que vea el tour que se le acaba de prometer.
+        itinerario = _reflejar_tour_en_itinerario(conn, conf_no)
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Las validaciones de capacidad, las MISMAS que corren para los tours del reporte.
+    alertas = validar_tour_asignado(tour_id)
+    for cf in detectar_conflictos_asignacion(fecha):
+        if cf["mensaje"] not in alertas:
+            alertas.append(cf["mensaje"])
+
+    _publicar_en_segundo_plano()
+    return {"status": "ok", "id": tour_id, "fecha": fecha, "pax": pax,
+            "sinac": sinac, "itinerario": itinerario, "alertas": alertas}
+
+
+@app.get("/api/tours/disponibles")
+def tours_disponibles(user: dict = Depends(exige("agenda", "reservas"))):
+    """Los tours que se pueden agregar a una reserva.
+
+    Existe aparte de /api/catalogo porque ese pide permiso de Agenda o Catálogo, y el
+    itinerario se edita desde Reservas: un usuario de recepción con permiso solo ahí
+    tenía la pantalla pero no la lista. Devuelve lo justo para el selector, sin
+    capacidades ni horarios que esa pantalla no usa.
+    """
+    conn = get_connection()
+    filas = conn.execute(
+        """SELECT codigo, nombre, requiere_entrada_sinac, es_privado
+           FROM tour_catalogo WHERE activo = 1 ORDER BY es_privado, nombre""").fetchall()
+    conn.close()
+    return [dict(f) for f in filas]
+
+
+@app.delete("/api/tours/agenda/{tour_id}")
+def quitar_tour(tour_id: int, user: dict = Depends(exige("agenda", "reservas", escribir=True))):
+    """Quita un tour de una reserva.
+
+    Hace falta junto al de agregar: sin esto, un tour agregado con el dedo equivocado se
+    queda para siempre ocupando cupo de guía y de bote, y contando en la entrada del
+    parque. La entrada del SINAC se recalcula, y si ya nadie va queda en cero para que se
+    vea que sobra —no se borra, porque puede estar comprada y pagada—.
+    """
+    conn = get_connection()
+    try:
+        ta = conn.execute("SELECT * FROM tour_asignado WHERE id = ?", (tour_id,)).fetchone()
+        if not ta:
+            raise HTTPException(status_code=404, detail="Ese tour ya no existe")
+        conf_no, codigo, fecha = ta["conf_no"], ta["tour_codigo"], ta["fecha"]
+        conn.execute("DELETE FROM tour_asignado WHERE id = ?", (tour_id,))
+
+        entrada = conn.execute(
+            """SELECT id, estado FROM entrada_sinac
+               WHERE tour_codigo = ? AND fecha = ? AND IFNULL(conf_entrada,'') = ''""",
+            (codigo, fecha)).fetchone()
+        aviso_sinac = None
+        if entrada:
+            total = conn.execute(
+                """SELECT COALESCE(SUM(ta.pax), 0) t FROM tour_asignado ta
+                   JOIN reserva r2 ON r2.conf_no = ta.conf_no
+                   WHERE ta.tour_codigo = ? AND ta.fecha = ?
+                     AND IFNULL(ta.conf_entrada_sinac,'') = ''
+                     AND r2.res_status != 'CANCELADA'""",
+                (codigo, fecha)).fetchone()["t"]
+            if total == 0 and entrada["estado"] != "COMPRADA":
+                # Ya no va nadie y no se compró: se borra en vez de dejarla en cero. Una
+                # entrada fantasma en la pantalla del SINAC es ruido, y el ruido ahí es
+                # caro: es la pantalla donde se decide qué comprar con 15 días de plazo.
+                conn.execute("DELETE FROM entrada_sinac WHERE id = ?", (entrada["id"],))
+            else:
+                conn.execute("UPDATE entrada_sinac SET pax_total_grupo = ? WHERE id = ?",
+                             (total, entrada["id"]))
+                if total == 0:
+                    aviso_sinac = (f"La entrada del SINAC de {codigo} el {fecha} ya está "
+                                   f"comprada y ahora no va nadie. Revisa si se puede usar "
+                                   f"o hay que gestionarla.")
+        conn.commit()
+        itinerario = _reflejar_tour_en_itinerario(
+            conn, conf_no, quitado=f"{codigo} del {fecha}")
+        conn.commit()
+    finally:
+        conn.close()
+
+    _publicar_en_segundo_plano()
+    return {"status": "ok", "conf_no": conf_no, "tour_codigo": codigo, "fecha": fecha,
+            "itinerario": itinerario, "aviso_sinac": aviso_sinac}
+
+
+def _reflejar_tour_en_itinerario(conn, conf_no, quitado=None):
+    """Pone al día el itinerario del huésped después de agregarle o quitarle un tour.
+
+    Si nadie lo editó a mano, se rearma completo y queda exacto. Si sí, se le agregan
+    solo las filas que faltan y se conservan las ediciones — que es lo que ya hace el
+    botón "incorporar cambios", reutilizado aquí para que se comporten igual.
+
+    Al QUITAR un tour de un itinerario editado no se borra nada solo: no hay forma
+    segura de saber cuál de las filas escritas a mano corresponde al tour, y borrar la
+    equivocada le quita al huésped algo que sí va a hacer. Se avisa y decide recepción,
+    que es lo mismo que el sistema ya hace cuando el reporte cambia.
+    """
+    fila = conn.execute("SELECT * FROM itinerario WHERE conf_no = ?", (conf_no,)).fetchone()
+    datos = itin.datos_de_reserva(conn, conf_no)
+    if not datos:
+        return "sin datos"
+    if not fila:
+        # Todavía no existe: se crea entero, ya con el tour nuevo dentro.
+        filas, _ = itin.construir_itinerario(datos)
+        _guardar_itinerario(conn, conf_no, datos["nombre_bienvenida"], filas, editado=0)
+        return "creado"
+
+    d = dict(fila)
+    actuales, _ = itin.construir_itinerario(datos)
+    if not d["editado"]:
+        _guardar_itinerario(conn, conf_no, datos["nombre_bienvenida"], actuales, editado=0)
+        return "regenerado"
+
+    guardadas = _json.loads(d["filas_json"])
+    if quitado:
+        aviso = (f"Se quitó {quitado} de esta reserva, pero el itinerario fue editado a "
+                 f"mano y no se pudo ajustar solo. Quita esa fila antes de enviarlo.")
+        conn.execute("UPDATE itinerario SET aviso_cambios = ? WHERE conf_no = ?",
+                     (aviso, conf_no))
+        return "requiere revisión manual"
+
+    faltantes = itin.detectar_faltantes(guardadas, actuales)
+    if not faltantes:
+        return "sin cambios"
+    combinadas = itin.incorporar_faltantes(guardadas, faltantes)
+    _guardar_itinerario(conn, conf_no, d["nombre_bienvenida"], combinadas,
+                        editado=1, aviso=None)
+    return "agregado al editado"
+
+
 @app.post("/api/tours/agenda/{tour_id}/fecha")
 def cambiar_fecha_tour(tour_id: int, fecha: str, user: dict = Depends(exige("agenda", escribir=True))):
     """Cambia la fecha de un tour. La fecha que trae la reserva es una intención, pero
@@ -2420,6 +2671,18 @@ def obtener_itinerario(conf_no: str, user: dict = Depends(exige("reservas"))):
         _guardar_itinerario(conn, conf_no, datos["nombre_bienvenida"], filas)
         conn.commit()
 
+    # La estadía y los tours que la reserva YA tiene. Van aquí para que el botón de
+    # agregar un tour pueda acotar el selector de fecha y no ofrecer uno repetido, sin
+    # que la pantalla tenga que pedir la reserva por separado.
+    r = conn.execute("SELECT arr_date, dep_date FROM reserva WHERE conf_no = ?",
+                     (conf_no,)).fetchone()
+    estadia_desde, estadia_hasta = _noches_de_estadia(r) if r else ("", "")
+    ya_tiene = [dict(x) for x in conn.execute(
+        """SELECT ta.id, ta.tour_codigo, ta.fecha, ta.pax, tc.nombre
+           FROM tour_asignado ta
+           LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
+           WHERE ta.conf_no = ? ORDER BY ta.fecha, ta.tour_codigo""", (conf_no,))]
+
     conn.close()
     if aviso_cambios:
         estado = "CAMBIOS"
@@ -2434,7 +2697,9 @@ def obtener_itinerario(conf_no: str, user: dict = Depends(exige("reservas"))):
     return {"conf_no": conf_no, "nombre_bienvenida": datos["nombre_bienvenida"],
             "filas": filas, "editado": editado, "estado": estado,
             "avisos": avisos, "aviso_cambios": aviso_cambios,
-            "idioma": idioma, "idiomas": _tr.IDIOMAS}
+            "idioma": idioma, "idiomas": _tr.IDIOMAS,
+            "estadia_desde": estadia_desde, "estadia_hasta": estadia_hasta,
+            "tours_reserva": ya_tiene}
 
 
 @app.put("/api/reservas/{conf_no}/itinerario")
