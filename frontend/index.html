@@ -2193,9 +2193,14 @@ async function loadAmenidades(fecha, desdeNuevo, hastaNuevo, estadoNuevo) {
   const qs = new URLSearchParams({ desde, hasta });
   if (estado) qs.append("estado", estado);
   const rows = await (await fetchAuth(`${API}/api/amenidades?${qs}`)).json();
-  // El estado de los avisos se pide una sola vez por sesión: no cambia entre recargas
-  // de la pantalla y el refresco automático la vuelve a dibujar cada pocos segundos.
-  if (_avisosEstado === null) await cargarEstadoAvisos();
+  // El estado de los avisos se guarda para no pedirlo en cada refresco (esta pantalla se
+  // vuelve a dibujar cada pocos segundos), pero SOLO cuando ya están funcionando.
+  //
+  // Mientras estén apagados se vuelve a preguntar cada vez, y esa es la parte importante:
+  // el día que se pongan las llaves en el servidor, la pantalla lo nota sola. Antes se
+  // guardaba también el "no configurado", así que quien tuviera la app abierta seguiría
+  // viendo ese aviso para siempre —hasta recargar la página entera— sin entender por qué.
+  if (!_avisosEstado || !_avisosEstado.activo) await cargarEstadoAvisos();
   const pend = rows.filter(a => a.estado === "PENDIENTE").length;
   const hechas = rows.filter(a => a.estado === "HECHA").length;
 

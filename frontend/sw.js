@@ -54,6 +54,10 @@ function noGuardar(url) {
   return url.pathname === "/api/cambios"
       || url.pathname === "/api/version"
       || url.pathname.startsWith("/api/auth/")
+      // El estado de los avisos cambia cuando se configuran las llaves en el servidor.
+      // Guardado, un teléfono podría seguir mostrando "no están configurados" días
+      // después de que sí lo estén, sin forma de que se entere.
+      || url.pathname.startsWith("/api/avisos/")
       || url.pathname.startsWith("/api/export/");   // descargas, van siempre a la red
 }
 
