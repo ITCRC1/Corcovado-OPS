@@ -2234,7 +2234,7 @@ async function loadAmenidades(fecha, desdeNuevo, hastaNuevo, estadoNuevo) {
         <div class="stat" style="cursor:default;"><p class="stat-label">Pendientes</p><p class="stat-value" style="color:var(--warn-text);">${pend}</p></div>
         <div class="stat" style="cursor:default;"><p class="stat-label">Hechas</p><p class="stat-value" style="color:var(--ok-text);">${hechas}</p></div>
       </div>
-      <p class="subtitle" style="margin-bottom:12px;">Se muestran según la fecha de llegada del huésped, que es cuando deben estar listas.</p>
+      <p class="subtitle" style="margin-bottom:12px;">Se muestran según el día en que hay que tenerlas listas: el de la columna «Para el día», o el de llegada del huésped si no se le puso uno.</p>
       ${rows.length ? Object.entries(porArea).map(([area, lista]) => `
         <p style="font-weight:600;font-size:14px;margin:16px 0 6px;color:var(--forest);">${area} (${lista.length})</p>
         <table>
