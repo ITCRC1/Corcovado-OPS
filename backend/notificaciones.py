@@ -32,6 +32,23 @@ import datetime
 
 PRIVADA = (os.environ.get("HOTEL_PUSH_PRIVADA") or "").strip()
 PUBLICA = (os.environ.get("HOTEL_PUSH_PUBLICA") or "").strip()
+
+# Sin las variables puestas, el sistema se genera las llaves solo y las guarda al lado
+# de la base. Antes esto quedaba apagado esperando que alguien pusiera dos variables a
+# mano, y la pantalla decía "no están configurados" sin que nadie supiera qué hacer con
+# eso. Las variables siguen mandando si están: sirven para usar las mismas llaves en dos
+# instalaciones, o para rotarlas a propósito.
+if not (PRIVADA and PUBLICA):
+    try:
+        from init_db import DB_PATH as _DB
+        from generar_llaves_push import cargar_o_crear as _cargar
+        _p, _u = _cargar(os.path.join(os.path.dirname(_DB), "llaves_avisos.json"))
+        if _p and _u:
+            PRIVADA, PUBLICA = _p, _u
+    except Exception:
+        # Falta 'cryptography', la ruta no se puede escribir, lo que sea: el sistema
+        # arranca igual y los avisos quedan apagados, que es como estaban antes.
+        pass
 CONTACTO = (os.environ.get("HOTEL_PUSH_CONTACTO")
             or "mailto:no-reply@corcovadowildernesslodge.com").strip()
 
@@ -69,8 +86,10 @@ def estado():
                 "motivo": "Falta la librería pywebpush en el servidor."}
     if not habilitado():
         return {"activo": False,
-                "motivo": ("Faltan las llaves HOTEL_PUSH_PRIVADA y HOTEL_PUSH_PUBLICA. "
-                           "Se generan con: python generar_llaves_push.py")}
+                "motivo": ("No se pudieron crear las llaves de los avisos. Revisa que "
+                           "la carpeta de datos se pueda escribir, o pon a mano "
+                           "HOTEL_PUSH_PRIVADA y HOTEL_PUSH_PUBLICA en el servidor "
+                           "(python generar_llaves_push.py las genera).")}
     return {"activo": True, "clave_publica": PUBLICA}
 
 

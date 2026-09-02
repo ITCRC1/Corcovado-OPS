@@ -2596,6 +2596,11 @@ async function activarAvisos() {
     avisar("Este navegador no puede recibir avisos.", true);
     return;
   }
+  if (!direccionSirveParaAvisos()) {
+    avisar("Desde esta dirección no se puede: hace falta abrir el sistema por su "
+         + "dirección de internet (https).", true);
+    return;
+  }
   // El caso que más va a pasar, y el que más confunde si no se explica.
   if (esIOS() && !appInstalada()) {
     avisar("En iPhone hay que agregar la app a la pantalla de inicio primero", true);
@@ -2677,30 +2682,69 @@ async function probarAviso() {
   avisar("Aviso de prueba enviado — debería llegarte en un momento");
 }
 
+// ¿Esta dirección puede recibir avisos? El navegador exige conexión segura para dar
+// notificaciones: solo funciona en https, o en localhost (la propia computadora).
+//
+// ESTO ES LO QUE MÁS CONFUNDE, y hay que decirlo: abriendo el sistema desde el teléfono
+// con la dirección de esta computadora (192.168.x.x:8000) el navegador NO registra nada
+// y el botón de activar no puede funcionar. Para el teléfono hace falta la dirección de
+// internet del hotel. Antes la pantalla no lo decía y parecía que el botón estaba roto.
+function direccionSirveParaAvisos() {
+  return window.isSecureContext === true
+      || location.hostname === "localhost" || location.hostname === "127.0.0.1";
+}
+
 function panelAvisos() {
   const est = _avisosEstado;
   if (!est) return "";
+  const caja = (color, contenido) =>
+    `<div style="background:var(--${color}-bg);color:var(--${color}-text);border-radius:var(--r-sm);padding:9px 12px;margin:0 0 12px;font-size:12.5px;line-height:1.55;">${contenido}</div>`;
+
   if (!est.activo) {
-    return `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:9px 12px;margin:0 0 12px;font-size:12.5px;">
-      🔔 Los avisos al celular no están configurados. ${est.motivo || ""}</div>`;
+    return caja("warn", `🔔 <strong>Los avisos al celular no están funcionando.</strong><br>${est.motivo || ""}`);
   }
+
+  // La dirección manda sobre todo lo demás: sin conexión segura no hay nada que activar.
+  if (!direccionSirveParaAvisos()) {
+    return caja("warn",
+      `🔔 <strong>Desde esta dirección el teléfono no puede recibir avisos.</strong><br>
+       El navegador solo entrega notificaciones por una conexión segura (https). Estás
+       en <code>${location.host}</code>.<br>
+       Para que le lleguen a un teléfono hay que abrir el sistema por la dirección de
+       internet del hotel. En esta computadora sí se puede probar entrando por
+       <code>localhost:8000</code>.`);
+  }
+
   const mios = est.mis_aparatos || [];
-  const soporta = avisosSoportados();
-  const faltaInstalar = esIOS() && !appInstalada();
-  return `
-    <div style="background:var(--surface-2, var(--warn-bg));border-radius:var(--r-sm);padding:10px 12px;margin:0 0 12px;font-size:12.5px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-      <span>🔔 <strong>Avisos al celular</strong></span>
-      ${mios.length
-        ? `<span style="color:var(--muted);">activos en ${mios.length} aparato(s): ${mios.map(a => a.aparato || "sin nombre").join(", ")}</span>
-           <button class="btn" onclick="probarAviso()">Probar</button>
-           <button class="btn" onclick="desactivarAvisos()">Desactivar aquí</button>`
-        : (!soporta
-            ? `<span style="color:var(--muted);">Este navegador no puede recibirlos.</span>`
-            : faltaInstalar
-              ? `<span style="color:var(--warn-text);">En iPhone hay que agregar la app a la pantalla de inicio para poder recibirlos.</span>`
-              : `<button class="btn btn-primary" onclick="activarAvisos()">Activar en este aparato</button>`)}
-      ${!est.puede_recibir ? `<span style="color:var(--muted);">${est.motivo || ""}</span>` : ""}
-    </div>`;
+  if (!avisosSoportados()) {
+    return caja("warn", "🔔 Este navegador no puede recibir avisos. Prueba con Chrome, Edge o Safari.");
+  }
+  if (mios.length) {
+    return caja("ok",
+      `🔔 <strong>Avisos activos</strong> en ${mios.length} aparato(s):
+       ${mios.map(a => a.aparato || "sin nombre").join(", ")}
+       <button class="btn" onclick="probarAviso()" style="margin-left:6px;">Probar</button>
+       <button class="btn" onclick="desactivarAvisos()">Desactivar aquí</button>
+       <br><span style="opacity:.85;">Llega un aviso cuando entra un requerimiento
+       nuevo, y un repaso de lo pendiente cada mañana. Cada persona los activa en su
+       propio teléfono: activarlos aquí no los activa en los demás.</span>`);
+  }
+
+  // En iPhone Apple no entrega nada a una pestaña de Safari: la app tiene que estar en
+  // la pantalla de inicio. Es el paso que nadie adivina, así que se explica cómo.
+  if (esIOS() && !appInstalada()) {
+    return caja("warn",
+      `🔔 <strong>En iPhone hay que agregar la app a la pantalla de inicio.</strong><br>
+       Apple no entrega avisos a una pestaña de Safari. En Safari: botón de compartir
+       (el cuadro con la flecha) → <strong>Agregar a inicio</strong>. Después abre el
+       sistema desde ese icono y vuelve aquí: aparecerá el botón para activarlos.`);
+  }
+
+  return caja("warn",
+    `🔔 <strong>Avisos al celular</strong>
+     <button class="btn btn-primary" onclick="activarAvisos()" style="margin-left:6px;">Activar en este aparato</button>
+     <br><span style="opacity:.85;">El navegador va a pedir permiso: hay que aceptarlo.
+     Se activa por aparato, así que cada persona lo hace en el suyo.</span>`);
 }
 
 // ---------- El día de cada amenidad ----------

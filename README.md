@@ -226,25 +226,47 @@ Restaurantes; se anotan en Amenidades.
 ## Avisos al celular
 
 El personal puede recibir una notificación en el teléfono cuando aparece un requerimiento
-nuevo, como cualquier otra app. **Vienen apagados**: se encienden poniendo dos llaves en
-el servidor.
+nuevo, como cualquier otra app.
 
-```
-python backend/generar_llaves_push.py
-```
+**No hay nada que configurar en el servidor.** El sistema se genera las llaves solo la
+primera vez que arranca y las guarda en `data/llaves_avisos.json` (en Railway, dentro del
+volumen). Si `HOTEL_PUSH_PRIVADA` y `HOTEL_PUSH_PUBLICA` están puestas como variables,
+esas mandan — sirve para usar las mismas llaves en dos instalaciones o para rotarlas.
 
-Eso imprime `HOTEL_PUSH_PRIVADA` y `HOTEL_PUSH_PUBLICA` para poner en las variables del
-servicio, más `HOTEL_PUSH_CONTACTO` con un correo del hotel. **Se generan una sola vez:**
-si se cambian, todos los celulares dejan de recibir y cada persona tiene que volver a
-activarlos.
+⚠️ **Las llaves viven en la carpeta de datos.** Si se borran, todos los teléfonos dejan
+de recibir y cada persona tiene que volver a activarlos. Es el mismo sitio donde viven
+las suscripciones, así que se pierden juntas o no se pierden.
 
-Después, cada persona los activa desde la pantalla **Amenidades**, con el botón
-*"Activar en este aparato"*. Hay un botón **Probar** al lado, porque activar esto tiene
-varios pasos que pueden fallar por separado y conviene comprobarlo en el momento.
+### Los dos requisitos que hay que entender
 
-⚠️ **En iPhone solo funciona si la app está agregada a la pantalla de inicio.** En una
-pestaña de Safari, Apple no entrega notificaciones y no hay forma de evitarlo. En Android
-funcionan también desde el navegador. La pantalla lo dice cuando detecta ese caso.
+**1. Hace falta `https`.** El navegador solo entrega notificaciones por conexión segura.
+
+| Cómo se abre el sistema | ¿Llegan avisos? |
+|---|---|
+| `https://…` (la dirección de internet del hotel) | **sí**, al teléfono y a la computadora |
+| `http://localhost:8000` en la propia computadora | sí, pero solo en **esa computadora** |
+| `http://192.168.x.x:8000` desde el teléfono | **no.** El navegador no registra nada |
+
+Por eso **no se pueden probar en el teléfono contra una computadora del lodge**: hace
+falta que el sistema esté publicado. La pantalla lo dice cuando la dirección no sirve, en
+vez de dejar un botón que no puede funcionar.
+
+**2. En iPhone la app tiene que estar en la pantalla de inicio.** En una pestaña de
+Safari, Apple no entrega notificaciones y no hay forma de evitarlo. En Safari: botón de
+compartir → *Agregar a inicio*, y abrir el sistema desde ese icono. En Android funcionan
+también desde el navegador. La pantalla lo dice cuando detecta ese caso.
+
+### Cómo se activan, paso a paso
+
+1. Abrir el sistema por su **dirección de internet** (`https://…`) e iniciar sesión.
+2. En iPhone: **agregar a la pantalla de inicio** y abrirlo desde ese icono.
+3. Ir a **Amenidades** → **Activar en este aparato** → aceptar el permiso que pide el
+   navegador.
+4. Tocar **Probar**: debe llegar una notificación en ese momento. Si no llega, la pantalla
+   dice qué falló.
+
+Se activa **por aparato**: cada persona lo hace en su propio teléfono. Activarlo en uno no
+lo activa en los demás.
 
 **Qué avisa, y a quién:**
 
@@ -328,7 +350,7 @@ Servicio → *Variables*:
 | `HOTEL_ADMIN_PASSWORD` | contraseña de la primera cuenta (mínimo 10 caracteres) | **Sí** |
 | `HOTEL_ADMIN_USER` | nombre de esa cuenta (por defecto `recepcion`) | No |
 | `HOTEL_SESION_HORAS` | horas que dura la sesión. Sin definir, **no vence** | No |
-| `HOTEL_PUSH_PRIVADA` · `HOTEL_PUSH_PUBLICA` | avisos al celular. Sin ellas quedan apagados | No |
+| `HOTEL_PUSH_PRIVADA` · `HOTEL_PUSH_PUBLICA` | llaves de los avisos. Sin ellas el sistema las genera y las guarda en el volumen | No |
 | `HOTEL_PUSH_CONTACTO` | correo de contacto que piden Google y Apple | No |
 | `HOTEL_PUSH_HORA_REPASO` | hora del repaso diario (por defecto `6`) | No |
 | `HOTEL_PORTAL_TOKEN` | secreto para el portal del huésped. Sin él, esa puerta no existe | No |
