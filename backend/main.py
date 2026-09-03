@@ -283,11 +283,17 @@ def dashboard(fecha: str, user: dict = Depends(exige("dashboard"))):
     # El spa del día. Va con las citas que están vivas —una cancelada no es trabajo— y
     # con las solicitudes contadas aparte: esas son lo que hay que resolver hoy, no lo
     # que hay que atender. Se pidió que el spa se refleje aquí cuando aplique para el día.
+    # La habitación es la de la RESERVA, no la copiada al crear la cita: si el huésped
+    # se cambió de cuarto, la terapeuta tiene que ir al de ahora.
     citas_hoy = conn.execute(
-        """SELECT c.hora, c.minutos, c.estado, c.terapeuta, c.room_no,
+        """SELECT c.hora, c.minutos, c.estado, c.terapeuta,
+                  COALESCE(r.room_no, c.room_no) AS room_no,
+                  c.room_no AS room_no_pedida,
                   c.nombre_huesped, c.embarazo, c.cirugia_reciente, c.buceo_24h,
                   s.nombre AS servicio_nombre
-           FROM spa_cita c LEFT JOIN spa_servicio s ON s.codigo = c.servicio_codigo
+           FROM spa_cita c
+           LEFT JOIN spa_servicio s ON s.codigo = c.servicio_codigo
+           LEFT JOIN reserva r ON r.conf_no = c.conf_no
            WHERE c.fecha = ? AND c.estado != 'CANCELADA'
            ORDER BY CASE WHEN c.hora IS NULL THEN 1 ELSE 0 END, c.hora""",
         (fecha,)).fetchall()
@@ -426,11 +432,15 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
     # El spa del día, para la hoja que se imprime y se reparte. Con la terapeuta y con
     # la marca de lo que hay que revisar antes de empezar.
     spa_dia = [dict(c) for c in conn.execute(
-        """SELECT c.hora, c.minutos, c.estado, c.terapeuta, c.room_no,
+        """SELECT c.hora, c.minutos, c.estado, c.terapeuta,
+                  COALESCE(r.room_no, c.room_no) AS room_no,
+                  c.room_no AS room_no_pedida,
                   c.nombre_huesped, c.nota_operacion,
                   c.embarazo, c.cirugia_reciente, c.buceo_24h,
                   s.nombre AS servicio_nombre
-           FROM spa_cita c LEFT JOIN spa_servicio s ON s.codigo = c.servicio_codigo
+           FROM spa_cita c
+           LEFT JOIN spa_servicio s ON s.codigo = c.servicio_codigo
+           LEFT JOIN reserva r ON r.conf_no = c.conf_no
            WHERE c.fecha = ? AND c.estado != 'CANCELADA'
            ORDER BY CASE WHEN c.hora IS NULL THEN 1 ELSE 0 END, c.hora""", (fecha,))]
     for c in spa_dia:
@@ -1903,8 +1913,24 @@ def _terapeutas_spa(conn, todas=False):
 
 
 def _citas_spa(conn, desde=None, hasta=None, conf_no=None, incluir_canceladas=True):
-    """Las citas del rango, ya con el nombre del tratamiento y sus minutos."""
-    query = """SELECT c.*, s.nombre AS servicio_nombre, s.tipo AS servicio_tipo,
+    """Las citas del rango, ya con el nombre del tratamiento y sus minutos.
+
+    LA HABITACIÓN QUE SE DEVUELVE ES LA DE LA RESERVA, no la que se copió al crear la
+    cita. Si el huésped se cambió de cuarto a mitad de estadía, la terapeuta tiene que
+    ir al cuarto donde está AHORA — con la copia iba al equivocado.
+
+    La copia se conserva en 'room_no_pedida' por dos razones: una cita sin reserva (un
+    visitante del día) no tiene de dónde sacar la habitación, y cuando las dos difieren
+    la pantalla lo puede señalar en vez de cambiar el número en silencio.
+    """
+    # OJO CON 'c.*' Y LOS ALIAS: si se pide 'c.*' y además un
+    # 'COALESCE(r.room_no, c.room_no) AS room_no', quedan DOS columnas llamadas igual y
+    # sqlite3.Row devuelve la primera — la de c.* — así que el alias no sirve para nada
+    # y no da ningún error. Se resolvió: la habitación de la reserva viene con otro
+    # nombre y la sustitución se hace abajo, a la vista.
+    query = """SELECT c.*,
+                      r.room_no AS room_no_reserva,
+                      s.nombre AS servicio_nombre, s.tipo AS servicio_tipo,
                       r.nombre_principal, r.arr_date, r.dep_date, r.res_status
                FROM spa_cita c
                LEFT JOIN spa_servicio s ON s.codigo = c.servicio_codigo
@@ -1923,7 +1949,16 @@ def _citas_spa(conn, desde=None, hasta=None, conf_no=None, incluir_canceladas=Tr
     # Las que no tienen hora van al final: son solicitudes a las que el spa todavía no
     # les puso hora, y lo que se mira primero es la agenda de la que sí está armada.
     query += " ORDER BY c.fecha, CASE WHEN c.hora IS NULL THEN 1 ELSE 0 END, c.hora, c.id"
-    return [dict(r) for r in conn.execute(query, params)]
+    salida = []
+    for fila in conn.execute(query, params):
+        d = dict(fila)
+        # La habitación que manda es la de la RESERVA: si el huésped se cambió de cuarto,
+        # la terapeuta tiene que ir al de ahora. Se conserva la que se pidió para que la
+        # pantalla pueda señalar el cambio en vez de mover el número en silencio.
+        d["room_no_pedida"] = d.get("room_no")
+        d["room_no"] = d.pop("room_no_reserva", None) or d.get("room_no")
+        salida.append(d)
+    return salida
 
 
 def _buceo_de(conn, conf_no):
@@ -2481,7 +2516,42 @@ async def spa_publico_pedir(conf_no: str, token: str, payload: dict):
         datos["nombre_huesped"] = reserva["nombre_principal"]
         datos["estado"] = "SOLICITADA"
         datos.pop("terapeuta", None)      # la asigna el spa al confirmar
-        cita_id = _crear_cita(conn, datos, origen="HUESPED")
+
+        # LA HORA TOMADA SE BLOQUEA, aquí sí. En la pantalla del spa los choques solo se
+        # avisan —quien atiende sabe si puede absorber algo apretado— pero al huésped no
+        # se le puede dejar pedir una hora que no existe: se iría creyendo que la tiene.
+        #
+        # BEGIN IMMEDIATE toma el bloqueo de escritura ANTES de comprobar. Sin eso hay
+        # una carrera real: dos huéspedes tocan las 10:00 en el mismo segundo, los dos
+        # pasan la comprobación y los dos entran. Con dos terapeutas y una hora, no puede
+        # haber tres citas.
+        # Se toma el control de las transacciones: por omisión, sqlite3 de Python abre
+        # una implícita al escribir, y un BEGIN encima de esa da error.
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            hora = _spa.normalizar_hora(datos.get("hora"))
+            servicio = conn.execute(
+                "SELECT minutos, nombre FROM spa_servicio WHERE codigo = ?",
+                ((datos.get("servicio_codigo") or "").strip().upper(),)).fetchone()
+            if hora and servicio:
+                cfg = _spa.cargar_config()
+                choques = _spa.revisar_choque(
+                    _citas_spa(conn, datos.get("fecha"), datos.get("fecha"),
+                               incluir_canceladas=False),
+                    hora, servicio["minutos"], _terapeutas_spa(conn), cfg)
+                if choques:
+                    conn.rollback()
+                    raise HTTPException(
+                        status_code=409,
+                        detail=("Esa hora ya se ocupó mientras llenabas el formulario. "
+                                "Elige otra de las que aparecen y volvemos a intentarlo."))
+            cita_id = _crear_cita(conn, datos, origen="HUESPED")
+        except HTTPException:
+            raise
+        except Exception:
+            conn.rollback()
+            raise
         respuesta = _datos_publicos_spa(conn, reserva)
     finally:
         conn.close()

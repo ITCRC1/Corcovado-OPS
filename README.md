@@ -96,6 +96,23 @@ no se solapa consigo misma. Los 30 minutos entre citas cuentan: una de 60 minuto
 empieza a las 10:00 deja libre a esa terapeuta a las **11:30**, no a las 11:00 — es
 limpiar la cabina y recibir al siguiente huésped.
 
+**Al huésped la hora tomada se le BLOQUEA.** Si otro ya ocupó esa hora y no quedan
+terapeutas, no puede pedirla: tiene que elegir otra. La página le vuelve a cargar las
+horas libres y le dice por qué. Aguanta incluso el caso de dos huéspedes tocando la
+misma hora en el mismo segundo — probado con tres a la vez: entran dos, la tercera
+recibe el aviso.
+
+En la pantalla del spa **sí se puede sobrecargar**, y es deliberado: quien atiende sabe
+si puede absorber algo apretado, y bloquearlo llevaría a inventar citas para saltárselo.
+
+**La habitación es la de ahora.** Si el huésped se cambia de cuarto después de pedir la
+cita, la agenda, el Dashboard y la hoja del día muestran el cuarto **donde está**, y
+señalan de dónde venía (*"se cambió de la 99"*). La terapeuta iba al equivocado.
+
+**El huésped va con su reserva, no con la habitación.** Si la 23 tiene un huésped hasta
+el jueves y otro desde el jueves, cada cita queda con el suyo: cada reserva tiene su
+propio enlace y solo puede agendar dentro de sus propias fechas.
+
 **Horario.** Una de 90 minutos a las 19:00 termina a las 21:00, con el spa cerrado.
 
 **Salud, antes de empezar.** Embarazo, cirugía reciente, buceo. Y aquí hay algo que el

@@ -268,6 +268,15 @@ async function enviar() {
     if (!res.ok) {
       boton.disabled = false;
       boton.textContent = "Pedir el tratamiento";
+      // 409 = alguien tomó esa hora mientras llenaba el formulario. Se vuelven a
+      // cargar las horas para que la que elija exista de verdad, y se le quita la que
+      // tenía marcada: si no, toca «Pedir» otra vez y le vuelve a fallar.
+      if (res.status === 409) {
+        HORA = null;
+        await verHoras();
+        document.getElementById("horas").scrollIntoView(
+          { behavior: "smooth", block: "center" });
+      }
       return mostrar(d.detail || "No se pudo enviar. Prueba otra vez.");
     }
     D = d;

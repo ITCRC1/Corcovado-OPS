@@ -3673,6 +3673,15 @@ async function loadSpa(fecha, desdeNuevo, hastaNuevo) {
     </div>`;
 }
 
+// Si el huésped se cambió de cuarto después de pedir la cita, se muestra el de AHORA
+// —es donde la terapeuta tiene que ir— y se señala de dónde venía. Cambiar el número
+// en silencio dejaría a quien lo anotó en un papel buscando en el cuarto equivocado.
+function cambioDeCuarto(c) {
+  if (!c.room_no_pedida || c.room_no_pedida === c.room_no) return "";
+  return `<br><span style="font-size:10px;color:var(--warn-text);"
+    title="El huésped se cambió de cuarto después de pedir la cita">se cambió de la ${escaparHTML(c.room_no_pedida)}</span>`;
+}
+
 function filaCitaSpa(c, terapeutas) {
   const [clase, texto] = ESTADO_SPA[c.estado] || ["badge-tour", c.estado];
   const apagada = c.estado === "CANCELADA" || c.estado === "HECHA";
@@ -3688,7 +3697,8 @@ function filaCitaSpa(c, terapeutas) {
              onchange="moverCita(${c.id}, {hora: this.value})"
              style="font-size:11.5px;padding:2px 4px;width:88px;">`
         : (c.hora || '<span style="color:var(--warn-text);font-size:11px;">sin hora</span>')}</td>
-      <td><strong>${escaparHTML(c.room_no || "—")}</strong>${c.conf_no ? etiquetaGrupo(c.conf_no) : ""}</td>
+      <td><strong>${escaparHTML(c.room_no || "—")}</strong>${c.conf_no ? etiquetaGrupo(c.conf_no) : ""}
+        ${cambioDeCuarto(c)}</td>
       <td>${escaparHTML(c.nombre_huesped || c.nombre_principal || "")}
         ${c.origen === "HUESPED" ? '<br><span style="font-size:10px;color:var(--muted);">lo pidió el huésped</span>' : ""}</td>
       <td><span class="badge badge-tour">${escaparHTML(c.servicio_nombre || c.servicio_codigo || "")}</span>
