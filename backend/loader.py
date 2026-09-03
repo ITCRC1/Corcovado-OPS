@@ -152,12 +152,25 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
         # misma reserva trae dos veces la misma amenidad, se restauran en orden.
         trabajo_previo = {}
         for prev in cur.execute(
-            """SELECT amenidad, fecha, detalle, tarea, estado, editado_a_mano
+            """SELECT id, amenidad, fecha, detalle, tarea, estado, editado_a_mano
                FROM amenidad_tarea WHERE conf_no = ? AND origen = 'PDF' ORDER BY id""",
             (r["conf_no"],),
         ).fetchall():
             if prev["editado_a_mano"] or prev["estado"] != "PENDIENTE":
-                trabajo_previo.setdefault(prev["amenidad"], []).append(dict(prev))
+                d = dict(prev)
+                # Los departamentos con el estado de cada uno, para poder devolverlos
+                # tal cual: si cocina ya hizo su parte y housekeeping no, reimportar no
+                # debe reabrir la de cocina ni cerrar la de housekeeping.
+                d["areas"] = [(x["area"], x["estado"]) for x in cur.execute(
+                    "SELECT area, estado FROM amenidad_area WHERE amenidad_id = ? "
+                    "ORDER BY rowid", (prev["id"],))]
+                trabajo_previo.setdefault(prev["amenidad"], []).append(d)
+
+        # Al borrar las del PDF se van también sus filas de departamento.
+        cur.execute(
+            """DELETE FROM amenidad_area WHERE amenidad_id IN
+                 (SELECT id FROM amenidad_tarea WHERE conf_no = ? AND origen = 'PDF')""",
+            (r["conf_no"],))
 
         cur.execute("DELETE FROM huesped WHERE conf_no = ?", (r["conf_no"],))
         # Los tours agregados a mano desde el itinerario NO están en el reporte, así que
@@ -206,6 +219,7 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
             # Lo que recepción ya había hecho sobre esta misma amenidad manda sobre lo
             # que dice el reporte: el reporte no sabe qué noche se acordó la cena, ni que
             # la alergia resultó ser también a la lactosa, ni que la cuna ya está puesta.
+            areas_previas = None
             guardado = trabajo_previo.get(nombre)
             if guardado:
                 p = guardado.pop(0)
@@ -215,13 +229,25 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                     fecha = p["fecha"]
                     detalle = p["detalle"]
                     tarea = p["tarea"] or tarea
+                    # Los departamentos que recepción le puso a mano. El catálogo solo
+                    # sabe de uno; si alguien decidió que esto también le toca a cocina,
+                    # el reporte no tiene por qué deshacerlo.
+                    areas_previas = p.get("areas")
             cur.execute(
                 """INSERT INTO amenidad_tarea (conf_no, amenidad, detalle, tarea,
                                                area_responsable, fecha, estado,
                                                editado_a_mano)
                    VALUES (?,?,?,?,?,?,?,?)""",
-                (r["conf_no"], nombre, detalle, tarea, area, fecha, estado, editado),
+                (r["conf_no"], nombre, detalle, tarea,
+                 (areas_previas or [(area, estado)])[0][0], fecha, estado, editado),
             )
+            nueva_id = cur.lastrowid
+            # Su fila de departamento. Sin esto la amenidad no le aparecería a nadie en
+            # la pantalla, que agrupa por departamento.
+            for nombre_area, estado_area in (areas_previas or [(area, estado)]):
+                cur.execute(
+                    """INSERT OR IGNORE INTO amenidad_area (amenidad_id, area, estado)
+                       VALUES (?,?,?)""", (nueva_id, nombre_area, estado_area))
 
         for g in r["rooming"]:
             cur.execute(

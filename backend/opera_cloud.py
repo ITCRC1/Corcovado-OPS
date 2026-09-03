@@ -19,6 +19,7 @@ Uso:
 import base64
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -51,6 +52,105 @@ GRANT_TYPE = (os.environ.get("OPERA_GRANT_TYPE") or "").strip()
 RUTA_TOKEN = "/oauth/v1/tokens"
 RUTA_RESERVAS = "/rsv/v1/hotels/{hotel}/reservations"
 
+# ---------------------------------------------------------------------------
+# Las credenciales, también desde un archivo
+# ---------------------------------------------------------------------------
+# En el servidor van en variables de entorno y ahí se quedan. Pero para PROBAR la
+# conexión desde una computadora del lodge, definir siete variables de entorno en
+# Windows es un trámite que no se le puede pedir a recepción, y hacerlo mal se ve igual
+# que una credencial equivocada. Así que se acepta un archivo en la carpeta de datos.
+#
+# Las variables de entorno MANDAN: si están puestas, el archivo no se lee. Así el
+# servidor sigue funcionando como antes y el archivo solo sirve donde hace falta.
+#
+# El archivo vive en data/, que está excluida del repositorio, y el respaldo de la base
+# no lo incluye (solo copia hotel.db). Aun así: en producción, variables de entorno.
+RUTA_CREDENCIALES = os.path.join(
+    os.environ.get("HOTEL_DATA_DIR") or os.path.join(os.path.dirname(__file__), "..", "data"),
+    "credenciales_opera.json",
+)
+
+# Qué constante de este módulo corresponde a cada variable de entorno.
+_NOMBRE_INTERNO = {
+    "OPERA_BASE_URL": "BASE_URL", "OPERA_APP_KEY": "APP_KEY",
+    "OPERA_CLIENT_ID": "CLIENT_ID", "OPERA_CLIENT_SECRET": "CLIENT_SECRET",
+    "OPERA_SCOPE": "SCOPE", "OPERA_ENTERPRISE_ID": "ENTERPRISE_ID",
+    "OPERA_HOTEL_ID": "HOTEL_ID", "OPERA_USER": "USUARIO",
+    "OPERA_PASSWORD": "CLAVE", "OPERA_GRANT_TYPE": "GRANT_TYPE",
+}
+
+
+def _leer_credenciales_de_archivo():
+    """Rellena lo que no venga por variable de entorno. Nunca pisa una variable puesta."""
+    if not os.path.exists(RUTA_CREDENCIALES):
+        return []
+    try:
+        # utf-8-sig porque el Bloc de notas de Windows guarda con marca de orden de
+        # bytes al principio, y con eso json.load falla sin explicar por qué.
+        with open(RUTA_CREDENCIALES, encoding="utf-8-sig") as f:
+            datos = json.load(f)
+    except (OSError, ValueError):
+        # Un archivo mal escrito no puede tumbar el arranque: la conexión queda sin
+        # configurar, que es el estado en que ya estaba.
+        return []
+    if not isinstance(datos, dict):
+        return []
+
+    puestas = []
+    for clave, interno in _NOMBRE_INTERNO.items():
+        # Se acepta con y sin el prefijo ('OPERA_APP_KEY' o 'app_key'): al copiar de la
+        # ficha de OHIP es fácil escribir solo el nombre corto, y un archivo que no
+        # funciona por el nombre de una llave es media hora perdida sin ninguna pista.
+        valor = datos.get(clave)
+        if valor is None:
+            valor = datos.get(clave.replace("OPERA_", "").lower())
+        if valor is None:
+            continue
+        valor = str(valor).strip()
+        # Los huecos de la plantilla sin rellenar se ignoran.
+        if not valor or valor.startswith("<"):
+            continue
+        if (os.environ.get(clave) or "").strip():
+            continue                      # la variable de entorno manda
+        globals()[interno] = valor
+        puestas.append(clave)
+    return puestas
+
+
+DESDE_ARCHIVO = _leer_credenciales_de_archivo()
+if BASE_URL:
+    BASE_URL = BASE_URL.rstrip("/")
+
+
+PLANTILLA_CREDENCIALES = {
+    "_lea_esto": [
+        "Credenciales de Opera Cloud (OHIP). Rellene los valores entre <> y guarde.",
+        "Este archivo NO se sube al repositorio. No lo comparta ni lo pegue en un chat.",
+        "En el servidor de produccion use variables de entorno en vez de este archivo.",
+        "Si un dato no se lo dieron, deje el hueco tal como esta o borre la linea.",
+    ],
+    "OPERA_BASE_URL": "<Gateway URL, ej. https://xxx.hospitality.oracleindustry.com>",
+    "OPERA_APP_KEY": "<App Key>",
+    "OPERA_CLIENT_ID": "<Client ID>",
+    "OPERA_CLIENT_SECRET": "<Client Secret>",
+    "OPERA_HOTEL_ID": "<codigo del hotel en Opera, ej. CWLCR>",
+    "OPERA_SCOPE": "<Scope, solo si se lo dieron>",
+    "OPERA_ENTERPRISE_ID": "<Enterprise ID, solo si se lo dieron>",
+    "OPERA_GRANT_TYPE": "<client_credentials o password, solo si hace falta forzarlo>",
+    "OPERA_USER": "<usuario de integracion, solo con esquema password>",
+    "OPERA_PASSWORD": "<contrasena de ese usuario, solo con esquema password>",
+}
+
+
+def crear_plantilla_credenciales():
+    """Deja el archivo listo para rellenar. Nunca sobreescribe uno que ya exista."""
+    if os.path.exists(RUTA_CREDENCIALES):
+        return False
+    os.makedirs(os.path.dirname(RUTA_CREDENCIALES), exist_ok=True)
+    with open(RUTA_CREDENCIALES, "w", encoding="utf-8") as f:
+        json.dump(PLANTILLA_CREDENCIALES, f, ensure_ascii=False, indent=2)
+    return True
+
 # El endpoint de reservas devuelve un esqueleto mínimo si no se le pide más. Cada
 # bloque de datos hay que solicitarlo por nombre. Esta lista cubre lo que el sistema
 # necesita; el descubrimiento informa cuáles respondió Oracle de verdad, porque
@@ -79,10 +179,34 @@ class OperaError(Exception):
     pass
 
 
+def normalizar_grant(valor):
+    """'Client Credentials' -> 'client_credentials'.
+
+    POR QUÉ HACE FALTA: la ficha de OHIP muestra el "Authentication Scheme" escrito para
+    leer —"Client Credentials"—, y eso es lo que uno copia. Pero OAuth exige el valor
+    exacto en minúsculas y con guion bajo. Enviado tal cual, Oracle responde un
+    'HTTP 401 Unauthorized' pelado, idéntico al de una contraseña equivocada: se pierden
+    horas revisando credenciales que estaban bien.
+    """
+    limpio = re.sub(r"[\s\-]+", "_", str(valor or "").strip().lower())
+    conocidos = {
+        "client_credentials": "client_credentials",
+        "clientcredentials": "client_credentials",
+        "credentials": "client_credentials",
+        "password": "password",
+        "user": "password",
+        "usuario": "password",
+        "password_credentials": "password",
+    }
+    # Si no es uno de los conocidos se devuelve como vino: puede ser un esquema nuevo
+    # que Oracle acepte y que aquí no convenga bloquear.
+    return conocidos.get(limpio, limpio)
+
+
 def tipo_de_autenticacion():
     """Qué flujo de OAuth se va a usar."""
     if GRANT_TYPE:
-        return GRANT_TYPE
+        return normalizar_grant(GRANT_TYPE)
     return "password" if (USUARIO and CLAVE) else "client_credentials"
 
 
@@ -96,6 +220,33 @@ def _faltantes():
         requeridas["OPERA_USER"] = USUARIO
         requeridas["OPERA_PASSWORD"] = CLAVE
     return [k for k, v in requeridas.items() if not v]
+
+
+def _motivo_de(error, ancho=110):
+    """Lo que Oracle dijo de verdad, sin la URL y sin el JSON en bruto.
+
+    Los errores de OHIP vienen como un JSON con 'title', 'detail' y un 'o:errorCode'.
+    Ese código es lo que sirve para reclamarle a Oracle —lo pueden buscar en su sistema—
+    así que se saca a la vista en vez de dejarlo enterrado en una línea de 400 caracteres.
+    """
+    texto = str(error)
+    lineas = []
+    llave = texto.find("{")
+    if llave >= 0:
+        try:
+            d = json.loads(texto[llave:texto.rfind("}") + 1])
+            mensaje = d.get("detail") or d.get("title") or ""
+            if mensaje:
+                lineas.append(mensaje.strip())
+            codigo = d.get("o:errorCode")
+            if codigo:
+                lineas.append(f"(código de Oracle: {codigo})")
+            return lineas or [texto[:ancho]]
+        except (ValueError, AttributeError):
+            pass
+    # Sin JSON: se devuelve todo menos la primera línea, que es la dirección.
+    resto = [l.strip() for l in texto.splitlines()[1:] if l.strip()]
+    return resto[:3] or [texto.splitlines()[0][:ancho]]
 
 
 def _pedir(req, timeout=45):
@@ -151,7 +302,20 @@ def _autenticar():
         "Authorization": f"Basic {basica}",
     }
     if ENTERPRISE_ID:
-        cabeceras["x-enterpriseId"] = ENTERPRISE_ID
+        # La cabecera va SIN el prefijo 'x-'. Comprobado contra el OHIP de Corcovado
+        # (mtcu11pr, us-ashburn-1): con 'x-enterpriseId' —el nombre que usan los
+        # ejemplos y que este conector traía— Oracle responde
+        #
+        #     HTTP 400  Enterprise ID is required
+        #
+        # aunque el dato vaya en la cabecera Y en el cuerpo. Con 'enterpriseId' pelado
+        # entrega el token. Se probaron nueve variantes: solo esa funciona.
+        #
+        # El mensaje engaña, y por eso queda escrito: dice "falta" cuando en realidad
+        # está pero con otro nombre, y uno se pone a revisar credenciales que estaban
+        # bien. Si alguna otra propiedad pide 'x-enterpriseId', se agrega — mandar las
+        # dos no molestó en las pruebas.
+        cabeceras["enterpriseId"] = ENTERPRISE_ID
 
     req = urllib.request.Request(
         BASE_URL + RUTA_TOKEN, data=urllib.parse.urlencode(campos).encode(),
@@ -211,14 +375,27 @@ def traer_reservas(desde, hasta, limite=200, fetch=None, desplazamiento=0):
 
     Gestiona el token por su cuenta: reutiliza el vigente y lo renueva si hace falta.
     """
-    campos = {
-        "arrivalStartDate": desde,
-        "arrivalEndDate": hasta,
-        "limit": limite,
-        "fetchInstructions": ",".join(fetch or FETCH_INSTRUCTIONS),
-    }
+    # Los bloques van cada uno en su PROPIO parámetro repetido:
+    #
+    #     ?fetchInstructions=Reservation&fetchInstructions=ReservationPreferences
+    #
+    # y NO separados por comas. Comprobado contra el OHIP de Corcovado: la forma con
+    # comas se rechaza entera con
+    #
+    #     HTTP 400  Invalid value of: Query.  (OPERAWS-GEN01346)
+    #
+    # porque toma "Reservation,ReservationPackages" como un único valor que no existe.
+    # Y ese error se dispara ANTES de comprobar los permisos, así que tapaba el 403 de
+    # autorización y hacía creer que el problema era otro. Se perdió un rato ahí.
+    campos = [
+        ("arrivalStartDate", desde),
+        ("arrivalEndDate", hasta),
+        ("limit", limite),
+    ]
+    for bloque in (fetch or FETCH_INSTRUCTIONS):
+        campos.append(("fetchInstructions", bloque))
     if desplazamiento:
-        campos["offset"] = desplazamiento
+        campos.append(("offset", desplazamiento))
     url = f"{BASE_URL}{RUTA_RESERVAS.format(hotel=HOTEL_ID)}?{urllib.parse.urlencode(campos)}"
 
     def peticion(token):
@@ -354,6 +531,11 @@ def descubrir(desde, hasta):
     # Se prueba cada bloque por separado: si uno no está contratado o cambió de
     # nombre, Oracle rechaza la petición entera. Así se sabe cuáles sirven en vez
     # de quedarse sin nada por culpa de uno solo.
+    # Un bloque que esta instalación no expone se rechaza con
+    # 'Invalid value of: Query' (OPERAWS-GEN01346), y ese error se dispara ANTES del
+    # control de permisos. Así que si falta el permiso de lectura, un bloque VÁLIDO
+    # responde 403 y uno inválido responde 400: se distinguen igual. Por eso el 403 se
+    # cuenta como aceptado — el bloque existe, lo que falta es el permiso.
     print("Probando que bloques de datos responde Opera …")
     aceptados = []
     for instruccion in FETCH_INSTRUCTIONS:
@@ -362,8 +544,18 @@ def descubrir(desde, hasta):
             aceptados.append(instruccion)
             print(f"   OK      {instruccion}")
         except OperaError as e:
-            primera = str(e).splitlines()[0]
-            print(f"   RECHAZA {instruccion}  ({primera})")
+            if "GEN01244" in str(e) or "GEN01265" in str(e):
+                aceptados.append(instruccion)
+                print(f"   EXISTE  {instruccion}  (falta el permiso de lectura)")
+                continue
+            # Se muestra el MENSAJE de Oracle, no la primera línea —que es la URL—.
+            # Costó un viaje entero descubrirlo: los bloques salían "RECHAZA" con la
+            # dirección larguísima al lado y la explicación real ('User is not
+            # authorized to access data for resort') quedaba cortada. El motivo es
+            # justo lo único que hace falta ver aquí.
+            print(f"   RECHAZA {instruccion}")
+            for linea in _motivo_de(e):
+                print(f"           {linea}")
     print()
 
     if not aceptados:

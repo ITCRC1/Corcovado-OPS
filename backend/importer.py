@@ -25,12 +25,19 @@ SALIDA_KEYWORDS = ["salida", "checkout", "check out", "check-out", "vuelo", "san
 # de formas distintas ("AGREGAR SOFA CAMA", "COLOCAR SOFÁ CAMA EN LA HABITACIÓN",
 # "5th wedding anniversary", "VIP experience package", etc.). Se usan expresiones
 # regulares para tolerar acentos, plurales y palabras intermedias.
+#
+# CADA AMENIDAD SE BUSCA EN LOS DOS IDIOMAS. Con el PDF bastaba el español para casi
+# todo, pero la conexión con Opera Cloud trae las notas tal como las escribe el PMS, y
+# ahí vienen en inglés. Una amenidad que no se detecta no genera tarea: nadie pone el
+# sofá cama y se descubre cuando el huésped llega. Medido sobre las 589 reservas con
+# texto de la base real: agregar el inglés no cambia NINGUNA detección existente —solo
+# caza lo que hoy se perdería.
 AMENIDADES_PATRONES = [
-    ("Sofá cama extra", r"sof[áa]\s*cama"),
+    ("Sofá cama extra", r"sof[áa]\s*cama|sofa[\s-]*bed|extra\s+bed|rollaway|roll-away"),
     # Nota: se busca "cliente VIP" y no solo "VIP", porque varios paquetes comerciales
     # se llaman "VIP Experience Package" y eso no implica una amenidad que preparar.
     ("Luna de miel / cliente VIP", r"luna\s+de\s+miel|honeymoon|aniversario|anniversary|cliente\s+vip|hu[ée]sped\s+vip"),
-    ("Decoración por cumpleaños", r"cumplea[ñn]os|birthday|decoraci[óo]n"),
+    ("Decoración por cumpleaños", r"cumplea[ñn]os|birthday|decoraci[óo]n|decorat"),
     # La cena privada se escribe de muchas formas y con palabras en medio ("cena
     # romántica privada", "cena privada en la playa", "private candlelight dinner").
     # Importa detectarla bien porque no es solo una tarea de cocina: fija la mesa en
@@ -39,9 +46,11 @@ AMENIDADES_PATRONES = [
         r"cena\s+(?:\w+\s+){0,2}privada|cena\s+rom[áa]ntica|"
         r"private\s+(?:\w+\s+){0,2}dinner|romantic\s+dinner"
     )),
-    ("Botella de vino cortesía", r"botella\s+de\s+vino|vino\s+de\s+cortes[íi]a|champ[áa]n|champagne"),
+    ("Botella de vino cortesía", r"botella\s+de\s+vino|vino\s+de\s+cortes[íi]a|champ[áa]n|champagne|"
+                                 r"bottle\s+of\s+wine|wine\s+bottle|complimentary\s+wine"),
     ("Frutas con chocolate cortesía", r"frutas?\s+con\s+chocolate|chocolate\s+covered"),
-    ("Frutas de cortesía", r"frutas?\s+(?:de\s+)?cortes[íi]a|canasta\s+de\s+frutas"),
+    ("Frutas de cortesía", r"frutas?\s+(?:de\s+)?cortes[íi]a|canasta\s+de\s+frutas|"
+                           r"fruit\s+basket|basket\s+of\s+fruit|complimentary\s+fruit"),
     ("Tarjeta de bienvenida", r"tarjeta\s+de\s+bienvenida|regalo\s+de\s+bienvenida|welcome\s+(?:card|gift)"),
     # Restricciones alimentarias y de salud: información crítica para cocina, que el
     # PDF suele escribir en inglés ("Dietary Restrictions: No seafood") o en español.

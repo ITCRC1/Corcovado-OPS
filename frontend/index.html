@@ -1094,6 +1094,10 @@ function hayCambiosSinGuardar() {
   // Una descripción de amenidad a medio escribir. Sin esto, el refresco automático
   // —que corre cada pocos segundos— borraba lo tecleado a mitad de frase.
   if (document.querySelector('[id^="am-tar-"]')) return true;
+  // Y el formulario de agregar requerimiento, que ahora lleva más campos que antes
+  // (número de reserva, detalle, fecha y las casillas de departamento): perderlo a
+  // medio llenar obliga a escribirlo todo otra vez.
+  if (document.getElementById("na-conf")) return true;
   return false;
 }
 
@@ -2428,12 +2432,28 @@ async function loadAmenidades(fecha, desdeNuevo, hastaNuevo, estadoNuevo) {
   // guardaba también el "no configurado", así que quien tuviera la app abierta seguiría
   // viendo ese aviso para siempre —hasta recargar la página entera— sin entender por qué.
   if (!_avisosEstado || !_avisosEstado.activo) await cargarEstadoAvisos();
+  await cargarDepartamentos();
   const pend = rows.filter(a => a.estado === "PENDIENTE").length;
   const hechas = rows.filter(a => a.estado === "HECHA").length;
 
-  // Agrupar por área responsable, que es como trabaja el staff
+  // Agrupar por área responsable, que es como trabaja el staff.
+  //
+  // Un requerimiento de VARIOS departamentos aparece en el grupo de CADA UNO, con el
+  // estado de ese departamento. Antes, al no poder asignar varios, esto se resolvía con
+  // nombres compuestos ("Gerencia/Recepción") que creaban un grupo propio: la tarea no
+  // le salía en la lista a ninguna de las dos áreas.
   const porArea = {};
-  rows.forEach(a => { (porArea[a.area_responsable] = porArea[a.area_responsable] || []).push(a); });
+  rows.forEach(a => {
+    const areas = (a.areas && a.areas.length)
+      ? a.areas
+      : [{ area: a.area_responsable, estado: a.estado }];
+    areas.forEach(x => {
+      (porArea[x.area] = porArea[x.area] || []).push({ ...a, _area: x.area, _estado: x.estado });
+    });
+  });
+  // Los departamentos en orden alfabético: con varios en juego, un orden estable es lo
+  // que permite buscar el suyo sin leer todos.
+  const areasOrdenadas = Object.keys(porArea).sort((a, b) => a.localeCompare(b, "es"));
 
   document.getElementById("app").innerHTML = `
     <div class="card">
@@ -2467,27 +2487,28 @@ async function loadAmenidades(fecha, desdeNuevo, hastaNuevo, estadoNuevo) {
         <div class="stat" style="cursor:default;"><p class="stat-label">Hechas</p><p class="stat-value" style="color:var(--ok-text);">${hechas}</p></div>
       </div>
       <p class="subtitle" style="margin-bottom:12px;">Se muestran según el día en que hay que tenerlas listas: el de la columna «Para el día», o el de llegada del huésped si no se le puso uno.</p>
-      ${rows.length ? Object.entries(porArea).map(([area, lista]) => `
-        <p style="font-weight:600;font-size:14px;margin:16px 0 6px;color:var(--forest);">${area} (${lista.length})</p>
+      ${rows.length ? areasOrdenadas.map(area => `
+        <p style="font-weight:600;font-size:14px;margin:16px 0 6px;color:var(--forest);">${escaparHTML(area)} (${porArea[area].length})</p>
         <table>
           <tr><th>Llegada</th><th>Hab.</th><th>Huésped</th><th>Amenidad</th><th>Para el día</th><th>Tarea</th><th>Estado</th>${puedeEscribir("amenidades")?"<th></th>":""}</tr>
-          ${lista.map(a => `
-            <tr class="${a.estado === 'HECHA' ? 'fila-salio' : ''}">
+          ${porArea[area].map(a => `
+            <tr class="${a._estado === 'HECHA' ? 'fila-salio' : ''}">
               <td>${a.arr_date}</td>
               <td>${a.room_no}${etiquetaGrupo(a.conf_no)}</td>
               <td>${a.nombre_principal}</td>
               <td><span class="badge badge-tour">${a.amenidad}</span>${a.origen === 'MANUAL' ? ' <span style="font-size:10px;color:var(--muted);">(manual)</span>' : ''}</td>
               <td>${celdaFechaAmenidad(a)}</td>
               <td style="font-size:12px;color:var(--muted);" id="am-txt-${a.id}">${celdaTextoAmenidad(a)}</td>
-              <td><span class="badge ${a.estado === 'HECHA' ? 'badge-ok' : 'badge-warn'}">${a.estado}</span></td>
-              ${puedeEscribir("amenidades") ? `<td><button class="btn" onclick="marcarAmenidad(${a.id}, '${a.estado === 'HECHA' ? 'PENDIENTE' : 'HECHA'}')">${a.estado === 'HECHA' ? 'Reabrir' : 'Marcar hecha'}</button>${a.origen === 'MANUAL' ? `<button class="btn" onclick="eliminarAmenidad(${a.id})">Eliminar</button>` : ''}</td>` : ""}
+              <td><span class="badge ${a._estado === 'HECHA' ? 'badge-ok' : 'badge-warn'}">${a._estado}</span>${otrosDepartamentos(a)}</td>
+              ${puedeEscribir("amenidades") ? `<td><button class="btn" onclick="marcarAmenidad(${a.id}, '${a._estado === 'HECHA' ? 'PENDIENTE' : 'HECHA'}', ${JSON.stringify(a._area).replace(/"/g, "&quot;")})">${a._estado === 'HECHA' ? 'Reabrir' : 'Marcar hecha'}</button><button class="btn" onclick="editarAreasAmenidad(${a.id})" title="Cambiar los departamentos" style="font-size:10px;padding:1px 5px;">Deptos.</button>${a.origen === 'MANUAL' ? `<button class="btn" onclick="eliminarAmenidad(${a.id})">Eliminar</button>` : ''}</td>` : ""}
             </tr>`).join("")}
         </table>`).join("") : `<p class="empty">No hay amenidades en estas fechas.<small>Se detectan al importar el PDF, y puedes agregar requerimientos a mano con el botón de arriba.</small></p>`}
     </div>
   `;
 }
 
-function mostrarFormAmenidad() {
+async function mostrarFormAmenidad() {
+  await cargarDepartamentos();
   document.getElementById("form-amenidad").innerHTML = `
     <div style="background:var(--warn-bg);border-radius:8px;padding:14px;margin-bottom:16px;">
       <p style="font-weight:600;font-size:13px;margin:0 0 10px;">Agregar requerimiento del huésped</p>
@@ -2505,11 +2526,15 @@ function mostrarFormAmenidad() {
           <option>Otro requerimiento</option>
         </select>
         <input type="text" id="na-detalle" placeholder="Detalle (ej: alérgico a mariscos)" style="width:260px;">
-        <select id="na-area" style="width:150px;">
-          <option>Cocina</option><option>Housekeeping</option><option>Recepción</option>
-          <option>Bar/Bodega</option><option>Gerencia/Recepción</option><option>Recepción/Operaciones</option>
-        </select>
         <input type="date" id="na-fecha" title="Día en que hay que tenerla lista" style="width:150px;">
+      </div>
+      <div style="margin-top:10px;">
+        <p style="font-size:12px;font-weight:600;margin:0 0 5px;">
+          ¿A qué departamentos le toca? <span style="font-weight:400;color:var(--muted);">
+          Puedes marcar varios; cada uno marca su parte por separado.</span></p>
+        <div id="na-areas">${casillasDepartamentos("na")}</div>
+      </div>
+      <div class="filterbar" style="margin-top:10px;">
         <button class="btn btn-primary" onclick="crearAmenidad()">Guardar</button>
         <button class="btn" onclick="document.getElementById('form-amenidad').innerHTML=''">Cancelar</button>
       </div>
@@ -2522,14 +2547,94 @@ function mostrarFormAmenidad() {
     </div>`;
 }
 
+/* ---------- Los departamentos de un requerimiento ----------
+ *
+ * Antes era un selector de UNO solo, y por eso el catálogo llegó a tener nombres
+ * compuestos como "Gerencia/Recepción": la necesidad de asignar varios ya existía y se
+ * resolvía inventando etiquetas. El problema de esas etiquetas es que la tarea quedaba
+ * en un grupo propio, así que ninguna de las dos áreas la veía en su lista.
+ *
+ * Ahora son casillas —se marcan varias— y hay un campo para escribir uno que no esté.
+ * El que se escriba queda disponible para todos la próxima vez, porque la lista se arma
+ * con los de siempre MÁS los que ya estén en uso en la base.
+ */
+let _departamentos = null;
+
+async function cargarDepartamentos() {
+  if (_departamentos) return _departamentos;
+  try {
+    const res = await fetchAuth(`${API}/api/amenidades/departamentos`);
+    _departamentos = res.ok ? (await res.json()).departamentos : [];
+  } catch (e) {
+    _departamentos = [];
+  }
+  return _departamentos;
+}
+
+function casillasDepartamentos(prefijo, marcados) {
+  const puestos = (marcados || []).map(x => String(x).toLowerCase());
+  // Un departamento que ya tenía este requerimiento pero que no está en la lista general
+  // se agrega igual: si no, editar los departamentos lo borraría sin que nadie lo note.
+  const lista = (_departamentos || []).slice();
+  (marcados || []).forEach(m => {
+    if (!lista.some(x => x.toLowerCase() === String(m).toLowerCase())) lista.push(m);
+  });
+  return `
+    <div style="display:flex;flex-wrap:wrap;gap:4px 14px;">
+      ${lista.map((a, i) => `
+        <label style="font-size:12px;white-space:nowrap;">
+          <input type="checkbox" class="${prefijo}-area" value="${escaparHTML(a)}"
+            ${puestos.includes(a.toLowerCase()) ? "checked" : ""}> ${escaparHTML(a)}
+        </label>`).join("")}
+    </div>
+    <div class="filterbar" style="margin-top:6px;">
+      <input type="text" id="${prefijo}-area-nueva" placeholder="Otro departamento…"
+        style="width:190px;font-size:12px;"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();agregarDepartamento('${prefijo}');}">
+      <button class="btn" onclick="agregarDepartamento('${prefijo}')"
+        style="font-size:11px;padding:2px 8px;">+ Agregar</button>
+    </div>`;
+}
+
+function departamentosMarcados(prefijo) {
+  return Array.from(document.querySelectorAll(`.${prefijo}-area:checked`))
+    .map(c => c.value);
+}
+
+function agregarDepartamento(prefijo) {
+  const campo = document.getElementById(`${prefijo}-area-nueva`);
+  const nombre = (campo.value || "").trim().replace(/\s+/g, " ").slice(0, 60);
+  if (!nombre) return;
+  if ((_departamentos || []).some(x => x.toLowerCase() === nombre.toLowerCase())) {
+    // Ya existe: en vez de duplicarlo, se marca el que hay. Si no, aparecerían dos
+    // casillas iguales y una tarea repartida entre las dos.
+    document.querySelectorAll(`.${prefijo}-area`).forEach(c => {
+      if (c.value.toLowerCase() === nombre.toLowerCase()) c.checked = true;
+    });
+    campo.value = "";
+    avisar(`${nombre} ya estaba en la lista: quedó marcado`);
+    return;
+  }
+  const marcados = departamentosMarcados(prefijo).concat([nombre]);
+  _departamentos = (_departamentos || []).concat([nombre]);
+  document.getElementById(`${prefijo}-areas`).innerHTML =
+    casillasDepartamentos(prefijo, marcados);
+}
+
 async function crearAmenidad() {
   const payload = {
     conf_no: document.getElementById("na-conf").value.trim(),
     amenidad: document.getElementById("na-tipo").value,
     detalle: document.getElementById("na-detalle").value.trim(),
-    area_responsable: document.getElementById("na-area").value,
+    areas: departamentosMarcados("na"),
   };
-  if (!payload.conf_no) { document.getElementById("na-error").textContent = "Indica el número de reserva."; return; }
+  const error = document.getElementById("na-error");
+  if (!payload.conf_no) { error.textContent = "Indica el número de reserva."; return; }
+  if (!payload.areas.length) {
+    error.textContent = ("Marca al menos un departamento: un requerimiento sin "
+                       + "departamento no le aparece a nadie.");
+    return;
+  }
   payload.tarea = payload.detalle || payload.amenidad;
   // Solo se manda la fecha si la escribieron. Si no viene el campo, el servidor aplica
   // su regla: día de llegada, o sin día si es cena privada.
@@ -2867,9 +2972,83 @@ async function eliminarAmenidad(id) {
   loadAmenidades();
 }
 
-async function marcarAmenidad(id, estado) {
-  await fetchAuth(`${API}/api/amenidades/${id}/estado?estado=${estado}`, { method: "POST" });
-  avisar(estado === "HECHA" ? "Marcada como hecha" : "Reabierta");
+async function marcarAmenidad(id, estado, area) {
+  const qs = `estado=${estado}` + (area ? `&area=${encodeURIComponent(area)}` : "");
+  const res = await fetchAuth(`${API}/api/amenidades/${id}/estado?${qs}`, { method: "POST" });
+  if (!res.ok) {
+    avisar((await res.json()).detail || "No se pudo cambiar", true);
+    loadAmenidades();
+    return;
+  }
+  const d = await res.json();
+  // Se dice a quién le falta. Con varios departamentos, "marcada como hecha" a secas
+  // haría creer que el requerimiento está cerrado cuando otra área no ha hecho lo suyo.
+  if (estado === "HECHA" && (d.pendientes || []).length) {
+    avisar(`${area || "Marcada"} listo · falta ${d.pendientes.join(" y ")}`);
+  } else {
+    avisar(estado === "HECHA" ? "Marcada como hecha" : "Reabierta");
+  }
+  loadAmenidades();
+}
+
+// Mostrar los demás departamentos y cómo va cada uno. Va junto al estado, en la fila del
+// área que está mirando, para que nadie asuma que el requerimiento está cerrado porque
+// su parte lo está.
+function otrosDepartamentos(a) {
+  const otros = (a.areas || []).filter(x => x.area !== a._area);
+  if (!otros.length) return "";
+  return `<br><span style="font-size:10px;color:var(--muted);">también: ${
+    otros.map(x => `${escaparHTML(x.area)} ${x.estado === "HECHA" ? "✓" : "·pendiente"}`)
+         .join(" / ")}</span>`;
+}
+
+async function editarAreasAmenidad(id) {
+  await cargarDepartamentos();
+  const a = (window._amenidades || []).find(x => x.id === id);
+  if (!a) return;
+  const puestos = (a.areas || []).map(x => x.area);
+  const modal = document.createElement("div");
+  modal.className = "modal-fondo";
+  modal.id = "modal-deptos";
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+  modal.innerHTML = `
+    <div class="modal-caja" style="max-width:560px;">
+      <button class="modal-cerrar" onclick="this.closest('.modal-fondo').remove()">×</button>
+      <p style="font-weight:600;font-size:16px;margin:0;color:var(--forest-dark);">Departamentos del requerimiento</p>
+      <p style="font-size:13px;color:var(--muted);margin:2px 0 14px;">
+        Hab. ${escaparHTML(a.room_no || "")} · ${escaparHTML(a.nombre_principal || "")}<br>
+        <strong>${escaparHTML(a.amenidad || "")}</strong>${a.detalle ? ` — ${escaparHTML(a.detalle)}` : ""}
+      </p>
+      <div id="ed-areas">${casillasDepartamentos("ed", puestos)}</div>
+      <p style="font-size:11.5px;color:var(--muted);margin:10px 0 0;">
+        Cada departamento marca su parte por separado. Lo que ya esté hecho no se reabre
+        al cambiar esta lista; si quitas un departamento, su marca se va con él.</p>
+      <div id="ed-error" style="color:var(--danger-text);font-size:12px;margin-top:6px;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--border);padding-top:12px;margin-top:14px;">
+        <button class="btn" onclick="this.closest('.modal-fondo').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="guardarAreasAmenidad(${id})">Guardar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function guardarAreasAmenidad(id) {
+  const areas = departamentosMarcados("ed");
+  const error = document.getElementById("ed-error");
+  if (!areas.length) {
+    error.textContent = ("Tiene que quedar al menos uno: un requerimiento sin "
+                       + "departamento no le aparece a nadie.");
+    return;
+  }
+  const res = await fetchAuth(`${API}/api/amenidades/${id}/areas`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ areas }),
+  });
+  if (!res.ok) { error.textContent = (await res.json()).detail || "No se pudo guardar"; return; }
+  const modal = document.getElementById("modal-deptos");
+  if (modal) modal.remove();
+  avisar(areas.length === 1 ? `Asignado a ${areas[0]}`
+                            : `Asignado a ${areas.length} departamentos`);
   loadAmenidades();
 }
 
@@ -2999,8 +3178,23 @@ async function loadRestaurantes(fecha) {
 
     <div class="card">
       <p class="title">Cenas privadas</p>
-      ${d.cenas_privadas.length
-        ? `<p style="font-size:13px;margin:8px 0 0;">${d.cenas_privadas.length} declarada(s) para esta fecha · van fijas en Bar el Bosque y cuentan para sus ${c.cap_bosque} lugares.</p>`
+      ${(d.cenas_privadas_info || []).length ? `
+        <p style="font-size:13px;margin:8px 0 10px;">
+          ${d.cenas_privadas_info.length} para esta noche · van fijas en Bar el Bosque y
+          cuentan para sus ${c.cap_bosque} lugares.</p>
+        <table>
+          <tr><th style="width:70px;">Hab.</th><th>Huésped</th><th style="width:60px;">Pax</th><th>Detalle</th></tr>
+          ${d.cenas_privadas_info.map(p => `<tr>
+            <td><strong>${escaparHTML(p.room_no || "")}</strong>${etiquetaGrupo(p.conf_no)}</td>
+            <td>${escaparHTML(p.nombre_principal || "")}</td>
+            <td>${p.pax != null ? p.pax : ""}</td>
+            <td style="font-size:12px;">${p.detalle
+                ? `<strong>${escaparHTML(p.detalle)}</strong>`
+                : `<span style="color:var(--muted);">sin detalle</span>`}
+              ${p.estado === "HECHA" ? ` <span class="badge badge-ok">preparada</span>` : ""}
+              ${p.cena_esa_noche === false ? `<br><span style="font-size:11px;color:var(--warn-text);">⚠ esa noche el huésped ya se fue: no ocupa mesa. Revisa la fecha en Amenidades.</span>` : ""}</td>
+          </tr>`).join("")}
+        </table>`
         : `<p class="empty" style="padding:16px 12px;">Sin cenas privadas asignadas a esta noche.<small>Con noche asignada quedan fijas en Bar el Bosque y ocupan su lugar.</small></p>`}
 
       ${(d.cenas_privadas_sin_noche || []).length ? `
@@ -3010,20 +3204,19 @@ async function loadRestaurantes(fecha) {
              Mientras no se le ponga la noche, <strong>no se le guarda mesa en Bar el Bosque ni cocina la ve venir</strong>.</p>
           ${d.cenas_privadas_sin_noche.map(p => `
             <p style="margin:0 0 5px;">
-              <strong>Hab. ${p.room_no}</strong> · ${p.nombre_principal}
+              <strong>Hab. ${escaparHTML(p.room_no || "")}</strong> · ${escaparHTML(p.nombre_principal || "")}
               <span style="font-size:11px;color:var(--muted);">(${p.arr_date} – ${p.dep_date})</span>
-              ${p.detalle ? `<br><span style="font-size:11.5px;">${p.detalle}</span>` : ""}
-              ${puedeEscribir("restaurantes") ? `<button class="btn" style="margin-left:6px;"
-                  onclick="abrirCenaPrivada('${F.fecha}', '${p.conf_no}', '${p.arr_date}', '${p.dep_date}')"
-                  title="Elegir cuál de las noches de su estadía">Elegir noche</button>` : ""}
+              ${p.detalle ? `<br><span style="font-size:11.5px;">${escaparHTML(p.detalle)}</span>` : ""}
             </p>`).join("")}
+          <p style="margin:8px 0 0;font-size:12px;">
+            La noche se le pone en <strong>Amenidades</strong>, en la columna «Para el
+            día». Al guardarla aparece sola aquí.</p>
         </div>` : ""}
 
-      ${puedeEscribir("restaurantes") ? `
-        <p style="margin:12px 0 0;font-size:12px;color:var(--muted);">
-          Las cenas privadas se registran en <strong>Amenidades</strong>, junto con el
-          resto de requerimientos del huésped. Aquí se les elige la noche y se ven las
-          de esta fecha.</p>` : ""}
+      <p style="margin:12px 0 0;font-size:12px;color:var(--muted);">
+        Las cenas privadas se registran y se fechan en <strong>Amenidades</strong>, junto
+        con el resto de requerimientos del huésped. Esta pantalla las muestra: es la misma
+        información, no un segundo sitio donde cambiarla.</p>
     </div>
   `;
 }
@@ -3311,52 +3504,21 @@ function isoDeDDMMYY(texto) {
   return `20${p[2]}-${p[1]}-${p[0]}`;
 }
 
-async function abrirCenaPrivada(fecha, confNo, arrDate, depDate) {
-  const d = window._restData;
-  const enCasa = [...d.cena.terra_kitchen, ...d.cena.bar_el_bosque];
-  // Si se entra desde una cena contratada sin noche, ya viene elegido el huésped.
-  const opciones = enCasa.map(x => `<option value="${x.conf_no}" ${x.conf_no === confNo ? "selected" : ""}>Hab. ${x.room_no} · ${x.nombre}</option>`).join("");
-  // Ahora se puede ELEGIR la noche. Antes esta ventana asignaba siempre la fecha que se
-  // estuviera viendo en la pantalla, así que para poner la cena en la tercera noche de la
-  // estadía había que navegar hasta esa noche primero. El rango se acota a la estadía
-  // cuando se conoce (al entrar desde una cena sin noche asignada); si no, el servidor
-  // lo comprueba igual y lo dice.
-  const min = isoDeDDMMYY(arrDate), max = isoDeDDMMYY(depDate);
-  const fondo = document.createElement("div");
-  fondo.className = "modal-fondo"; fondo.id = "modal-cp";
-  fondo.innerHTML = `<div class="modal-caja" style="max-width:520px;">
-    <div class="modal-encabezado"><p class="title">Marcar cena privada</p>
-      <button class="btn" onclick="document.getElementById('modal-cp').remove()">Cerrar</button></div>
-    <div class="modal-cuerpo">
-      <p style="font-size:13px;color:var(--muted);">La cena privada se sirve en la piscina
-        y queda fija en Bar el Bosque, contando para su capacidad.</p>
-      <select id="cp-conf" style="width:100%;margin:8px 0;">${opciones}</select>
-      <label style="display:block;font-size:12px;color:var(--muted);margin:10px 0 4px;">
-        Noche de la cena${min && max ? ` (entre ${min} y ${max})` : ""}</label>
-      <input type="date" id="cp-fecha" value="${fecha}"
-        ${min ? `min="${min}"` : ""} ${max ? `max="${max}"` : ""} style="width:100%;">
-      <input type="text" id="cp-detalle" placeholder="Detalle (opcional): aniversario, decoración…" style="width:100%;margin-top:8px;">
-      <div style="margin-top:12px;">
-        <button class="btn btn-primary" onclick="guardarCenaPrivada()">Guardar</button>
-      </div>
-    </div></div>`;
-  document.body.appendChild(fondo);
-}
-
-async function guardarCenaPrivada() {
-  const conf_no = document.getElementById("cp-conf").value;
-  const fecha = document.getElementById("cp-fecha").value;
-  const detalle = document.getElementById("cp-detalle").value.trim();
-  if (!fecha) { avisar("Elige la noche de la cena", true); return; }
-  const res = await fetchAuth(`${API}/api/restaurantes/cena-privada`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fecha, conf_no, detalle }),
-  });
-  if (!res.ok) { avisar((await res.json()).detail, true); return; }
-  document.getElementById("modal-cp")?.remove();
-  avisar(`Cena privada la noche del ${fecha}`);
-  loadRestaurantes();
-}
+/* La ventana de "Marcar cena privada" se quitó de esta pantalla.
+ *
+ * La noche de la cena se pone en AMENIDADES, en la columna «Para el día», que es donde
+ * vive la amenidad y donde ya se le pone la fecha a todas las demás. Tenerlo también
+ * aquí significaba dos puertas para escribir el mismo dato, con dos formularios que
+ * había que mantener iguales — y uno de los dos siempre se queda atrás.
+ *
+ * Restaurantes MUESTRA las cenas privadas de la noche con su habitación, su pax y su
+ * detalle, que es lo que el salonero necesita, y señala las contratadas a las que
+ * todavía nadie les puso noche.
+ *
+ * El endpoint /api/restaurantes/cena-privada se deja en el servidor: hace exactamente lo
+ * mismo que ponerle la fecha a la amenidad, así que no estorba, y quitarlo rompería a
+ * cualquiera que tuviera la pantalla vieja abierta durante un despliegue.
+ */
 
 // Mismo manejo de fechas que Agenda y Transporte: abre en el día de hoy y desde ahí
 // se puede mover de día o pasar a un rango. `fecha` nula significa "ver rango".
@@ -3630,7 +3792,7 @@ async function loadResumenOperacion(fecha) {
           <td><strong>${x.room_no}</strong>${etiquetaGrupo(x.conf_no)}</td><td>${x.nombre_principal}</td>
           <td><span class="badge badge-tour">${x.amenidad}</span></td>
           <td style="font-size:12px;">${x.detalle || x.tarea}</td>
-          <td style="font-size:12px;">${x.area_responsable}</td>
+          <td style="font-size:12px;">${escaparHTML(x.areas || x.area_responsable || "")}</td>
         </tr>`).join("")}
       </table>
     </div>` : ""}

@@ -12,7 +12,7 @@ Sistema local para la operación diaria de Sierpe y Drake. Funciona sin internet
 | **Agenda de tours** | Asignar guía y bote, dividir salidas en grupos, con aviso de conflictos de horario |
 | **Transporte** | Entradas y salidas por Sierpe o Drake, con horas de vuelo |
 | **Entradas SINAC** | Control de compra con 15 días de anticipación, por urgencia |
-| **Amenidades** | Tareas por área (cocina, housekeeping, recepción), incluidas alergias. Cada una con el día en que hay que tenerla lista, y con la descripción editable |
+| **Amenidades** | Tareas por área (cocina, housekeeping, recepción…), incluidas alergias. Cada una con su día, su descripción editable y **varios departamentos**, donde cada uno marca su parte |
 | **Analítica** | Uso de botes y guías, movimiento por punto y ocupación del periodo |
 | **Resumen operación** | La hoja del día para todos los departamentos |
 | **Importar PDF** | Cargar el reporte "Arrivals: Detailed" del PMS |
@@ -50,6 +50,41 @@ se recalcula. Si esa entrada ya estaba comprada no se borra, se avisa para gesti
 Y si el itinerario fue editado a mano, el sistema no borra filas por su cuenta: avisa
 para que recepción revise cuál corresponde.
 
+## Un requerimiento con varios departamentos
+
+Al agregar un requerimiento, en **¿A qué departamentos le toca?** se marcan **varios** con
+casillas, y hay un campo para escribir uno que no esté en la lista. El que se escriba
+queda disponible para todos la próxima vez.
+
+El requerimiento aparece en la lista de **cada** departamento, y **cada uno marca su
+parte**: cocina puede cerrar la suya y sigue pendiente para housekeeping hasta que ellos
+cierren la suya. En la fila se ve cómo va el resto (*"también: Housekeeping ·pendiente"*),
+para que nadie dé por cerrado algo que otra área no hizo. El requerimiento cuenta como
+hecho solo cuando lo marcaron todos.
+
+Con el botón **Deptos.** se cambian los departamentos de un requerimiento ya creado. Lo
+que ya esté hecho no se reabre; si se quita un departamento, su marca se va con él.
+
+Antes solo se podía elegir uno, y por eso el catálogo llegó a tener etiquetas compuestas
+como *"Gerencia/Recepción"*. Esas creaban un grupo propio en la pantalla, así que la tarea
+no le aparecía en su lista a ninguna de las dos áreas.
+
+El **resumen del día sigue igual**: la hoja de cocina con sus restricciones y la de
+housekeeping con la columna Área, que ahora nombra todos los departamentos. Y una alergia
+asignada a cocina más otra área **sigue saliendo en la hoja de cocina**.
+
+## Las cenas privadas se fechan en un solo sitio
+
+La noche de una cena privada se pone en **Amenidades**, en la columna «Para el día».
+
+La pantalla de **Restaurantes** las **muestra**: habitación, huésped, pax y detalle de las
+que hay esa noche, si ya están preparadas, y las contratadas a las que todavía nadie les
+puso noche. Ya no se elige la noche desde ahí — era el mismo dato con dos puertas, y una
+de las dos siempre se quedaba atrás.
+
+Si una cena privada quedó puesta en la **noche de salida**, la pantalla lo advierte: ese
+día el huésped desayuna y se va, así que no ocupa mesa en Bar el Bosque.
+
 ## Corregir una amenidad
 
 En **Amenidades**, cada fila tiene el botón **Editar** en la columna de la tarea. Se
@@ -76,6 +111,7 @@ se conserva:
 |---|---|
 | El día que se le puso a una amenidad (la noche de la cena privada) | sí |
 | El detalle y la tarea corregidos | sí |
+| Los departamentos asignados a mano, con lo que cada uno ya marcó | sí |
 | Las amenidades ya marcadas como hechas | sí |
 | Los requerimientos agregados a mano | sí |
 | Los tours agregados desde el itinerario | sí |

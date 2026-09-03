@@ -205,6 +205,29 @@ CREATE TABLE IF NOT EXISTS amenidad_tarea (
     creado_en TEXT DEFAULT (datetime('now'))
 );
 
+-- Los departamentos de un requerimiento, con el estado de CADA UNO.
+--
+-- Antes cada amenidad tenía un solo área, y por eso el catálogo llegó a tener nombres
+-- compuestos como "Gerencia/Recepción" y "Recepción/Operaciones": la necesidad de
+-- asignar varias ya existía y se resolvía inventando etiquetas. El problema de esas
+-- etiquetas es que la tarea aparece en un grupo propio y no en el de cada área, así que
+-- ninguna de las dos la ve en su lista.
+--
+-- El estado va POR ÁREA a propósito. Con una sola marca compartida, cocina cerraría la
+-- tarea y desaparecería de la lista de housekeeping sin que housekeeping hiciera nada —
+-- justo lo que este sistema existe para evitar.
+--
+-- amenidad_tarea.area_responsable sigue guardando el PRIMER área y amenidad_tarea.estado
+-- el estado GENERAL (hecha solo cuando todas lo están). Así todo lo que ya leía esas dos
+-- columnas —el resumen, los avisos, los reportes— sigue funcionando igual, y una
+-- amenidad de un solo departamento se comporta exactamente como antes.
+CREATE TABLE IF NOT EXISTS amenidad_area (
+    amenidad_id INTEGER NOT NULL REFERENCES amenidad_tarea(id) ON DELETE CASCADE,
+    area TEXT NOT NULL,
+    estado TEXT NOT NULL DEFAULT 'PENDIENTE',  -- PENDIENTE | HECHA
+    PRIMARY KEY (amenidad_id, area)
+);
+
 -- Alertas de cambios de último momento
 CREATE TABLE IF NOT EXISTS alerta (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

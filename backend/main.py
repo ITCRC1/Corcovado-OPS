@@ -387,19 +387,31 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
         return salida
 
     habitaciones_en_casa = {x["room_no"] for x in en_casa} | {x["room_no"] for x in desayunos}
+    # Cocina puede ser UNO de varios departamentos del requerimiento, no solo el
+    # principal. Se busca en la lista de departamentos además de en la columna de
+    # siempre: sin el EXISTS, una alergia asignada a "Cocina y Recepción" dejaría de
+    # aparecer en la hoja de cocina en cuanto Recepción quedara primera.
     restricciones = por_habitacion(
         """SELECT a.id AS _orden, r.room_no, r.nombre_principal, a.amenidad, a.detalle,
                   a.tarea, a.estado
            FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
-           WHERE a.area_responsable = 'Cocina' AND r.room_no IN ({marcas})
+           WHERE (a.area_responsable = 'Cocina'
+                  OR EXISTS (SELECT 1 FROM amenidad_area x
+                             WHERE x.amenidad_id = a.id AND x.area = 'Cocina'))
+             AND r.room_no IN ({marcas})
            ORDER BY a.id""",
         habitaciones_en_casa)
 
     # --- Amenidades a preparar para quienes llegan ese día ---
     habitaciones_ingresan = {x["room_no"] for x in ingresos}
+    # 'areas' trae TODOS los departamentos separados por · para que la columna Área de la
+    # hoja del día los muestre completos. Antes salía solo el principal, y una tarea que
+    # también era de cocina se leía como si fuera solo de housekeeping.
     amenidades = por_habitacion(
         """SELECT a.id AS _orden, r.room_no, r.nombre_principal, a.amenidad, a.detalle,
-                  a.tarea, a.area_responsable, a.estado
+                  a.tarea, a.area_responsable, a.estado,
+                  (SELECT GROUP_CONCAT(x.area, ' · ') FROM amenidad_area x
+                   WHERE x.amenidad_id = a.id) AS areas
            FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
            WHERE a.estado = 'PENDIENTE' AND r.room_no IN ({marcas})
            ORDER BY a.id""",
@@ -2172,6 +2184,147 @@ def _revisar_fecha_amenidad(conn, conf_no, fecha):
     return iso, None
 
 
+# ---------- LOS DEPARTAMENTOS DE UN REQUERIMIENTO ----------
+#
+# Un requerimiento puede tocarle a varios departamentos (la decoración de aniversario la
+# monta housekeeping y la canasta la prepara cocina), y cada uno marca SU parte. Ver el
+# comentario de la tabla amenidad_area en schema.sql para el por qué.
+#
+# Los de siempre. No es una tabla porque no hace falta administrarlos: quien necesite uno
+# que no está lo escribe en el momento, y a partir de ahí aparece en la lista porque la
+# lista se arma con estos MÁS los que ya estén en uso en la base.
+AREAS_BASE = ["Cocina", "Housekeeping", "Recepción", "Bar/Bodega", "Mantenimiento",
+              "Operaciones", "Gerencia", "Transporte", "Guías"]
+
+
+def _limpiar_areas(valores):
+    """Deja la lista de departamentos en orden, sin vacíos ni repetidos.
+
+    Se conserva el ORDEN en que los eligieron porque el primero se guarda en
+    amenidad_tarea.area_responsable, que es el que ven las pantallas que todavía leen un
+    solo área. Así el departamento principal es el que la persona puso primero y no uno
+    al azar.
+    """
+    limpias = []
+    for v in (valores or []):
+        nombre = " ".join(str(v or "").split())[:60]
+        if nombre and nombre.lower() not in [x.lower() for x in limpias]:
+            limpias.append(nombre)
+    return limpias
+
+
+def _areas_del_payload(payload):
+    """Los departamentos que manda la pantalla, aceptando las dos formas.
+
+    'areas' es la nueva (una lista). 'area_responsable' es la de antes (un texto), y se
+    sigue aceptando para no romper nada que la mande — incluida una versión vieja de la
+    pantalla abierta en el teléfono de alguien mientras se despliega.
+    """
+    areas = _limpiar_areas(payload.get("areas"))
+    if not areas:
+        areas = _limpiar_areas([payload.get("area_responsable")])
+    return areas
+
+
+def _fijar_areas(conn, amenidad_id, areas):
+    """Deja exactamente estos departamentos, conservando lo ya marcado como hecho.
+
+    Si a un requerimiento se le agrega un departamento, lo que otro ya había hecho NO se
+    reabre: solo el nuevo entra pendiente. Y si se le quita uno, su marca desaparece con
+    él. Sin conservar el estado, editar los departamentos reabriría trabajo ya hecho y
+    nadie volvería a confiar en las marcas.
+    """
+    previos = {r["area"]: r["estado"] for r in conn.execute(
+        "SELECT area, estado FROM amenidad_area WHERE amenidad_id = ?", (amenidad_id,))}
+    conn.execute("DELETE FROM amenidad_area WHERE amenidad_id = ?", (amenidad_id,))
+    for area in areas:
+        conn.execute(
+            "INSERT INTO amenidad_area (amenidad_id, area, estado) VALUES (?,?,?)",
+            (amenidad_id, area, previos.get(area, "PENDIENTE")))
+    _sincronizar_amenidad(conn, amenidad_id)
+
+
+def _sincronizar_amenidad(conn, amenidad_id):
+    """Pone al día las dos columnas de resumen de amenidad_tarea.
+
+    · area_responsable = el primer departamento
+    · estado           = HECHA solo si TODOS lo marcaron
+
+    Existen para que todo lo que ya leía esas columnas —el resumen del día, los avisos al
+    celular, los reportes de Excel y PDF, los contadores de la pantalla— siga funcionando
+    sin cambios. Una amenidad de un solo departamento queda idéntica a como estaba.
+    """
+    filas = conn.execute(
+        "SELECT area, estado FROM amenidad_area WHERE amenidad_id = ? ORDER BY rowid",
+        (amenidad_id,)).fetchall()
+    if not filas:
+        return
+    principal = filas[0]["area"]
+    general = "HECHA" if all(f["estado"] == "HECHA" for f in filas) else "PENDIENTE"
+    conn.execute("UPDATE amenidad_tarea SET area_responsable = ?, estado = ? WHERE id = ?",
+                 (principal, general, amenidad_id))
+
+
+def _areas_por_amenidad(conn, ids):
+    """{id: [{'area':..., 'estado':...}]} para una lista de amenidades, en dos consultas
+    en vez de una por fila."""
+    salida = {}
+    for lote in en_lotes(ids):
+        marcas = ",".join("?" * len(lote))
+        for f in conn.execute(
+                f"""SELECT amenidad_id, area, estado FROM amenidad_area
+                    WHERE amenidad_id IN ({marcas}) ORDER BY amenidad_id, rowid""", lote):
+            salida.setdefault(f["amenidad_id"], []).append(
+                {"area": f["area"], "estado": f["estado"]})
+    return salida
+
+
+@app.get("/api/amenidades/departamentos")
+def departamentos_amenidades(user: dict = Depends(exige("amenidades"))):
+    """Los departamentos que ofrece el selector: los de siempre más los que ya se usan.
+
+    Así, un departamento que alguien escribió a mano una vez queda disponible para todos
+    la próxima, sin tener que administrar un catálogo aparte.
+    """
+    conn = get_connection()
+    usados = [r["area"] for r in conn.execute(
+        "SELECT DISTINCT area FROM amenidad_area WHERE area IS NOT NULL ORDER BY area")]
+    conn.close()
+    conocidos = list(AREAS_BASE)
+    for a in usados:
+        if a.lower() not in [x.lower() for x in conocidos]:
+            conocidos.append(a)
+    return {"base": AREAS_BASE, "departamentos": conocidos}
+
+
+@app.post("/api/amenidades/{amenidad_id}/areas")
+async def cambiar_areas_amenidad(amenidad_id: int, payload: dict,
+                                 user: dict = Depends(exige("amenidades", escribir=True))):
+    """Cambia a qué departamentos le toca un requerimiento."""
+    areas = _areas_del_payload(payload)
+    if not areas:
+        raise HTTPException(
+            status_code=400,
+            detail=("Tiene que quedar al menos un departamento. Un requerimiento sin "
+                    "departamento no le aparece a nadie."))
+    conn = get_connection()
+    try:
+        existe = conn.execute("SELECT id FROM amenidad_tarea WHERE id = ?",
+                              (amenidad_id,)).fetchone()
+        if not existe:
+            raise HTTPException(status_code=404, detail="No existe esa amenidad")
+        _fijar_areas(conn, amenidad_id, areas)
+        conn.execute("UPDATE amenidad_tarea SET editado_a_mano = 1 WHERE id = ?",
+                     (amenidad_id,))
+        conn.commit()
+        estado = conn.execute("SELECT estado FROM amenidad_tarea WHERE id = ?",
+                              (amenidad_id,)).fetchone()["estado"]
+        detalle = _areas_por_amenidad(conn, [amenidad_id]).get(amenidad_id, [])
+    finally:
+        conn.close()
+    return {"status": "ok", "areas": detalle, "estado": estado}
+
+
 @app.post("/api/amenidades")
 async def crear_amenidad_manual(payload: dict, user: dict = Depends(exige("amenidades", escribir=True))):
     """Permite a recepción/gerencia agregar un requerimiento del huésped que no venía
@@ -2207,13 +2360,15 @@ async def crear_amenidad_manual(payload: dict, user: dict = Depends(exige("ameni
             fecha, _ = _noches_de_estadia(r)
             fecha = fecha or None
 
-        area = payload.get("area_responsable") or "Recepción"
-        conn.execute(
+        areas = _areas_del_payload(payload) or ["Recepción"]
+        area = areas[0]
+        cur = conn.execute(
             """INSERT INTO amenidad_tarea (conf_no, amenidad, detalle, tarea,
                                            area_responsable, origen, fecha)
                VALUES (?,?,?,?,?,'MANUAL',?)""",
             (payload["conf_no"], amenidad, payload.get("detalle"), tarea, area, fecha),
         )
+        _fijar_areas(conn, cur.lastrowid, areas)
         conn.commit()
 
         # Aviso al celular de los demás. Va después del commit: si el aviso fallara, la
@@ -2225,7 +2380,11 @@ async def crear_amenidad_manual(payload: dict, user: dict = Depends(exige("ameni
             notif.aviso_amenidad_nueva(
                 conn,
                 {"room_no": hab["room_no"] if hab else None, "amenidad": amenidad,
-                 "fecha": fecha, "area_responsable": area},
+                 "fecha": fecha,
+                 # Van TODOS los departamentos en el aviso: si le toca a cocina y a
+                 # housekeeping, el aviso que dice solo "Cocina" hace que housekeeping
+                 # lo lea y piense que no es con ellos.
+                 "area_responsable": " y ".join(areas)},
                 quien_la_creo=user.get("id"))
         except Exception as e:
             # Un aviso que no sale no puede hacer fallar el guardado.
@@ -2352,6 +2511,10 @@ def eliminar_amenidad(amenidad_id: int, user: dict = Depends(exige("amenidades",
     if row["origen"] != "MANUAL":
         conn.close()
         raise HTTPException(status_code=400, detail="Solo se pueden eliminar los agregados manualmente")
+    # Las filas de departamento se borran a mano: la clave foránea tiene ON DELETE
+    # CASCADE, pero solo actúa si el PRAGMA foreign_keys está encendido en ESA conexión,
+    # y no vale la pena que la limpieza dependa de eso.
+    conn.execute("DELETE FROM amenidad_area WHERE amenidad_id = ?", (amenidad_id,))
     conn.execute("DELETE FROM amenidad_tarea WHERE id = ?", (amenidad_id,))
     conn.commit()
     conn.close()
@@ -2398,32 +2561,85 @@ def listar_amenidades(desde: str = None, hasta: str = None, estado: str = None,
     # que nadie pueda elegir un día en que el huésped no está. Y si es cena privada, para
     # que la pantalla lo señale: es la única cuya fecha cambia el comedor.
     import restaurantes as _rest
+    conn2 = get_connection()
+    try:
+        areas = _areas_por_amenidad(conn2, [r["id"] for r in rows])
+    finally:
+        conn2.close()
+
     salida = []
     for r in rows:
         d = dict(r)
         d["estadia_desde"], d["estadia_hasta"] = _noches_de_estadia(r)
         d["es_cena_privada"] = _rest.es_cena_privada(d["amenidad"], d["tarea"])
+        # Los departamentos con el estado de cada uno. Si por lo que sea no tuviera
+        # ninguno, se devuelve el de la columna de siempre: así la pantalla lo muestra
+        # igual y la tarea no se le pierde a nadie.
+        d["areas"] = areas.get(d["id"]) or (
+            [{"area": d["area_responsable"], "estado": d["estado"]}]
+            if d["area_responsable"] else [])
         salida.append(d)
     return salida
 
 
 @app.post("/api/amenidades/{amenidad_id}/estado")
-def cambiar_estado_amenidad(amenidad_id: int, estado: str, user: dict = Depends(exige("amenidades", escribir=True))):
+def cambiar_estado_amenidad(amenidad_id: int, estado: str, area: str = None,
+                            user: dict = Depends(exige("amenidades", escribir=True))):
+    """Marca un requerimiento como hecho o pendiente.
+
+    Con 'area', se marca SOLO la parte de ese departamento: cocina puede cerrar la suya y
+    el requerimiento sigue pendiente para housekeeping hasta que ellos cierren la suya.
+    Sin 'area' se marcan todos, que es lo que hacía antes — así una versión vieja de la
+    pantalla, o cualquier otra cosa que llame a esto, sigue funcionando igual.
+    """
     if estado not in ("PENDIENTE", "HECHA"):
         raise HTTPException(status_code=400, detail="Estado inválido")
     conn = get_connection()
-    conn.execute("UPDATE amenidad_tarea SET estado = ? WHERE id = ?", (estado, amenidad_id))
-    conn.commit()
-    conn.close()
-    return {"status": "ok"}
+    try:
+        existe = conn.execute("SELECT id FROM amenidad_tarea WHERE id = ?",
+                              (amenidad_id,)).fetchone()
+        if not existe:
+            raise HTTPException(status_code=404, detail="No existe esa amenidad")
+
+        if area:
+            cur = conn.execute(
+                "UPDATE amenidad_area SET estado = ? WHERE amenidad_id = ? AND area = ?",
+                (estado, amenidad_id, area))
+            if not cur.rowcount:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Este requerimiento no está asignado a {area}.")
+        else:
+            conn.execute("UPDATE amenidad_area SET estado = ? WHERE amenidad_id = ?",
+                         (estado, amenidad_id))
+        _sincronizar_amenidad(conn, amenidad_id)
+        # Si por lo que sea no tuviera filas de área, se escribe igual el estado general:
+        # más vale una marca sin desglose que un botón que no hace nada.
+        conn.execute("UPDATE amenidad_tarea SET estado = ? WHERE id = ? AND NOT EXISTS "
+                     "(SELECT 1 FROM amenidad_area WHERE amenidad_id = ?)",
+                     (estado, amenidad_id, amenidad_id))
+        conn.commit()
+        fila = conn.execute("SELECT estado FROM amenidad_tarea WHERE id = ?",
+                            (amenidad_id,)).fetchone()
+        detalle = _areas_por_amenidad(conn, [amenidad_id]).get(amenidad_id, [])
+    finally:
+        conn.close()
+    pendientes = [a["area"] for a in detalle if a["estado"] != "HECHA"]
+    return {"status": "ok", "estado": fila["estado"], "areas": detalle,
+            "pendientes": pendientes}
 
 
 @app.get("/api/export/amenidades")
 def export_amenidades(desde: str = None, hasta: str = None, formato: str = "xlsx",
                       user: dict = Depends(exige("amenidades"))):
     conn = get_connection()
+    # La columna Área lleva TODOS los departamentos: el reporte se imprime y se reparte,
+    # y uno que solo nombre al principal deja fuera a quien también tiene que hacer algo.
     query = f"""SELECT r.arr_date, r.room_no, r.nombre_principal, a.amenidad,
-                       a.tarea, a.area_responsable, a.estado
+                       a.tarea, a.estado,
+                       COALESCE((SELECT GROUP_CONCAT(x.area, ' · ') FROM amenidad_area x
+                                 WHERE x.amenidad_id = a.id),
+                                a.area_responsable) AS area_responsable
                 FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no"""
     params = []
     if desde and hasta:
@@ -3653,6 +3869,13 @@ async def restaurantes_marcar_restriccion(
                 status_code=403,
                 detail=("Desde Restaurantes solo se pueden marcar las restricciones "
                         "alimentarias. El resto se maneja en Amenidades."))
+        # Se marcan TODOS los departamentos, no solo la columna de resumen. Si se tocara
+        # nada más 'amenidad_tarea.estado', la próxima vez que alguien marcara algo en
+        # Amenidades el estado general se recalcularía desde los departamentos —que
+        # seguirían pendientes— y esta marca se desharía sola. Una alergia que se
+        # "desmarca" sin que nadie la toque es exactamente lo que no puede pasar.
+        conn.execute("UPDATE amenidad_area SET estado = ? WHERE amenidad_id = ?",
+                     (estado, amenidad_id))
         conn.execute("UPDATE amenidad_tarea SET estado = ? WHERE id = ?",
                      (estado, amenidad_id))
         conn.commit()

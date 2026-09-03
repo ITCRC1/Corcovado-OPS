@@ -155,16 +155,27 @@ RUTAS_ACOMPANANTES = [
     "sharedGuests[].personName[]",
 ]
 
-# Transporte: llegada y salida.
+# Transporte: llegada y salida. De aquí sale el punto de embarque (Sierpe o Drake) y la
+# hora del vuelo.
+#
+# OJO CON LA FORMA: en OHIP 'arrivalTransportation' es un OBJETO, no un texto —trae tipo,
+# descripción, hora y transportista—. Las rutas apuntan al objeto a propósito y el texto
+# se saca con _texto_de(), que junta lo que haya dentro. Apuntar a un nombre de campo
+# concreto sería adivinar: ese nombre cambia entre instalaciones, y equivocarse aquí no
+# da error, da un punto de embarque vacío para siempre.
 RUTAS_TRANSPORTE_LLEGADA = [
     "reservationTransportation.arrivalTransportation",
+    "reservationTransportation[].arrivalTransportation",
     "transportation.arrival",
     "reservationTransportation[].arrival",
+    "roomStay.transportation.arrival",
 ]
 RUTAS_TRANSPORTE_SALIDA = [
     "reservationTransportation.departureTransportation",
+    "reservationTransportation[].departureTransportation",
     "transportation.departure",
     "reservationTransportation[].departure",
+    "roomStay.transportation.departure",
 ]
 
 # Cómo se traducen los estados de Opera a los del lodge.
@@ -252,6 +263,45 @@ def campo(dato, nombre, por_defecto=None):
     return primero(dato, RUTAS.get(nombre, []), por_defecto)
 
 
+def _texto_de(valor, profundidad=0):
+    """Todo el texto que haya dentro de un valor, sea texto, lista u objeto.
+
+    POR QUÉ HACE FALTA: 'primero()' descarta objetos y listas a propósito —un campo que
+    debería ser un dato suelto y llega como objeto es señal de ruta equivocada—. Pero el
+    bloque de transporte de OHIP ES un objeto, con el tipo, la descripción, la hora y el
+    transportista repartidos en campos cuyo nombre cambia entre instalaciones.
+
+    Antes de esto, las rutas de transporte apuntaban a ese objeto y 'primero()' lo
+    descartaba, así que el punto de embarque quedaba vacío SIEMPRE y nadie se enteraba:
+    no da error, da una reserva sin punto, que recepción tiene que confirmar a mano una
+    por una. Juntando el texto de dentro, el detector encuentra "Sierpe" o "Drake" esté
+    en el campo que esté.
+    """
+    if valor is None or profundidad > 4:
+        return ""
+    if isinstance(valor, dict):
+        return " ".join(t for t in (_texto_de(v, profundidad + 1)
+                                    for v in valor.values()) if t)
+    if isinstance(valor, (list, tuple)):
+        return " ".join(t for t in (_texto_de(v, profundidad + 1)
+                                    for v in valor) if t)
+    if isinstance(valor, bool):
+        return ""          # un true/false no es texto que nombre un lugar
+    return str(valor).strip()
+
+
+def texto_por_rutas(dato, rutas):
+    """El texto de la primera ruta que traiga algo, aplanando objetos y listas."""
+    for ruta in rutas:
+        valores = leer(dato, ruta)
+        if not valores:
+            continue
+        texto = _texto_de(valores).strip()
+        if texto:
+            return texto
+    return None
+
+
 def numero_de_confirmacion(reserva):
     """El identificador de la reserva. Lo usa opera_cloud para no repetir páginas."""
     v = campo(reserva, "conf_no")
@@ -316,11 +366,22 @@ def _hora(texto):
     return f"{int(m.group(1)):02d}:{m.group(2)}"
 
 
+# Cómo se junta apellido y nombre. Es 'APELLIDO/NOMBRE' porque es EXACTAMENTE lo que
+# produce el PDF del PMS: comprobado, 783 de 783 reservas de la base real usan esa forma.
+#
+# Antes aquí se armaba 'APELLIDO, NOMBRE'. No daba error, y por eso era peor: en cuanto
+# se encendiera Opera, la base habría quedado con dos estilos de nombre a la vez, y los
+# reportes y las hojas del día se verían a medias de una forma y a medias de la otra.
+# Todo este módulo existe para producir el mismo diccionario que el PDF; el nombre es
+# parte de eso.
+def _unir_nombre(apellido, pila):
+    return "/".join(p for p in ((apellido or "").strip(), (pila or "").strip()) if p)
+
+
 def _nombre_titular(reserva):
     apellido = primero(reserva, RUTAS_NOMBRE_APELLIDO, "") or ""
     pila = primero(reserva, RUTAS_NOMBRE_PILA, "") or ""
-    completo = f"{apellido}, {pila}".strip(", ").strip()
-    return completo or None
+    return _unir_nombre(apellido, pila) or None
 
 
 def _acompanantes(reserva):
@@ -329,7 +390,7 @@ def _acompanantes(reserva):
         for p in leer(reserva, ruta):
             if not isinstance(p, dict):
                 continue
-            nombre = f"{p.get('surname','')}, {p.get('givenName','')}".strip(", ").strip()
+            nombre = _unir_nombre(p.get("surname"), p.get("givenName"))
             if nombre and nombre not in [g["nombre"] for g in gente]:
                 gente.append({"nombre": nombre, "pasaporte": None})
     return gente
@@ -400,8 +461,8 @@ def mapear(cruda):
     paquetes = [n for n, _ in leer_pares(cruda, RUTAS_PAQUETES_NOMBRE, RUTAS_PAQUETES_FECHA)]
     adicionales = ", ".join(paquetes)
 
-    llegada = primero(cruda, RUTAS_TRANSPORTE_LLEGADA)
-    salida = primero(cruda, RUTAS_TRANSPORTE_SALIDA)
+    llegada = texto_por_rutas(cruda, RUTAS_TRANSPORTE_LLEGADA)
+    salida = texto_por_rutas(cruda, RUTAS_TRANSPORTE_SALIDA)
     p_ent, p_ent_dudoso = _punto_de_embarque(llegada)
     p_sal, p_sal_dudoso = _punto_de_embarque(salida)
 

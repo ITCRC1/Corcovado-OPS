@@ -8,6 +8,11 @@ config_publicacion.json
 config_qr.json
 sync_config.json
 config_opera.json
+# Credenciales de Opera Cloud y llaves de los avisos al celular. Viven en data/ (que ya
+# esta excluida), pero se nombran aparte a proposito: son secretos, y si algun dia
+# alguien los deja por error en la raiz del proyecto, esta linea los sigue excluyendo.
+credenciales_opera.json
+llaves_avisos.json
 cache_itinerarios/
 # Respuestas crudas de Opera Cloud guardadas por "opera_cloud.py descubrir":
 # traen nombres y datos de huéspedes tal como los devuelve Oracle.

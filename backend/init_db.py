@@ -162,6 +162,11 @@ INDICES = [
     ("idx_amenidad_conf", "CREATE INDEX IF NOT EXISTS idx_amenidad_conf ON amenidad_tarea (conf_no)"),
     ("idx_amenidad_fecha", "CREATE INDEX IF NOT EXISTS idx_amenidad_fecha ON amenidad_tarea (fecha)"),
     ("idx_amenidad_estado", "CREATE INDEX IF NOT EXISTS idx_amenidad_estado ON amenidad_tarea (estado)"),
+    # Por área: es como agrupa la pantalla de Amenidades y como filtra el resumen las
+    # restricciones de cocina. La clave primaria (amenidad_id, area) ya sirve para buscar
+    # las áreas DE una amenidad; esto sirve para el camino contrario.
+    ("idx_amenidad_area_area",
+     "CREATE INDEX IF NOT EXISTS idx_amenidad_area_area ON amenidad_area (area)"),
     ("idx_entrada_sinac_fecha", "CREATE INDEX IF NOT EXISTS idx_entrada_sinac_fecha ON entrada_sinac (fecha)"),
     ("idx_alerta_resuelto", "CREATE INDEX IF NOT EXISTS idx_alerta_resuelto ON alerta (resuelto)"),
     ("idx_sugerencia_estado",
@@ -228,11 +233,42 @@ def _migrar(conn):
     _materializar_permisos(conn)
     _sembrar_perfiles(conn)
     _arreglar_entradas_sinac(conn)
+    _sembrar_areas_de_amenidades(conn)
     _limpiar_grupos_sueltos(conn)
     _purgar_sesiones(conn)
     # Al final, con las tablas ya creadas y los duplicados ya limpios.
     _crear_indices(conn)
     return agregadas
+
+
+def _sembrar_areas_de_amenidades(conn):
+    """Le da a cada amenidad existente su fila en amenidad_area.
+
+    Las amenidades de antes tenían un solo departamento, guardado en
+    amenidad_tarea.area_responsable. Se copia tal cual, con su estado, para que sigan
+    comportándose EXACTAMENTE igual: un solo área, un solo estado.
+
+    Se corre en cada arranque y solo toca las que no tengan ninguna fila. Así una base
+    vieja se pone al día sola, y las que ya se migraron no se vuelven a tocar.
+
+    Un requerimiento SIN filas de área sería invisible para todos los departamentos, y
+    eso es una tarea perdida. Por eso esto corre siempre y no una sola vez.
+    """
+    if not {r[1] for r in conn.execute("PRAGMA table_info(amenidad_area)")}:
+        return 0
+    if not {r[1] for r in conn.execute("PRAGMA table_info(amenidad_tarea)")}:
+        return 0
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO amenidad_area (amenidad_id, area, estado)
+           SELECT a.id, a.area_responsable, a.estado
+           FROM amenidad_tarea a
+           WHERE a.area_responsable IS NOT NULL AND TRIM(a.area_responsable) != ''
+             AND NOT EXISTS (SELECT 1 FROM amenidad_area x WHERE x.amenidad_id = a.id)""")
+    n = cur.rowcount or 0
+    if n:
+        conn.commit()
+        print(f"Departamentos de amenidades sembrados: {n}")
+    return n
 
 
 def _limpiar_grupos_sueltos(conn):

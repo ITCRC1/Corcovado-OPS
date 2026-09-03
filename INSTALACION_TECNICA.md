@@ -90,6 +90,153 @@ El esquema de autenticación se deduce solo: si hay `OPERA_USER` y `OPERA_PASSWO
 usa `password`, y si no `client_credentials`. `OPERA_GRANT_TYPE` sirve para forzarlo
 cuando la propiedad usa otro.
 
+##### Qué pedirle a Oracle / al partner de Opera
+
+El conector está terminado y probado; lo único que falta son estas credenciales, que
+solo puede emitir Oracle. Texto para reenviarles:
+
+> Necesitamos registrar una aplicación en OHIP (Oracle Hospitality Integration Platform)
+> para nuestra propiedad, con acceso de **solo lectura** a reservas. Les pedimos:
+>
+> 1. **Gateway URL** del entorno (y si es de producción o de pruebas)
+> 2. **App Key**
+> 3. **Client ID** y **Client Secret**
+> 4. **Hotel ID** (el código de la propiedad en Opera)
+> 5. **Scope** y **Enterprise ID**, si su configuración los requiere
+> 6. **Authentication Scheme**: ¿`client_credentials` o `password`? Si es `password`,
+>    el usuario de integración y su contraseña
+>
+> Y que la aplicación tenga habilitada la API de reservas
+> (`GET /rsv/v1/hotels/{hotelId}/reservations`) con estos bloques en
+> `fetchInstructions`: `Reservation`, `ReservationPackages`, `ReservationComments`,
+> `GuestComments`, `ReservationPreferences`, `ReservationTransportation`,
+> `ReservationMemberships`, `ReservationAlerts`, `ReservationTraces`,
+> `ReservationLinkedReservations`, `ReservationGuestList`.
+>
+> No necesitamos permisos de escritura: el sistema solo lee.
+
+Si algún bloque no está contratado, la conexión funciona igual: ese dato llega vacío y
+la vista previa lo señala. Los tours salen de `ReservationPackages` y las amenidades de
+los bloques de comentarios y preferencias, así que esos dos son los que más pesan.
+
+##### Con las credenciales en mano: `conectar_opera.bat`
+
+Doble clic en **`conectar_opera.bat`**, en la carpeta del proyecto. Hace el diagnóstico
+completo y no escribe nada en la base:
+
+1. La primera vez deja `data/credenciales_opera.json` listo para rellenar y dice dónde
+   está. Se abre con el Bloc de notas, se reemplazan los huecos `<...>` y se guarda. Lo
+   que Oracle no haya entregado se deja como está.
+2. Comprueba que autentican. Si no, muestra la respuesta literal de Oracle y la lista de
+   causas por orden de frecuencia.
+3. Pregunta a Opera qué bloques de datos responde, **uno por uno** — si un módulo no
+   está contratado, Oracle rechaza la petición entera, así que probarlos juntos no dice
+   cuál falla.
+4. Descarga reservas y dice, campo por campo, qué llegó y qué no.
+5. Muestra qué entraría al sistema.
+
+Se aceptan los nombres con prefijo (`OPERA_APP_KEY`) o cortos (`app_key`), y el archivo
+se lee aunque el Bloc de notas lo guarde con marca de orden de bytes.
+
+**Las variables de entorno mandan sobre el archivo.** En el servidor de producción se
+usan variables y el archivo no se lee; el archivo existe porque definir siete variables
+de entorno en Windows para una prueba es un trámite que se hace mal y se ve igual que
+una credencial equivocada.
+
+El paso 4 es el que decide. Si algún campo llega vacío en **todas** las reservas, en esta
+propiedad ese dato viene con otro nombre, y hay que corregir la ruta en `opera_mapeo.py`
+(están todas juntas arriba del archivo, con varias alternativas cada una).
+
+Para eso se comparte `data/opera_muestras/estructura_*.txt`, que trae **solo nombres y
+tipos de campo**. El otro archivo de esa carpeta, `reservas_*.json`, **sí trae datos de
+huéspedes**: ese no se comparte.
+
+##### Lo aprendido contra el OHIP real de Corcovado (2026-09-02)
+
+Tres cosas que costaron un rato y quedan escritas para no volver a descubrirlas.
+Instalación: `mtcu11pr.hospitality-api.us-ashburn-1`, hub `ECRWLG`, hotel `CRWLG`.
+
+**1. El "Authentication Scheme" se copia mal.** La ficha de OHIP lo muestra como
+*"Client Credentials"*, con mayúsculas y espacio. OAuth exige `client_credentials`.
+Enviado tal cual, Oracle responde un `HTTP 401 Unauthorized` pelado —idéntico al de una
+credencial equivocada—. Ya se normaliza solo (`normalizar_grant`), así que se puede
+pegar como venga.
+
+**2. La cabecera del Enterprise ID va SIN el prefijo `x-`.** Con `x-enterpriseId` —el
+nombre de los ejemplos— Oracle responde:
+
+```
+HTTP 400   Enterprise ID is required
+```
+
+aunque el dato viaje en la cabecera **y** en el cuerpo. El mensaje engaña: dice que
+falta cuando está, pero con otro nombre. Se probaron nueve variantes; la única que
+entrega el token es la cabecera `enterpriseId` pelada. Ya está corregido.
+
+**3. Autenticar y poder LEER son dos permisos distintos.** Con el token ya funcionando,
+la consulta de reservas devolvía:
+
+| Cabecera usada | Respuesta |
+|---|---|
+| `x-hotelid: CRWLG` | 403 · `OPERAWS-GEN01244` · *User is not authorized to access data for resort* |
+| `x-hubid: ECRWLG` | 403 · `OPERAWS-GEN01265` · *User is not authorized to access data for hub* |
+
+Y da 403 **incluso sin ningún parámetro en la consulta**, lo que descarta que sea un
+problema de parámetros. La ruta es la correcta: `/rsv/v1/hotels/{hotel}/reservations`
+responde 403 mientras que las rutas inventadas responden 404.
+
+Eso se concede en Opera/OHIP, no en este sistema: al **usuario de integración** hay que
+asignarle la propiedad, darle a su rol las tareas de lectura de reservas, y suscribir la
+aplicación a esa propiedad. El asistente ya reconoce estos códigos y lo dice en vez de
+mandar a revisar credenciales que están bien.
+
+**4. Los bloques van en parámetros REPETIDOS, no separados por comas.**
+
+```
+?fetchInstructions=Reservation&fetchInstructions=ReservationPreferences     ✅
+?fetchInstructions=Reservation,ReservationPreferences                       ❌
+```
+
+Con comas, OHIP toma `Reservation,ReservationPreferences` como **un solo valor** que no
+existe y rechaza la petición entera con `400 · OPERAWS-GEN01346 · Invalid value of:
+Query`. Ya está corregido.
+
+**5. Ese 400 se dispara ANTES del control de permisos, y por eso engaña.** Un bloque
+válido con permiso faltante da 403; uno inválido da 400. Mandando los once bloques con
+comas, el 400 salía siempre y **tapaba el 403** — parecía que el permiso ya estaba
+concedido cuando no lo estaba. Costó dos vueltas de diagnóstico.
+
+Se aprovecha: `descubrir` cuenta el 403 como *"el bloque existe, falta el permiso"*, así
+que el inventario de bloques se puede levantar **antes** de tener acceso de lectura.
+
+**6. Esta instalación solo expone dos bloques.** Probados 40 nombres, uno por uno:
+
+| Bloque | ¿Lo expone? |
+|---|---|
+| `Reservation` | **sí** |
+| `ReservationPreferences` | **sí** |
+| `ReservationPackages`, `ReservationComments`, `GuestComments`, `ReservationTransportation`, `ReservationGuestList`, `ReservationTraces`, `ReservationAlerts`, `ReservationMemberships`, `ReservationLinkedReservations` | no |
+
+Eso importa: sin `ReservationPackages` no vienen los **tours**, sin los de comentarios no
+vienen las **amenidades**, sin `ReservationTransportation` no viene el **punto de
+embarque** y sin `ReservationGuestList` no vienen los **acompañantes**. Con solo esos dos
+bloques, Opera entregaría la reserva (fechas, habitación, titular, pax, estado) y nada de
+la operación.
+
+Desde fuera **no se puede distinguir** "esta versión no tiene ese bloque" de "la
+aplicación no está suscrita a ese bloque": las dos cosas dan el mismo `GEN01346`. Oracle
+sí lo puede ver, así que va en la misma petición que el permiso.
+
+##### Y después
+
+1. Con la vista previa limpia: pantalla **Importar** → **Sincronizar ahora**, una vez.
+2. Revisar la Agenda y las Amenidades del día contra lo que ya se sabe.
+3. Recién entonces **Encender la sincronización**.
+4. Para producción, poner las credenciales como variables de entorno en Railway.
+
+El PDF sigue funcionando igual todo el tiempo: son dos caminos hacia el mismo sitio, no
+uno o el otro.
+
 El resto de la configuración —encendido, cada cuántos minutos y qué ventana de fechas—
 se maneja desde la pantalla **Importar**, y se guarda en `config_opera.json` dentro de
 la carpeta de datos. No hace falta redesplegar para encenderla o apagarla.

@@ -340,6 +340,53 @@ def _cenas_privadas(conn, fecha):
         (_iso(fecha),)).fetchall()}
 
 
+def info_cenas_privadas(conn, fecha):
+    """Las cenas privadas de esa noche CON su información, no solo el número.
+
+    La pantalla mostraba únicamente el conteo ("2 declaradas para esta fecha"), así que
+    para saber de quién eran había que ir a buscarlas a Amenidades. El salonero necesita
+    la habitación y el detalle —si es aniversario hay decoración, si hay alergia la
+    cocina la tiene que saber—, y eso es lo que se sirve aquí.
+
+    La NOCHE no se elige desde esta pantalla: se asigna en Amenidades, que es donde vive
+    la amenidad. Antes se podía hacer en los dos sitios y era el mismo dato escrito desde
+    dos puertas distintas.
+    """
+    filas = conn.execute(
+        f"""SELECT a.id, a.conf_no, a.amenidad, a.detalle, a.tarea, a.estado,
+                   r.room_no, r.nombre_principal, (r.adl + r.chl) AS pax,
+                   r.arr_date, r.dep_date
+            FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
+            WHERE a.fecha = ? AND {_filtro_privada('a')}
+              AND r.res_status != 'CANCELADA'
+            ORDER BY CAST(r.room_no AS INTEGER)""",
+        (_iso(fecha),)).fetchall()
+
+    # ¿El huésped CENA esa noche? La noche de salida no: ese día desayuna y se va. Una
+    # cena privada puesta ahí se acepta —el selector de fecha abarca toda la estadía
+    # porque el desayuno del día de salida también es una tarea— pero no ocupa mesa ni
+    # entra en el reparto de Bar el Bosque. Sin decirlo, la pantalla mostraría una cena
+    # que nadie va a servir y en la cocina se enterarían esa noche.
+    noche = fecha if hasattr(fecha, "isoformat") else datetime.date.fromisoformat(str(fecha))
+    salida = []
+    for f in filas:
+        d = dict(f)
+        llegada = _fecha_de_ddmmyy(d.pop("arr_date", None))
+        se_va = _fecha_de_ddmmyy(d.pop("dep_date", None))
+        d["cena_esa_noche"] = bool(llegada and se_va and llegada <= noche < se_va)
+        salida.append(d)
+    return salida
+
+
+def _fecha_de_ddmmyy(valor):
+    """'05-08-26' -> date(2026, 8, 5). None si no tiene esa forma."""
+    try:
+        d, m, y = str(valor).strip().split("-")
+        return datetime.date(2000 + int(y), int(m), int(d))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
 def _privadas_sin_noche(conn, conf_nos):
     """Cenas privadas contratadas a las que todavía nadie les puso noche.
 
@@ -584,6 +631,10 @@ def distribuir(conn, fecha, cache=None):
         "salen": [{"room_no": r["room_no"], "nombre": r["nombre_principal"],
                    "pax": r["pax"]} for r in salidas],
         "cenas_privadas": sorted(privadas),
+        # La información de cada una, para que la pantalla muestre de quién es y qué
+        # lleva en vez de solo cuántas hay. Va como campo aparte y no cambiando el de
+        # arriba, que otras cosas usan como lista de números de reserva.
+        "cenas_privadas_info": info_cenas_privadas(conn, fecha),
         # Contratadas pero sin noche puesta: no entran en el reparto todavía, y por eso
         # hay que reclamarlas en pantalla mientras el huésped está en casa.
         "cenas_privadas_sin_noche": _privadas_sin_noche(
