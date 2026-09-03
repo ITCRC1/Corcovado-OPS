@@ -300,6 +300,17 @@ CREATE TABLE IF NOT EXISTS spa_enlace (
     creado_en TEXT DEFAULT (datetime('now'))
 );
 
+-- Memoria del propio sistema, para las migraciones que necesitan recordar algo.
+--
+-- La primera que la usa: qué pantallas existían la última vez que se arrancó. Sin eso
+-- no hay forma de distinguir "esta pantalla es nueva" de "a este usuario le quitaron
+-- esta pantalla a propósito", y una migración que no los distinga le devuelve accesos
+-- que alguien decidió quitar.
+CREATE TABLE IF NOT EXISTS sistema_meta (
+    clave TEXT PRIMARY KEY,
+    valor TEXT
+);
+
 -- Alertas de cambios de último momento
 CREATE TABLE IF NOT EXISTS alerta (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -254,6 +254,10 @@ def _migrar(conn):
         print("Base actualizada, columnas agregadas: " + ", ".join(agregadas))
     _renombrar_restaurante(conn, "Vitrales", "Bar el Bosque")
     _materializar_permisos(conn)
+    # Después de materializar: primero se le da rejilla a quien no la tenga, y luego se
+    # le agregan a todos las pantallas nuevas. En ese orden, un usuario recién creado no
+    # pasa dos veces por lo mismo.
+    _pantallas_nuevas_a_las_rejillas(conn)
     _sembrar_perfiles(conn)
     _arreglar_entradas_sinac(conn)
     _sembrar_areas_de_amenidades(conn)
@@ -411,6 +415,96 @@ def _materializar_permisos(conn):
     conn.commit()
     print(f"Permisos materializados desde el rol en {len(filas)} usuario(s)")
     return len(filas)
+
+
+def _meta(conn, clave, valor=None):
+    """Lee o escribe un dato que el propio sistema necesita recordar entre arranques."""
+    if valor is None:
+        fila = conn.execute("SELECT valor FROM sistema_meta WHERE clave = ?",
+                            (clave,)).fetchone()
+        return dict(fila)["valor"] if fila else None
+    conn.execute(
+        "INSERT INTO sistema_meta (clave, valor) VALUES (?,?) "
+        "ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor", (clave, valor))
+    conn.commit()
+    return valor
+
+
+def _pantallas_nuevas_a_las_rejillas(conn):
+    """Le agrega a cada usuario las pantallas NUEVAS del sistema, al nivel de su rol.
+
+    EL PROBLEMA QUE RESUELVE, que pasó de verdad: al agregar la pantalla del Spa, el
+    sistema se desplegó bien pero el botón no le aparecía a nadie y las rutas del spa
+    respondían 403. La razón es que _materializar_permisos solo le pone la rejilla a
+    quien NO la tiene, y en una instalación que lleva meses corriendo todos la tienen.
+    La pantalla nueva quedaba fuera de la rejilla de todos, y una pantalla que no está
+    en la rejilla es una pantalla que no existe.
+
+    Se veía como "el despliegue no funcionó", que es lo peor: manda a buscar el problema
+    donde no está.
+
+    POR QUÉ HACE FALTA RECORDAR QUÉ PANTALLAS HABÍA. Sin eso, "está en el sistema y no
+    en la rejilla" es ambiguo: puede ser una pantalla nueva, o una que alguien le quitó
+    a ese usuario a propósito. Devolverle un acceso que se le quitó es peor que no
+    agregarle uno nuevo. Con la lista guardada, solo se agregan las que de verdad son
+    nuevas desde el último arranque.
+
+    Se respeta el rol: solo se agrega lo que POR_ROL le daría. Así el staff de campo no
+    recibe pantallas que su rol nunca le dio.
+    """
+    import json as _json
+    try:
+        import auth
+    except ImportError:
+        return 0
+    if not {r[1] for r in conn.execute("PRAGMA table_info(sistema_meta)")}:
+        return 0
+
+    actuales = [k for k, _ in auth.PANTALLAS]
+    guardadas = _meta(conn, "pantallas_conocidas")
+    if guardadas:
+        try:
+            conocidas = _json.loads(guardadas)
+        except ValueError:
+            conocidas = []
+        nuevas = [p for p in actuales if p not in conocidas]
+    else:
+        # Primera vez con este mecanismo: no hay lista anterior, así que se completa lo
+        # que le falte a cada rejilla según el rol. Es el caso de la instalación que ya
+        # está corriendo, y es lo que hace aparecer la pantalla del Spa.
+        nuevas = actuales
+
+    if not nuevas:
+        return 0
+
+    tocados = 0
+    for u in conn.execute(
+            "SELECT id, rol, permisos_json FROM usuario "
+            "WHERE permisos_json IS NOT NULL AND permisos_json != ''").fetchall():
+        try:
+            rejilla = _json.loads(dict(u)["permisos_json"])
+        except ValueError:
+            continue
+        if not isinstance(rejilla, dict):
+            continue
+        del_rol = auth.POR_ROL.get(u["rol"]) or {}
+        agregadas = []
+        for p in nuevas:
+            # Nunca se toca lo que ya está: ni para dar más ni para quitar.
+            if p not in rejilla and p in del_rol:
+                rejilla[p] = del_rol[p]
+                agregadas.append(p)
+        if agregadas:
+            conn.execute("UPDATE usuario SET permisos_json = ? WHERE id = ?",
+                         (_json.dumps(rejilla, ensure_ascii=False), u["id"]))
+            tocados += 1
+
+    if tocados:
+        conn.commit()
+        print(f"Pantallas nuevas agregadas a la rejilla de {tocados} usuario(s): "
+              f"{', '.join(nuevas)}")
+    _meta(conn, "pantallas_conocidas", _json.dumps(actuales))
+    return tocados
 
 
 def _purgar_sesiones(conn):

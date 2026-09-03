@@ -232,6 +232,26 @@ Dos campos del tour pesan más que los demás:
   cuando el tour se agrega a una reserva. Marcarla aquí alcanza; no hay que tocar código.
 - **Máx. pax/guía** — es el número con que la Agenda avisa de sobrecupo.
 
+## Al actualizar: si una pantalla nueva no aparece
+
+Al desplegar una versión que trae una **pantalla nueva**, el sistema se la agrega sola a
+la rejilla de permisos de cada usuario, al nivel que le dé su rol. Antes no lo hacía, y
+el síntoma engañaba: el despliegue funcionaba pero el botón no aparecía y esa parte
+respondía 403 — se veía igual que *"no se subieron los cambios"*.
+
+Lo que **no** hace es devolver una pantalla que alguien le quitó a un usuario a
+propósito. El sistema recuerda qué pantallas existían en el arranque anterior, así que
+distingue *"esta es nueva"* de *"esta se la quitaron"*.
+
+⚠️ **Una sola vez**, en el primer despliegue con esto, no hay lista anterior que
+comparar, así que se completa lo que le falte a cada rejilla según su rol. Si alguien
+tenía un acceso quitado a mano, conviene revisarlo en **Usuarios** después de ese
+despliegue. De ahí en adelante ya no vuelve a pasar.
+
+Para saber qué versión tiene el servidor, sin iniciar sesión: **`/api/version`**.
+Devuelve la fecha y el commit desplegado — comparándolo con el último de GitHub se sabe
+si el despliegue entró.
+
 ## Al actualizar a una versión nueva
 
 Con el sistema en Railway, actualizar es **subir los cambios a GitHub**: Railway
