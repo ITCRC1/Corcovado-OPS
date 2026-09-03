@@ -228,6 +228,78 @@ CREATE TABLE IF NOT EXISTS amenidad_area (
     PRIMARY KEY (amenidad_id, area)
 );
 
+-- ---------------------------------------------------------------------------
+-- SPA
+-- ---------------------------------------------------------------------------
+-- El huésped PIDE una cita y el spa la confirma. No es una reserva en firme desde el
+-- primer momento, y eso es deliberado: así funciona hoy en el lodge —la hora se acuerda
+-- con el spa— y un sistema que prometa horas por su cuenta se equivoca el día que la
+-- terapeuta llega tarde o un tratamiento se alarga.
+--
+-- Lo que el sistema SÍ hace es avisar de choques: con la duración de cada servicio, el
+-- espacio entre citas y cuántas terapeutas hay, sabe cuándo dos citas no caben.
+
+CREATE TABLE IF NOT EXISTS spa_servicio (
+    codigo TEXT PRIMARY KEY,
+    nombre TEXT NOT NULL,
+    minutos INTEGER NOT NULL,
+    tipo TEXT NOT NULL DEFAULT 'MASAJE',   -- MASAJE | FACIAL | OTRO
+    orden INTEGER NOT NULL DEFAULT 0,      -- para que la lista salga como en el formulario
+    activo INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS spa_terapeuta (
+    nombre TEXT PRIMARY KEY,
+    activo INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS spa_cita (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conf_no TEXT REFERENCES reserva(conf_no),
+    -- Se copian la habitación y el nombre al crear la cita. Suena redundante teniendo
+    -- conf_no, pero hace falta: una cita pedida a mano puede no tener reserva (un
+    -- visitante del día), y el número de habitación del momento es el que la terapeuta
+    -- necesita aunque después la reserva cambie de cuarto.
+    room_no TEXT,
+    nombre_huesped TEXT,
+    servicio_codigo TEXT REFERENCES spa_servicio(codigo),
+    fecha TEXT NOT NULL,                   -- ISO, el día de la cita
+    hora TEXT,                             -- 'HH:MM'. Si está SOLICITADA es la preferida
+    minutos INTEGER,                       -- duración copiada del servicio al crear
+    terapeuta TEXT REFERENCES spa_terapeuta(nombre),
+    estado TEXT NOT NULL DEFAULT 'SOLICITADA',  -- SOLICITADA | CONFIRMADA | HECHA | CANCELADA
+    origen TEXT NOT NULL DEFAULT 'HUESPED',     -- HUESPED | RECEPCION
+
+    -- La ficha médica, con las MISMAS preguntas del formulario que ya usa el spa.
+    -- Se guarda con la cita y no con el huésped: es un consentimiento de una fecha
+    -- concreta, y cambiarlo después le quitaría el valor que tiene.
+    condicion_medica TEXT,
+    cirugia_reciente INTEGER,              -- 1 sí, 0 no, NULL sin contestar
+    alergias TEXT,
+    embarazo INTEGER,
+    -- Buceo en las últimas 24 horas, aquí o antes de llegar. Es una pregunta de salud
+    -- y seguridad: se conserva la respuesta del huésped tal cual, y aparte el sistema
+    -- avisa si además tiene un tour de buceo cerca de la cita.
+    buceo_24h INTEGER,
+    acepto_terminos INTEGER NOT NULL DEFAULT 0,
+    acepto_en TEXT,                        -- cuándo aceptó, para que el consentimiento tenga fecha
+
+    nota_operacion TEXT,                   -- lo que anota el spa o recepción
+    cancelada_motivo TEXT,
+    creada_en TEXT DEFAULT (datetime('now'))
+);
+
+-- El enlace personal que se le manda al huésped para que pida su cita.
+--
+-- Va por RESERVA y no por habitación: el código de la habitación no cambia nunca
+-- —los QR se imprimen una vez y se pegan en el cuarto— así que un huésped anterior
+-- podría abrir el enlace del siguiente. Este muere con la reserva.
+CREATE TABLE IF NOT EXISTS spa_enlace (
+    conf_no TEXT PRIMARY KEY REFERENCES reserva(conf_no),
+    token TEXT NOT NULL UNIQUE,
+    creado_en TEXT DEFAULT (datetime('now'))
+);
+
 -- Alertas de cambios de último momento
 CREATE TABLE IF NOT EXISTS alerta (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

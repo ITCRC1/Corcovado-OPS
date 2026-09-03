@@ -96,6 +96,29 @@ AMENIDADES = [
 ]
 
 
+# Los tratamientos del spa, con los nombres y las duraciones EXACTAS del formulario que
+# el spa ya le manda al huésped. Se siembran para que el sistema arranque con lo que ya
+# se ofrece, y son editables desde el Catálogo: la duración, el nombre y "Promo of the
+# week" cambian sin tocar código.
+#
+# (codigo, nombre, minutos, tipo, orden)
+SERVICIOS_SPA = [
+    ("DEEP",    "Deep Connection",    90, "MASAJE", 1),
+    ("PACHA",   "Pachamama Touch",    60, "MASAJE", 2),
+    ("FRESH",   "Fresh Soul",         90, "MASAJE", 3),
+    ("FLORA",   "Flora Experience",   60, "FACIAL", 4),
+    ("OCEAN",   "Ocean Breeze",       60, "MASAJE", 5),
+    ("RAIN",    "Rainforest Delight", 60, "MASAJE", 6),
+    ("JUNGLE",  "Jungle Bliss",       40, "MASAJE", 7),
+    ("SOUL",    "Soul and Body",      30, "MASAJE", 8),
+    ("PROMO",   "Promo of the week",  60, "OTRO",   9),
+]
+
+# Las dos terapeutas. Sin nombre todavía: se editan desde el Catálogo. Se siembran para
+# que la agenda pueda repartir citas desde el primer día sin tener que configurar nada.
+TERAPEUTAS_SPA = [("Terapeuta 1",), ("Terapeuta 2",)]
+
+
 # Columnas agregadas después de que el sistema ya estaba en uso. El esquema se crea
 # con CREATE TABLE IF NOT EXISTS, así que en una base que ya existe estas columnas
 # NO aparecen solas: hay que agregarlas explícitamente. Sin esto fallan al importar
@@ -485,11 +508,21 @@ def init_db(reset=False):
         "INSERT OR IGNORE INTO amenidad_catalogo (nombre, tarea_automatica, area_responsable) VALUES (?,?,?)",
         AMENIDADES,
     )
+    cur.executemany(
+        """INSERT OR IGNORE INTO spa_servicio (codigo, nombre, minutos, tipo, orden)
+           VALUES (?,?,?,?,?)""",
+        SERVICIOS_SPA,
+    )
+    cur.executemany(
+        "INSERT OR IGNORE INTO spa_terapeuta (nombre) VALUES (?)",
+        TERAPEUTAS_SPA,
+    )
 
     conn.commit()
     conn.close()
     print(f"Base de datos inicializada en {DB_PATH}")
-    print(f"Catálogo cargado: {len(TOURS)} tours, {len(BOTES)} botes, {len(GUIAS)} guías, {len(AMENIDADES)} amenidades")
+    print(f"Catálogo cargado: {len(TOURS)} tours, {len(BOTES)} botes, {len(GUIAS)} guías, "
+          f"{len(AMENIDADES)} amenidades, {len(SERVICIOS_SPA)} servicios de spa")
 
 
 if __name__ == "__main__":

@@ -280,6 +280,23 @@ def dashboard(fecha: str, user: dict = Depends(exige("dashboard"))):
         elif dias <= 7:
             sinac_urgentes.append(item)
 
+    # El spa del día. Va con las citas que están vivas —una cancelada no es trabajo— y
+    # con las solicitudes contadas aparte: esas son lo que hay que resolver hoy, no lo
+    # que hay que atender. Se pidió que el spa se refleje aquí cuando aplique para el día.
+    citas_hoy = conn.execute(
+        """SELECT c.hora, c.minutos, c.estado, c.terapeuta, c.room_no,
+                  c.nombre_huesped, c.embarazo, c.cirugia_reciente, c.buceo_24h,
+                  s.nombre AS servicio_nombre
+           FROM spa_cita c LEFT JOIN spa_servicio s ON s.codigo = c.servicio_codigo
+           WHERE c.fecha = ? AND c.estado != 'CANCELADA'
+           ORDER BY CASE WHEN c.hora IS NULL THEN 1 ELSE 0 END, c.hora""",
+        (fecha,)).fetchall()
+    spa_citas = [dict(c) for c in citas_hoy]
+    for c in spa_citas:
+        # Solo si hay ALGO que revisar. Un aviso vacío en la hoja del día es ruido.
+        c["revisar"] = bool(c.get("embarazo") or c.get("cirugia_reciente")
+                            or c.get("buceo_24h"))
+
     conn.close()
     return {
         "fecha": fecha,
@@ -290,6 +307,8 @@ def dashboard(fecha: str, user: dict = Depends(exige("dashboard"))):
         "en_casa": [reserva_resumen(r) for r in en_casa],
         "tours": [dict(t) for t in tours],
         "alertas": [dict(a) for a in alertas],
+        "spa": spa_citas,
+        "spa_por_confirmar": len([c for c in spa_citas if c["estado"] == "SOLICITADA"]),
     }
 
 
@@ -404,6 +423,20 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
 
     # --- Amenidades a preparar para quienes llegan ese día ---
     habitaciones_ingresan = {x["room_no"] for x in ingresos}
+    # El spa del día, para la hoja que se imprime y se reparte. Con la terapeuta y con
+    # la marca de lo que hay que revisar antes de empezar.
+    spa_dia = [dict(c) for c in conn.execute(
+        """SELECT c.hora, c.minutos, c.estado, c.terapeuta, c.room_no,
+                  c.nombre_huesped, c.nota_operacion,
+                  c.embarazo, c.cirugia_reciente, c.buceo_24h,
+                  s.nombre AS servicio_nombre
+           FROM spa_cita c LEFT JOIN spa_servicio s ON s.codigo = c.servicio_codigo
+           WHERE c.fecha = ? AND c.estado != 'CANCELADA'
+           ORDER BY CASE WHEN c.hora IS NULL THEN 1 ELSE 0 END, c.hora""", (fecha,))]
+    for c in spa_dia:
+        c["revisar"] = bool(c.get("embarazo") or c.get("cirugia_reciente")
+                            or c.get("buceo_24h"))
+
     # 'areas' trae TODOS los departamentos separados por · para que la columna Área de la
     # hoja del día los muestre completos. Antes salía solo el principal, y una tarea que
     # también era de cocina se leía como si fuera solo de housekeeping.
@@ -436,6 +469,7 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
         "restricciones_cocina": restricciones,
         "amenidades": amenidades,
         "restaurantes": resumen_restaurantes,
+        "spa": spa_dia,
     }
 
 
@@ -775,11 +809,42 @@ def analitica(desde: str, hasta: str, user: dict = Depends(exige("analitica"))):
            GROUP BY punto_entrada""",
         (yymmdd(desde), yymmdd(hasta)),
     ).fetchall()
+    # ---- Spa ----
+    # Solo se cuentan las ATENDIDAS y las CONFIRMADAS: una solicitud sin confirmar no es
+    # trabajo hecho ni comprometido, y meterla infla el número. Las canceladas quedan
+    # fuera por lo mismo.
+    spa_por_tratamiento = conn.execute(
+        """SELECT COALESCE(s.nombre, c.servicio_codigo) AS tratamiento,
+                  COUNT(*) AS citas, COALESCE(SUM(c.minutos), 0) AS minutos
+           FROM spa_cita c LEFT JOIN spa_servicio s ON s.codigo = c.servicio_codigo
+           WHERE c.fecha BETWEEN ? AND ? AND c.estado IN ('HECHA','CONFIRMADA')
+           GROUP BY tratamiento ORDER BY citas DESC, tratamiento""",
+        (desde, hasta)).fetchall()
+    spa_por_terapeuta = conn.execute(
+        """SELECT c.terapeuta, COUNT(*) AS citas, COALESCE(SUM(c.minutos), 0) AS minutos
+           FROM spa_cita c
+           WHERE c.fecha BETWEEN ? AND ? AND c.estado IN ('HECHA','CONFIRMADA')
+             AND c.terapeuta IS NOT NULL
+           GROUP BY c.terapeuta ORDER BY citas DESC""",
+        (desde, hasta)).fetchall()
+    spa_totales = dict(conn.execute(
+        """SELECT
+             COUNT(*) AS total,
+             SUM(CASE WHEN estado = 'HECHA' THEN 1 ELSE 0 END) AS atendidas,
+             SUM(CASE WHEN estado = 'CONFIRMADA' THEN 1 ELSE 0 END) AS confirmadas,
+             SUM(CASE WHEN estado = 'SOLICITADA' THEN 1 ELSE 0 END) AS por_confirmar,
+             SUM(CASE WHEN estado = 'CANCELADA' THEN 1 ELSE 0 END) AS canceladas,
+             SUM(CASE WHEN origen = 'HUESPED' THEN 1 ELSE 0 END) AS las_pidio_el_huesped
+           FROM spa_cita WHERE fecha BETWEEN ? AND ?""", (desde, hasta)).fetchone())
+
     conn.close()
     return {
         "uso_botes": [dict(r) for r in uso_botes],
         "actividades_por_guia": [dict(r) for r in por_guia],
         "movimiento_por_punto": [dict(r) for r in movimiento],
+        "spa_por_tratamiento": [dict(r) for r in spa_por_tratamiento],
+        "spa_por_terapeuta": [dict(r) for r in spa_por_terapeuta],
+        "spa_totales": spa_totales,
     }
 
 
@@ -1675,6 +1740,10 @@ REFERENCIAS_CATALOGO = {
              ("entrada_sinac", "tour_codigo"),
              # Un tour privado apunta al normal equivalente por su código.
              ("tour_catalogo", "tour_base")],
+    # El spa usa el mismo editor: renombrar un tratamiento o una terapeuta arrastra las
+    # citas que ya los tenían, igual que con los tours.
+    "spa_servicio": [("spa_cita", "servicio_codigo")],
+    "spa_terapeuta": [("spa_cita", "terapeuta")],
 }
 
 
@@ -1808,6 +1877,666 @@ async def editar_tour(codigo: str, payload: dict,
          "horario_alterno_inicio": _texto, "horario_alterno_fin": _texto,
          "max_pax_guia": _entero, "requiere_entrada_sinac": _si_no,
          "requiere_bote": _si_no, "es_privado": _si_no, "tour_base": _texto})
+
+
+# ---------- SPA ----------
+#
+# El huésped PIDE la cita y el spa la CONFIRMA. Ver el encabezado de spa.py para el
+# por qué, y el de la tabla spa_cita en schema.sql para el modelo de datos.
+import spa as _spa
+# HTMLResponse se importa aquí y no solo abajo con las rutas del QR: la página del spa
+# la usa en su decorador, y un decorador se ejecuta al cargar el módulo — así que un
+# import más abajo llega tarde y el servidor no arranca.
+from fastapi.responses import HTMLResponse
+
+
+def _servicios_spa(conn, todos=False):
+    cond = "" if todos else "WHERE activo = 1"
+    return [dict(r) for r in conn.execute(
+        f"SELECT * FROM spa_servicio {cond} ORDER BY orden, nombre")]
+
+
+def _terapeutas_spa(conn, todas=False):
+    cond = "" if todas else "WHERE activo = 1"
+    return [dict(r)["nombre"] for r in conn.execute(
+        f"SELECT nombre FROM spa_terapeuta {cond} ORDER BY nombre")]
+
+
+def _citas_spa(conn, desde=None, hasta=None, conf_no=None, incluir_canceladas=True):
+    """Las citas del rango, ya con el nombre del tratamiento y sus minutos."""
+    query = """SELECT c.*, s.nombre AS servicio_nombre, s.tipo AS servicio_tipo,
+                      r.nombre_principal, r.arr_date, r.dep_date, r.res_status
+               FROM spa_cita c
+               LEFT JOIN spa_servicio s ON s.codigo = c.servicio_codigo
+               LEFT JOIN reserva r ON r.conf_no = c.conf_no"""
+    cond, params = [], []
+    if desde and hasta:
+        cond.append("c.fecha BETWEEN ? AND ?")
+        params += [desde, hasta]
+    if conf_no:
+        cond.append("c.conf_no = ?")
+        params.append(conf_no)
+    if not incluir_canceladas:
+        cond.append("c.estado != 'CANCELADA'")
+    if cond:
+        query += " WHERE " + " AND ".join(cond)
+    # Las que no tienen hora van al final: son solicitudes a las que el spa todavía no
+    # les puso hora, y lo que se mira primero es la agenda de la que sí está armada.
+    query += " ORDER BY c.fecha, CASE WHEN c.hora IS NULL THEN 1 ELSE 0 END, c.hora, c.id"
+    return [dict(r) for r in conn.execute(query, params)]
+
+
+def _buceo_de(conn, conf_no):
+    """Las fechas en que esa reserva tiene tour de buceo, según el sistema.
+
+    Es la segunda red de la pregunta de buceo del formulario: esa la contesta el huésped
+    de memoria, y esto lo sabe de los tours cargados. Se usa para avisar, nunca para
+    contradecirlo.
+    """
+    if not conf_no:
+        return []
+    return [dict(r)["fecha"] for r in conn.execute(
+        """SELECT ta.fecha FROM tour_asignado ta
+           JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
+           WHERE ta.conf_no = ?
+             AND (ta.tour_codigo LIKE '%BUCEO%' OR UPPER(tc.nombre) LIKE '%DIV%'
+                  OR UPPER(tc.nombre) LIKE '%BUCE%')""", (conf_no,))]
+
+
+def _con_avisos(conn, citas):
+    """Le agrega a cada cita los avisos de salud, resueltos en pocas consultas."""
+    buceo = {}
+    for c in citas:
+        if c.get("conf_no") and c["conf_no"] not in buceo:
+            buceo[c["conf_no"]] = _buceo_de(conn, c["conf_no"])
+    for c in citas:
+        c["avisos_salud"] = _spa.avisos_de_salud(c, buceo.get(c.get("conf_no")) or [])
+    return citas
+
+
+@app.get("/api/spa/catalogo")
+def spa_catalogo(todos: bool = False, user: dict = Depends(exige("spa", "catalogo"))):
+    """Los tratamientos, las terapeutas y el horario del spa."""
+    conn = get_connection()
+    try:
+        return {"servicios": _servicios_spa(conn, todos),
+                "terapeutas": _terapeutas_spa(conn, todos),
+                "config": _spa.cargar_config()}
+    finally:
+        conn.close()
+
+
+@app.post("/api/spa/config")
+async def spa_config(payload: dict, user: dict = Depends(exige("spa", escribir=True))):
+    """Cambia el horario del spa y el espacio entre citas."""
+    try:
+        return {"status": "ok", "config": _spa.guardar_config(payload)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/spa/servicio")
+async def crear_servicio_spa(payload: dict,
+                             user: dict = Depends(exige("spa", "catalogo", escribir=True))):
+    codigo = (payload.get("codigo") or "").strip().upper()
+    nombre = (payload.get("nombre") or "").strip()
+    if not codigo or not nombre:
+        raise HTTPException(status_code=400, detail="Hacen falta el código y el nombre.")
+    try:
+        minutos = int(payload.get("minutos") or 0)
+    except (TypeError, ValueError):
+        minutos = 0
+    if minutos < 5:
+        raise HTTPException(status_code=400,
+                            detail="La duración tiene que ser de al menos 5 minutos.")
+    conn = get_connection()
+    try:
+        if conn.execute("SELECT 1 FROM spa_servicio WHERE codigo = ? COLLATE NOCASE",
+                        (codigo,)).fetchone():
+            raise HTTPException(status_code=400, detail="Ya existe un tratamiento con ese código")
+        orden = (conn.execute("SELECT COALESCE(MAX(orden), 0) o FROM spa_servicio")
+                 .fetchone()["o"] or 0) + 1
+        conn.execute(
+            """INSERT INTO spa_servicio (codigo, nombre, minutos, tipo, orden)
+               VALUES (?,?,?,?,?)""",
+            (codigo, nombre, minutos,
+             (payload.get("tipo") or "MASAJE").upper()[:10], orden))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/api/spa/servicio/{codigo}/editar")
+async def editar_servicio_spa(codigo: str, payload: dict,
+                              user: dict = Depends(exige("spa", "catalogo", escribir=True))):
+    """Cambia un tratamiento: nombre, duración y tipo.
+
+    Aquí se resuelve «Promo of the week»: se le cambia el nombre y la duración cada
+    semana sin tocar el código, así las citas que ya la tenían siguen apuntando a ella.
+    """
+    if "minutos" in payload and not _entero(payload["minutos"]):
+        raise HTTPException(status_code=400,
+                            detail="La duración tiene que ser un número de minutos.")
+    return _editar_catalogo(
+        "spa_servicio", "spa_servicio", "codigo", codigo.upper(), payload,
+        {"nombre": _texto, "minutos": _entero, "tipo": _texto, "orden": _entero})
+
+
+@app.post("/api/spa/servicio/{codigo}/estado")
+def estado_servicio_spa(codigo: str, activo: bool,
+                        user: dict = Depends(exige("spa", "catalogo", escribir=True))):
+    conn = get_connection()
+    conn.execute("UPDATE spa_servicio SET activo = ? WHERE codigo = ?",
+                 (1 if activo else 0, codigo.upper()))
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/api/spa/terapeuta")
+async def crear_terapeuta(payload: dict,
+                          user: dict = Depends(exige("spa", "catalogo", escribir=True))):
+    nombre = " ".join((payload.get("nombre") or "").split())[:60]
+    if not nombre:
+        raise HTTPException(status_code=400, detail="Falta el nombre.")
+    conn = get_connection()
+    try:
+        if conn.execute("SELECT 1 FROM spa_terapeuta WHERE nombre = ? COLLATE NOCASE",
+                        (nombre,)).fetchone():
+            raise HTTPException(status_code=400, detail="Ya existe una terapeuta con ese nombre")
+        conn.execute("INSERT INTO spa_terapeuta (nombre) VALUES (?)", (nombre,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/api/spa/terapeuta/{nombre}/editar")
+async def editar_terapeuta(nombre: str, payload: dict,
+                           user: dict = Depends(exige("spa", "catalogo", escribir=True))):
+    """Renombra una terapeuta arrastrando sus citas, igual que con los guías."""
+    return _editar_catalogo("spa_terapeuta", "spa_terapeuta", "nombre", nombre,
+                            payload, {})
+
+
+@app.post("/api/spa/terapeuta/{nombre}/estado")
+def estado_terapeuta(nombre: str, activo: bool,
+                     user: dict = Depends(exige("spa", "catalogo", escribir=True))):
+    conn = get_connection()
+    conn.execute("UPDATE spa_terapeuta SET activo = ? WHERE nombre = ?",
+                 (1 if activo else 0, nombre))
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+
+# ---------- Las citas ----------
+
+def _revisar_fecha_cita(conn, conf_no, fecha):
+    """(fecha_iso, error). La cita tiene que caer en la estadía del huésped.
+
+    Es la misma comprobación que para las amenidades y los tours: una cita en un día en
+    que el huésped no está no la puede hacer nadie, y es el error fácil de cometer.
+    Una cita SIN reserva (un visitante del día) no se acota: no hay estadía contra la
+    que comparar.
+    """
+    try:
+        iso = datetime.date.fromisoformat(str(fecha).strip()).isoformat()
+    except (ValueError, AttributeError):
+        return None, "La fecha no tiene el formato año-mes-día."
+    if not conf_no:
+        return iso, None
+    r = conn.execute("SELECT arr_date, dep_date FROM reserva WHERE conf_no = ?",
+                     (conf_no,)).fetchone()
+    if not r:
+        return None, "No existe una reserva con ese número."
+    llegada, salida = _noches_de_estadia(r)
+    if llegada and iso < llegada:
+        return None, f"El huésped llega el {llegada}: no puede tener una cita antes."
+    if salida and iso > salida:
+        return None, f"El huésped se va el {salida}: no puede tener una cita después."
+    return iso, None
+
+
+def _crear_cita(conn, payload, origen, user_id=None):
+    """El tronco común del alta: la usa recepción desde la pantalla y el huésped desde
+    su enlace. Un solo sitio para que las dos puertas validen igual."""
+    codigo = (payload.get("servicio_codigo") or "").strip().upper()
+    servicio = conn.execute("SELECT * FROM spa_servicio WHERE codigo = ?",
+                            (codigo,)).fetchone()
+    if not servicio:
+        raise HTTPException(status_code=404, detail="Ese tratamiento no está en la lista")
+    if not servicio["activo"]:
+        raise HTTPException(status_code=400,
+                            detail=f"«{servicio['nombre']}» ya no se está ofreciendo.")
+
+    conf_no = (payload.get("conf_no") or "").strip() or None
+    fecha, problema = _revisar_fecha_cita(conn, conf_no, payload.get("fecha"))
+    if problema:
+        raise HTTPException(status_code=400, detail=problema)
+
+    hora = _spa.normalizar_hora(payload.get("hora"))
+    if payload.get("hora") and not hora:
+        raise HTTPException(status_code=400, detail="La hora no tiene el formato hora:minutos.")
+
+    room_no = (payload.get("room_no") or "").strip() or None
+    nombre = (payload.get("nombre_huesped") or "").strip() or None
+    if conf_no:
+        r = conn.execute("SELECT room_no, nombre_principal FROM reserva WHERE conf_no = ?",
+                         (conf_no,)).fetchone()
+        if r:
+            # Lo que dice la reserva manda sobre lo que se escriba: es de donde salen la
+            # habitación y el nombre correctos, y evita el error de teclear mal el cuarto
+            # —que es justo lo que pasaba con el formulario de Google.
+            room_no = room_no or r["room_no"]
+            nombre = nombre or r["nombre_principal"]
+    if not room_no and not conf_no:
+        raise HTTPException(
+            status_code=400,
+            detail="Hace falta la reserva o al menos el número de habitación.")
+
+    def si_no(v):
+        if v in (None, ""):
+            return None
+        if isinstance(v, str):
+            return 1 if v.strip().lower() in ("1", "si", "sí", "yes", "true") else 0
+        return 1 if v else 0
+
+    acepto = 1 if si_no(payload.get("acepto_terminos")) else 0
+    cur = conn.execute(
+        """INSERT INTO spa_cita
+             (conf_no, room_no, nombre_huesped, servicio_codigo, fecha, hora, minutos,
+              terapeuta, estado, origen, condicion_medica, cirugia_reciente, alergias,
+              embarazo, buceo_24h, acepto_terminos, acepto_en, nota_operacion)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (conf_no, room_no, nombre, codigo, fecha, hora, servicio["minutos"],
+         (payload.get("terapeuta") or "").strip() or None,
+         payload.get("estado") if payload.get("estado") in _spa.ESTADOS else "SOLICITADA",
+         origen,
+         (payload.get("condicion_medica") or "").strip() or None,
+         si_no(payload.get("cirugia_reciente")),
+         (payload.get("alergias") or "").strip() or None,
+         si_no(payload.get("embarazo")),
+         si_no(payload.get("buceo_24h")),
+         acepto,
+         datetime.datetime.now().isoformat(timespec="seconds") if acepto else None,
+         (payload.get("nota_operacion") or "").strip() or None))
+    conn.commit()
+    return cur.lastrowid
+
+
+@app.get("/api/spa/citas")
+def listar_citas_spa(fecha: str = None, desde: str = None, hasta: str = None,
+                     user: dict = Depends(exige("spa"))):
+    """La agenda del spa. Con 'fecha' es el día; con 'desde/hasta', el rango."""
+    if fecha:
+        desde = hasta = fecha
+    conn = get_connection()
+    try:
+        citas = _citas_spa(conn, desde, hasta)
+        _con_avisos(conn, citas)
+        cfg = _spa.cargar_config()
+        terapeutas = _terapeutas_spa(conn)
+        # Se marca cada cita que choca, con la agenda del mismo día como referencia.
+        por_dia = {}
+        for c in citas:
+            por_dia.setdefault(c["fecha"], []).append(c)
+        for c in citas:
+            if c["estado"] in ("CANCELADA",) or not c.get("hora"):
+                c["choques"] = []
+                continue
+            c["choques"] = _spa.revisar_choque(
+                por_dia.get(c["fecha"], []), c["hora"], c.get("minutos"), terapeutas,
+                cfg, excluir_id=c["id"], terapeuta=c.get("terapeuta"))
+        pendientes = [c for c in citas if c["estado"] == "SOLICITADA"]
+        return {"citas": citas, "config": cfg, "terapeutas": terapeutas,
+                "solicitudes_pendientes": len(pendientes)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/spa/disponibilidad")
+def disponibilidad_spa(fecha: str, servicio: str = None, minutos: int = None,
+                       excluir: int = None, user: dict = Depends(exige("spa"))):
+    """Las horas en que ese tratamiento cabe ese día.
+
+    Se usa para SUGERIR. El huésped pide y el spa confirma, así que esto no reserva
+    nada — pero evita que pida una hora que no existe, que es la mitad del problema.
+    """
+    conn = get_connection()
+    try:
+        dura = minutos
+        if not dura and servicio:
+            s = conn.execute("SELECT minutos FROM spa_servicio WHERE codigo = ?",
+                             (servicio.upper(),)).fetchone()
+            dura = s["minutos"] if s else None
+        cfg = _spa.cargar_config()
+        citas = _citas_spa(conn, fecha, fecha, incluir_canceladas=False)
+        terapeutas = _terapeutas_spa(conn)
+        libres = _spa.horas_libres(citas, dura or 60, terapeutas, cfg, excluir_id=excluir)
+        return {"fecha": fecha, "minutos": dura or 60, "horas": libres,
+                "terapeutas": len(terapeutas), "config": cfg}
+    finally:
+        conn.close()
+
+
+@app.post("/api/spa/citas")
+async def crear_cita_spa(payload: dict, user: dict = Depends(exige("spa", escribir=True))):
+    """Alta a mano, desde la pantalla del Spa. Para las citas que llegan por teléfono o
+    en el mostrador — y es el único sitio donde se crean a mano, como se pidió."""
+    conn = get_connection()
+    try:
+        # Por defecto una cita creada por el spa entra CONFIRMADA: la está tomando quien
+        # atiende, no es una solicitud que alguien tenga que revisar después.
+        payload.setdefault("estado", "CONFIRMADA")
+        cita_id = _crear_cita(conn, payload, origen="RECEPCION", user_id=user.get("id"))
+        cfg = _spa.cargar_config()
+        citas = _citas_spa(conn, payload.get("fecha"), payload.get("fecha"),
+                           incluir_canceladas=False)
+        terapeutas = _terapeutas_spa(conn)
+        nueva = next((c for c in citas if c["id"] == cita_id), None)
+        avisos = []
+        if nueva and nueva.get("hora"):
+            avisos = _spa.revisar_choque(citas, nueva["hora"], nueva.get("minutos"),
+                                         terapeutas, cfg, excluir_id=cita_id,
+                                         terapeuta=nueva.get("terapeuta"))
+        salud = _spa.avisos_de_salud(nueva or {}, _buceo_de(conn, payload.get("conf_no")))
+    finally:
+        conn.close()
+    return {"status": "ok", "id": cita_id, "avisos": avisos, "avisos_salud": salud}
+
+
+@app.post("/api/spa/citas/{cita_id}/estado")
+def estado_cita_spa(cita_id: int, estado: str, motivo: str = None,
+                    user: dict = Depends(exige("spa", escribir=True))):
+    """Confirmar, marcar hecha o cancelar."""
+    if estado not in _spa.ESTADOS:
+        raise HTTPException(status_code=400, detail="Estado inválido")
+    conn = get_connection()
+    try:
+        cita = conn.execute("SELECT * FROM spa_cita WHERE id = ?", (cita_id,)).fetchone()
+        if not cita:
+            raise HTTPException(status_code=404, detail="No existe esa cita")
+        if estado == "CONFIRMADA" and not cita["hora"]:
+            raise HTTPException(
+                status_code=400,
+                detail=("Ponle hora antes de confirmarla: una cita confirmada sin hora "
+                        "no le sirve a nadie."))
+        conn.execute(
+            "UPDATE spa_cita SET estado = ?, cancelada_motivo = ? WHERE id = ?",
+            (estado, (motivo or "").strip() or None if estado == "CANCELADA" else None,
+             cita_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "estado": estado}
+
+
+@app.post("/api/spa/citas/{cita_id}/mover")
+async def mover_cita_spa(cita_id: int, payload: dict,
+                         user: dict = Depends(exige("spa", escribir=True))):
+    """Cambia la fecha, la hora o la terapeuta de una cita.
+
+    Devuelve los avisos de choque en vez de bloquear: el spa sabe si puede absorber algo
+    que el sistema ve apretado, y bloquearlo llevaría a inventar citas para saltárselo.
+    """
+    conn = get_connection()
+    try:
+        cita = conn.execute("SELECT * FROM spa_cita WHERE id = ?", (cita_id,)).fetchone()
+        if not cita:
+            raise HTTPException(status_code=404, detail="No existe esa cita")
+        d = dict(cita)
+
+        fecha = d["fecha"]
+        if payload.get("fecha"):
+            fecha, problema = _revisar_fecha_cita(conn, d["conf_no"], payload["fecha"])
+            if problema:
+                raise HTTPException(status_code=400, detail=problema)
+
+        hora = d["hora"]
+        if "hora" in payload:
+            hora = _spa.normalizar_hora(payload.get("hora"))
+            if payload.get("hora") and not hora:
+                raise HTTPException(status_code=400,
+                                    detail="La hora no tiene el formato hora:minutos.")
+
+        terapeuta = d["terapeuta"]
+        if "terapeuta" in payload:
+            terapeuta = (payload.get("terapeuta") or "").strip() or None
+            if terapeuta and not conn.execute(
+                    "SELECT 1 FROM spa_terapeuta WHERE nombre = ?", (terapeuta,)).fetchone():
+                raise HTTPException(status_code=404, detail="Esa terapeuta no está en la lista")
+
+        conn.execute(
+            "UPDATE spa_cita SET fecha = ?, hora = ?, terapeuta = ? WHERE id = ?",
+            (fecha, hora, terapeuta, cita_id))
+        conn.commit()
+
+        cfg = _spa.cargar_config()
+        citas = _citas_spa(conn, fecha, fecha, incluir_canceladas=False)
+        terapeutas = _terapeutas_spa(conn)
+        avisos = []
+        if hora:
+            avisos = _spa.revisar_choque(citas, hora, d["minutos"], terapeutas, cfg,
+                                         excluir_id=cita_id, terapeuta=terapeuta)
+        sugerida = None
+        if hora and not terapeuta:
+            sugerida = _spa.terapeuta_sugerida(citas, hora, d["minutos"], terapeutas,
+                                               cfg, excluir_id=cita_id)
+    finally:
+        conn.close()
+    return {"status": "ok", "fecha": fecha, "hora": hora, "terapeuta": terapeuta,
+            "avisos": avisos, "terapeuta_sugerida": sugerida}
+
+
+@app.post("/api/spa/citas/{cita_id}/nota")
+async def nota_cita_spa(cita_id: int, payload: dict,
+                        user: dict = Depends(exige("spa", escribir=True))):
+    conn = get_connection()
+    try:
+        if not conn.execute("SELECT 1 FROM spa_cita WHERE id = ?", (cita_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="No existe esa cita")
+        conn.execute("UPDATE spa_cita SET nota_operacion = ? WHERE id = ?",
+                     ((payload.get("nota_operacion") or "").strip() or None, cita_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+@app.get("/api/spa/enlaces")
+def enlaces_spa(desde: str = None, hasta: str = None,
+                user: dict = Depends(exige("spa", escribir=True))):
+    """Los enlaces personales de los huéspedes que están o llegan en esas fechas.
+
+    De aquí se copia el enlace y se le manda por WhatsApp, igual que hoy se manda el del
+    formulario de Google. La diferencia es que este enlace ya sabe quién es el huésped:
+    no escribe su nombre ni su habitación, y solo se le ofrecen días de su estadía.
+
+    Va por RESERVA. El código de la habitación no sirve para esto: no cambia nunca
+    —los QR se imprimen una vez— así que un huésped anterior podría abrir el del
+    siguiente.
+    """
+    hoy = datetime.date.today().isoformat()
+    desde = desde or hoy
+    hasta = hasta or (datetime.date.today() + datetime.timedelta(days=14)).isoformat()
+    conn = get_connection()
+    try:
+        # Los que están en casa o llegan en el rango: a esos se les manda el enlace.
+        filas = conn.execute(
+            f"""SELECT conf_no, room_no, nombre_principal, arr_date, dep_date
+                FROM reserva
+                WHERE res_status != 'CANCELADA'
+                  AND {sql_fecha('arr_date')} <= ?
+                  AND {sql_fecha('dep_date')} >= ?
+                ORDER BY CAST(room_no AS INTEGER)""",
+            (yymmdd(hasta), yymmdd(desde))).fetchall()
+        salida = []
+        for f in filas:
+            d = dict(f)
+            d["token"] = _spa.token_de_reserva(conn, d["conf_no"])
+            d["ruta"] = f"/spa/{d['conf_no']}/{d['token']}"
+            d["citas"] = conn.execute(
+                "SELECT COUNT(*) n FROM spa_cita WHERE conf_no = ? AND estado != 'CANCELADA'",
+                (d["conf_no"],)).fetchone()["n"]
+            salida.append(d)
+        # La dirección base es la misma que ya se configuró para los itinerarios QR: si
+        # el hotel ya la puso ahí, esto funciona sin configurar nada más.
+        base = (pub.cargar_config().get("base_url") or "").rstrip("/")
+        return {"base_url": base, "huespedes": salida}
+    finally:
+        conn.close()
+
+
+# ---------- La página del huésped ----------
+#
+# Pública, sin iniciar sesión, y solo con SU reserva: el código del enlace es lo que la
+# abre. Las respuestas médicas NO vienen precargadas a propósito —un enlace se reenvía
+# por WhatsApp y no tiene por qué exponer las alergias de la habitación 23—. El huésped
+# las contesta y el sistema cruza después contra lo que ya sabe.
+
+def _datos_publicos_spa(conn, reserva):
+    llegada, salida = _noches_de_estadia(reserva)
+    servicios = [{"codigo": s["codigo"], "nombre": s["nombre"], "minutos": s["minutos"],
+                  "tipo": s["tipo"]}
+                 for s in _servicios_spa(conn)]
+    mias = conn.execute(
+        """SELECT c.id, c.fecha, c.hora, c.estado, s.nombre AS servicio_nombre
+           FROM spa_cita c LEFT JOIN spa_servicio s ON s.codigo = c.servicio_codigo
+           WHERE c.conf_no = ? AND c.estado != 'CANCELADA'
+           ORDER BY c.fecha, c.hora""", (reserva["conf_no"],)).fetchall()
+    return {
+        "conf_no": reserva["conf_no"],
+        "room_no": reserva["room_no"],
+        "nombre": reserva["nombre_principal"],
+        "estadia_desde": llegada,
+        "estadia_hasta": salida,
+        "servicios": servicios,
+        "config": _spa.cargar_config(),
+        "mis_citas": [dict(m) for m in mias],
+    }
+
+
+@app.get("/api/spa/publico/{conf_no}/{token}")
+def spa_publico_datos(conf_no: str, token: str):
+    """Lo que la página del huésped necesita para armarse. Sin datos de nadie más."""
+    conn = get_connection()
+    try:
+        reserva = _spa.reserva_de_token(conn, conf_no, token)
+        if not reserva:
+            raise HTTPException(status_code=404, detail="Enlace no válido")
+        return _datos_publicos_spa(conn, reserva)
+    finally:
+        conn.close()
+
+
+@app.get("/api/spa/publico/{conf_no}/{token}/horas")
+def spa_publico_horas(conf_no: str, token: str, fecha: str, servicio: str):
+    """Las horas libres de ese día, para que el huésped no pida una que no existe."""
+    conn = get_connection()
+    try:
+        if not _spa.reserva_de_token(conn, conf_no, token):
+            raise HTTPException(status_code=404, detail="Enlace no válido")
+        s = conn.execute("SELECT minutos FROM spa_servicio WHERE codigo = ? AND activo = 1",
+                         (servicio.upper(),)).fetchone()
+        if not s:
+            raise HTTPException(status_code=404, detail="Ese tratamiento no está disponible")
+        cfg = _spa.cargar_config()
+        citas = _citas_spa(conn, fecha, fecha, incluir_canceladas=False)
+        libres = _spa.horas_libres(citas, s["minutos"], _terapeutas_spa(conn), cfg)
+        return {"fecha": fecha, "minutos": s["minutos"], "horas": libres}
+    finally:
+        conn.close()
+
+
+@app.post("/api/spa/publico/{conf_no}/{token}")
+async def spa_publico_pedir(conf_no: str, token: str, payload: dict):
+    """El huésped pide su cita. Entra como SOLICITADA y el spa la confirma."""
+    conn = get_connection()
+    try:
+        reserva = _spa.reserva_de_token(conn, conf_no, token)
+        if not reserva:
+            raise HTTPException(status_code=404, detail="Enlace no válido")
+        if not payload.get("acepto_terminos"):
+            raise HTTPException(
+                status_code=400,
+                detail="Hay que aceptar los términos para reservar el tratamiento.")
+        # Un tope por reserva: sin él, este enlace es público y una sola persona podría
+        # dejar la agenda del spa llena de solicitudes.
+        ya = conn.execute(
+            """SELECT COUNT(*) n FROM spa_cita
+               WHERE conf_no = ? AND estado IN ('SOLICITADA','CONFIRMADA')""",
+            (conf_no,)).fetchone()["n"]
+        if ya >= 12:
+            raise HTTPException(
+                status_code=429,
+                detail=("Ya hay varias citas pedidas para esta habitación. "
+                        "Habla con recepción para agregar otra."))
+
+        datos = dict(payload)
+        # Lo que decide el sistema y no el formulario: quién es y en qué estado entra.
+        datos["conf_no"] = conf_no
+        datos["room_no"] = reserva["room_no"]
+        datos["nombre_huesped"] = reserva["nombre_principal"]
+        datos["estado"] = "SOLICITADA"
+        datos.pop("terapeuta", None)      # la asigna el spa al confirmar
+        cita_id = _crear_cita(conn, datos, origen="HUESPED")
+        respuesta = _datos_publicos_spa(conn, reserva)
+    finally:
+        conn.close()
+
+    # Aviso al celular de recepción y del spa. Va después de guardar: si el aviso falla,
+    # la solicitud ya está anotada.
+    try:
+        import notificaciones as notif
+        notif.aviso_cita_spa(
+            {"room_no": reserva["room_no"], "nombre": reserva["nombre_principal"],
+             "fecha": datos.get("fecha"), "hora": datos.get("hora"),
+             "servicio": datos.get("servicio_codigo")})
+    except Exception as e:
+        print(f"[avisos] no se pudo avisar de la cita de spa: {type(e).__name__}: {e}")
+
+    return {"status": "ok", "id": cita_id, **respuesta}
+
+
+@app.get("/spa/{conf_no}/{token}", response_class=HTMLResponse)
+def pagina_spa_huesped(conf_no: str, token: str):
+    """La página que abre el huésped con su enlace."""
+    conn = get_connection()
+    try:
+        reserva = _spa.reserva_de_token(conn, conf_no, token)
+        if not reserva:
+            raise HTTPException(status_code=404, detail="Enlace no válido")
+    finally:
+        conn.close()
+    import spa_pagina
+    return HTMLResponse(spa_pagina.html(conf_no, token))
+
+
+@app.delete("/api/spa/citas/{cita_id}")
+def borrar_cita_spa(cita_id: int, user: dict = Depends(exige("spa", escribir=True))):
+    """Borra una cita del todo.
+
+    Se permite solo con las que nunca se confirmaron: una cita atendida o cancelada es
+    historia del spa —y su ficha médica es un consentimiento con fecha— así que esas se
+    cancelan, no se borran.
+    """
+    conn = get_connection()
+    try:
+        cita = conn.execute("SELECT estado FROM spa_cita WHERE id = ?", (cita_id,)).fetchone()
+        if not cita:
+            raise HTTPException(status_code=404, detail="No existe esa cita")
+        if cita["estado"] != "SOLICITADA":
+            raise HTTPException(
+                status_code=400,
+                detail=("Solo se borran las solicitudes que nunca se confirmaron. "
+                        "Esta cancélala: queda el registro de que existió."))
+        conn.execute("DELETE FROM spa_cita WHERE id = ?", (cita_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
 
 
 from fastapi.responses import Response

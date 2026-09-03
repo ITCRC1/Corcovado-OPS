@@ -206,6 +206,10 @@ PANTALLAS = [
     ("sinac", "Entradas SINAC"),
     ("amenidades", "Amenidades"),
     ("restaurantes", "Restaurantes"),
+    # El spa va aquí, junto a las pantallas de operación del día. Es su propio permiso
+    # porque quien atiende el spa no necesita ver el resto, y porque los avisos de citas
+    # nuevas se mandan a quien tenga este permiso: recepción y spa.
+    ("spa", "Spa"),
     ("analitica", "Analítica"),
     ("resumen", "Resumen de operación"),
     ("importar", "Importar PDF"),
@@ -232,6 +236,10 @@ PERFILES = {
     "Restaurante": {"restaurantes": "escribir", "resumen": "ver", "reservas": "ver"},
     "Cocina": {"restaurantes": "ver", "amenidades": "escribir", "resumen": "ver"},
     "Guías": {"agenda": "escribir", "transporte": "ver", "resumen": "ver"},
+    # La terapeuta del spa: su agenda y poco más. Necesita ver Reservas para saber quién
+    # está en casa, y el resumen del día. Tiene 'spa' en escribir, que es además lo que
+    # hace que le lleguen los avisos de citas nuevas.
+    "Spa": {"spa": "escribir", "reservas": "ver", "resumen": "ver"},
     "Solo lectura": {k: "ver" for k, _ in PANTALLAS},
 }
 

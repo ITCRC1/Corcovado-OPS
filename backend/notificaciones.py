@@ -285,6 +285,57 @@ def aviso_amenidad_nueva(conn, amenidad, quien_la_creo=None):
     enviar(destinos, "Requerimiento nuevo", detalle, etiqueta="amenidad-nueva")
 
 
+def destinatarios_spa(conn):
+    """Quien tenga permiso en la pantalla del Spa: recepción y el spa.
+
+    AQUÍ SÍ SE MIRAN LOS PERMISOS, al contrario que en las amenidades — y es a pedido
+    del hotel. La razón práctica: una cita de spa la atiende quien está en el spa, y el
+    aviso lleva datos de salud del huésped ("embarazo", "cirugía reciente"). Mandarlo a
+    todo el personal repartiría ese dato de más sin que nadie lo necesitara.
+
+    Quien administra el sistema (recepción y gerencia) tiene la pantalla, así que le
+    llega. Si hace falta que le llegue a alguien más, se le da permiso de Spa en la
+    pantalla de Usuarios — sin tocar código.
+    """
+    import auth
+    filas = conn.execute(
+        "SELECT id, rol, permisos_json FROM usuario WHERE activo = 1").fetchall()
+    destinos = []
+    for u in filas:
+        if auth.puede(dict(u), "spa"):
+            destinos.append(u["id"])
+    return destinos
+
+
+def aviso_cita_spa(cita):
+    """Una cita que pidió el huésped por su enlace. Va de una: hay que confirmarla.
+
+    Se abre en la pantalla del Spa al tocarlo (índice 7 del menú).
+
+    No lleva la ficha médica en el texto: para eso se abre la cita. Un aviso que se lee
+    en la pantalla de bloqueo del teléfono no es sitio para un dato de salud.
+    """
+    if not habilitado():
+        return
+    from init_db import get_connection
+    conn = get_connection()
+    try:
+        destinos = destinatarios_spa(conn)
+    finally:
+        conn.close()
+    if not destinos:
+        return
+    partes = [f"Hab. {cita.get('room_no') or '?'}"]
+    if cita.get("servicio"):
+        partes.append(str(cita["servicio"]))
+    if cita.get("fecha"):
+        partes.append(f"el {cita['fecha']}")
+    if cita.get("hora"):
+        partes.append(f"a las {cita['hora']}")
+    enviar(destinos, "Cita de spa por confirmar", " · ".join(partes),
+           etiqueta="spa-cita", pantalla=7)
+
+
 def aviso_amenidades_importadas(conn, cuantas, para_manana=0):
     """Después de importar el PDF: UN aviso con el total, no uno por amenidad.
 

@@ -13,7 +13,8 @@ Sistema local para la operación diaria de Sierpe y Drake. Funciona sin internet
 | **Transporte** | Entradas y salidas por Sierpe o Drake, con horas de vuelo |
 | **Entradas SINAC** | Control de compra con 15 días de anticipación, por urgencia |
 | **Amenidades** | Tareas por área (cocina, housekeeping, recepción…), incluidas alergias. Cada una con su día, su descripción editable y **varios departamentos**, donde cada uno marca su parte |
-| **Analítica** | Uso de botes y guías, movimiento por punto y ocupación del periodo |
+| **Spa** | Agenda de tratamientos, ficha médica y consentimiento. El huésped pide por un enlace; el spa confirma |
+| **Analítica** | Uso de botes y guías, movimiento por punto, ocupación y carga del spa |
 | **Resumen operación** | La hoja del día para todos los departamentos |
 | **Importar PDF** | Cargar el reporte "Arrivals: Detailed" del PMS |
 | **Usuarios** | Crear y administrar accesos |
@@ -49,6 +50,81 @@ El botón **Quitar** deshace todo: el tour sale de la operación y la entrada de
 se recalcula. Si esa entrada ya estaba comprada no se borra, se avisa para gestionarla.
 Y si el itinerario fue editado a mano, el sistema no borra filas por su cuenta: avisa
 para que recepción revise cuál corresponde.
+
+## Spa
+
+El huésped **pide** su tratamiento y el spa **confirma**. Es como se trabaja en el
+lodge, y evita que el sistema prometa una hora que después no se pueda cumplir porque un
+tratamiento se alargó.
+
+### El enlace del huésped
+
+En **Spa** → **🔗 Enlace para el huésped** hay un enlace por habitación. Se copia y se le
+manda por WhatsApp, igual que se hacía con el formulario de Google. La diferencia es que
+este enlace **ya sabe quién es**:
+
+- No escribe su nombre ni su habitación — era el error fácil del formulario anterior
+- Solo se le ofrecen **días de su estadía**
+- Ve **las horas que de verdad están libres**, así que no pide una que no existe
+- El enlace **deja de servir** cuando la reserva termina
+
+Contesta las **mismas once preguntas** del formulario de siempre, y la cita entra en la
+pantalla del Spa como **por confirmar**. Le llega un aviso al celular a recepción y al
+spa (a quien tenga permiso en esa pantalla).
+
+⚠️ No se usa el código del QR de la habitación: ese **no cambia nunca** —los adhesivos se
+imprimen una vez— así que un huésped anterior podría abrir el enlace del siguiente.
+
+Las respuestas médicas **no vienen precargadas**, a propósito: un enlace se reenvía por
+WhatsApp y no tiene por qué exponer las alergias de la habitación 23. El sistema cruza
+después, del lado del spa.
+
+### Lo que hace la pantalla
+
+- La **agenda** por día o por rango, con el estado de cada cita
+- **+ Nueva cita** para las que llegan por teléfono o en el mostrador — es el único sitio
+  donde se crean a mano. Entra ya confirmada: la está tomando el spa
+- **Confirmar**, mover de hora, cambiar de terapeuta, marcar atendida o cancelar
+- **Ficha** muestra la ficha médica y el consentimiento con la hora exacta en que se
+  aceptó. No se edita: es un consentimiento de una fecha concreta
+- **Horario del spa**: apertura, cierre y minutos entre citas
+
+### Los avisos que da
+
+**Choques.** Con dos terapeutas caben dos citas a la vez y no tres, y la misma terapeuta
+no se solapa consigo misma. Los 30 minutos entre citas cuentan: una de 60 minutos que
+empieza a las 10:00 deja libre a esa terapeuta a las **11:30**, no a las 11:00 — es
+limpiar la cabina y recibir al siguiente huésped.
+
+**Horario.** Una de 90 minutos a las 19:00 termina a las 21:00, con el spa cerrado.
+
+**Salud, antes de empezar.** Embarazo, cirugía reciente, buceo. Y aquí hay algo que el
+formulario no podía dar: la pregunta del buceo la contesta el huésped de memoria, pero
+**el sistema tiene sus tours** — si tiene BUCEO el mismo día o el anterior, lo advierte.
+Dos redes en vez de una.
+
+Ninguno **bloquea**: avisa. El spa sabe si puede absorber algo que el sistema ve apretado,
+y bloquearlo llevaría a inventar citas para saltárselo.
+
+### Los tratamientos
+
+Los nueve del formulario, con sus duraciones, **editables en Catálogo**. Ahí se resuelve
+*«Promo of the week»*: se le cambia el nombre y la duración cada semana sin tocar nada
+más, y las citas que ya la tenían siguen apuntando a ella.
+
+### Dónde más aparece
+
+| Pantalla | Qué muestra |
+|---|---|
+| **Dashboard** | Las citas de hoy, con las que hay por confirmar y las que hay que revisar |
+| **Resumen del día** | La hoja del spa, en orden de hora, con la terapeuta y su nota |
+| **Analítica** | Tratamientos más pedidos, carga por terapeuta, y cuántas pidió el huésped |
+
+Solo aparece cuando hay algo ese día. En Analítica se cuentan las **atendidas y las
+confirmadas**: una solicitud sin confirmar no es trabajo comprometido, y meterla infla el
+número.
+
+El **precio queda fuera** a propósito: es otro proceso del hotel.
 
 ## Un requerimiento con varios departamentos
 
@@ -197,6 +273,11 @@ El sistema pide iniciar sesión.
 | Gerencia | Lectura y escritura (no administra usuarios) |
 | Staff de campo | Solo lectura (resúmenes del día) |
 
+Los permisos reales son **por pantalla**, y el rol es solo una etiqueta. Al crear un
+usuario hay perfiles sugeridos: Recepción, Gerencia, Restaurante, Cocina, Guías, **Spa** y
+Solo lectura. El perfil **Spa** da su agenda más Reservas y el Resumen en modo lectura —
+y es además lo que hace que a esa persona **le lleguen los avisos** de citas nuevas.
+
 **Primera cuenta.** Depende de dónde corra el sistema:
 
 - **En la nube o en un servidor** (Railway, o con `HOTEL_ENTORNO=produccion`):
@@ -324,6 +405,7 @@ lo activa en los demás.
 | Cuándo | Qué manda |
 |---|---|
 | Alguien agrega un requerimiento a mano | Un aviso, a todos menos a quien lo escribió |
+| Un huésped pide una cita de spa por su enlace | Un aviso, **solo a quien tiene la pantalla Spa** (recepción y spa) |
 | Se importa el reporte del PMS | **Un solo aviso** con el total pendiente para hoy y mañana |
 | Cada mañana (6:00 por defecto, `HOTEL_PUSH_HORA_REPASO`) | El repaso de lo pendiente para hoy |
 
@@ -361,6 +443,9 @@ Reservas, Agenda de tours, Transporte, Entradas SINAC, Analítica y Resumen de
 Operación tienen botones **⬇ Excel** y **⬇ PDF** para descargar el reporte tal
 como se está viendo en pantalla (con los mismos filtros de fecha aplicados),
 con la marca del hotel incluida.
+
+El Spa todavía no tiene su propia descarga: sus citas del día salen en el **Resumen de
+Operación**, que sí se descarga.
 
 
 ## Publicar en internet con Railway
