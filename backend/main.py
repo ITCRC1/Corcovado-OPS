@@ -411,21 +411,38 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
             del x["_orden"]          # es solo para ordenar, no es parte del dato
         return salida
 
-    habitaciones_en_casa = {x["room_no"] for x in en_casa} | {x["room_no"] for x in desayunos}
+    # LA LISTA PRINCIPAL ES SOLO DE QUIENES ESTÁN Y QUIENES ENTRAN.
+    #
+    # 'en_casa' es exactamente eso: quien llega hoy, más quien ya estaba y NO se va hoy.
+    # Antes se le unía 'desayunos', que incluye a los que salen, y la hoja mezclaba
+    # habitaciones que a mediodía ya estaban vacías con las que había que atender todo
+    # el día. Confundía, que es lo peor que puede hacer una hoja del día.
+    habitaciones_en_casa = {x["room_no"] for x in en_casa}
+
     # Cocina puede ser UNO de varios departamentos del requerimiento, no solo el
     # principal. Se busca en la lista de departamentos además de en la columna de
     # siempre: sin el EXISTS, una alergia asignada a "Cocina y Recepción" dejaría de
     # aparecer en la hoja de cocina en cuanto Recepción quedara primera.
-    restricciones = por_habitacion(
-        """SELECT a.id AS _orden, r.room_no, r.nombre_principal, a.amenidad, a.detalle,
-                  a.tarea, a.estado
-           FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
-           WHERE (a.area_responsable = 'Cocina'
-                  OR EXISTS (SELECT 1 FROM amenidad_area x
-                             WHERE x.amenidad_id = a.id AND x.area = 'Cocina'))
-             AND r.room_no IN ({marcas})
-           ORDER BY a.id""",
-        habitaciones_en_casa)
+    SQL_RESTRICCIONES = """
+        SELECT a.id AS _orden, r.room_no, r.nombre_principal, a.amenidad, a.detalle,
+               a.tarea, a.estado
+        FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
+        WHERE (a.area_responsable = 'Cocina'
+               OR EXISTS (SELECT 1 FROM amenidad_area x
+                          WHERE x.amenidad_id = a.id AND x.area = 'Cocina'))
+          AND r.room_no IN ({marcas})
+        ORDER BY a.id"""
+    restricciones = por_habitacion(SQL_RESTRICCIONES, habitaciones_en_casa)
+
+    # Y aparte, las de quienes SE VAN hoy.
+    #
+    # No se borran del todo: el huésped que sale DESAYUNA esa mañana, así que cocina
+    # todavía le sirve y su alergia sigue importando ese día. Lo que se pidió —y tiene
+    # razón— es que no se mezclen con las de todo el día. Van en su propio bloque,
+    # etiquetado, para que la hoja principal quede limpia sin perder la información.
+    habitaciones_salen = ({x["room_no"] for x in salidas}
+                          - habitaciones_en_casa)
+    restricciones_salen = por_habitacion(SQL_RESTRICCIONES, habitaciones_salen)
 
     # --- Amenidades a preparar para quienes llegan ese día ---
     habitaciones_ingresan = {x["room_no"] for x in ingresos}
@@ -477,6 +494,8 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
         "puntos": sorted(puntos.values(), key=lambda x: x["punto"]),
         "tours": tours,
         "restricciones_cocina": restricciones,
+        # Las de quienes se van hoy, aparte: solo desayunan.
+        "restricciones_cocina_salen": restricciones_salen,
         "amenidades": amenidades,
         "restaurantes": resumen_restaurantes,
         "spa": spa_dia,

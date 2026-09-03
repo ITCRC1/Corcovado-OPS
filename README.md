@@ -15,7 +15,7 @@ Sistema local para la operación diaria de Sierpe y Drake. Funciona sin internet
 | **Amenidades** | Tareas por área (cocina, housekeeping, recepción…), incluidas alergias. Cada una con su día, su descripción editable y **varios departamentos**, donde cada uno marca su parte |
 | **Spa** | Agenda de tratamientos, ficha médica y consentimiento. El huésped pide por un enlace; el spa confirma |
 | **Analítica** | Uso de botes y guías, movimiento por punto, ocupación y carga del spa |
-| **Resumen operación** | La hoja del día para todos los departamentos |
+| **Resumen operación** | La hoja del día para todos los departamentos, por área |
 | **Importar PDF** | Cargar el reporte "Arrivals: Detailed" del PMS |
 | **Usuarios** | Crear y administrar accesos |
 | **Catálogo** | Guías, botes y tours del hotel. Se pueden corregir sin tener que crear uno nuevo |
@@ -165,6 +165,19 @@ confirmadas**: una solicitud sin confirmar no es trabajo comprometido, y meterla
 número.
 
 El **precio queda fuera** a propósito: es otro proceso del hotel.
+
+## La hoja de cocina del Resumen
+
+Las restricciones y alergias que salen ahí son de **quienes están en el hotel y quienes
+entran hoy**. Antes también aparecían las de los que se iban ese día, y la hoja mezclaba
+habitaciones que a mediodía ya estaban vacías con las que había que atender todo el día.
+
+Las de **quienes salen hoy** van en su propio bloque, etiquetado *«salen hoy — solo
+desayuno»*. No se quitan del todo a propósito: el huésped que se va **desayuna antes de
+salir**, así que cocina todavía le sirve y su alergia sigue importando esa mañana. Lo que
+se resolvió es que no se confundan con las del día.
+
+Si prefiere que no aparezcan en absoluto, es quitar ese bloque.
 
 ## Un requerimiento con varios departamentos
 

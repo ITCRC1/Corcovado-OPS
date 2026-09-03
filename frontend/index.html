@@ -4369,17 +4369,29 @@ async function loadResumenOperacion(fecha) {
       </table>` : `<p class="empty">No hay tours para esta fecha.<small>Se cargan al importar el PDF de reservas.</small></p>`}
     </div>
 
-    ${d.restricciones_cocina.length ? `
+    ${(d.restricciones_cocina.length || (d.restricciones_cocina_salen || []).length) ? `
     <div class="card">
       <p class="title">Cocina — restricciones y alergias</p>
-      <p class="subtitle" style="margin-bottom:12px;">De los huéspedes que están en el hotel hoy</p>
+      <p class="subtitle" style="margin-bottom:12px;">De los huéspedes que están en el hotel y de los que entran hoy</p>
+      ${d.restricciones_cocina.length ? `
       <table>
         <tr><th>Hab.</th><th>Huésped</th><th>Detalle</th></tr>
         ${d.restricciones_cocina.map(x => `<tr class="fila-sale">
           <td><strong>${x.room_no}</strong>${etiquetaGrupo(x.conf_no)}</td><td>${x.nombre_principal}</td>
           <td><strong>${x.detalle || x.amenidad}</strong>${x.detalle ? `<br><span style="font-size:11px;color:var(--muted);">${x.tarea}</span>` : ''}</td>
         </tr>`).join("")}
-      </table>
+      </table>` : `<p class="empty">Ninguna entre los huéspedes que están y los que entran.</p>`}
+
+      ${(d.restricciones_cocina_salen || []).length ? `
+        <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:11px 13px;margin-top:14px;font-size:13px;">
+          <p style="margin:0 0 4px;font-weight:600;">Salen hoy — solo desayuno (${d.restricciones_cocina_salen.length})</p>
+          <p style="margin:0 0 8px;font-size:12px;">Estas habitaciones se van hoy, pero
+            desayunan antes de salir. Van aparte para no confundirlas con las del día.</p>
+          ${d.restricciones_cocina_salen.map(x => `<p style="margin:0 0 4px;">
+            <strong>Hab. ${escaparHTML(x.room_no || "")}</strong> · ${escaparHTML(x.nombre_principal || "")} ·
+            <strong>${escaparHTML(x.detalle || x.amenidad || "")}</strong>
+          </p>`).join("")}
+        </div>` : ""}
     </div>` : ""}
 
     ${(d.spa || []).length ? `
