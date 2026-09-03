@@ -85,6 +85,21 @@ de las dos siempre se quedaba atrás.
 Si una cena privada quedó puesta en la **noche de salida**, la pantalla lo advierte: ese
 día el huésped desayuna y se va, así que no ocupa mesa en Bar el Bosque.
 
+**Una habitación no sale en las dos listas a la vez.** Pasa que el reporte del PMS anuncia
+la cena privada sin decir el día y además queda otra anotada con la noche ya puesta —
+recepción la agregó a mano, o el reporte la trae dos veces. Son la misma cena escrita dos
+veces, así que **si la reserva ya tiene una cena privada con noche, no se vuelve a
+reclamar como «sin noche asignada»**.
+
+El precio de esa regla: si un huésped tuviera de verdad **dos** cenas privadas y a una le
+faltara la noche, esta pantalla no la reclamaría. Sigue señalada en **Amenidades**, en la
+columna «Para el día», con el aviso *"sin noche no llega al comedor"*. Se eligió así
+porque un aviso que salta cuando no toca es un aviso que la gente aprende a ignorar,
+incluido el día que sí importa.
+
+Y si una reserva tiene varias cenas privadas sin noche, sale **una sola línea** por
+habitación, avisando cuántas hay anotadas por si está repetida.
+
 ## Corregir una amenidad
 
 En **Amenidades**, cada fila tiene el botón **Editar** en la columna de la tarea. Se

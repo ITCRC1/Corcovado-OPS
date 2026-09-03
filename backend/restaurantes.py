@@ -402,12 +402,35 @@ def _privadas_sin_noche(conn, conf_nos):
     if not conf_nos:
         return []
     marcas = ",".join("?" * len(conf_nos))
+    # NO se reclama una reserva que YA tiene una cena privada con noche puesta.
+    #
+    # Pasa así: el reporte del PMS anuncia la cena sin decir el día, y además queda otra
+    # amenidad de cena privada con la noche ya asignada —porque recepción la agregó a
+    # mano, o porque el reporte la trae dos veces—. Son la misma cena escrita dos veces,
+    # y sin este filtro la pantalla mostraba la habitación en las DOS listas a la vez:
+    # arriba con su noche y su detalle, y abajo como "contratada sin noche asignada".
+    # Comprobado sobre las 104 reservas con cena privada de la base: le pasa a 1.
+    #
+    # No se pierde nada: la amenidad sin día sigue señalada en Amenidades, en la columna
+    # «Para el día», con el aviso "sin noche no llega al comedor". Lo que se calla aquí es
+    # el reclamo repetido — y un aviso que sale cuando no toca es un aviso que la gente
+    # aprende a ignorar, incluido el día que sí importa.
+    # UNA LINEA POR HABITACION, no una por amenidad. Si la misma reserva trae dos veces
+    # la cena privada sin fecha —el reporte la repite, o alguien la agregó a mano además
+    # de la del reporte— antes salía dos veces en el aviso y parecía que el huésped tenía
+    # dos cenas contratadas. 'cuantas' dice si de verdad hay más de una.
     filas = conn.execute(
-        f"""SELECT DISTINCT a.conf_no, r.room_no, r.nombre_principal, a.detalle,
-                   r.arr_date, r.dep_date
+        f"""SELECT a.conf_no, r.room_no, r.nombre_principal,
+                   r.arr_date, r.dep_date, COUNT(*) AS cuantas,
+                   GROUP_CONCAT(a.detalle, ' · ') AS detalle
             FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
             WHERE a.fecha IS NULL AND {_filtro_privada('a')}
               AND a.conf_no IN ({marcas})
+              AND NOT EXISTS (
+                    SELECT 1 FROM amenidad_tarea b
+                    WHERE b.conf_no = a.conf_no AND b.fecha IS NOT NULL
+                      AND {_filtro_privada('b')})
+            GROUP BY a.conf_no, r.room_no, r.nombre_principal, r.arr_date, r.dep_date
             ORDER BY CAST(r.room_no AS INTEGER)""",
         tuple(conf_nos)).fetchall()
     return [dict(f) for f in filas]

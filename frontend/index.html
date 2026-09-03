@@ -3206,6 +3206,7 @@ async function loadRestaurantes(fecha) {
             <p style="margin:0 0 5px;">
               <strong>Hab. ${escaparHTML(p.room_no || "")}</strong> · ${escaparHTML(p.nombre_principal || "")}
               <span style="font-size:11px;color:var(--muted);">(${p.arr_date} – ${p.dep_date})</span>
+              ${p.cuantas > 1 ? ` <span style="font-size:11px;">· ${p.cuantas} anotadas, revisa si está repetida</span>` : ""}
               ${p.detalle ? `<br><span style="font-size:11.5px;">${escaparHTML(p.detalle)}</span>` : ""}
             </p>`).join("")}
           <p style="margin:8px 0 0;font-size:12px;">
