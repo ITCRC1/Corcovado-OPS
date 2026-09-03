@@ -2303,9 +2303,30 @@ def estado_cita_spa(cita_id: int, estado: str, motivo: str = None,
             (estado, (motivo or "").strip() or None if estado == "CANCELADA" else None,
              cita_id))
         conn.commit()
+        # El itinerario del huésped. Solo entran las citas CONFIRMADAS, así que
+        # confirmar una la agrega y cancelarla la quita — y en las dos direcciones hay
+        # que rehacerlo. Se reutiliza el mismo camino que los tours.
+        itinerario = _reflejar_cita_en_itinerario(conn, dict(cita)["conf_no"], estado)
+        conn.commit()
     finally:
         conn.close()
-    return {"status": "ok", "estado": estado}
+    return {"status": "ok", "estado": estado, "itinerario": itinerario}
+
+
+def _reflejar_cita_en_itinerario(conn, conf_no, estado):
+    """Pone al día el itinerario del huésped tras confirmar o cancelar una cita.
+
+    Al CANCELAR de un itinerario editado a mano no se borra nada solo: no hay forma
+    segura de saber cuál de las filas escritas a mano es la cita, y borrar la equivocada
+    le quita al huésped algo que sí va a hacer. Se avisa y decide recepción — igual que
+    con los tours.
+    """
+    if not conf_no:
+        return "sin reserva"
+    quitado = None
+    if estado in ("CANCELADA", "SOLICITADA"):
+        quitado = "una cita de spa"
+    return _reflejar_tour_en_itinerario(conn, conf_no, quitado=quitado)
 
 
 @app.post("/api/spa/citas/{cita_id}/mover")
@@ -2359,10 +2380,15 @@ async def mover_cita_spa(cita_id: int, payload: dict,
         if hora and not terapeuta:
             sugerida = _spa.terapeuta_sugerida(citas, hora, d["minutos"], terapeutas,
                                                cfg, excluir_id=cita_id)
+        # Si la cita ya estaba confirmada, su fila del itinerario tiene la hora vieja.
+        itinerario = None
+        if d["estado"] in ("CONFIRMADA", "HECHA"):
+            itinerario = _reflejar_cita_en_itinerario(conn, d["conf_no"], d["estado"])
+            conn.commit()
     finally:
         conn.close()
     return {"status": "ok", "fecha": fecha, "hora": hora, "terapeuta": terapeuta,
-            "avisos": avisos, "terapeuta_sugerida": sugerida}
+            "avisos": avisos, "terapeuta_sugerida": sugerida, "itinerario": itinerario}
 
 
 @app.post("/api/spa/citas/{cita_id}/nota")
@@ -2407,11 +2433,18 @@ def enlaces_spa(desde: str = None, hasta: str = None,
                   AND {sql_fecha('dep_date')} >= ?
                 ORDER BY CAST(room_no AS INTEGER)""",
             (yymmdd(hasta), yymmdd(desde))).fetchall()
+        import spa_pagina as _pag
         salida = []
         for f in filas:
             d = dict(f)
             d["token"] = _spa.token_de_reserva(conn, d["conf_no"])
+            # El enlace lleva el idioma del ITINERARIO de ese huésped. Así el que
+            # recepción copia sale ya en su idioma y nadie tiene que acordarse; el
+            # huésped puede cambiarlo igual con el botón EN/ES de la página.
+            d["idioma"] = _pag.idioma_valido(_idioma_del_itinerario(conn, d["conf_no"]))
             d["ruta"] = f"/spa/{d['conf_no']}/{d['token']}"
+            if d["idioma"] != _pag.IDIOMA_POR_DEFECTO:
+                d["ruta"] += f"?idioma={d['idioma']}"
             d["citas"] = conn.execute(
                 "SELECT COUNT(*) n FROM spa_cita WHERE conf_no = ? AND estado != 'CANCELADA'",
                 (d["conf_no"],)).fetchone()["n"]
@@ -2571,17 +2604,39 @@ async def spa_publico_pedir(conf_no: str, token: str, payload: dict):
 
 
 @app.get("/spa/{conf_no}/{token}", response_class=HTMLResponse)
-def pagina_spa_huesped(conf_no: str, token: str):
-    """La página que abre el huésped con su enlace."""
+def pagina_spa_huesped(conf_no: str, token: str, idioma: str = None):
+    """La página que abre el huésped con su enlace.
+
+    El idioma va por omisión en inglés y la propia página tiene un botón EN/ES. Si el
+    enlace lo trae puesto (`?idioma=es`) manda ese: lo puso recepción a propósito, con
+    el idioma del itinerario de ese huésped.
+    """
     conn = get_connection()
     try:
         reserva = _spa.reserva_de_token(conn, conf_no, token)
         if not reserva:
             raise HTTPException(status_code=404, detail="Enlace no válido")
+        if not idioma:
+            idioma = _idioma_del_itinerario(conn, conf_no)
     finally:
         conn.close()
     import spa_pagina
-    return HTMLResponse(spa_pagina.html(conf_no, token))
+    return HTMLResponse(spa_pagina.html(conf_no, token, idioma))
+
+
+def _idioma_del_itinerario(conn, conf_no):
+    """El idioma en que el huésped ve su itinerario, si ya tiene uno.
+
+    Sirve para que el formulario del spa le salga en el mismo idioma sin que nadie
+    tenga que acordarse. Si no tiene itinerario todavía, se devuelve None y la página
+    se queda en inglés, que es el idioma base.
+    """
+    try:
+        fila = conn.execute("SELECT idioma FROM itinerario WHERE conf_no = ?",
+                            (conf_no,)).fetchone()
+        return dict(fila)["idioma"] if fila else None
+    except Exception:
+        return None
 
 
 @app.delete("/api/spa/citas/{cita_id}")

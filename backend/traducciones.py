@@ -137,6 +137,11 @@ SERVICIOS = {
 
 # --- Nombres de las actividades ---
 ACTIVIDADES = {
+    # El spa. El NOMBRE DEL TRATAMIENTO no se traduce a propósito —"Deep Connection" se
+    # llama así en la carta del spa y en la factura— pero el encabezado sí, para que el
+    # huésped entienda de qué es la línea en su itinerario.
+    "Spa Treatment": {"es": "Tratamiento de spa", "pt": "Tratamento de spa",
+                      "fr": "Soin au spa", "ru": "Спа-процедура"},
     "Arrival Day": {"es": "Día de llegada", "pt": "Dia de chegada",
                     "fr": "Jour d'arrivée", "ru": "День заезда"},
     "Departure Day": {"es": "Día de salida", "pt": "Dia de partida",
@@ -201,6 +206,18 @@ ACTIVIDADES = {
 # --- Frases de horarios y recomendaciones ---
 # Se traducen por frase completa para que el resultado suene natural en cada idioma.
 FRASES = {
+    # --- Spa ---
+    # 'minutes' va primero en el orden natural del diccionario pero se reemplaza de la
+    # frase más larga a la más corta, así que no importa: lo importante es que exista.
+    "minutes": {"es": "minutos", "pt": "minutos", "fr": "minutes", "ru": "минут"},
+    "Please arrive 10 minutes early at the spa": {
+        "es": "Por favor llega al spa 10 minutos antes",
+        "pt": "Por favor chegue ao spa 10 minutos antes",
+        "fr": "Merci d'arriver au spa 10 minutes en avance",
+        "ru": "Пожалуйста, приходите в спа на 10 минут раньше"},
+    "Confirmed with the spa": {
+        "es": "Confirmado con el spa", "pt": "Confirmado com o spa",
+        "fr": "Confirmé avec le spa", "ru": "Подтверждено спа-центром"},
     "(5 HOURS TOUR)": {"es": "(TOUR DE 5 HORAS)", "pt": "(TOUR DE 5 HORAS)",
                        "fr": "(EXCURSION DE 5 HEURES)", "ru": "(5 ЧАСОВ)"},
     "(4 HOURS TOUR)": {"es": "(TOUR DE 4 HORAS)", "pt": "(TOUR DE 4 HORAS)",

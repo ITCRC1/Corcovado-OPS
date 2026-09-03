@@ -175,6 +175,34 @@ def calcular_logistica_salida(hora_vuelo):
             "excepcion_vuelo_temprano": excepcion}
 
 
+def texto_cita_spa(cita):
+    """La fila del itinerario para una cita de spa, EN INGLÉS.
+
+    En inglés porque así funciona el itinerario: las filas se guardan en el idioma base
+    y se traducen al mostrarlas, según el idioma que tenga el documento. Así una misma
+    cita se lee en español, portugués, francés o ruso sin guardarla cinco veces.
+
+    El nombre del tratamiento NO se traduce: «Deep Connection» se llama igual en la
+    carta del spa y en la factura, y traducirlo haría que el huésped pidiera una cosa y
+    leyera otra.
+    """
+    nombre = (cita.get("tratamiento") or "Spa").strip()
+    minutos = cita.get("minutos")
+    # La ACTIVIDAD va sola: 'traducir_actividad' busca la cadena COMPLETA en el catálogo,
+    # así que pegarle el nombre del tratamiento haría que no coincidiera con nada y el
+    # encabezado se quedara en inglés aunque el itinerario esté en español. El nombre del
+    # tratamiento va en los detalles, donde no se traduce —y así debe ser.
+    detalles = [nombre + "."] if nombre else []
+    detalles.append("Please arrive 10 minutes early at the spa.")
+    detalles.append("Confirmed with the spa.")
+    return {
+        "nombre": "Spa Treatment",
+        "duracion": f"{minutos} minutes" if minutos else "",
+        "horario": cita.get("hora") or "",
+        "detalles": " ".join(detalles),
+    }
+
+
 def construir_filas(datos):
     filas = []
     llegada = cat.texto_llegada(datos.get("punto_entrada"), datos.get("vuelo_entrada"),
@@ -185,6 +213,9 @@ def construir_filas(datos):
         externo = (t.get("guia_nombre") or "").upper() == "EXTERNO"
         info = cat.texto_tour(t["tour_codigo"], guia_es_externo=externo)
         filas.append((_fecha_larga(t["fecha"]), info))
+
+    for s in datos.get("spa", []):
+        filas.append((_fecha_larga(s["fecha"]), texto_cita_spa(s)))
 
     logistica = datos.get("logistica_salida")
     if logistica is None and (datos.get("punto_salida") or "").lower() == "drake":
@@ -383,6 +414,25 @@ def datos_de_reserva(conn, conf_no):
         """SELECT ta.fecha, ta.tour_codigo, ta.guia_nombre
            FROM tour_asignado ta WHERE ta.conf_no = ? ORDER BY ta.fecha""", (conf_no,))]
 
+    # Las citas de spa CONFIRMADAS. Solo esas: una solicitud que el spa todavía no
+    # confirmó no se le puede prometer al huésped en su itinerario — si después no
+    # alcanza la hora, el itinerario ya se lo prometió.
+    #
+    # El texto se guarda en INGLÉS porque así funciona el itinerario: las filas se
+    # guardan en inglés y se traducen al mostrarlas, en el idioma que tenga el
+    # documento. Ver traducir_actividad y traducir_texto en traducciones.py.
+    try:
+        spa = [dict(s) for s in conn.execute(
+            """SELECT c.fecha, c.hora, c.minutos, s.nombre AS tratamiento
+               FROM spa_cita c LEFT JOIN spa_servicio s ON s.codigo = c.servicio_codigo
+               WHERE c.conf_no = ? AND c.estado IN ('CONFIRMADA','HECHA')
+                 AND c.hora IS NOT NULL
+               ORDER BY c.fecha, c.hora""", (conf_no,))]
+    except Exception:
+        # Una base sin las tablas del spa (antes de migrar) no puede dejar sin
+        # itinerario a nadie.
+        spa = []
+
     def a_iso(dd):
         if not dd:
             return None
@@ -399,6 +449,7 @@ def datos_de_reserva(conn, conf_no):
         "vuelo_entrada": r.get("vuelo_entrada"), "hora_vuelo_entrada": r.get("hora_vuelo_entrada"),
         "vuelo_salida": r.get("vuelo_salida"), "hora_vuelo_salida": r.get("hora_vuelo_salida"),
         "tours": tours,
+        "spa": spa,
     }
 
 

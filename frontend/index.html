@@ -3967,30 +3967,54 @@ async function mostrarEnlacesSpa() {
       ${(d.huespedes || []).length ? `
         <table style="font-size:12.5px;">
           <tr><th style="width:60px;">Hab.</th><th>Huésped</th><th style="width:118px;">Estadía</th>
-              <th style="width:56px;">Citas</th><th style="width:96px;"></th></tr>
+              <th style="width:56px;">Citas</th><th style="width:74px;">Idioma</th>
+              <th style="width:96px;"></th></tr>
           ${d.huespedes.map((h, i) => `<tr>
             <td><strong>${escaparHTML(h.room_no || "—")}</strong></td>
             <td>${escaparHTML(h.nombre_principal || "")}</td>
             <td style="font-size:11.5px;">${h.arr_date} – ${h.dep_date}</td>
             <td>${h.citas || ""}</td>
+            <td><select onchange="cambiarIdiomaEnlace(${i}, this.value)"
+                  style="font-size:11px;width:62px;padding:1px 3px;">
+                  ${["en", "es"].map(x => `<option value="${x}" ${h.idioma === x ? "selected" : ""}>${x.toUpperCase()}</option>`).join("")}
+                </select></td>
             <td><button class="btn" onclick="copiarEnlaceSpa(${i})">Copiar</button></td>
           </tr>`).join("")}
         </table>
         <p style="font-size:11.5px;color:var(--muted);margin:10px 0 0;">
-          El enlace deja de servir cuando la reserva termina.</p>`
+          El idioma viene del <strong>itinerario</strong> de cada huésped, y se puede
+          cambiar aquí antes de copiar. La página abre en inglés por omisión y el
+          huésped puede cambiarla él mismo con el botón EN/ES.</p>`
         : `<p class="empty">No hay huéspedes en casa ni por llegar en las próximas dos semanas.</p>`}
     </div>`;
   document.body.appendChild(modal);
-  window._spaEnlaces = (d.huespedes || []).map(h => `${base}${h.ruta}`);
+  // Se guardan la base y la ruta por separado para poder rearmar el enlace al cambiar
+  // el idioma, sin volver a pedirle nada al servidor.
+  window._spaEnlaces = (d.huespedes || []).map(h => ({
+    base: base, conf_no: h.conf_no, token: h.token, idioma: h.idioma,
+  }));
+}
+
+function urlEnlaceSpa(e) {
+  // El inglés es el idioma por omisión de la página, así que no hace falta ponerlo en
+  // la dirección: un enlace más corto es un enlace que no se rompe al pegarlo.
+  const sufijo = e.idioma && e.idioma !== "en" ? `?idioma=${e.idioma}` : "";
+  return `${e.base}/spa/${e.conf_no}/${e.token}${sufijo}`;
+}
+
+function cambiarIdiomaEnlace(i, idioma) {
+  const e = (window._spaEnlaces || [])[i];
+  if (e) e.idioma = idioma;
 }
 
 async function copiarEnlaceSpa(i) {
-  const url = (window._spaEnlaces || [])[i];
-  if (!url) return;
+  const e = (window._spaEnlaces || [])[i];
+  if (!e) return;
+  const url = urlEnlaceSpa(e);
   try {
     await navigator.clipboard.writeText(url);
-    avisar("Enlace copiado — pégalo en WhatsApp");
-  } catch (e) {
+    avisar(`Enlace copiado en ${e.idioma.toUpperCase()} — pégalo en WhatsApp`);
+  } catch (err) {
     // Sin permiso del portapapeles (pasa en algunos navegadores por http): se muestra
     // para copiarlo a mano, en vez de dejar al usuario sin nada.
     prompt("Copia este enlace:", url);

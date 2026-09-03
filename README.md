@@ -72,6 +72,17 @@ Contesta las **mismas once preguntas** del formulario de siempre, y la cita entr
 pantalla del Spa como **por confirmar**. Le llega un aviso al celular a recepción y al
 spa (a quien tenga permiso en esa pantalla).
 
+### El idioma del formulario
+
+La página abre **en inglés** por omisión, y tiene un botón **EN / ES** arriba a la derecha
+para cambiarlo en el momento. Al cambiarlo **no se pierde lo ya escrito** — es justo
+cuando alguien lo cambia, después de empezar a leer.
+
+En la lista de enlaces hay una columna **Idioma** por habitación. Viene puesto con el
+idioma del **itinerario** de ese huésped, así que el enlace que copia recepción ya sale
+en su idioma sin tener que acordarse; se puede cambiar ahí antes de copiar. La elección
+que haga el huésped queda recordada en su propio teléfono.
+
 ⚠️ No se usa el código del QR de la habitación: ese **no cambia nunca** —los adhesivos se
 imprimen una vez— así que un huésped anterior podría abrir el enlace del siguiente.
 
@@ -136,6 +147,18 @@ más, y las citas que ya la tenían siguen apuntando a ella.
 | **Dashboard** | Las citas de hoy, con las que hay por confirmar y las que hay que revisar |
 | **Resumen del día** | La hoja del spa, en orden de hora, con la terapeuta y su nota |
 | **Analítica** | Tratamientos más pedidos, carga por terapeuta, y cuántas pidió el huésped |
+| **Itinerario del huésped** | La cita **confirmada**, en el idioma de su itinerario |
+
+### En el itinerario del huésped
+
+Una cita **confirmada** aparece sola en el itinerario que el huésped ve por su código QR
+y en el PDF, **en el idioma de ese itinerario** — inglés, español, portugués, francés o
+ruso. El encabezado y el aviso se traducen; el **nombre del tratamiento no**, porque
+«Deep Connection» se llama igual en la carta del spa y en la factura.
+
+Solo entran las confirmadas: una solicitud que el spa todavía no aceptó no se le puede
+prometer al huésped en su itinerario. Al cancelarla, sale. Y si el itinerario fue editado
+a mano, no se borra ninguna fila sola: se avisa para que recepción revise cuál era.
 
 Solo aparece cuando hay algo ese día. En Analítica se cuentan las **atendidas y las
 confirmadas**: una solicitud sin confirmar no es trabajo comprometido, y meterla infla el
