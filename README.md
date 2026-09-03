@@ -166,6 +166,20 @@ número.
 
 El **precio queda fuera** a propósito: es otro proceso del hotel.
 
+## La hoja del día se arma por RESERVA, no por habitación
+
+Las restricciones y las amenidades del Resumen salen de las **reservas que están ese
+día**, no de las habitaciones. Parece un detalle y no lo es: la habitación 23 se reutiliza
+cada pocos días, y filtrando por número de cuarto entraba en la hoja todo lo que esa
+habitación hubiera tenido alguna vez.
+
+Medido sobre la base real antes de corregirlo: en la hoja del 5 de septiembre, **65 de las
+66 restricciones de cocina eran de reservas de enero, marzo y mayo** — una de ellas
+cancelada. La hoja quedaba inservible, porque nadie puede distinguir ahí la alergia del
+huésped que llega hoy de la de uno que se fue hace ocho meses.
+
+El número de reserva es lo único que identifica a un huésped.
+
 ## La hoja de cocina del Resumen
 
 Las restricciones y alergias que salen ahí son de **quienes están en el hotel y quienes

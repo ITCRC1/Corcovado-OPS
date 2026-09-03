@@ -391,19 +391,31 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
            ORDER BY tc.horario_inicio""", (fecha,))
 
     # --- Cocina: restricciones alimentarias de quienes están en el hotel ---
-    # El filtro por habitación se hace en la base, no en Python. Antes se traía la tabla
-    # de amenidades COMPLETA (con su JOIN a reservas) y se descartaba casi todo aquí.
-    # El resultado es el mismo: 'room_no IN (...)' deja fuera los nulos igual que hacía
-    # el 'in' de Python. Con la lista vacía no se consulta nada, porque 'IN ()' no es
-    # SQL válido y de todas formas no habría nada que mostrar.
+    # El filtro se hace en la base y no en Python: antes se traía la tabla de amenidades
+    # COMPLETA (con su JOIN a reservas) y se descartaba casi todo aquí. Con la lista
+    # vacía no se consulta nada, porque 'IN ()' no es SQL válido y de todas formas no
+    # habría nada que mostrar.
+    #
     # El 'ORDER BY a.id' no está por gusto: antes estas filas salían en el orden en que
     # se recorría amenidad_tarea, y al meter el filtro en el WHERE el planificador podría
     # decidir empezar por reservas y devolverlas en otro orden. Se deja escrito para que
     # la hoja del día siga listando lo mismo en el mismo orden. 'id' es el rowid de la
     # tabla, o sea exactamente el orden que salía antes.
-    def por_habitacion(sql, habitaciones):
+    #
+    # SE FILTRA POR RESERVA, NO POR HABITACIÓN.
+    #
+    # Antes se filtraba por número de habitación, y eso traía a la hoja del día las
+    # amenidades y alergias de CUALQUIER reserva que hubiera tenido ese cuarto alguna
+    # vez. Medido sobre la base real: en la hoja del 5 de septiembre, 65 de las 66
+    # restricciones de cocina eran de reservas de enero, marzo y mayo, y una de una
+    # reserva cancelada. La hoja quedaba inservible: nadie puede distinguir en ella la
+    # alergia del huésped que llega hoy de la de uno que se fue en enero.
+    #
+    # El número de reserva es lo único que identifica al huésped. La habitación se
+    # reutiliza cada pocos días.
+    def por_reserva(sql, confs):
         salida = []
-        for lote in en_lotes(sorted(h for h in habitaciones if h is not None)):
+        for lote in en_lotes(sorted(c for c in confs if c)):
             marcas = ",".join("?" * len(lote))
             salida += lista(sql.format(marcas=marcas), lote)
         salida.sort(key=lambda x: x["_orden"])
@@ -417,22 +429,22 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
     # Antes se le unía 'desayunos', que incluye a los que salen, y la hoja mezclaba
     # habitaciones que a mediodía ya estaban vacías con las que había que atender todo
     # el día. Confundía, que es lo peor que puede hacer una hoja del día.
-    habitaciones_en_casa = {x["room_no"] for x in en_casa}
+    confs_en_casa = {x["conf_no"] for x in en_casa}
 
     # Cocina puede ser UNO de varios departamentos del requerimiento, no solo el
     # principal. Se busca en la lista de departamentos además de en la columna de
     # siempre: sin el EXISTS, una alergia asignada a "Cocina y Recepción" dejaría de
     # aparecer en la hoja de cocina en cuanto Recepción quedara primera.
     SQL_RESTRICCIONES = """
-        SELECT a.id AS _orden, r.room_no, r.nombre_principal, a.amenidad, a.detalle,
-               a.tarea, a.estado
+        SELECT a.id AS _orden, r.conf_no, r.room_no, r.nombre_principal, a.amenidad,
+               a.detalle, a.tarea, a.estado
         FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
         WHERE (a.area_responsable = 'Cocina'
                OR EXISTS (SELECT 1 FROM amenidad_area x
                           WHERE x.amenidad_id = a.id AND x.area = 'Cocina'))
-          AND r.room_no IN ({marcas})
+          AND a.conf_no IN ({marcas})
         ORDER BY a.id"""
-    restricciones = por_habitacion(SQL_RESTRICCIONES, habitaciones_en_casa)
+    restricciones = por_reserva(SQL_RESTRICCIONES, confs_en_casa)
 
     # Y aparte, las de quienes SE VAN hoy.
     #
@@ -440,12 +452,11 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
     # todavía le sirve y su alergia sigue importando ese día. Lo que se pidió —y tiene
     # razón— es que no se mezclen con las de todo el día. Van en su propio bloque,
     # etiquetado, para que la hoja principal quede limpia sin perder la información.
-    habitaciones_salen = ({x["room_no"] for x in salidas}
-                          - habitaciones_en_casa)
-    restricciones_salen = por_habitacion(SQL_RESTRICCIONES, habitaciones_salen)
+    confs_salen = {x["conf_no"] for x in salidas} - confs_en_casa
+    restricciones_salen = por_reserva(SQL_RESTRICCIONES, confs_salen)
 
     # --- Amenidades a preparar para quienes llegan ese día ---
-    habitaciones_ingresan = {x["room_no"] for x in ingresos}
+    confs_ingresan = {x["conf_no"] for x in ingresos}
     # El spa del día, para la hoja que se imprime y se reparte. Con la terapeuta y con
     # la marca de lo que hay que revisar antes de empezar.
     spa_dia = [dict(c) for c in conn.execute(
@@ -467,15 +478,15 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
     # 'areas' trae TODOS los departamentos separados por · para que la columna Área de la
     # hoja del día los muestre completos. Antes salía solo el principal, y una tarea que
     # también era de cocina se leía como si fuera solo de housekeeping.
-    amenidades = por_habitacion(
-        """SELECT a.id AS _orden, r.room_no, r.nombre_principal, a.amenidad, a.detalle,
-                  a.tarea, a.area_responsable, a.estado,
+    amenidades = por_reserva(
+        """SELECT a.id AS _orden, r.conf_no, r.room_no, r.nombre_principal, a.amenidad,
+                  a.detalle, a.tarea, a.area_responsable, a.estado,
                   (SELECT GROUP_CONCAT(x.area, ' · ') FROM amenidad_area x
                    WHERE x.amenidad_id = a.id) AS areas
            FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
-           WHERE a.estado = 'PENDIENTE' AND r.room_no IN ({marcas})
+           WHERE a.estado = 'PENDIENTE' AND a.conf_no IN ({marcas})
            ORDER BY a.id""",
-        habitaciones_ingresan)
+        confs_ingresan)
 
     # Se calcula ANTES de cerrar la conexión. Estaba dentro del return, o sea después
     # del close, así que siempre fallaba por dentro y _restaurantes_resumen devolvía
