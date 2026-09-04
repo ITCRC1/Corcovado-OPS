@@ -266,19 +266,6 @@ def parse_reservations(pdf_path):
             i += 1
             continue
 
-        # Se acumula todo el texto del bloque de la reserva. Las menciones de
-        # amenidades pueden aparecer en cualquier parte (línea de RESERVATION, la de
-        # Rooming, las notas...), no solo en la sección NOTAS.
-        current["texto_completo"] += " " + line
-
-        # Código de bloque del PMS. Identifica reservas que viajan juntas cuando no
-        # traen la nota "viene con rsv" — es el caso de los grupos de agencia, que
-        # antes quedaban sin agrupar y se separaban en la distribución.
-        if not current.get("block_code"):
-            mb = BLOCK_RE.search(line)
-            if mb and _es_block_code(line, mb.group(1)):
-                current["block_code"] = mb.group(1)
-
         m_conf = CONF_RE.match(line)
         if m_conf and current["conf_no"] is None:
             current["conf_no"] = m_conf.group("conf")
@@ -286,24 +273,112 @@ def parse_reservations(pdf_path):
             i += 1
             continue
 
-        if re.match(r"^\s*ROOMING\b", line, re.IGNORECASE):
-            section = "rooming"
-            i += 1
+        section = procesar_linea(line, current, section)
+        i += 1
+
+    if current:
+        reservations.append(current)
+
+    return reservations
+
+
+def bloque_vacio():
+    """Un bloque de reserva con todas las llaves que procesar_linea() espera.
+
+    Lo usan las dos fuentes: el PDF al abrir una reserva nueva, y Opera al leer el
+    texto de las Reservation Notes.
+    """
+    return {
+        "adicionales_raw": "",
+        "punto_entrada": None,
+        "punto_salida": None,
+        "punto_entrada_sin_confirmar": None,
+        "punto_salida_sin_confirmar": None,
+        "hora_vuelo_entrada": None,
+        "hora_vuelo_salida": None,
+        "vuelo_entrada": None,
+        "vuelo_salida": None,
+        "rooming": [],
+        "operacion": [],
+        "notas": "",
+        "texto_completo": "",
+        "block_code": None,
+        "guia_sugerido": None,
+        "vinculo_texto": None,
+    }
+
+
+def leer_texto_de_reserva(texto, current=None):
+    """Lee el bloque de texto de UNA reserva y devuelve sus campos.
+
+    El texto puede venir del PDF o de las Reservation Notes de Opera Cloud: son el
+    MISMO contenido con el mismo formato, porque el reporte imprime esa nota. Ejemplo
+    real de Opera:
+
+        Paquete 4D/3N -Full board
+        PNC e ISLA
+        Entrada: Via Sierpe
+        Salida: Via Sierpe
+        ---------------------------
+        Rooming:
+        <nombre> <pasaporte>
+        ---------------------------
+        Operacion:
+        09: In
+        10: PNC 123456
+        11: ISLA 123456
+        12: Out
+        ---------------------------
+        Notas:
+        Viene con rsv 123456
+
+    POR QUÉ SE COMPARTE EL LECTOR Y NO SE ESCRIBE OTRO: este formato lo escribe
+    recepción a mano, así que tiene mil variantes —'Operación' con tilde y sin, el
+    ROOMING con o sin dos puntos, el punto de embarque vacío o con texto libre—. Todas
+    esas variantes ya están resueltas aquí, y cada corrección futura le sirve a las dos
+    fuentes. Con dos lectores, arreglar una sola sería arreglarla a medias.
+    """
+    current = current if current is not None else bloque_vacio()
+    section = None
+    for linea in (texto or "").splitlines():
+        linea = linea.rstrip()
+        if not linea.strip():
             continue
+        section = procesar_linea(linea, current, section)
+    return current
+
+
+def procesar_linea(line, current, section):
+    """Una línea del bloque de una reserva. Devuelve la sección en que quedó.
+
+    Es el estado del lector: qué sección se está leyendo (rooming, operación, notas).
+    Está aparte para que el PDF y las notas de Opera usen exactamente el mismo código.
+    """
+    # Se acumula todo el texto del bloque de la reserva. Las menciones de
+    # amenidades pueden aparecer en cualquier parte (línea de RESERVATION, la de
+    # Rooming, las notas...), no solo en la sección NOTAS.
+    current["texto_completo"] += " " + line
+
+    # Código de bloque del PMS. Identifica reservas que viajan juntas cuando no
+    # traen la nota "viene con rsv" — es el caso de los grupos de agencia, que
+    # antes quedaban sin agrupar y se separaban en la distribución.
+    if not current.get("block_code"):
+        mb = BLOCK_RE.search(line)
+        if mb and _es_block_code(line, mb.group(1)):
+            current["block_code"] = mb.group(1)
+
+    if True:
+        if re.match(r"^\s*ROOMING\b", line, re.IGNORECASE):
+            return "rooming"
         # El encabezado puede venir con texto pegado ("OPERACION, PENDIENTE ACOMODAR
         # PESCA Y WHALE WATCHING, POR ANDREY"), así que basta con que empiece por la
         # palabra. Antes se exigían los dos puntos y esas reservas quedaban sin itinerario.
         if re.match(r"^\s*OPERACI[OÓ]N\b", line, re.IGNORECASE):
-            section = "operacion"
-            i += 1
-            continue
+            return "operacion"
         if re.match(r"^\s*NOTAS\b", line, re.IGNORECASE):
-            section = "notas"
-            i += 1
-            continue
+            return "notas"
         if set(line) <= {"-"}:
-            i += 1
-            continue
+            return section
 
         m_adic = re.search(r"Adicionales:\s*(.+)", line)
         if m_adic:
@@ -474,12 +549,7 @@ def parse_reservations(pdf_path):
         if section == "notas" and not line.upper().startswith("NOTAS"):
             current["notas"] += (" " + line)
 
-        i += 1
-
-    if current:
-        reservations.append(current)
-
-    return reservations
+    return section
 
 
 def cross_reference_tours(adicionales_raw):

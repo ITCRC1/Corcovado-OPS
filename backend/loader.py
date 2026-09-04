@@ -48,7 +48,343 @@ def _filas_fuera_de_estadia(filas, arr_date, dep_date):
     return fuera
 
 
-def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_canceladas=True):
+# Las columnas de 'reserva' que Opera Cloud SÍ entrega en esta propiedad y por lo tanto
+# puede mandar. Todo lo que no esté en esta lista lo sigue mandando el PDF.
+#
+# POR QUÉ HACE FALTA ESTA LISTA: el PDF trae la reserva COMPLETA, así que reescribir la
+# fila entera es correcto para él. Opera, en cambio, entrega solo el núcleo —Oracle no
+# concede los bloques de paquetes ni de comentarios—, y reescribir la fila entera con lo
+# que Opera trae dejaría en blanco todo lo demás.
+#
+# Medido antes de existir esta lista, sobre una reserva real con trabajo hecho: al correr
+# la sincronización se perdían sus 3 tours, sus 2 amenidades, el régimen de comidas, las
+# notas de operación y el punto de embarque. Y no daba ningún error: la reserva quedaba
+# ahí, con los datos correctos y el resto vacío.
+COLUMNAS_DEL_NUCLEO = (
+    "room_no", "nombre_principal", "company_travel_agent", "arr_date", "dep_date",
+    "arr_time", "room_type", "adl", "chl", "rooms", "mkt_code", "src_code",
+    "res_status", "block_code",
+    # La marca de Opera. Se guarda junto al núcleo para que el próximo ciclo sepa que
+    # esta reserva ya está al día.
+    "opera_modificado_en",
+)
+
+# Qué columnas de 'reserva' pertenecen a cada área. Solo se escriben las de las áreas
+# que la fuente manda; las demás se quedan como estaban.
+COLUMNAS_POR_AREA = {
+    "nucleo": COLUMNAS_DEL_NUCLEO,
+    "regimen": ("regimen",),
+    "textos": ("nota_ingreso", "nota_en_casa", "nota_salida", "notas_operacion",
+               "notas_libres", "guia_sugerido"),
+    "transporte": ("punto_entrada", "punto_salida", "punto_entrada_sin_confirmar",
+                   "punto_salida_sin_confirmar", "hora_vuelo_entrada",
+                   "hora_vuelo_salida", "vuelo_entrada", "vuelo_salida"),
+}
+
+# Todas las áreas que existen. Las tres últimas no son columnas: son tablas aparte.
+AREAS = frozenset(COLUMNAS_POR_AREA) | {"tours", "amenidades", "rooming"}
+
+
+def _valor_de_columna(r, columna):
+    """El valor que va en esa columna, tomado del diccionario de la reserva.
+
+    Dos columnas no se llaman igual que su llave, y confundirlas no da error: escribe
+    NULL y borra el dato.
+      notas_libres    <- r['notas']            (la llave nunca se llamó igual)
+      notas_operacion <- lista, hay que unirla (SQLite no acepta una lista)
+    """
+    if columna == "notas_libres":
+        return r.get("notas")
+    if columna == "notas_operacion":
+        return " · ".join(r.get("notas_operacion") or []) or None
+    return r.get(columna)
+
+# El PDF trae la hoja completa, así que manda en todo. Es el comportamiento de siempre.
+MANDA_TODO = frozenset(AREAS)
+
+
+def _areas_que_manda(manda_en):
+    """Normaliza 'manda_en' a un conjunto de áreas.
+
+    Se aceptan los nombres cortos "TODO" y "NUCLEO" además del conjunto explícito,
+    porque son los dos casos de siempre y así quien llama no tiene que enumerar.
+    """
+    if manda_en == "TODO":
+        return MANDA_TODO
+    if manda_en == "NUCLEO":
+        return frozenset({"nucleo"})
+    if isinstance(manda_en, (set, frozenset, list, tuple)):
+        pedidas = frozenset(manda_en)
+        desconocidas = pedidas - AREAS
+        if desconocidas:
+            raise ValueError(f"areas no reconocidas: {sorted(desconocidas)}")
+        if "nucleo" not in pedidas:
+            # Sin el núcleo no hay reserva que actualizar: casi seguro es un error de
+            # quien llama, y fallar aquí es mejor que escribir a medias.
+            raise ValueError("manda_en tiene que incluir 'nucleo'")
+        return pedidas
+    raise ValueError(f"manda_en no reconocido: {manda_en!r}")
+
+
+def _guardar_amenidades(cur, r, llegada_iso, origen="PDF"):
+    """Regenera las amenidades de esta reserva, conservando el trabajo hecho a mano.
+
+    'origen' dice de qué filas es dueña esta fuente. CADA FUENTE ADMINISTRA SOLO LAS
+    SUYAS, y esto no es un detalle: las amenidades casi siempre están escritas en las
+    notas de la reserva, y esas notas no se pueden leer por el API. Si la
+    sincronización con Opera borrara las del PDF para poner las suyas, borraría casi
+    todas —medido: los paquetes de Opera traen una amenidad en 1 de 223 reservas—.
+    Así, Opera agrega la cena privada y el detalle de bienvenida que sí conoce, y no
+    toca nada más.
+
+    Lo que recepción hizo a mano sobre las amenidades del reporte —el día que les puso,
+    el texto que corrigió, si ya están hechas y qué departamentos le asignó— se guarda
+    ANTES de borrarlas, porque enseguida se regeneran. Sin esto ese trabajo se perdía en
+    silencio: la noche que recepción le había asignado a una cena privada volvía a
+    quedar vacía, y la amenidad que housekeeping ya había marcado hecha volvía a
+    aparecer pendiente. Medido: se perdía en la primera reimportación.
+
+    Se guarda por NOMBRE de amenidad porque es lo único estable entre una importación y
+    la siguiente —la fila se borra, así que el id no sirve—. Si la misma reserva trae
+    dos veces la misma amenidad, se restauran en orden.
+    """
+    import restaurantes as _rest
+
+    trabajo_previo = {}
+    for prev in cur.execute(
+        """SELECT id, amenidad, fecha, detalle, tarea, estado, editado_a_mano
+           FROM amenidad_tarea WHERE conf_no = ? AND origen = ? ORDER BY id""",
+        (r["conf_no"], origen),
+    ).fetchall():
+        if prev["editado_a_mano"] or prev["estado"] != "PENDIENTE":
+            d = dict(prev)
+            # Los departamentos con el estado de cada uno, para poder devolverlos tal
+            # cual: si cocina ya hizo su parte y housekeeping no, reimportar no debe
+            # reabrir la de cocina ni cerrar la de housekeeping.
+            d["areas"] = [(x["area"], x["estado"]) for x in cur.execute(
+                "SELECT area, estado FROM amenidad_area WHERE amenidad_id = ? "
+                "ORDER BY rowid", (prev["id"],))]
+            trabajo_previo.setdefault(prev["amenidad"], []).append(d)
+
+    # Al borrar las de esta fuente se van también sus filas de departamento.
+    cur.execute(
+        """DELETE FROM amenidad_area WHERE amenidad_id IN
+             (SELECT id FROM amenidad_tarea WHERE conf_no = ? AND origen = ?)""",
+        (r["conf_no"], origen))
+    # Solo las de esta fuente; las de las otras y las que agregó recepción a mano se
+    # conservan.
+    cur.execute("DELETE FROM amenidad_tarea WHERE conf_no = ? AND origen = ?",
+                (r["conf_no"], origen))
+
+    # Fechas que la fuente sí conoce, por nombre de amenidad. El PDF no manda ninguna;
+    # Opera sí trae la fecha de la cena privada y del detalle de bienvenida, y una
+    # fecha real siempre es mejor que la de llegada por omisión.
+    fechas_conocidas = r.get("fechas_de_amenidad") or {}
+
+    for amenidad in r.get("amenidades_detectadas", []):
+        catalog_row = cur.execute(
+            "SELECT nombre, tarea_automatica, area_responsable FROM amenidad_catalogo WHERE nombre = ?",
+            (amenidad,),
+        ).fetchone()
+        if catalog_row:
+            nombre = catalog_row["nombre"]
+            tarea = catalog_row["tarea_automatica"]
+            area = catalog_row["area_responsable"]
+        else:
+            # Detectada pero sin fila en el catálogo (porque se renombró, se borró, o la
+            # base es anterior a esa amenidad). Antes se descartaba en silencio y nadie
+            # se enteraba de que el huésped la tenía pedida. Se guarda igual, con una
+            # tarea genérica, para que alguien la vea.
+            nombre = amenidad
+            tarea = (f"Revisar con recepción: se menciona «{amenidad}» "
+                     "y no está en el catálogo")
+            area = "Recepción"
+
+        # La fecha en que hay que tener lista la amenidad. Por omisión, el día de
+        # llegada: el sofá cama, la cuna, la decoración, la canasta de frutas y la
+        # tarjeta de bienvenida tienen que estar puestas ANTES del check-in, y a cocina
+        # la alergia le sirve saberla antes de que el huésped se siente a comer.
+        #
+        # La CENA PRIVADA es la excepción, y se deja sin fecha a propósito cuando la
+        # fuente no la sabe: el PDF avisa que existe pero casi nunca dice qué noche.
+        # Ponerle la llegada sería inventarle un día, y además apagaría el aviso de
+        # "contratadas sin noche asignada", que hoy es lo que hace que recepción
+        # pregunte y lo confirme. Un dato inventado es peor que un dato faltante que
+        # alguien está vigilando.
+        if nombre in fechas_conocidas and fechas_conocidas[nombre]:
+            fecha = fechas_conocidas[nombre]
+        elif _rest.es_cena_privada(nombre, tarea):
+            fecha = None
+        else:
+            fecha = llegada_iso
+        detalle = None
+        estado = "PENDIENTE"
+        editado = 0
+        # Lo que recepción ya había hecho sobre esta misma amenidad manda sobre lo que
+        # dice el reporte: el reporte no sabe qué noche se acordó la cena, ni que la
+        # alergia resultó ser también a la lactosa, ni que la cuna ya está puesta.
+        areas_previas = None
+        guardado = trabajo_previo.get(nombre)
+        if guardado:
+            p = guardado.pop(0)
+            estado = p["estado"]
+            if p["editado_a_mano"]:
+                editado = 1
+                fecha = p["fecha"]
+                detalle = p["detalle"]
+                tarea = p["tarea"] or tarea
+                # Los departamentos que recepción le puso a mano. El catálogo solo sabe
+                # de uno; si alguien decidió que esto también le toca a cocina, el
+                # reporte no tiene por qué deshacerlo.
+                areas_previas = p.get("areas")
+        cur.execute(
+            """INSERT INTO amenidad_tarea (conf_no, amenidad, detalle, tarea,
+                                           area_responsable, fecha, estado,
+                                           editado_a_mano, origen)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (r["conf_no"], nombre, detalle, tarea,
+             (areas_previas or [(area, estado)])[0][0], fecha, estado, editado,
+             origen),
+        )
+        nueva_id = cur.lastrowid
+        # Su fila de departamento. Sin esto la amenidad no le aparecería a nadie en la
+        # pantalla, que agrupa por departamento.
+        for nombre_area, estado_area in (areas_previas or [(area, estado)]):
+            cur.execute(
+                """INSERT OR IGNORE INTO amenidad_area (amenidad_id, area, estado)
+                   VALUES (?,?,?)""", (nueva_id, nombre_area, estado_area))
+
+
+def _guardar_rooming(cur, r):
+    """Los acompañantes de la reserva. Se regeneran enteros en cada importación."""
+    cur.execute("DELETE FROM huesped WHERE conf_no = ?", (r["conf_no"],))
+    for g in r.get("rooming") or []:
+        cur.execute(
+            "INSERT INTO huesped (conf_no, nombre_completo, pasaporte) VALUES (?,?,?)",
+            (r["conf_no"], g["nombre"], g.get("pasaporte")),
+        )
+
+
+def _guardar_tours(cur, r, borrar_si_vacio=True):
+    """Regenera los tours de esta reserva, conservando guía, bote y los manuales.
+
+    Antes de borrar se guardan las asignaciones de guía y bote que recepción ya hizo,
+    por fecha+tour y también agrupadas solo por tour: si el reporte actualizado mueve
+    el tour de día, la asignación seguía siendo válida y antes se perdía —recepción
+    tenía que volver a asignar todo—.
+
+    'borrar_si_vacio' es la diferencia entre las dos fuentes, y es importante:
+
+      El PDF trae la hoja completa. Si en el PDF una reserva no tiene tours, ES que no
+      tiene: borrar los que hubiera es lo correcto.
+
+      Opera solo ve los tours que están cargados como paquete, y no todos lo están
+      —medido: 145 de 223 reservas activas traen paquetes de tour—. Para las otras, "no
+      veo tours" NO significa "no tiene tours": significa que no puedo saberlo, porque
+      esa parte vive en las notas de la reserva y el API no las entrega. Así que si
+      Opera no trae ninguno, se dejan los que estén.
+    """
+    if not (r.get("agenda") or []) and not borrar_si_vacio:
+        return
+
+    asignaciones_previas = {}
+    asignaciones_por_tour = {}
+    for prev in cur.execute(
+        "SELECT fecha, tour_codigo, guia_nombre, bote_nombre, grupo_operativo "
+        "FROM tour_asignado WHERE conf_no = ? ORDER BY fecha",
+        (r["conf_no"],),
+    ).fetchall():
+        if prev["guia_nombre"] or prev["bote_nombre"] or prev["grupo_operativo"] != "A":
+            datos_prev = (prev["guia_nombre"], prev["bote_nombre"], prev["grupo_operativo"])
+            asignaciones_previas[(prev["fecha"], prev["tour_codigo"])] = datos_prev
+            asignaciones_por_tour.setdefault(prev["tour_codigo"], []).append(datos_prev)
+
+    # Los tours agregados a mano desde el itinerario NO están en el reporte, así que
+    # regenerar los borraría. Se conservan: el huésped ya los tiene prometidos y la
+    # operación ya les asignó guía y bote.
+    cur.execute("DELETE FROM tour_asignado WHERE conf_no = ? "
+                "AND IFNULL(origen, 'PDF') <> 'MANUAL'", (r["conf_no"],))
+
+    for a in r.get("agenda") or []:
+        # Cuánta gente va a este tour. Si la fuente lo dice, se respeta; si no, se
+        # asume que va toda la habitación, que es lo que hacía el PDF.
+        pax_del_tour = a.get("pax")
+        if not (isinstance(pax_del_tour, int) and pax_del_tour > 0):
+            pax_del_tour = r["adl"] + r["chl"]
+        asignacion = asignaciones_previas.pop((a["fecha"], a["tour"]), None)
+        if asignacion is None:
+            # No hay coincidencia exacta de fecha: el tour probablemente se movió de
+            # día. Se recupera la asignación por tour, en orden, para no obligar a
+            # recepción a reasignar guía y bote.
+            pendientes_tour = asignaciones_por_tour.get(a["tour"])
+            if pendientes_tour:
+                asignacion = pendientes_tour.pop(0)
+        guia_prev, bote_prev, grupo_prev = asignacion or (None, None, "A")
+        # Si recepción ya lo había agregado a mano y ahora el reporte lo trae, es el
+        # MISMO tour: se le cambia el origen en vez de insertar otro. Sin esto la
+        # reserva quedaría con el tour dos veces —dos veces en la agenda, doble pax en
+        # la entrada del parque—, que es la trampa de conservar los manuales.
+        ya_manual = cur.execute(
+            """SELECT id FROM tour_asignado
+               WHERE conf_no = ? AND fecha = ? AND tour_codigo = ?
+                 AND IFNULL(origen,'PDF') = 'MANUAL'""",
+            (r["conf_no"], a["fecha"], a["tour"]),
+        ).fetchone()
+        if ya_manual:
+            cur.execute(
+                """UPDATE tour_asignado SET origen = 'PDF', pax = ?,
+                       conf_entrada_sinac = COALESCE(conf_entrada_sinac, ?)
+                   WHERE id = ?""",
+                (pax_del_tour, a.get("conf_entrada"), ya_manual["id"]))
+            continue
+        cur.execute(
+            """INSERT INTO tour_asignado
+               (conf_no, fecha, tour_codigo, pax, conf_entrada_sinac, guia_nombre,
+                bote_nombre, grupo_operativo, origen)
+               VALUES (?,?,?,?,?,?,?,?,'PDF')""",
+            (r["conf_no"], a["fecha"], a["tour"], pax_del_tour,
+             a.get("conf_entrada"), guia_prev, bote_prev, grupo_prev),
+        )
+
+
+def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_canceladas=True,
+               manda_en="TODO", origen_parcial="OPERA"):
+    """Carga un lote de reservas ya procesado por el importador.
+
+    'manda_en' dice DE QUÉ es dueña la fuente, por áreas: 'nucleo', 'regimen',
+    'textos', 'transporte', 'tours', 'amenidades', 'rooming'. Lo que la fuente no
+    manda no se toca: se queda como lo dejó la otra fuente o recepción.
+
+      "TODO"   — todas las áreas (el PDF, que trae la hoja completa).
+      "NUCLEO" — solo la reserva.
+      un conjunto — lo que esa fuente entrega de verdad. Opera Cloud, por ejemplo,
+                    manda en el núcleo, los tours, el régimen, las amenidades y el
+                    rooming, pero NO en los textos ni en el punto de embarque, que no
+                    entrega.
+
+    'origen_parcial' es la etiqueta con la que una fuente parcial marca SUS amenidades,
+    para no pisar las de las otras.
+
+    POR QUÉ ESTO EXISTE. Antes había un solo camino, el del PDF, que reescribe la
+    reserva entera y regenera tours y amenidades. Correcto para el PDF; destructivo
+    para cualquier fuente que traiga menos. Medido sobre una reserva real con trabajo
+    hecho: al sincronizar con Opera se perdían sus 3 tours, sus 2 amenidades, el
+    régimen, las notas y el punto de embarque. Y sin dar un solo error —la reserva
+    quedaba ahí, correcta, y el resto en blanco—.
+    """
+    manda = _areas_que_manda(manda_en)
+
+    # El camino del PDF se usa SOLO cuando quien llama dice literalmente "TODO". Una
+    # fuente que enumera sus áreas usa siempre el camino selectivo, aunque las
+    # enumere todas.
+    #
+    # No es un detalle de estilo. El camino del PDF reescribe la fila entera con una
+    # lista fija de columnas, y ahí no está 'opera_modificado_en': al pasar por él,
+    # Opera borraba su propia marca de cambios y al ciclo siguiente creía que TODAS
+    # las reservas habían cambiado. Además ese camino borra los tours de una reserva
+    # que llega sin ninguno, que es justo lo que no debe hacer con Opera.
+    por_areas = manda_en != "TODO"
+
     conn = get_connection()
     cur = conn.cursor()
 
@@ -75,6 +411,44 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                FROM reserva r LEFT JOIN grupo g ON g.id = r.grupo_id
                WHERE r.conf_no = ?""", (r["conf_no"],)).fetchone()
         grupo_id = previo["gid"] if previo and previo["confirmado"] else None
+
+        if por_areas:
+            # Se escriben SOLO las columnas de las áreas que esta fuente manda. Si la
+            # reserva es nueva se inserta; si ya existía se actualiza dejando el resto
+            # intacto.
+            #
+            # Se usa INSERT ... ON CONFLICT y no INSERT OR REPLACE justo por eso:
+            # REPLACE borra la fila y la vuelve a escribir, así que cualquier columna
+            # que no se nombre queda en su valor por omisión.
+            propias = []
+            for area, columnas_area in COLUMNAS_POR_AREA.items():
+                if area in manda:
+                    propias.extend(columnas_area)
+            columnas = ", ".join(propias)
+            marcas = ", ".join("?" * len(propias))
+            asignaciones = ", ".join(f"{c} = excluded.{c}" for c in propias)
+            valores = [_valor_de_columna(r, c) for c in propias]
+            cur.execute(
+                f"""INSERT INTO reserva (conf_no, fuente_pdf, {columnas})
+                    VALUES (?, ?, {marcas})
+                    ON CONFLICT(conf_no) DO UPDATE SET
+                      fuente_pdf = excluded.fuente_pdf, {asignaciones}""",
+                [r["conf_no"], fuente_pdf] + valores)
+
+            # Y ahora, solo las tablas aparte que esta fuente manda. Una fuente parcial
+            # administra sus propias filas y no borra lo que no ve: ver los comentarios
+            # de _guardar_amenidades y _guardar_tours, que es donde está el porqué.
+            if "rooming" in manda and r.get("rooming"):
+                _guardar_rooming(cur, r)
+            if "amenidades" in manda:
+                _guardar_amenidades(cur, r, _iso_de_ddmmyy(r.get("arr_date")),
+                                    origen=origen_parcial)
+            if "tours" in manda:
+                # Solo se borran los tours si la fuente LEYÓ el itinerario y estaba
+                # vacío. Si ni siquiera pudo leerlo, no sabe nada y no debe borrar.
+                _guardar_tours(cur, r,
+                               borrar_si_vacio=bool(r.get("itinerario_leido")))
+            continue
 
         cur.execute(
             """INSERT OR REPLACE INTO reserva (conf_no, grupo_id, room_no, nombre_principal, company_travel_agent,
@@ -119,177 +493,13 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                     )
 
         # Al reimportar un PDF (algo normal: primero el mes completo, luego
-        # actualizaciones diarias), estos registros se vuelven a generar. Se borran
-        # los anteriores de esta reserva para que no se acumulen duplicados.
-        # IMPORTANTE: antes de borrar los tours, se guardan las asignaciones de guía
-        # y bote que recepción ya hizo manualmente, para restaurarlas después y no
-        # perder ese trabajo.
-        # Asignaciones que recepción ya hizo (guía, bote, grupo operativo). Se guardan
-        # por fecha+tour y también agrupadas solo por tour, porque si el PDF actualizado
-        # mueve el tour de día la asignación seguía siendo válida y antes se perdía:
-        # recepción tenía que volver a asignar todo.
-        asignaciones_previas = {}
-        asignaciones_por_tour = {}
-        for prev in cur.execute(
-            "SELECT fecha, tour_codigo, guia_nombre, bote_nombre, grupo_operativo "
-            "FROM tour_asignado WHERE conf_no = ? ORDER BY fecha",
-            (r["conf_no"],),
-        ).fetchall():
-            if prev["guia_nombre"] or prev["bote_nombre"] or prev["grupo_operativo"] != "A":
-                datos_prev = (prev["guia_nombre"], prev["bote_nombre"], prev["grupo_operativo"])
-                asignaciones_previas[(prev["fecha"], prev["tour_codigo"])] = datos_prev
-                asignaciones_por_tour.setdefault(prev["tour_codigo"], []).append(datos_prev)
-
-        # Lo que recepción hizo a mano sobre las amenidades del reporte: el día que les
-        # puso, el texto que corrigió y si ya están hechas. Se guarda ANTES de borrarlas
-        # porque enseguida se regeneran desde el PDF, y sin esto ese trabajo se perdía en
-        # silencio: la noche que recepción le había asignado a una cena privada volvía a
-        # quedar vacía, y la amenidad que housekeeping ya había marcado hecha volvía a
-        # aparecer pendiente. Medido: se perdía en la primera reimportación.
-        #
-        # Se guarda por nombre de amenidad porque es lo único estable entre una
-        # importación y la siguiente —la fila se borra, así que el id no sirve—. Si la
-        # misma reserva trae dos veces la misma amenidad, se restauran en orden.
-        trabajo_previo = {}
-        for prev in cur.execute(
-            """SELECT id, amenidad, fecha, detalle, tarea, estado, editado_a_mano
-               FROM amenidad_tarea WHERE conf_no = ? AND origen = 'PDF' ORDER BY id""",
-            (r["conf_no"],),
-        ).fetchall():
-            if prev["editado_a_mano"] or prev["estado"] != "PENDIENTE":
-                d = dict(prev)
-                # Los departamentos con el estado de cada uno, para poder devolverlos
-                # tal cual: si cocina ya hizo su parte y housekeeping no, reimportar no
-                # debe reabrir la de cocina ni cerrar la de housekeeping.
-                d["areas"] = [(x["area"], x["estado"]) for x in cur.execute(
-                    "SELECT area, estado FROM amenidad_area WHERE amenidad_id = ? "
-                    "ORDER BY rowid", (prev["id"],))]
-                trabajo_previo.setdefault(prev["amenidad"], []).append(d)
-
-        # Al borrar las del PDF se van también sus filas de departamento.
-        cur.execute(
-            """DELETE FROM amenidad_area WHERE amenidad_id IN
-                 (SELECT id FROM amenidad_tarea WHERE conf_no = ? AND origen = 'PDF')""",
-            (r["conf_no"],))
-
-        cur.execute("DELETE FROM huesped WHERE conf_no = ?", (r["conf_no"],))
-        # Los tours agregados a mano desde el itinerario NO están en el reporte, así que
-        # regenerar desde el PDF los borraría. Se conservan: el huésped ya los tiene
-        # prometidos y la operación ya les asignó guía y bote.
-        cur.execute("DELETE FROM tour_asignado WHERE conf_no = ? "
-                    "AND IFNULL(origen, 'PDF') <> 'MANUAL'", (r["conf_no"],))
-        # Solo se borran las detectadas del PDF; las agregadas a mano por recepción se conservan.
-        cur.execute("DELETE FROM amenidad_tarea WHERE conf_no = ? AND origen = 'PDF'", (r["conf_no"],))
-
-        # La fecha en que hay que tener lista la amenidad. Por omisión, el día de
-        # llegada: el sofá cama, la cuna, la decoración, la canasta de frutas y la
-        # tarjeta de bienvenida tienen que estar puestas ANTES del check-in, y a cocina
-        # la alergia le sirve saberla antes de que el huésped se siente a comer.
-        #
-        # La CENA PRIVADA es la excepción, y se deja sin fecha a propósito: el PDF avisa
-        # que existe pero casi nunca dice qué noche. Ponerle la llegada sería inventarle
-        # un día, y además apagaría el aviso de "contratadas sin noche asignada" que hoy
-        # es lo que hace que recepción pregunte y lo confirme. Un dato inventado es peor
-        # que un dato faltante que alguien está vigilando.
-        llegada_iso = _iso_de_ddmmyy(r.get("arr_date"))
-        import restaurantes as _rest
-
-        for amenidad in r.get("amenidades_detectadas", []):
-            catalog_row = cur.execute(
-                "SELECT nombre, tarea_automatica, area_responsable FROM amenidad_catalogo WHERE nombre = ?",
-                (amenidad,),
-            ).fetchone()
-            if catalog_row:
-                nombre = catalog_row["nombre"]
-                tarea = catalog_row["tarea_automatica"]
-                area = catalog_row["area_responsable"]
-            else:
-                # Detectada en el PDF pero sin fila en el catálogo (porque se renombró,
-                # se borró, o la base es anterior a esa amenidad). Antes se descartaba
-                # en silencio y nadie se enteraba de que el huésped la tenía pedida.
-                # Se guarda igual, con una tarea genérica, para que alguien la vea.
-                nombre = amenidad
-                tarea = (f"Revisar con recepción: el PDF menciona «{amenidad}» "
-                         "y no está en el catálogo")
-                area = "Recepción"
-            fecha = None if _rest.es_cena_privada(nombre, tarea) else llegada_iso
-            detalle = None
-            estado = "PENDIENTE"
-            editado = 0
-            # Lo que recepción ya había hecho sobre esta misma amenidad manda sobre lo
-            # que dice el reporte: el reporte no sabe qué noche se acordó la cena, ni que
-            # la alergia resultó ser también a la lactosa, ni que la cuna ya está puesta.
-            areas_previas = None
-            guardado = trabajo_previo.get(nombre)
-            if guardado:
-                p = guardado.pop(0)
-                estado = p["estado"]
-                if p["editado_a_mano"]:
-                    editado = 1
-                    fecha = p["fecha"]
-                    detalle = p["detalle"]
-                    tarea = p["tarea"] or tarea
-                    # Los departamentos que recepción le puso a mano. El catálogo solo
-                    # sabe de uno; si alguien decidió que esto también le toca a cocina,
-                    # el reporte no tiene por qué deshacerlo.
-                    areas_previas = p.get("areas")
-            cur.execute(
-                """INSERT INTO amenidad_tarea (conf_no, amenidad, detalle, tarea,
-                                               area_responsable, fecha, estado,
-                                               editado_a_mano)
-                   VALUES (?,?,?,?,?,?,?,?)""",
-                (r["conf_no"], nombre, detalle, tarea,
-                 (areas_previas or [(area, estado)])[0][0], fecha, estado, editado),
-            )
-            nueva_id = cur.lastrowid
-            # Su fila de departamento. Sin esto la amenidad no le aparecería a nadie en
-            # la pantalla, que agrupa por departamento.
-            for nombre_area, estado_area in (areas_previas or [(area, estado)]):
-                cur.execute(
-                    """INSERT OR IGNORE INTO amenidad_area (amenidad_id, area, estado)
-                       VALUES (?,?,?)""", (nueva_id, nombre_area, estado_area))
-
-        for g in r["rooming"]:
-            cur.execute(
-                "INSERT INTO huesped (conf_no, nombre_completo, pasaporte) VALUES (?,?,?)",
-                (r["conf_no"], g["nombre"], g.get("pasaporte")),
-            )
-
-        for a in r["agenda"]:
-            asignacion = asignaciones_previas.pop((a["fecha"], a["tour"]), None)
-            if asignacion is None:
-                # No hay coincidencia exacta de fecha: el tour probablemente se movió
-                # de día en el PDF actualizado. Se recupera la asignación por tour, en
-                # orden, para no obligar a recepción a reasignar guía y bote.
-                pendientes_tour = asignaciones_por_tour.get(a["tour"])
-                if pendientes_tour:
-                    asignacion = pendientes_tour.pop(0)
-            guia_prev, bote_prev, grupo_prev = asignacion or (None, None, "A")
-            # Si recepción ya lo había agregado a mano y ahora el reporte lo trae, es el
-            # MISMO tour: se le cambia el origen en vez de insertar otro. Sin esto la
-            # reserva quedaría con el tour dos veces —dos veces en la agenda, doble pax
-            # en la entrada del parque—, que es la trampa de conservar los manuales.
-            ya_manual = cur.execute(
-                """SELECT id FROM tour_asignado
-                   WHERE conf_no = ? AND fecha = ? AND tour_codigo = ?
-                     AND IFNULL(origen,'PDF') = 'MANUAL'""",
-                (r["conf_no"], a["fecha"], a["tour"]),
-            ).fetchone()
-            if ya_manual:
-                cur.execute(
-                    """UPDATE tour_asignado SET origen = 'PDF', pax = ?,
-                           conf_entrada_sinac = COALESCE(conf_entrada_sinac, ?)
-                       WHERE id = ?""",
-                    (r["adl"] + r["chl"], a.get("conf_entrada"), ya_manual["id"]))
-                continue
-            cur.execute(
-                """INSERT INTO tour_asignado
-                   (conf_no, fecha, tour_codigo, pax, conf_entrada_sinac, guia_nombre,
-                    bote_nombre, grupo_operativo, origen)
-                   VALUES (?,?,?,?,?,?,?,?,'PDF')""",
-                (r["conf_no"], a["fecha"], a["tour"], r["adl"] + r["chl"],
-                 a.get("conf_entrada"), guia_prev, bote_prev, grupo_prev),
-            )
+        # actualizaciones diarias), estos registros se vuelven a generar. Las tres
+        # funciones se encargan de borrar lo anterior sin perder el trabajo hecho a
+        # mano; son las MISMAS que usa cualquier otra fuente, para que una corrección
+        # aquí llegue también a las reservas de Opera.
+        _guardar_amenidades(cur, r, _iso_de_ddmmyy(r.get("arr_date")))
+        _guardar_rooming(cur, r)
+        _guardar_tours(cur, r)
 
     # Reservas que ya no aparecen en el PDF: se marcan como CANCELADA.
     # Solo se revisan las fechas de llegada que SÍ vienen en este PDF, para no tocar

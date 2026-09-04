@@ -1607,6 +1607,50 @@ def opera_sincronizar(user: dict = Depends(exige("importar", escribir=True))):
     return opera_sync.sincronizar(cargar=True)
 
 
+@app.get("/api/respaldo")
+def descargar_respaldo(user: dict = Depends(exige("usuarios"))):
+    """Una copia completa y consistente de la base, para descargar y guardar afuera.
+
+    POR QUÉ ESTO EXISTE. Hasta ahora el respaldo estaba solo documentado, y hacerlo
+    exigía el CLI de Railway y tres comandos encadenados con base64. En la práctica eso
+    significa que no se hace nunca. El volumen de Railway tampoco se respalda solo: si
+    se pierde, se pierde todo.
+
+    POR QUÉ NO SE COPIA EL ARCHIVO Y YA. La base corre en modo WAL: los últimos cambios
+    viven en 'hotel.db-wal' hasta que SQLite los integra. Copiar 'hotel.db' tal cual
+    puede dejar afuera justo lo más reciente —y un respaldo al que le falta el último
+    día es peor que ninguno, porque nadie lo sabe hasta que hace falta—. Se usa
+    'sqlite3.backup()', que es el mecanismo propio de SQLite y produce una copia
+    consistente aunque haya escrituras en curso.
+
+    Lo pide la pantalla de Usuarios, que es la de administración.
+    """
+    import shutil
+    import sqlite3
+    from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
+
+    origen = get_connection()
+    carpeta = tempfile.mkdtemp(prefix="respaldo_")
+    destino_ruta = os.path.join(carpeta, "hotel.db")
+    try:
+        destino = sqlite3.connect(destino_ruta)
+        try:
+            origen.backup(destino)
+        finally:
+            destino.close()
+    finally:
+        origen.close()
+
+    marca = datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
+    return FileResponse(
+        destino_ruta, media_type="application/octet-stream",
+        filename=f"corcovado_respaldo_{marca}.db",
+        # Se borra la carpeta temporal cuando termina de enviarse: sin esto, cada
+        # respaldo dejaría una copia entera de la base en el disco del servidor.
+        background=BackgroundTask(shutil.rmtree, carpeta, ignore_errors=True))
+
+
 @app.get("/api/usuarios")
 def listar_usuarios(user: dict = Depends(exige("usuarios"))):
     conn = get_connection()

@@ -249,6 +249,12 @@ def build_review_batch_desde_reservas(reservas):
                 "tour": op["tour"],
                 "conf_entrada": op.get("conf_entrada"),
                 "contradiccion": contradiccion,
+                # Cuánta gente va A ESTE tour, si la fuente lo sabe. Opera lo dice
+                # ('totalQuantity' del paquete) y no siempre coincide con la gente de
+                # la habitación: medido en una reserva real, 3 adultos con solo 2 en
+                # el snorkel. Usar el pax de la habitación pediría un asiento de bote
+                # y una entrada del parque de más, todos los días.
+                "pax": op.get("pax_opera"),
             })
             # Se registra la necesidad de entrada SINAC para TODOS los tours que la
             # requieren, tengan o no número de confirmación. Antes solo se registraban
@@ -259,7 +265,12 @@ def build_review_batch_desde_reservas(reservas):
                 key = (op["tour"], fecha_iso, op.get("conf_entrada"))
                 if key not in entradas_sinac:
                     entradas_sinac[key] = {"pax_total": 0, "grupos": set(), "conf_nos": [], "contradiccion": False}
-                entradas_sinac[key]["pax_total"] += r["adl"] + r["chl"]
+                # La misma cuenta que el tour: si la fuente sabe cuánta gente va, se
+                # compran esas entradas y no una por cada persona de la habitación.
+                pax_tour = op.get("pax_opera")
+                entradas_sinac[key]["pax_total"] += (
+                    pax_tour if isinstance(pax_tour, int) and pax_tour > 0
+                    else r["adl"] + r["chl"])
                 entradas_sinac[key]["grupos"].add(grupo_de[r["conf_no"]])
                 entradas_sinac[key]["conf_nos"].append(r["conf_no"])
                 entradas_sinac[key]["contradiccion"] = (

@@ -133,6 +133,8 @@ COLUMNAS_NUEVAS = [
     # Ver los comentarios en schema.sql y en loader.py.
     ("amenidad_tarea", "editado_a_mano", "INTEGER NOT NULL DEFAULT 0"),
     ("tour_asignado", "origen", "TEXT NOT NULL DEFAULT 'PDF'"),
+    # La marca de modificación de Opera, para no reprocesar lo que no cambió.
+    ("reserva", "opera_modificado_en", "TEXT"),
 ]
 
 

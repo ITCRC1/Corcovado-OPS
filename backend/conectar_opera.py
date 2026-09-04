@@ -140,25 +140,73 @@ def main():
     print()
     print("-" * 78)
     diag = r.get("diagnostico") or ""
+
+    # Dos problemas muy distintos, y se atienden en sitios distintos: una ruta mala se
+    # corrige en el código; un bloque que Oracle no concede, no —por mucho que se
+    # insista aquí—. Mezclarlos hace perder días buscando en el lado equivocado.
     if "REVISAR RUTA" in diag:
-        print("HAY CAMPOS QUE LLEGAN VACÍOS EN TODAS LAS RESERVAS.")
+        print("HAY CAMPOS VACÍOS QUE SÍ DEBERÍAN LLEGAR.")
         print()
-        print("Eso casi siempre significa que en esta propiedad ese dato viene con otro")
-        print("nombre. NO encienda la sincronización todavía: comparta el archivo")
+        print("El bloque que trae ese dato sí responde, así que en esta propiedad el")
+        print("campo viene con otro nombre. Se arregla en el mapeo: comparta el archivo")
         print("estructura_*.txt de data/opera_muestras/ con quien lleva el sistema.")
         print()
         print("Ese archivo trae SOLO nombres y tipos de campo — ningún nombre de huésped")
         print("ni dato personal— así que se puede compartir sin problema. El otro archivo")
         print("de esa carpeta (reservas_*.json) SÍ trae datos de huéspedes: ese no.")
-    else:
-        print("TODO LLEGA COMPLETO.")
+        print("-" * 78)
+        return 0
+
+    alcance = r.get("manda_en") or []
+    tours = r.get("tours_en_la_muestra")
+    sin_mapear = r.get("paquetes_sin_reconocer") or []
+
+    if "REVISAR RUTA" in diag:
+        print("HAY CAMPOS VACÍOS QUE SÍ DEBERÍAN LLEGAR.")
         print()
-        print("Ya se puede encender desde la pantalla Importar PDF:")
-        print("  1. «Sincronizar ahora» una vez")
-        print("  2. Revisar la Agenda y las Amenidades del día contra lo que ya sabe")
-        print("  3. «Encender la sincronización»")
+        print("Comparta el archivo estructura_*.txt de data/opera_muestras/ con quien")
+        print("lleva el sistema: trae SOLO nombres y tipos de campo, ningún dato de")
+        print("huésped. El otro archivo de esa carpeta (reservas_*.json) SÍ los trae.")
+        print("-" * 78)
+        return 0
+
+    print("LA SINCRONIZACIÓN TRAE TODO LO QUE TRAE EL PDF.")
+    print()
+    print("De dónde sale cada cosa:")
+    print("  Reservation Notes  -> el itinerario por día con su entrada del SINAC,")
+    print("                        el punto de embarque (Sierpe/Drake) con vuelo y hora,")
+    print("                        el rooming con pasaportes, las alergias y las")
+    print("                        amenidades, y los vínculos de grupo")
+    print("  Los paquetes       -> el régimen de comidas y qué tours están vendidos")
+    print("  La reserva         -> huésped, fechas, habitación, pax, estado, agencia")
+    print("                        y las CANCELACIONES")
+    print()
+    print(f"  ({tours} tours leídos en la muestra de esta corrida)")
+    print()
+    print("Es el MISMO texto que imprime el PDF, leído con el MISMO lector. Si una")
+    print("reserva todavía no tiene los tours repartidos, aquí tampoco aparecerán —")
+    print("igual que en el PDF, porque es la misma nota.")
+    print()
+    print(f"Opera manda en: {', '.join(alcance)}")
+    print()
+    print("DOS RESGUARDOS, por si algún día Opera deja de entregar algo:")
+    print("  - Si no puede leer el itinerario de una reserva, NO borra los tours que")
+    print("    ya tenga. No poder verlos no es lo mismo que no existir.")
+    print("  - Si deja de entregar las notas, el sistema lo detecta y deja de mandar")
+    print("    en esas áreas, en vez de vaciarlas.")
+    print()
+    if sin_mapear:
+        print("OJO — paquetes que el sistema no supo interpretar:")
+        for c in sin_mapear:
+            print(f"  - {c}")
+        print("No se adivinan: queda un aviso para que se agreguen al mapeo.")
         print()
-        print("El PDF sigue funcionando igual: son dos caminos al mismo sitio.")
+    print("PARA ENCENDERLA, desde la pantalla Importar:")
+    print("  1. «Sincronizar ahora» una vez")
+    print("  2. Revisar la Agenda y las Amenidades del día contra lo que ya sabe")
+    print("  3. «Encender la sincronización»")
+    print()
+    print("El PDF sigue funcionando igual: son dos caminos al mismo sitio.")
     print("-" * 78)
     return 0
 

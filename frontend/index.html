@@ -4932,7 +4932,61 @@ async function loadUsuarios() {
           aquí.</span>` : ""}
       </p>
     </div>
+
+    <div class="card">
+      <div class="header">
+        <p class="title">Respaldo de la base de datos</p>
+        <button class="btn btn-primary" id="btn-respaldo" onclick="bajarRespaldo()">
+          Descargar respaldo
+        </button>
+      </div>
+      <p style="font-size:12.5px;color:var(--muted);margin:0;">
+        Baja una copia completa de la base —reservas, tours, amenidades, spa, usuarios—
+        en un solo archivo. Guárdela <strong>fuera del servidor</strong>: en su computadora
+        o en Drive. El servidor no respalda solo, así que si se pierde, se pierde todo.
+        <br><strong>Hágalo antes de cada despliegue</strong>, y una vez por semana.
+      </p>
+      <p id="respaldo-estado" style="font-size:12.5px;margin:10px 0 0;"></p>
+    </div>
   `;
+}
+
+async function bajarRespaldo() {
+  // Se descarga con fetch y no con un enlace normal porque la sesión viaja en la
+  // cabecera Authorization: un <a href> no la lleva y el servidor respondería 401.
+  const boton = document.getElementById("btn-respaldo");
+  const aviso = document.getElementById("respaldo-estado");
+  boton.disabled = true;
+  boton.textContent = "Preparando…";
+  aviso.textContent = "Copiando la base. En una base grande puede tardar unos segundos.";
+  aviso.style.color = "var(--muted)";
+  try {
+    const res = await fetchAuth(`${API}/api/respaldo`);
+    if (!res.ok) throw new Error(`el servidor respondió ${res.status}`);
+    const blob = await res.blob();
+    // El nombre viene del servidor con la fecha y la hora.
+    let nombre = "corcovado_respaldo.db";
+    const cd = res.headers.get("content-disposition") || "";
+    const m = cd.match(/filename="?([^";]+)"?/);
+    if (m) nombre = m[1];
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = nombre;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    const mb = (blob.size / (1024 * 1024)).toFixed(1);
+    aviso.innerHTML = `<span style="color:var(--ok-text,green);">Listo: <strong>${escaparHTML(nombre)}</strong>
+      (${mb} MB). Guárdelo fuera del servidor.</span>`;
+  } catch (e) {
+    aviso.innerHTML = `<span style="color:var(--warn-text);">No se pudo descargar: ${escaparHTML(e.message)}.
+      El respaldo NO se hizo.</span>`;
+  } finally {
+    boton.disabled = false;
+    boton.textContent = "Descargar respaldo";
+  }
 }
 
 function mostrarFormNuevoUsuario() {

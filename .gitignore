@@ -17,6 +17,10 @@ cache_itinerarios/
 # Respuestas crudas de Opera Cloud guardadas por "opera_cloud.py descubrir":
 # traen nombres y datos de huéspedes tal como los devuelve Oracle.
 opera_muestras/
+# Los bloques de datos que la propiedad concede, aprendidos en la primera consulta.
+# No es un secreto, pero es del servidor donde corre: cada instalación aprende los
+# suyos y traerlos de otra haría pedir bloques que aquí no existen.
+opera_bloques.json
 
 # Reportes del PMS y hojas de cálculo. Traen nombres, fechas y datos personales
 # de los huéspedes. Si uno de estos archivos se deja en la carpeta del proyecto,

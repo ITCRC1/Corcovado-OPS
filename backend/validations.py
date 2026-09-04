@@ -100,6 +100,66 @@ def validar_tour_asignado(tour_asignado_id):
     return alertas_creadas
 
 
+def _iso(ddmmyy):
+    """'30-01-26' -> '2026-01-30'. None si no tiene la forma del PMS."""
+    texto = (ddmmyy or "").strip()
+    if len(texto) != 8 or texto.count("-") != 2:
+        return None
+    d, m, y = texto.split("-")
+    if not (d.isdigit() and m.isdigit() and y.isdigit()):
+        return None
+    return f"20{y}-{m}-{d}"
+
+
+def validar_tours_fuera_de_la_estadia():
+    """Tours que caen antes de la llegada o después de la salida de su reserva.
+
+    POR QUÉ EXISTE: los tours se reparten por fecha DESPUÉS de que entra la reserva.
+    Si más adelante alguien mueve las fechas en el PMS —y eso pasa—, los tours ya
+    repartidos se quedan en los días viejos. No da ningún error: el tour aparece en la
+    agenda de un día en que el huésped no está en el lodge, y se descubre el día del
+    tour, cuando ya no hay nada que hacer.
+
+    Medido sobre la base real antes de escribir esto: de 1.164 tours, CERO caían fuera.
+    Por eso este aviso sirve —está callado mientras todo esté bien y solo habla cuando
+    de verdad pasó algo—. Un aviso que salta siempre se aprende a ignorar.
+
+    Las canceladas se saltan: sus tours ya no importan y ensuciarían la lista.
+    """
+    conn = get_connection()
+    filas = conn.execute(
+        """SELECT t.id, t.fecha, t.tour_codigo, r.conf_no, r.room_no,
+                  r.nombre_principal, r.arr_date, r.dep_date
+             FROM tour_asignado t JOIN reserva r ON r.conf_no = t.conf_no
+            WHERE t.fecha IS NOT NULL
+              AND IFNULL(r.res_status,'') != 'CANCELADA'""").fetchall()
+
+    mensajes = []
+    for f in filas:
+        llega, sale = _iso(f["arr_date"]), _iso(f["dep_date"])
+        if llega and f["fecha"] < llega:
+            cuando = f"antes de que llegue ({f['arr_date']})"
+        elif sale and f["fecha"] > sale:
+            cuando = f"después de que se vaya ({f['dep_date']})"
+        else:
+            continue
+        msg = (f"{f['tour_codigo']} el {f['fecha']} le queda {cuando} a "
+               f"{f['nombre_principal']} (hab. {f['room_no']}). "
+               f"Revisar: cambiaron las fechas de la reserva después de repartir el tour.")
+        ya = conn.execute(
+            "SELECT 1 FROM alerta WHERE tipo='TOUR_FUERA_DE_ESTADIA' AND mensaje=? "
+            "AND resuelto=0", (msg,)).fetchone()
+        if not ya:
+            conn.execute(
+                "INSERT INTO alerta (tipo, referencia_id, mensaje) "
+                "VALUES ('TOUR_FUERA_DE_ESTADIA', ?, ?)", (f["id"], msg))
+        mensajes.append(msg)
+
+    conn.commit()
+    conn.close()
+    return mensajes
+
+
 def validar_todos_los_tours(fecha=None):
     conn = get_connection()
     query = "SELECT id FROM tour_asignado"
@@ -112,6 +172,9 @@ def validar_todos_los_tours(fecha=None):
     resultado = []
     for tid in ids:
         resultado.extend(validar_tour_asignado(tid))
+    # Se revisa al final, una sola vez para toda la base: es una comparación de fechas
+    # por reserva, no por tour, así que no tiene sentido repetirla en cada vuelta.
+    resultado.extend(validar_tours_fuera_de_la_estadia())
     vistos = set()
     resultado_unico = []
     for msg in resultado:

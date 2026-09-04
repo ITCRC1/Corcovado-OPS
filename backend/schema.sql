@@ -115,6 +115,12 @@ CREATE TABLE IF NOT EXISTS reserva (
     notas_operacion TEXT,  -- notas en texto libre que aparecen tras el itinerario
     notas_libres TEXT,
     fuente_pdf TEXT,
+    -- Marca de última modificación que informa Opera Cloud ('lastModifyDateTime').
+    -- Guardarla permite que el ciclo automático solo vuelva a procesar las reservas que
+    -- de verdad cambiaron, en vez de reescribirlas todas cada media hora.
+    -- Si una importación de PDF la deja en blanco no pasa nada: el siguiente ciclo de
+    -- Opera vuelve a escribir el núcleo una vez y queda al día otra vez.
+    opera_modificado_en TEXT,
     actualizado_en TEXT DEFAULT (datetime('now'))
 );
 
@@ -188,7 +194,13 @@ CREATE TABLE IF NOT EXISTS amenidad_tarea (
     -- recepción puede agregar requerimientos libres del huésped (alergias que llegan
     -- por teléfono, preferencias, peticiones especiales).
     amenidad TEXT,
-    origen TEXT NOT NULL DEFAULT 'PDF',  -- 'PDF' | 'MANUAL'
+    -- 'PDF' | 'MANUAL' | 'OPERA'
+    -- Cada fuente administra SOLO sus propias filas. Importa: las amenidades casi
+    -- siempre están escritas en las notas de la reserva, y esas notas no se pueden
+    -- leer por el API —Oracle no concede el bloque—. Si la sincronización con Opera
+    -- borrara las del PDF para poner las suyas, borraría casi todas: medido, los
+    -- paquetes de Opera traen una amenidad en 1 de 223 reservas.
+    origen TEXT NOT NULL DEFAULT 'PDF',
     detalle TEXT,
     tarea TEXT NOT NULL,
     area_responsable TEXT NOT NULL,

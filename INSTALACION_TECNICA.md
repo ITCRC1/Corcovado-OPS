@@ -151,10 +151,17 @@ Para eso se comparte `data/opera_muestras/estructura_*.txt`, que trae **solo nom
 tipos de campo**. El otro archivo de esa carpeta, `reservas_*.json`, **sí trae datos de
 huéspedes**: ese no se comparte.
 
-##### Lo aprendido contra el OHIP real de Corcovado (2026-09-02)
+##### Lo aprendido contra el OHIP real de Corcovado (2026-09-02 al 2026-09-04)
 
-Tres cosas que costaron un rato y quedan escritas para no volver a descubrirlas.
-Instalación: `mtcu11pr.hospitality-api.us-ashburn-1`, hub `ECRWLG`, hotel `CRWLG`.
+Lo que costó un rato y queda escrito para no volver a descubrirlo.
+Instalación: `mtcu11pr.hospitality-api.us-ashburn-1`, hub `ECRWLG`, hotel **`COWLCR`**.
+
+> **Lo primero de todo: el código de hotel es `COWLCR`.** Durante dos días se probó con
+> `CRWLG`, que **nunca fue** la propiedad de Corcovado. Eso —y nada más— era el
+> `403 OPERAWS-GEN01244` del punto 3. Con el código correcto la consulta responde
+> `200 OK` y baja las reservas. Antes de sospechar de un permiso, comprobar el código.
+> El punto 3 se conserva porque el diagnóstico que describe sigue siendo válido: si
+> algún día vuelve el 403 con el código bueno, entonces sí es permiso.
 
 **1. El "Authentication Scheme" se copia mal.** La ficha de OHIP lo muestra como
 *"Client Credentials"*, con mayúsculas y espacio. OAuth exige `client_credentials`.
@@ -178,8 +185,13 @@ la consulta de reservas devolvía:
 
 | Cabecera usada | Respuesta |
 |---|---|
-| `x-hotelid: CRWLG` | 403 · `OPERAWS-GEN01244` · *User is not authorized to access data for resort* |
+| `x-hotelid: CRWLG` *(código equivocado)* | 403 · `OPERAWS-GEN01244` · *User is not authorized to access data for resort* |
 | `x-hubid: ECRWLG` | 403 · `OPERAWS-GEN01265` · *User is not authorized to access data for hub* |
+| `x-hotelid: COWLCR` *(el correcto)* | **200 OK** |
+
+Ese 403 era el código de hotel, no el permiso. Pero el mensaje de Oracle es exactamente
+el mismo en los dos casos —*"not authorized"*—, así que la tabla queda como referencia:
+si aparece con el código bueno, entonces sí es lo que dice.
 
 Y da 403 **incluso sin ningún parámetro en la consulta**, lo que descarta que sea un
 problema de parámetros. La ruta es la correcta: `/rsv/v1/hotels/{hotel}/reservations`
@@ -226,6 +238,290 @@ la operación.
 Desde fuera **no se puede distinguir** "esta versión no tiene ese bloque" de "la
 aplicación no está suscrita a ese bloque": las dos cosas dan el mismo `GEN01346`. Oracle
 sí lo puede ver, así que va en la misma petición que el permiso.
+
+**7. Un bloque de más tumba la consulta ENTERA.** No devuelve ese bloque vacío y el
+resto lleno: devuelve `400` y nada. Por eso la sincronización pedía los once y fallaba
+siempre, aunque la descarga de diagnóstico —que sí filtraba— funcionara. Ya se corrigió:
+los bloques concedidos se aprenden en la primera consulta y quedan en
+`data/opera_bloques.json`; si Oracle cambia lo que concede, se vuelven a averiguar solos
+y se reintenta. Se aprende **a partir del error**, así que el caso normal no paga ni una
+petición de más.
+
+##### LAS RESERVATION NOTES SÍ SE LEEN: el bloque se llama `Comments`
+
+> **Este es el punto más importante de toda la sección.** Durante un buen rato se dio
+> por imposible leer las notas, porque `fetchInstructions=ReservationComments` responde
+> `400 GEN01346` y `/reservations/{id}/comments` responde 404 — y eso parece decir que
+> la propiedad no las expone. **No es cierto: el nombre del bloque es `Comments`, a
+> secas.** Se probaron 70 nombres hasta dar con él.
+
+```
+GET /rsv/v1/hotels/COWLCR/reservations/{id}
+      ?fetchInstructions=Reservation&fetchInstructions=Comments
+
+reservations.reservation[0].comments[].comment.text.value
+reservations.reservation[0].comments[].comment.notificationLocation   'RESERVATION' | 'CASHIER'
+```
+
+Y el texto es **exactamente el que imprime el PDF**:
+
+```
+Paquete 4D/3N -Full board
+PNC e ISLA
+Entrada: Via Sierpe
+Salida: Via Drake RZ1116 9:25am
+---------------------------------------------------
+Rooming:
+<nombre> <pasaporte>
+-------------------------------------------------
+Operacion:
+09: In
+10: PNC 199536
+11: ISLA 199528
+12: Out
+-------------------------------------------------
+Notas:
+Viene con rsv 594008465
+```
+
+Por eso **lo lee el MISMO lector que el PDF**: `pdf_parser.leer_texto_de_reserva()`,
+que antes estaba enterrado dentro del bucle de `parse_reservations`. Ese formato lo
+escribe recepción a mano y tiene mil variantes —`Operación` con tilde y sin, `ROOMING`
+con o sin dos puntos, el punto de embarque vacío o con texto libre—; todas están
+resueltas ahí, y ahora cada corrección le sirve a las dos fuentes.
+
+La nota del área **`CASHIER`** se descarta a propósito: es el total y la fuente de la
+venta (`Total $2,830.47`), no operación, y su texto solo ensuciaría los detectores.
+
+##### Lo que se creía que faltaba
+
+Confirmado con una captura de Opera. En la reserva, botón **Notes → Reservation Notes**,
+hay una nota de tipo `RESERVATION` que dice, literalmente:
+
+```
+Paquete 3N/4D+PENSION COMPLETA PNC (San Pedrillo) + SIRENA
+              ENTRADA: Via Sierpe
+SALIDA: Via Drake RZ1116 a las 09:25
+ROOMING: <nombres>
+```
+
+**Eso es exactamente lo que imprime el PDF**, y de ahí salen los tours, el régimen, el
+punto de embarque y los acompañantes. Es el 100% de lo que falta.
+
+Y es justo lo que el API no entrega:
+
+| Camino | Resultado |
+|---|---|
+| bloque `ReservationComments` (búsqueda y una reserva) | `400 GEN01346` · no existe en el esquema de esta versión |
+| `/reservations/{id}/comments` | 404 · y 8 variantes más (`notes`, `reservationNotes`, `notifications`…) también |
+
+**Lo que sí funciona** (probado en reservas de huéspedes que pagan, no en cuartos de
+cortesía):
+
+| Sub-recurso | Qué trae |
+|---|---|
+| `/traces` | **sí trae contenido**: las tareas de recepción por departamento — `traceText`, `departmentId` (RESE, FRONT), `traceOn`. Ej.: "Comprar entradas", "follow up info pendiente: entrada, salida y pasaportes". Útil, pero **no son los tours** |
+| `/routingInstructions` | quién paga (`payeeName`: ARA TOURS, GREEN WORLD ADVENTURES) y qué códigos de cargo se enrutan. Los tours aparecen como **códigos** (`3400 Corcovado Hike Tour`, `3670 Snorkeling Caño Island`, `3412 Private Guide`), pero es la configuración de facturación, **no el itinerario por día** |
+| `/alerts` | responde; con contenido en 1 de 5 |
+| `/csh/…/folios` | responde (~10 KB), sin cargos de tour |
+
+> **La trampa de muestreo que costó dos conclusiones equivocadas:** las primeras pruebas
+> se hicieron sobre reservas del 5 de septiembre, todas con tarifa `HUSR` y garantía
+> `STAFF`/`COMP`/`HOUSE` — cuartos de cortesía y de personal, que no tienen ni notas ni
+> tours. Con esa muestra `/traces` y `/alerts` parecían "siempre vacíos" y los paquetes
+> "inexistentes". **Al sondear OHIP hay que usar reservas de huéspedes que pagan y con
+> llegada lo bastante lejana como para que ya les hayan repartido los tours.**
+
+##### LOS TOURS SÍ SE PUEDEN LEER: entrando a cada reserva
+
+**La búsqueda de reservas no trae los paquetes, pero la consulta de UNA reserva sí, y
+con su fecha.** Es la pieza que hacía falta:
+
+```
+GET /rsv/v1/hotels/COWLCR/reservations/{id}?fetchInstructions=Reservation
+
+reservationPackages[].packageCode                     'CIS30'
+reservationPackages[].…primaryDetails.description      'Caño Island Snorkeling 30%'
+reservationPackages[].scheduleList[].consumptionDate   '2026-11-04'
+reservationPackages[].scheduleList[].totalQuantity     2
+```
+
+La búsqueda devuelve 84 campos; entrar a la reserva devuelve **117**, y no hace falta
+ningún bloque extra. Medido sobre **80 reservas**: 69 códigos de paquete distintos y
+**ninguno sin fecha**.
+
+El sufijo de los códigos es el descuento comercial (`CIS20`, `CIS25`, `CIS30`,
+`CIS3027`, `CISWEB`), así que se identifica por la raíz — **pero solo después de probar
+el código exacto**, por un caso que lo rompe:
+
+| Código | Descripción | Es |
+|---|---|---|
+| `DINP` | Cena para paquetes web o reservaciones | una **comida** |
+| `DINP30` | Cena Privada (setting especial y menú) | una **amenidad** |
+
+Quitándole el sufijo, `DINP30` se volvería `DINP` y una cena privada entraría como una
+cena normal. Sin ningún error: la cocina no montaría la cena, y nadie sabría por qué.
+El orden está en `opera_paquetes.clasificar()`.
+
+**Y lo que no se reconoce no se adivina.** Un código nuevo genera una alerta
+`PAQUETE_SIN_MAPEAR` en vez de "algo parecido". Eso ya sirvió: al medir 223 reservas
+aparecieron `CNW` (Complementary Night Walk → NW) y `WWE` (Whale Watching → BALLENAS),
+que estaban sin mapear.
+
+> **La trampa de muestreo que costó dos conclusiones equivocadas:** los primeros
+> barridos se hicieron sobre reservas del 5 de septiembre, todas con tarifa `HUSR` y
+> garantía `STAFF`/`COMP`/`HOUSE` — cuartos de cortesía y de personal, que no tienen ni
+> notas ni tours. Con esa muestra los paquetes parecían "inexistentes" y `/traces`
+> "siempre vacío". **Al sondear OHIP hay que usar reservas de huéspedes que pagan y con
+> llegada lo bastante lejana como para que ya les hayan repartido los tours.** La vista
+> previa reparte su muestra a lo largo de la ventana justo por esto.
+
+##### CUIDADO: la fecha del paquete NO es la del tour
+
+Parece razonable usar `scheduleList[].consumptionDate` para agendar los tours —es un
+dato del sistema, no un texto escrito a mano—. **Es un error, y se midió:** en 15
+reservas que tenían las dos cosas, la fecha del paquete **no coincidió con la del
+itinerario ni una sola vez.**
+
+| Reserva | Llega | El itinerario dice | Los paquetes dicen |
+|---|---|---|---|
+| 75067234 | 04-11 | PNC el 05, ISLA el 06 | PNC el 04, CLARO y SNORKEL el 07 |
+| 56770981 | 20-11 | PNC el 21, ISLA el 22 | PNC el 20, CLARO y SNORKEL el 23 |
+| 52702756 | 29-11 | PNC el 01, ISLA el 30 | PNC el 01, SNORKEL el 01 |
+
+La `consumptionDate` es la fecha de **facturación**: cae el día de llegada o el último
+de la estadía. Y el paquete tampoco usa los códigos del lodge —llama `SNORKEL` a lo que
+el itinerario llama `ISLA`—.
+
+**Manda el itinerario de la nota.** Los paquetes se usan para el **régimen de comidas**,
+para las amenidades que Opera registra como servicio, y para saber **qué** tours están
+vendidos (`tours_vendidos`), que no es lo mismo que cuándo.
+
+##### Cobertura medida (224 reservas activas, septiembre a diciembre)
+
+| Dato | Llega | |
+|---|---|---|
+| reserva, huésped, fechas, habitación, tipo, pax, estado | 100% | |
+| **texto de la nota** | **98%** | |
+| agencia | 97% | |
+| **itinerario escrito** | **87%** | la sección existe |
+| acompañantes con pasaporte | 81% | |
+| **régimen de comidas** | **63%** | |
+| **punto Sierpe/Drake** | **52%** | +85 reservas con entrada por confirmar |
+| **tours ya repartidos** | 56 reservas | 99 tours: ISLA 43, PNC 43, BUCEO 6, NW 2, PAJAREO 2, SIRENA 2, PESCA 1 |
+| amenidades detectadas del texto | 60 | 32 tarjeta de bienvenida, **14 alergias**, 6 sofá cama, 4 cumpleaños… |
+
+**Los huecos son huecos del dato, no de la conexión.** Solo 56 reservas tienen los tours
+repartidos porque eso se hace después de que entra la reserva; el PDF mostraría
+exactamente lo mismo, porque imprime esta misma nota.
+
+Dos consecuencias en el código:
+
+- **Si la nota no tiene sección de operación, no se borran los tours que ya haya.** No
+  poder leer el itinerario no es lo mismo que leerlo vacío. Si la sección existe y no
+  tiene tours, eso sí es autoritativo (`reserva["itinerario_leido"]`).
+- **El pax del tour sale del itinerario, no del paquete.** El `totalQuantity` del
+  paquete cuenta lo facturado y no coincide con el día ni con el código, así que
+  cruzarlo sería adivinar.
+
+##### Lo que se le podría pedir a Oracle (ya no es urgente)
+
+Con el bloque `Comments` ya no falta nada para apagar el PDF. Lo de abajo queda por si
+alguna vez se quiere el dato estructurado en vez del texto — sería más robusto que
+depender de cómo lo escriba recepción, pero **hoy no hace falta**. Texto para el ticket:
+
+> Property `COWLCR` (chain `ECRWLG`), OHIP gateway `mtcu11pr`.
+>
+> **We need to read Reservation Notes over the API.** Our integration user authenticates
+> and reads reservations fine, and `/reservations/{id}/traces`,
+> `/reservations/{id}/routingInstructions` and `/csh/v1/.../folios` all return real data
+> — so this is not a user-permission problem. But the reservation's own Notes are
+> unreachable:
+>
+> - `fetchInstructions=ReservationComments` (on both `GET /reservations` and
+>   `GET /reservations/{id}`) → `400 OPERAWS-GEN01346 · Invalid value of: Query`
+> - `GET /rsv/v1/hotels/COWLCR/reservations/{id}/comments` → `404`
+>
+> Those Notes (type RESERVATION, notification area RESERVATION) hold the guest's tour
+> itinerary, board plan, boat entry/exit point and rooming list. It is the information
+> our operation runs on, and today the only way to get it is exporting the Arrivals
+> Detailed report by hand.
+>
+> Please tell us how to read Reservation Notes on this subscription — enabling the
+> `ReservationComments` fetch instruction, or whichever operation replaces it in the API
+> version we are subscribed to.
+>
+> Same request, lower priority: `GuestComments`, `ReservationPackages`,
+> `ReservationTransportation`, `ReservationGuestList`, `ReservationAlerts`.
+>
+> For context, this gateway serves only 5 modules (`rsv`, `crm`, `evm`, `act`, `rtp`) and
+> `/rpt/v1/*` returns 404 on every path, so fetching the report itself is not an option
+> either.
+
+**Una sola cosa importa: las Reservation Notes.** Sin ese texto no hay tours ni
+amenidades ni punto de embarque, y es el 100% de lo que falta para apagar el PDF. Los
+demás bloques son secundarios. Y el argumento fuerte para Oracle es que `/traces` y
+`/routingInstructions` **sí** devuelven datos: el usuario tiene permiso de lectura, así
+que lo que falta es que la suscripción exponga las notas.
+
+##### Dónde NO están las cosas (probado, para no volver a buscar)
+
+Antes de dar por perdidos los tours y las notas se sondeó la instalación entera. Queda
+escrito porque cada una de estas puertas parece la buena hasta que se prueba:
+
+| Dónde se buscó | Qué pasó |
+|---|---|
+| La misma consulta de UNA reserva, 37 bloques | acepta 3: `Reservation`, `GuestComments`, `ReservationAwards`. **La lista de bloques cambia según la operación**: `GuestComments` funciona aquí y no en la búsqueda; `ReservationPreferences`, al revés |
+| `/reservations/{id}/comments` | 404 · y otros 8 nombres (`notes`, `remarks`, `specialRequests`…) también |
+| `/reservations/{id}/alerts`, `/traces`, `/preferences` | **200, pero vacíos en las 12 reservas probadas** |
+| `/reservations/{id}/packages` | pide `productCode`: hay que preguntar tour por tour. Contesta —el paquete `SPA` aparece— pero **`scheduleList` viene vacío: sin fecha**. Un tour sin fecha no se puede agendar |
+| `/act/v1/…/activities` (módulo de actividades) | 200 y `totalResults: 0` — el módulo está, el hotel no lo usa |
+| `/rpt/v1/…` (API de reportes) | **404 en las 9 rutas**: el reporte de arrivals NO se puede pedir por API |
+| Room Diary | no existe en OHIP; es una pantalla, no un endpoint |
+| `/evm/v1/…/events` | responde, pero es el módulo de eventos de banquetes, no un registro de cambios |
+| `modifiedFromDate`, `modifiedStartDate`, `lastModifiedDate` | **se ignoran EN SILENCIO**: responden 200 y devuelven reservas de 2025 ya salidas. Peor que un error, porque parecen funcionar |
+| `/crm/v1/profiles/{id}` + `Comments` | 400 · solo acepta el bloque `Profile` |
+
+**La conclusión práctica:** las amenidades y las alergias solo pueden estar en
+`ReservationComments`, que es justo el bloque que Oracle no concede. Los endpoints de
+alertas y trazas sí responden y vienen vacíos, así que ahí no están. Eso hace de
+`ReservationComments` **lo más valioso que se le puede pedir a Oracle**.
+
+##### Cómo queda la automatización con lo que hay
+
+Se puede encender, y es seguro. La clave es que **cada fuente manda solo en lo que de
+verdad trae** (`loader.load_batch(..., manda_en=...)`):
+
+**Opera manda en todo**, porque trae todo:
+`{nucleo, tours, regimen, amenidades, rooming, textos, transporte}`. Lo decide
+`opera_sync.alcance_de_opera()` mirando si el bloque `Comments` está en la lista que se
+le pide a cada reserva; si algún día dejara de entregarse, quita `textos` y
+`transporte` y deja de pisar el trabajo del PDF en vez de vaciarlo.
+
+Dos reglas hacen que convivir sea seguro, y las dos salieron de medir:
+
+- **Cada fuente administra solo sus propias amenidades** (`amenidad_tarea.origen`:
+  `PDF` | `MANUAL` | `OPERA`). Si Opera borrara las del PDF para poner las suyas,
+  borraría casi todas: sus paquetes traen una amenidad en **1 de 223** reservas.
+- **Opera no borra los tours de una reserva en la que no ve ninguno.** Trae paquetes en
+  145 de 223; en las otras, "no veo tours" no es "no tiene tours", es "no puedo
+  saberlo". El PDF sí borra, porque él trae la hoja completa
+  (`_guardar_tours(borrar_si_vacio=)`).
+
+Por qué importa tanto: medido antes de existir esto, una reserva real con trabajo hecho
+**perdía sus 3 tours, sus 2 amenidades, el régimen, las notas y el punto de embarque** en
+el primer ciclo. Y sin dar ningún error: la reserva quedaba ahí, correcta, y el resto en
+blanco. Fijado en `probar_automatico.py`.
+
+**Solo se reprocesa lo que cambió.** Como Opera no deja filtrar por fecha de
+modificación, la comparación se hace de este lado contra `reserva.opera_modificado_en`.
+Un ciclo sin cambios devuelve `SIN_CAMBIOS` y no escribe nada — así la marca de
+actualización de una reserva significa algo, en vez de moverse cada media hora para
+todas.
+
+**Y si mueven las fechas después de repartir los tours**, `validar_tours_fuera_de_la_estadia()`
+avisa de los que quedaron fuera. Está callado mientras todo esté bien: medido sobre la
+base real, de 1.164 tours ninguno caía fuera de su estadía.
 
 ##### Y después
 
@@ -330,9 +626,18 @@ montado en `/data`):
 En Railway esta carpeta debe ser un **volumen montado en `/data`**; si no, se pierde
 en cada despliegue.
 
-**Respaldar en caliente** (la base corre en modo WAL, así que copiar el archivo tal
-cual puede dejar afuera los últimos cambios — hay que usar el respaldo propio de
-SQLite):
+**Respaldar: pantalla Usuarios → «Descargar respaldo».** Baja un archivo `.db` con
+toda la base. Es un clic, y por eso existe: antes el respaldo estaba solo documentado
+como tres comandos encadenados con `railway ssh` y base64, y algo así no se hace nunca.
+
+Usa `sqlite3.backup()`, no una copia del archivo. **No es un detalle:** la base corre en
+modo WAL y los últimos cambios viven en `hotel.db-wal` hasta que SQLite los integra;
+copiar `hotel.db` tal cual puede dejar afuera justo lo más reciente. Un respaldo al que
+le falta el último día es peor que ninguno, porque nadie lo sabe hasta que hace falta.
+Está fijado en `probar_respaldo.py`, que además comprueba que el archivo bajado abra
+como base SQLite válida y traiga las mismas filas que el original.
+
+El mismo respaldo, por línea de comandos (si hiciera falta sin pasar por la pantalla):
 
 ```bash
 railway ssh "python -c \"import sqlite3; o=sqlite3.connect('/data/hotel.db'); d=sqlite3.connect('/data/respaldo.db'); o.backup(d); d.close(); o.close()\""
@@ -340,9 +645,16 @@ railway ssh "base64 /data/respaldo.db" > respaldo.b64
 python -c "import base64; open('hotel-respaldo.db','wb').write(base64.b64decode(open('respaldo.b64').read()))"
 ```
 
-⚠️ **Hoy no hay respaldo automático, y el volumen de Railway no se respalda solo.**
-Es el hueco operativo más importante que queda abierto: conviene bajar una copia
-semanal y guardarla fuera de Railway.
+⚠️ **Sigue sin haber respaldo automático, y el volumen de Railway no se respalda solo.**
+La descarga hay que hacerla y **guardarla fuera de Railway** —en una computadora del
+lodge o en Drive—: un respaldo que vive en el mismo servidor no protege de perder el
+servidor. Conviene una copia semanal, y siempre una antes de desplegar.
+
+**Del código no hay respaldo automático tampoco**, y en la máquina del lodge no hay
+git: sin una copia no habría forma de volver atrás. Antes de tocar el código conviene
+duplicar `backend/`, `frontend/` y los `.md` en una carpeta con la fecha, fuera del
+repositorio (`Documentos\Respaldos-Corcovado\codigo_AAAA-MM-DD_HHMM`). **Nunca copiar
+`data/`**: ahí viven las credenciales de Opera y las llaves de los avisos.
 
 ---
 

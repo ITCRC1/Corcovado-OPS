@@ -174,6 +174,58 @@ DIR_MUESTRAS = os.path.join(
     "opera_muestras",
 )
 
+# Los bloques que ESTA propiedad acepta de verdad, aprendidos y guardados.
+#
+# POR QUÉ EXISTE ESTE ARCHIVO: la lista de arriba es lo que el sistema querría; lo que
+# Oracle concede es otra cosa y varía por propiedad. Pedir un bloque que la instalación
+# no expone no devuelve ese bloque vacío: rechaza la CONSULTA ENTERA con
+#
+#     HTTP 400  Invalid value of: Query.  (OPERAWS-GEN01346)
+#
+# Es decir, un solo bloque de más deja la sincronización en cero. En Corcovado eso es
+# lo que pasaba: de once bloques Oracle acepta dos, y la vista previa fallaba siempre
+# con 400 aunque la descarga de datos funcionara.
+RUTA_BLOQUES = os.path.join(
+    os.environ.get("HOTEL_DATA_DIR") or os.path.join(os.path.dirname(__file__), "..", "data"),
+    "opera_bloques.json",
+)
+
+
+def bloques_recordados():
+    """Los bloques aprendidos, o None si todavía no se ha averiguado."""
+    try:
+        with open(RUTA_BLOQUES, encoding="utf-8") as f:
+            guardado = json.load(f)
+    except (OSError, ValueError):
+        return None
+    lista = guardado.get("aceptados") if isinstance(guardado, dict) else guardado
+    if not isinstance(lista, list):
+        return None
+    limpia = [b for b in lista if isinstance(b, str) and b in FETCH_INSTRUCTIONS]
+    return limpia or None
+
+
+def recordar_bloques(aceptados, hotel=None):
+    """Guarda los bloques aceptados para no volver a preguntar en cada ciclo."""
+    try:
+        os.makedirs(os.path.dirname(RUTA_BLOQUES), exist_ok=True)
+        with open(RUTA_BLOQUES, "w", encoding="utf-8") as f:
+            json.dump({
+                "hotel": hotel or HOTEL_ID,
+                "aceptados": list(aceptados),
+                "averiguado": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }, f, ensure_ascii=False, indent=2)
+        return True
+    except OSError:
+        # No poder guardar no es motivo para romper la sincronización: se vuelve a
+        # averiguar la próxima vez, que cuesta unas peticiones y nada más.
+        return False
+
+
+def bloques_utiles():
+    """Qué pedirle a Opera: lo aprendido si lo hay, la lista completa si no."""
+    return bloques_recordados() or list(FETCH_INSTRUCTIONS)
+
 
 class OperaError(Exception):
     pass
@@ -392,7 +444,7 @@ def traer_reservas(desde, hasta, limite=200, fetch=None, desplazamiento=0):
         ("arrivalEndDate", hasta),
         ("limit", limite),
     ]
-    for bloque in (fetch or FETCH_INSTRUCTIONS):
+    for bloque in (fetch or bloques_utiles()):
         campos.append(("fetchInstructions", bloque))
     if desplazamiento:
         campos.append(("offset", desplazamiento))
@@ -402,6 +454,70 @@ def traer_reservas(desde, hasta, limite=200, fetch=None, desplazamiento=0):
         return _pedir(urllib.request.Request(url, headers=_cabeceras(token)))
 
     return _con_reintento(peticion)
+
+
+RUTA_UNA_RESERVA = "/rsv/v1/hotels/{hotel}/reservations/{id}"
+
+
+# Los bloques que se le piden a UNA reserva. 'Comments' es el que trae las Reservation
+# Notes, donde está el punto de embarque, el rooming, las alergias y el itinerario
+# escrito a mano.
+#
+# OJO CON EL NOMBRE: es 'Comments', NO 'ReservationComments'. Ese error costó dar por
+# imposible la automatización: 'ReservationComments' se rechaza con 400 GEN01346 y
+# parece que la propiedad no expone las notas, cuando lo que no existe es ese nombre.
+# Se probaron 70 nombres hasta encontrarlo.
+BLOQUES_DE_UNA_RESERVA = ("Reservation", "Comments")
+
+
+def traer_una_reserva(reserva_id, fetch=BLOQUES_DE_UNA_RESERVA):
+    """El detalle de UNA reserva, con sus paquetes.
+
+    POR QUÉ HACE FALTA ESTA SEGUNDA CONSULTA. La búsqueda de reservas devuelve un
+    resumen —84 campos— y rechaza el bloque de paquetes. Entrar a la reserva por su id
+    devuelve MUCHO más: 117 campos y, sobre todo, `reservationPackages` con
+    `scheduleList[].consumptionDate`. Ahí está la distribución de tours por día, que es
+    lo que hasta ahora solo se podía sacar del PDF.
+
+    Con `Reservation` vienen los paquetes; con `Comments`, las Reservation Notes. Las
+    dos cosas juntas son todo lo que el PDF imprime.
+    """
+    campos = [("fetchInstructions", b) for b in (fetch or BLOQUES_DE_UNA_RESERVA)]
+    url = (BASE_URL + RUTA_UNA_RESERVA.format(hotel=HOTEL_ID, id=reserva_id)
+           + "?" + urllib.parse.urlencode(campos))
+
+    def peticion(token):
+        return _pedir(urllib.request.Request(url, headers=_cabeceras(token)))
+
+    return _con_reintento(peticion)
+
+
+def _nodo_de_reserva(respuesta):
+    """Saca el nodo de la reserva del envoltorio que usa la consulta individual.
+
+    Viene como 'reservations.reservation[0]', que NO es el mismo envoltorio que la
+    búsqueda ('reservations.reservationInfo[]'). Se prueban las formas conocidas en vez
+    de dar una por segura: equivocarse aquí no da error, da una reserva sin paquetes.
+    """
+    if not isinstance(respuesta, dict):
+        return {}
+    for camino in (("reservations", "reservation"), ("reservations", "reservationInfo"),
+                   ("reservation",), ("reservationInfo",)):
+        nodo = respuesta
+        for paso in camino:
+            nodo = nodo.get(paso) if isinstance(nodo, dict) else None
+            if nodo is None:
+                break
+        if isinstance(nodo, list) and nodo:
+            return nodo[0] if isinstance(nodo[0], dict) else {}
+        if isinstance(nodo, dict):
+            return nodo
+    return {}
+
+
+def traer_detalle(reserva_id):
+    """El nodo de la reserva, ya desenvuelto. {} si no vino nada utilizable."""
+    return _nodo_de_reserva(traer_una_reserva(reserva_id))
 
 
 # Tope de páginas. Es un freno de seguridad, no un límite esperado: con 20 páginas de
@@ -451,9 +567,34 @@ def traer_todas_las_reservas(desde, hasta, limite=200, fetch=None):
     completo = False
     desplazamiento = 0
 
+    # Si Opera rechaza la consulta por pedir un bloque que esta propiedad no expone, se
+    # averigua cuáles acepta, se guardan y se reintenta UNA vez. Solo cuando quien llama
+    # no pidió bloques concretos: si los pidió, el error es suyo y debe verlo.
+    #
+    # Tiene que ser automático porque el ciclo corre en el servidor, donde nadie va a
+    # ejecutar el asistente. Sin esto, un bloque que Oracle deje de conceder apagaría la
+    # sincronización entera y en silencio.
+    #
+    # El sondeo cuelga del ERROR, no se hace por adelantado: así el caso normal —que es
+    # que todo vaya bien— no paga ni una petición de más.
+    reaprendido = False
+
+    def pedir(desplazamiento):
+        nonlocal fetch, reaprendido
+        try:
+            return traer_reservas(desde, hasta, limite=limite, fetch=fetch,
+                                  desplazamiento=desplazamiento)
+        except OperaError as e:
+            if reaprendido or fetch is not None or "GEN01346" not in str(e):
+                raise
+            reaprendido = True
+            fetch = averiguar_bloques(desde, hasta)
+            recordar_bloques(fetch)
+            return traer_reservas(desde, hasta, limite=limite, fetch=fetch,
+                                  desplazamiento=desplazamiento)
+
     for _ in range(MAX_PAGINAS):
-        respuesta = traer_reservas(desde, hasta, limite=limite, fetch=fetch,
-                                   desplazamiento=desplazamiento)
+        respuesta = pedir(desplazamiento)
         pagina = _lista_de_reservas(respuesta)
         nuevas = 0
         for r in pagina:
@@ -521,6 +662,50 @@ def mapa_de_campos(dato, prefijo="", salida=None, profundidad=0):
     return salida
 
 
+def averiguar_bloques(desde, hasta, contar=None):
+    """Pregunta bloque por bloque cuáles acepta esta propiedad.
+
+    Se prueba cada uno por separado —siempre junto a 'Reservation', que es el núcleo—
+    porque uno inválido tumba la consulta completa: probándolos en grupo, un solo
+    bloque malo haría parecer que ninguno sirve.
+
+    Un bloque que la instalación no expone se rechaza con 'Invalid value of: Query'
+    (OPERAWS-GEN01346), y ese error salta ANTES del control de permisos. De ahí que se
+    puedan distinguir dos cosas muy distintas: un bloque VÁLIDO sin permiso responde
+    403, y uno inexistente responde 400. El 403 cuenta como aceptado —el bloque está,
+    lo que falta es que Oracle conceda la lectura.
+
+    'contar' es una función para ir informando (print en el asistente, nada en el
+    servidor).
+    """
+    aceptados = []
+    for instruccion in FETCH_INSTRUCTIONS:
+        try:
+            traer_reservas(desde, hasta, limite=1, fetch=["Reservation", instruccion])
+            aceptados.append(instruccion)
+            if contar:
+                contar(f"   OK      {instruccion}")
+        except OperaError as e:
+            if "GEN01244" in str(e) or "GEN01265" in str(e):
+                aceptados.append(instruccion)
+                if contar:
+                    contar(f"   EXISTE  {instruccion}  (falta el permiso de lectura)")
+                continue
+            if contar:
+                # Se muestra el MENSAJE de Oracle, no la primera línea —que es la URL—.
+                # Costó un viaje entero descubrirlo: los bloques salían "RECHAZA" con la
+                # dirección larguísima al lado y la explicación real ('User is not
+                # authorized to access data for resort') quedaba cortada. El motivo es
+                # justo lo único que hace falta ver aquí.
+                contar(f"   RECHAZA {instruccion}")
+                for linea in _motivo_de(e):
+                    contar(f"           {linea}")
+    # 'Reservation' es imprescindible: sin él no hay ni fechas ni habitación. Si el
+    # sondeo no lo trajo (por un corte de red a mitad, por ejemplo), se devuelve él
+    # solo antes que una lista vacía, que dejaría la sincronización sin nada que pedir.
+    return aceptados or ["Reservation"]
+
+
 def descubrir(desde, hasta):
     os.makedirs(DIR_MUESTRAS, exist_ok=True)
     print(f"Autenticando contra {BASE_URL} …")
@@ -528,38 +713,18 @@ def descubrir(desde, hasta):
     minutos = max(int((_token["expira_en"] - time.time()) / 60), 0)
     print(f"  Token obtenido (se reutiliza durante ~{minutos} minutos).\n")
 
-    # Se prueba cada bloque por separado: si uno no está contratado o cambió de
-    # nombre, Oracle rechaza la petición entera. Así se sabe cuáles sirven en vez
-    # de quedarse sin nada por culpa de uno solo.
-    # Un bloque que esta instalación no expone se rechaza con
-    # 'Invalid value of: Query' (OPERAWS-GEN01346), y ese error se dispara ANTES del
-    # control de permisos. Así que si falta el permiso de lectura, un bloque VÁLIDO
-    # responde 403 y uno inválido responde 400: se distinguen igual. Por eso el 403 se
-    # cuenta como aceptado — el bloque existe, lo que falta es el permiso.
     print("Probando que bloques de datos responde Opera …")
-    aceptados = []
-    for instruccion in FETCH_INSTRUCTIONS:
-        try:
-            traer_reservas(desde, hasta, limite=1, fetch=["Reservation", instruccion])
-            aceptados.append(instruccion)
-            print(f"   OK      {instruccion}")
-        except OperaError as e:
-            if "GEN01244" in str(e) or "GEN01265" in str(e):
-                aceptados.append(instruccion)
-                print(f"   EXISTE  {instruccion}  (falta el permiso de lectura)")
-                continue
-            # Se muestra el MENSAJE de Oracle, no la primera línea —que es la URL—.
-            # Costó un viaje entero descubrirlo: los bloques salían "RECHAZA" con la
-            # dirección larguísima al lado y la explicación real ('User is not
-            # authorized to access data for resort') quedaba cortada. El motivo es
-            # justo lo único que hace falta ver aquí.
-            print(f"   RECHAZA {instruccion}")
-            for linea in _motivo_de(e):
-                print(f"           {linea}")
+    aceptados = averiguar_bloques(desde, hasta, contar=print)
     print()
 
     if not aceptados:
         raise OperaError("Opera no acepto ningun bloque de datos. Revisa el hotel y los permisos.")
+
+    # Se guardan para que la sincronización automática pida solo estos y no vuelva a
+    # chocar con el 400.
+    if recordar_bloques(aceptados):
+        print(f"Bloques aceptados guardados en:\n  {RUTA_BLOQUES}")
+        print("La sincronizacion automatica pedira solo estos.\n")
 
     print(f"Trayendo reservas con llegada entre {desde} y {hasta} …")
     datos = traer_reservas(desde, hasta, fetch=aceptados)
