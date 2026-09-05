@@ -151,6 +151,119 @@ def crear_plantilla_credenciales():
         json.dump(PLANTILLA_CREDENCIALES, f, ensure_ascii=False, indent=2)
     return True
 
+
+def recargar_credenciales():
+    """Vuelve a leer las credenciales sin reiniciar el servidor.
+
+    Las constantes de este módulo se llenan UNA vez, al importarlo. Eso alcanza cuando
+    las credenciales vienen en variables de entorno —el servidor arranca con ellas—,
+    pero no cuando alguien las acaba de guardar desde la pantalla: sin esto habría que
+    reiniciar, y quien no tiene acceso al panel del hosting no puede hacerlo.
+
+    Las variables de entorno SIGUEN MANDANDO: primero se restablece lo que haya en el
+    entorno y solo después se rellena con el archivo. Así, guardar desde la pantalla
+    nunca puede pisar lo que el servidor tenga configurado por fuera.
+    """
+    for clave, interno in _NOMBRE_INTERNO.items():
+        globals()[interno] = (os.environ.get(clave) or "").strip()
+    globals()["DESDE_ARCHIVO"] = _leer_credenciales_de_archivo()
+    if BASE_URL:
+        globals()["BASE_URL"] = BASE_URL.rstrip("/")
+    # El token guardado pertenece a las credenciales anteriores: si se cambiaron, ya no
+    # sirve, y reutilizarlo daría un 401 confuso en la primera consulta.
+    with _token_lock:
+        _token["valor"] = None
+        _token["expira_en"] = 0
+    return _faltantes()
+
+
+def guardar_credenciales(valores):
+    """Guarda las credenciales en el archivo de la carpeta de datos y las aplica.
+
+    POR QUÉ EN UN ARCHIVO Y NO EN LA BASE. La base se descarga entera desde la pantalla
+    de respaldo: unas credenciales guardadas ahí viajarían en cada copia, a la
+    computadora de quien la baje y a donde la guarde. En el archivo se quedan en el
+    servidor, igual que una variable de entorno.
+
+    POR QUÉ EXISTE. Lo normal es ponerlas como variables de entorno en el hosting. Pero
+    quien opera el hotel no siempre tiene acceso a ese panel —puede estar a nombre de
+    otra persona—, y entonces la conexión queda bloqueada por un trámite. Esto le da una
+    salida sin tocar el hosting.
+
+    Devuelve (nombres_guardados, faltantes). Nunca devuelve valores.
+    """
+    if not isinstance(valores, dict):
+        raise ValueError("Se esperaba un conjunto de credenciales")
+
+    limpio = {}
+    for clave in _NOMBRE_INTERNO:
+        valor = valores.get(clave)
+        if valor is None:
+            valor = valores.get(clave.replace("OPERA_", "").lower())
+        if valor is None:
+            continue
+        valor = str(valor).strip()
+        # Los huecos de la plantilla sin rellenar no se guardan como si fueran un dato.
+        if not valor or valor.startswith("<"):
+            continue
+        limpio[clave] = valor
+
+    if not limpio:
+        raise ValueError("No se reconoció ninguna credencial en lo que se envió")
+
+    # Se conserva lo que ya estuviera guardado y no venga ahora: así se puede corregir
+    # una sola credencial sin tener que volver a escribir las ocho.
+    anterior = {}
+    if os.path.exists(RUTA_CREDENCIALES):
+        try:
+            with open(RUTA_CREDENCIALES, encoding="utf-8-sig") as f:
+                previo = json.load(f)
+            if isinstance(previo, dict):
+                anterior = {k: v for k, v in previo.items() if k in _NOMBRE_INTERNO}
+        except (OSError, ValueError):
+            anterior = {}
+    anterior.update(limpio)
+
+    os.makedirs(os.path.dirname(RUTA_CREDENCIALES), exist_ok=True)
+    # Se escribe en un archivo aparte y se reemplaza de golpe: si el servidor se cae a
+    # mitad de la escritura, el archivo anterior queda intacto en vez de quedar a medias
+    # y dejar la conexión rota sin que nadie sepa por qué.
+    temporal = RUTA_CREDENCIALES + ".nuevo"
+    with open(temporal, "w", encoding="utf-8") as f:
+        json.dump(anterior, f, ensure_ascii=False, indent=2)
+    os.replace(temporal, RUTA_CREDENCIALES)
+    try:
+        os.chmod(RUTA_CREDENCIALES, 0o600)   # solo el dueño puede leerlas
+    except OSError:
+        pass
+
+    return sorted(limpio), recargar_credenciales()
+
+
+def leer_texto_de_credenciales(texto):
+    """Convierte un bloque 'NOMBRE=valor' (una por línea) en un diccionario.
+
+    Es el mismo formato que usa el panel del hosting, así que se puede pegar tal cual
+    lo que ya se tenga preparado, sin volver a escribirlo campo por campo. Se aceptan
+    comillas alrededor del valor y líneas en blanco o de comentario.
+    """
+    salida = {}
+    for linea in (texto or "").splitlines():
+        linea = linea.strip().lstrip("﻿")
+        if not linea or linea.startswith("#") or "=" not in linea:
+            continue
+        nombre, valor = linea.split("=", 1)
+        nombre = nombre.strip().strip('"').upper()
+        # 'export OPERA_APP_KEY=...' también se acepta.
+        if nombre.startswith("EXPORT "):
+            nombre = nombre[7:].strip()
+        valor = valor.strip()
+        if len(valor) >= 2 and valor[0] == valor[-1] and valor[0] in "\"'":
+            valor = valor[1:-1]
+        if nombre in _NOMBRE_INTERNO and valor:
+            salida[nombre] = valor
+    return salida
+
 # El endpoint de reservas devuelve un esqueleto mínimo si no se le pide más. Cada
 # bloque de datos hay que solicitarlo por nombre. Esta lista cubre lo que el sistema
 # necesita; el descubrimiento informa cuáles respondió Oracle de verdad, porque

@@ -1607,6 +1607,43 @@ def opera_sincronizar(user: dict = Depends(exige("importar", escribir=True))):
     return opera_sync.sincronizar(cargar=True)
 
 
+@app.post("/api/opera/credenciales")
+async def opera_credenciales(payload: dict,
+                             user: dict = Depends(exige("usuarios", escribir=True))):
+    """Guarda las credenciales de Opera en el servidor y las aplica de inmediato.
+
+    Lo normal es ponerlas como variables de entorno en el hosting, y si están puestas
+    ahí, MANDAN sobre esto. Pero quien opera el hotel no siempre tiene acceso a ese
+    panel —puede estar a nombre de otra persona—, y entonces la conexión queda
+    bloqueada por un trámite que no depende del sistema. Esto le da una salida.
+
+    Se guardan en un archivo de la carpeta de datos, NO en la base: la base se descarga
+    entera desde la pantalla de respaldo, y unas credenciales ahí viajarían en cada
+    copia.
+
+    Pide permiso de administración de usuarios, no el de Importar: es configuración del
+    servidor, no una tarea del día.
+
+    NUNCA devuelve valores, solo qué nombres se guardaron y cuáles siguen faltando.
+    """
+    import opera_cloud as oc
+
+    valores = payload.get("credenciales")
+    if isinstance(payload.get("texto"), str) and payload["texto"].strip():
+        # Se acepta pegar el mismo bloque 'NOMBRE=valor' del panel del hosting, para no
+        # tener que reescribir campo por campo lo que ya se tiene preparado.
+        valores = oc.leer_texto_de_credenciales(payload["texto"])
+    if not isinstance(valores, dict):
+        raise HTTPException(status_code=400,
+                            detail="No se reconoció ninguna credencial")
+    try:
+        guardadas, faltan = oc.guardar_credenciales(valores)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    return {"guardadas": guardadas, "faltantes": faltan,
+            "configurado": not faltan}
+
+
 @app.get("/api/respaldo")
 def descargar_respaldo(user: dict = Depends(exige("usuarios"))):
     """Una copia completa y consistente de la base, para descargar y guardar afuera.

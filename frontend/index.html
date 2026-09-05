@@ -4532,6 +4532,76 @@ const TEXTO_CICLO_OPERA = {
   "nunca ejecutado": ["badge-tour", "todavía no ha corrido"],
 };
 
+function mostrarFormCredenciales() {
+  const caja = document.getElementById("opera-cred-form");
+  if (!caja) return;
+  document.getElementById("btn-cred-opera").style.display = "none";
+  caja.innerHTML = `
+    <div style="background:var(--warn-bg);border-radius:8px;padding:14px;margin-top:12px;">
+      <p style="font-weight:600;font-size:13px;margin:0 0 8px;">Credenciales de Opera Cloud</p>
+      <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
+        Pegue aquí las líneas tal como se las dieron, una por renglón, con el formato
+        <code>NOMBRE=valor</code>. Es el mismo formato del panel del servidor, así que
+        si ya las tiene preparadas puede pegarlas sin cambiar nada.
+      </p>
+      <textarea id="cred-texto" rows="9" spellcheck="false"
+        style="width:100%;font-family:ui-monospace,monospace;font-size:12px;padding:10px;
+               border-radius:6px;border:1px solid var(--linea);background:var(--fondo);
+               color:var(--texto);"
+        placeholder="OPERA_BASE_URL=https://...&#10;OPERA_APP_KEY=...&#10;OPERA_CLIENT_ID=...&#10;OPERA_CLIENT_SECRET=...&#10;OPERA_HOTEL_ID=..."></textarea>
+      <p style="font-size:11.5px;color:var(--muted);margin:8px 0 10px;">
+        Se guardan en el servidor, <strong>fuera de la base de datos</strong>: no viajan
+        en el respaldo que usted descarga. Si algún día se definen como variables de
+        entorno, esas mandan sobre lo que se guarde aquí.
+      </p>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn btn-primary" onclick="guardarCredencialesOpera()"
+                id="btn-guardar-cred">Guardar y conectar</button>
+        <button class="btn" onclick="loadImportarPDF()">Cancelar</button>
+      </div>
+      <p id="cred-aviso" style="font-size:12.5px;margin:10px 0 0;"></p>
+    </div>`;
+  document.getElementById("cred-texto").focus();
+}
+
+async function guardarCredencialesOpera() {
+  const texto = document.getElementById("cred-texto").value;
+  const aviso = document.getElementById("cred-aviso");
+  const boton = document.getElementById("btn-guardar-cred");
+  if (!texto.trim()) {
+    aviso.innerHTML = `<span style="color:var(--warn-text);">No hay nada que guardar.</span>`;
+    return;
+  }
+  boton.disabled = true;
+  boton.textContent = "Guardando…";
+  aviso.textContent = "";
+  try {
+    const res = await fetchAuth(`${API}/api/opera/credenciales`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ texto }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || `el servidor respondió ${res.status}`);
+    if (d.configurado) {
+      aviso.innerHTML = `<span style="color:var(--ok-text,green);">Listo: se guardaron
+        ${d.guardadas.length} credenciales y la conexión quedó configurada.</span>`;
+      // Se vuelve a pintar la pantalla: ahora salen los botones de la conexión.
+      setTimeout(loadImportarPDF, 900);
+    } else {
+      aviso.innerHTML = `<span style="color:var(--warn-text);">Se guardaron
+        ${d.guardadas.length}, pero todavía faltan:
+        <strong>${d.faltantes.map(escHtml).join(", ")}</strong>.</span>`;
+    }
+  } catch (e) {
+    aviso.innerHTML = `<span style="color:var(--warn-text);">No se pudo guardar:
+      ${escHtml(e.message)}</span>`;
+  } finally {
+    boton.disabled = false;
+    boton.textContent = "Guardar y conectar";
+  }
+}
+
 async function pintarEstadoOpera() {
   const caja = document.getElementById("opera-estado");
   if (!caja) return;
@@ -4550,9 +4620,15 @@ async function pintarEstadoOpera() {
         <p style="margin:8px 0 0;font-size:12px;">Falta definir en el servidor:
         ${d.faltantes.map(v => `<strong>${escHtml(v)}</strong>`).join(", ")}.</p>
         <p style="margin:8px 0 0;font-size:12px;">Esos datos salen de la ficha de la
-        aplicación en OHIP. Se ponen como variables de entorno en Railway — nunca dentro
-        del sistema, para que no queden guardados en ningún archivo.</p>
-      </div>`;
+        aplicación en OHIP. Lo mejor es ponerlos como variables de entorno en el
+        servidor. Si no tiene acceso a ese panel, puede guardarlos aquí.</p>
+      </div>
+
+      <div style="margin-top:14px;">
+        <button class="btn btn-primary" onclick="mostrarFormCredenciales()"
+                id="btn-cred-opera">Cargar las credenciales aquí</button>
+      </div>
+      <div id="opera-cred-form"></div>`;
     return;
   }
 
