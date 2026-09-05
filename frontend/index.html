@@ -4510,7 +4510,10 @@ async function loadImportarPDF() {
     </div>
   `;
   document.getElementById("pdf-input").addEventListener("change", handlePdfUpload);
-  pintarEstadoOpera();
+  // El buzón se pinta DESPUÉS de Opera, y a propósito: si Opera está trayendo las
+  // reservas, la importación por correo sobra y se esconde. Al revés, se mostraría
+  // un recuadro de "todavía no está activada" para algo que ya no hace falta.
+  await pintarEstadoOpera();
   pintarEstadoBuzon();
 }
 
@@ -4609,6 +4612,9 @@ async function pintarEstadoOpera() {
   try {
     d = await (await fetchAuth(`${API}/api/opera/estado`)).json();
   } catch (e) { caja.innerHTML = `<p class="empty">No se pudo consultar.</p>`; return; }
+
+  // ¿Opera está trayendo las reservas? Lo mira la tarjeta del buzón para esconderse.
+  window._operaTrayendo = !!(d.configurado && d.config && d.config.activo);
 
   if (!d.configurado) {
     caja.innerHTML = `
@@ -4744,6 +4750,12 @@ async function pintarEstadoBuzon() {
   } catch (e) { caja.innerHTML = `<p class="empty">No se pudo consultar.</p>`; return; }
 
   if (!d.configurado) {
+    // Con Opera conectado y trayendo reservas, este camino sobra: existía para
+    // recibir el PDF por correo sin descargarlo a mano, y ya no hay PDF de por medio.
+    // Se esconde en vez de borrarse: si algún día Opera queda caída un tiempo largo,
+    // sigue disponible. Vuelve a aparecer solo, en cuanto Opera se apague.
+    const tarjeta = document.getElementById("buzon-card");
+    if (tarjeta && window._operaTrayendo) { tarjeta.style.display = "none"; return; }
     caja.innerHTML = `
       <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:12px 14px;font-size:13px;">
         <p style="margin:0 0 6px;font-weight:600;">Todavía no está activada</p>
