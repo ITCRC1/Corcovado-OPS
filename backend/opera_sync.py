@@ -244,28 +244,32 @@ def sincronizar(cargar=True):
     # régimen y las amenidades. Una petición por reserva, y solo por las que cambiaron.
     detalles = _traer_detalles(a_cargar)
 
-    lote = build_review_batch_desde_reservas(a_cargar)
-    # Las amenidades que Opera entrega como paquete se agregan DESPUÉS del importador,
-    # porque el importador las deduce del texto y aquí no hay texto: las sobrescribiría
-    # con una lista vacía.
-    _sumar_amenidades_de_opera(lote)
-
-    # Solo se permite cancelar ausentes si la descarga vino completa. Con una lista
-    # parcial, "no vino en el lote" no significa "cancelada": significa que falta, y
-    # cancelarla sacaría de la agenda a un huésped que sí llega.
+    # Aplicar las reglas del lodge y guardar. Va todo en el mismo resguardo porque es
+    # lo único que no se puede dejar pasar en silencio: si falla, hay que decir POR QUÉ.
+    #
+    # Aquí adentro entra texto escrito a mano —el itinerario de las notas de Opera—, y
+    # eso trae de todo: un día 31 en un mes de 30, erratas, números de más. Una nota
+    # mal escrita puede costar ese tour; no puede costar la sincronización del hotel.
     manda = alcance_de_opera()
     try:
+        lote = build_review_batch_desde_reservas(a_cargar)
+        # Las amenidades que Opera entrega como paquete se agregan DESPUÉS del
+        # importador, porque el importador las deduce del texto y aquí no hay texto:
+        # las sobrescribiría con una lista vacía.
+        _sumar_amenidades_de_opera(lote)
+        # Solo se permite cancelar ausentes si la descarga vino completa. Con una lista
+        # parcial, "no vino en el lote" no significa "cancelada": significa que falta,
+        # y cancelarla sacaría de la agenda a un huésped que sí llega.
         load_batch(lote, fuente_pdf=f"Opera Cloud {desde}/{hasta}",
                    marcar_ausentes_como_canceladas=bool(completo),
                    manda_en=manda)
     except Exception as e:
-        # Cargar es lo único que no se puede dejar pasar: si falla, la base quedó a
-        # medias y hay que decirlo con el motivo, no con un "no se pudo".
         detalle = f"{type(e).__name__}: {str(e).splitlines()[0][:250]}"
         _anotar(resultado="ERROR_AL_CARGAR", detalle=detalle)
         return {"estado": "ERROR_AL_CARGAR", "desde": desde, "hasta": hasta,
-                "mensaje": "Opera respondió bien, pero falló al guardar en la base",
-                "detalle": detalle}
+                "mensaje": "Opera respondió bien, pero falló al procesar o guardar",
+                "detalle": detalle,
+                "reservas_que_se_intentaban": len(a_cargar)}
 
     # LO QUE SIGUE NO PUEDE TUMBAR EL CICLO.
     #

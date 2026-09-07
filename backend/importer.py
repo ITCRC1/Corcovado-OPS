@@ -150,9 +150,24 @@ def detectar_amenidades(reserva):
 
 
 def to_iso_date(arr_date_ddmmyy, dia_num):
-    # arr_date viene como "23-07-26" (DD-MM-YY)
-    dd, mm, yy = arr_date_ddmmyy.split("-")
-    year, month, arr_day, dia_num = 2000 + int(yy), int(mm), int(dd), int(dia_num)
+    """El día del itinerario ('11') convertido a fecha, usando la llegada de referencia.
+
+    Devuelve None si no se puede formar una fecha, y eso NO es un caso raro: el
+    itinerario lo escribe recepción a mano, así que aparecen días que no existen en ese
+    mes —llega el 30 de septiembre y el itinerario dice 31—, números de más y erratas.
+
+    POR QUÉ DEVUELVE None Y NO LEVANTA: antes hacía `date(...)` a pelo. Una sola nota
+    con un día imposible reventaba la conversión, la excepción subía por el importador
+    y se llevaba puesto el ciclo de sincronización COMPLETO. El hotel lo veía como
+    "no se pudo sincronizar" —aunque las reservas ya se hubieran guardado—, sin ninguna
+    pista de que la causa era el día 31 de una nota. Una nota mal escrita puede costar
+    ese tour; no puede costar la sincronización de todo el hotel.
+    """
+    try:
+        dd, mm, yy = str(arr_date_ddmmyy).split("-")
+        year, month, arr_day, dia_num = 2000 + int(yy), int(mm), int(dd), int(dia_num)
+    except (ValueError, AttributeError, TypeError):
+        return None
     # Si el día de "Operacion" es menor que el día de llegada, la estadía cruzó de mes
     # (ej. llega el 29 de julio, día "1" de Operacion es en realidad 1 de agosto).
     if dia_num < arr_day:
@@ -160,7 +175,10 @@ def to_iso_date(arr_date_ddmmyy, dia_num):
         if month > 12:
             month = 1
             year += 1
-    return date(year, month, dia_num).isoformat()
+    try:
+        return date(year, month, dia_num).isoformat()
+    except ValueError:
+        return None
 
 
 def detect_group_link(reserva):
@@ -243,6 +261,15 @@ def build_review_batch_desde_reservas(reservas):
             if "tour" not in op:
                 continue
             fecha_iso = to_iso_date(r["arr_date"], op["dia"])
+            if not fecha_iso:
+                # El día del itinerario no forma una fecha válida (un 31 en un mes de
+                # 30, una errata). No se descarta en silencio: se guarda para revisión,
+                # que es lo mismo que se hace con una actividad que no está en el
+                # catálogo. Recepción lo ve y lo corrige en la nota.
+                r.setdefault("actividades_no_reconocidas", []).append(
+                    {"dia": op["dia"], "texto": f"{op['tour']} — el día "
+                     f"{op['dia']} no existe en ese mes, revisar la nota"})
+                continue
             contradiccion = detect_contradiction(r, op["tour"])
             agenda.append({
                 "fecha": fecha_iso,
