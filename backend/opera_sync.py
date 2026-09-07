@@ -232,13 +232,28 @@ def sincronizar(cargar=True):
         nuevas, cambiadas, iguales = _separar_por_cambio(reservas)
     a_cargar = nuevas + cambiadas
 
+    # La limpieza de duplicadas va sobre TODAS las reservas de la ventana, no solo
+    # sobre las que se van a cargar, y ANTES de la salida por "sin cambios".
+    #
+    # Ayer esto corría solo sobre 'a_cargar' y quedaba un hueco: una reserva que ya
+    # estaba al día no se cargaba, así que su fila duplicada —la que dejó la versión
+    # que guardaba el número equivocado— no se limpiaba NUNCA. Y como el ciclo salía
+    # por "sin cambios", tampoco llegaba a intentarlo. El hotel seguía viendo la
+    # duplicada aunque la corrección ya estuviera desplegada.
+    problemas = []
+    unificadas = _con_cuidado("unificar duplicadas",
+                              lambda: _unificar_numero_viejo(reservas), 0, problemas)
+
     if not a_cargar:
         _anotar(ultimo_exito=datetime.datetime.now().isoformat(timespec="seconds"),
-                resultado="SIN_CAMBIOS", detalle=None, reservas_cargadas=0,
+                resultado="SIN_CAMBIOS", detalle="; ".join(problemas) or None,
+                reservas_cargadas=0,
                 descartadas=descartadas, completo=completo)
         return {"estado": "SIN_CAMBIOS", "desde": desde, "hasta": hasta,
                 "revisadas": len(reservas), "nuevas": 0, "cambiadas": 0,
-                "sin_cambio": len(iguales), "completo": completo}
+                "sin_cambio": len(iguales), "completo": completo,
+                "duplicadas_unificadas": unificadas,
+                "problemas_secundarios": problemas}
 
     # El detalle de cada reserva que cambió: de ahí salen los tours con su fecha, el
     # régimen y las amenidades. Una petición por reserva, y solo por las que cambiaron.
@@ -271,32 +286,14 @@ def sincronizar(cargar=True):
                 "detalle": detalle,
                 "reservas_que_se_intentaban": len(a_cargar)}
 
-    # LO QUE SIGUE NO PUEDE TUMBAR EL CICLO.
-    #
-    # Son tareas de limpieza y de aviso: útiles, pero secundarias frente a tener las
-    # reservas al día. Sin esta separación, un error en cualquiera de ellas hacía que
-    # el botón «Sincronizar ahora» dijera "no se pudo sincronizar" AUNQUE las reservas
-    # ya se hubieran guardado bien —que es exactamente lo que reportó el hotel: los
-    # cambios entraban y el botón daba error—. Cada una se cuida sola y lo que falle
-    # queda anotado con su motivo.
-    problemas = []
-
-    def con_cuidado(nombre, funcion, por_defecto):
-        try:
-            return funcion()
-        except Exception as e:
-            problemas.append(f"{nombre}: {type(e).__name__}: "
-                             f"{str(e).splitlines()[0][:150]}")
-            return por_defecto
-
-    unificadas = con_cuidado("unificar duplicadas",
-                             lambda: _unificar_numero_viejo(a_cargar), 0)
-    alertas = con_cuidado("validar tours", validar_todos_los_tours, [])
-    alertas += con_cuidado("avisar paquetes sin mapear",
-                           lambda: _avisar_paquetes_desconocidos(
-                               detalles["desconocidos"]), [])
-    alertas += con_cuidado("avisar cuartos con dos reservas",
-                           _avisar_cuartos_con_dos_reservas, [])
+    # Los avisos y validaciones tampoco pueden tumbar el ciclo: son útiles, pero
+    # secundarios frente a tener las reservas al día.
+    alertas = _con_cuidado("validar tours", validar_todos_los_tours, [], problemas)
+    alertas += _con_cuidado("avisar paquetes sin mapear",
+                            lambda: _avisar_paquetes_desconocidos(
+                                detalles["desconocidos"]), [], problemas)
+    alertas += _con_cuidado("avisar cuartos con dos reservas",
+                            _avisar_cuartos_con_dos_reservas, [], problemas)
 
     # El ciclo fue bien: las reservas están al día. Si alguna limpieza falló, se dice,
     # pero no se presenta como si la sincronización hubiera fracasado.
@@ -408,6 +405,21 @@ TRABAJO_A_MOVER = (
     ("restaurante_cambio", "conf_no", None),
     ("restaurante_hora", "conf_no", None),
 )
+
+
+def _con_cuidado(nombre, funcion, por_defecto, problemas):
+    """Corre una tarea secundaria y anota el motivo si falla, en vez de tumbar el ciclo.
+
+    Las limpiezas y los avisos son útiles, pero secundarios frente a tener las reservas
+    al día. Sin esto, un error en cualquiera de ellos hacía que «Sincronizar ahora»
+    dijera "no se pudo sincronizar" AUNQUE las reservas ya se hubieran guardado bien.
+    """
+    try:
+        return funcion()
+    except Exception as e:
+        problemas.append(f"{nombre}: {type(e).__name__}: "
+                         f"{str(e).splitlines()[0][:150]}")
+        return por_defecto
 
 
 def _unificar_numero_viejo(reservas):
