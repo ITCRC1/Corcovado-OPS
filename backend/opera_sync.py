@@ -89,7 +89,57 @@ def cargar_config():
             # Un archivo de configuración corrupto no puede tumbar el sistema: se
             # sigue con los valores por defecto, que dejan la sincronización apagada.
             pass
+    return _corregir_dias_atras(cfg)
+
+
+def _corregir_dias_atras(cfg):
+    """Sube a lo recomendado un 'dias_atras' que quedó guardado por debajo del piso.
+
+    Los archivos de configuración escritos antes de que se midiera esto traen
+    'dias_atras: 1', y con ese valor el sistema deja de ver a los huéspedes que ya
+    están en casa. La ventana ya se protege sola en ventana(), pero el número guardado
+    seguía siendo el viejo: la pantalla mostraba "1 día atrás" mientras el sistema
+    consultaba 15, y esa contradicción engaña justo cuando alguien está diagnosticando.
+
+    Solo se toca lo que está POR DEBAJO del piso, que nunca es una elección válida. Un
+    valor de 20 o de 45 es deliberado y se respeta tal cual.
+    """
+    try:
+        atras = int(cfg.get("dias_atras"))
+    except (TypeError, ValueError):
+        atras = None
+    if atras is not None and atras >= DIAS_ATRAS_MINIMOS:
+        return cfg
+
+    cfg["dias_atras"] = CONFIG_POR_DEFECTO["dias_atras"]
+    # Se deja escrito para que el archivo diga lo mismo que hace el sistema. Si no se
+    # puede escribir, no importa: la corrección ya está aplicada en memoria y se vuelve
+    # a aplicar en la siguiente lectura.
+    try:
+        if os.path.exists(CONFIG_PATH):
+            guardar_config(cfg)
+    except OSError:
+        pass
     return cfg
+
+
+def dias_de_ventana(cfg=None):
+    """Los días hacia atrás y hacia adelante que se van a consultar DE VERDAD.
+
+    Existe para que la pantalla muestre lo efectivo y no lo guardado. Son la misma
+    cosa desde que cargar_config() corrige los valores viejos, pero el piso sigue
+    estando y este es el único lugar que lo sabe.
+    """
+    cfg = cfg or cargar_config()
+    try:
+        atras = int(cfg.get("dias_atras", 30) or 0)
+    except (TypeError, ValueError):
+        atras = 30
+    try:
+        adelante = int(cfg.get("dias_adelante", 60) or 60)
+    except (TypeError, ValueError):
+        adelante = 60
+    return max(atras, DIAS_ATRAS_MINIMOS), adelante
 
 
 def guardar_config(cfg):
@@ -127,15 +177,10 @@ def ventana(cfg=None):
     Se respeta lo configurado, salvo que sea menos que DIAS_ATRAS_MINIMOS: ahí manda el
     piso. Ver el comentario de 'dias_atras' en CONFIG_POR_DEFECTO para el porqué.
     """
-    cfg = cfg or cargar_config()
-    try:
-        atras = int(cfg.get("dias_atras", 30) or 0)
-    except (TypeError, ValueError):
-        atras = 30
-    atras = max(atras, DIAS_ATRAS_MINIMOS)
+    atras, adelante = dias_de_ventana(cfg)
     hoy = datetime.date.today()
     desde = hoy - datetime.timedelta(days=atras)
-    hasta = hoy + datetime.timedelta(days=int(cfg.get("dias_adelante", 60) or 60))
+    hasta = hoy + datetime.timedelta(days=adelante)
     return desde.isoformat(), hasta.isoformat()
 
 
@@ -149,8 +194,137 @@ def _anotar(**campos):
         _estado.update(campos)
 
 
-def sincronizar(cargar=True):
-    """Un ciclo completo. Devuelve un resumen; nunca lanza excepción hacia afuera."""
+# ---------------------------------------------------------------------------
+# Historial en la base: lo único que sobrevive a un reinicio
+# ---------------------------------------------------------------------------
+# El estado de arriba vive en memoria, así que cada redespliegue lo borra y la pantalla
+# vuelve a decir "nunca ejecutado" — sin poder distinguir eso de "está apagada". Con el
+# historial en la base se puede responder "¿sincronizó ayer?" y se ve de un vistazo si
+# algo lleva días fallando.
+
+# Cuántos ciclos se conservan. A 48 por día (cada 30 min) son unos 20 días, que es de
+# sobra para ver una racha de fallos. No se guarda más porque esto es diagnóstico: la
+# tabla no puede crecer sin fin en un disco que también tiene la operación.
+CICLOS_QUE_SE_GUARDAN = 1000
+
+
+def _anotar_ciclo(resumen, disparo, segundos):
+    """Deja el ciclo escrito en la base. No puede fallar hacia afuera.
+
+    Si esto reventara, tumbaría una sincronización que ya salió bien por no poder
+    escribir su propia bitácora — exactamente al revés de lo que se busca.
+    """
+    try:
+        from init_db import get_connection
+        conn = get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO opera_ciclo
+                   (ocurrio_en, resultado, disparo, reservas_cargadas, revisadas,
+                    descartadas, completo, segundos, detalle, ventana_desde, ventana_hasta)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (datetime.datetime.now().isoformat(timespec="seconds"),
+                 str(resumen.get("estado") or "DESCONOCIDO"),
+                 disparo,
+                 int(resumen.get("reservas_cargadas") or 0),
+                 int(resumen.get("revisadas") or 0),
+                 int(resumen.get("descartadas") or 0),
+                 None if resumen.get("completo") is None else int(bool(resumen["completo"])),
+                 round(float(segundos), 1),
+                 _detalle_del_resumen(resumen),
+                 resumen.get("desde"), resumen.get("hasta")))
+            # Se purga aquí y no en una tarea aparte: es una fila por ciclo, así que el
+            # borrado casi nunca encuentra nada que hacer.
+            conn.execute(
+                """DELETE FROM opera_ciclo WHERE id NOT IN
+                   (SELECT id FROM opera_ciclo ORDER BY id DESC LIMIT ?)""",
+                (CICLOS_QUE_SE_GUARDAN,))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _detalle_del_resumen(resumen):
+    """El texto que explica un fallo, o los problemas de un ciclo que igual salió bien."""
+    partes = []
+    for clave in ("mensaje", "detalle"):
+        v = resumen.get(clave)
+        if v and v not in partes:
+            partes.append(str(v))
+    for p in resumen.get("problemas_secundarios") or []:
+        partes.append(str(p))
+    return " · ".join(partes)[:500] or None
+
+
+def historial(limite=30):
+    """Los últimos ciclos, del más reciente al más viejo. Nunca lanza excepción.
+
+    Devuelve lista vacía si la tabla todavía no existe: en una base que no arrancó con
+    el esquema nuevo, la pantalla debe mostrarse igual, sin historial.
+    """
+    try:
+        from init_db import get_connection
+        conn = get_connection()
+        try:
+            filas = conn.execute(
+                """SELECT ocurrio_en, resultado, disparo, reservas_cargadas, revisadas,
+                          descartadas, completo, segundos, detalle
+                     FROM opera_ciclo ORDER BY id DESC LIMIT ?""",
+                (max(int(limite), 1),)).fetchall()
+        finally:
+            conn.close()
+        return [dict(f) for f in filas]
+    except Exception:
+        return []
+
+
+def resumen_de_dias(dias=7):
+    """Cuántos ciclos hubo y cuántos fallaron por día. Es la respuesta a "¿sincronizó ayer?".
+
+    Un día sin ninguna fila significa que ese día el sistema no sincronizó — o porque
+    estaba apagado, o porque el servidor estuvo caído. Las dos cosas hay que verlas.
+    """
+    try:
+        from init_db import get_connection
+        conn = get_connection()
+        try:
+            filas = conn.execute(
+                """SELECT substr(ocurrio_en, 1, 10)                         AS dia,
+                          COUNT(*)                                          AS ciclos,
+                          SUM(CASE WHEN resultado IN ('OK','SIN_CAMBIOS')
+                                   THEN 1 ELSE 0 END)                       AS buenos,
+                          SUM(reservas_cargadas)                            AS cargadas,
+                          MAX(ocurrio_en)                                   AS ultimo
+                     FROM opera_ciclo
+                    GROUP BY dia ORDER BY dia DESC LIMIT ?""",
+                (max(int(dias), 1),)).fetchall()
+        finally:
+            conn.close()
+        return [dict(f) for f in filas]
+    except Exception:
+        return []
+
+
+def sincronizar(cargar=True, disparo="MANUAL"):
+    """Un ciclo completo. Devuelve un resumen; nunca lanza excepción hacia afuera.
+
+    'disparo' dice quién lo pidió: el reloj ('AUTOMATICO') o alguien apretando el botón
+    ('MANUAL'). Queda guardado porque es lo primero que se pregunta cuando algo se ve
+    raro, y hasta ahora no había forma de saberlo.
+
+    La vista previa (cargar=False) no se anota: no cambia nada, y ensuciaría el
+    historial con filas que no representan un ciclo de verdad.
+    """
+    comenzo = time.time()
+    resumen = _sincronizar(cargar=cargar)
+    if cargar:
+        _anotar_ciclo(resumen, disparo, time.time() - comenzo)
+    return resumen
+
+
+def _sincronizar(cargar=True):
     import opera_cloud as oc
     import opera_mapeo as om
 
@@ -718,8 +892,10 @@ def _bucle():
             cfg = cargar_config()
             intervalo = max(int(cfg.get("intervalo_minutos", 30) or 30), 5) * 60
             if cfg.get("activo") and esta_configurado() and (time.time() - ultimo) >= intervalo:
+                # 'AUTOMATICO' distingue este ciclo del que dispara el botón. Es lo
+                # primero que se pregunta cuando algo se ve raro en la pantalla.
                 ultimo = time.time()
-                sincronizar()
+                sincronizar(disparo="AUTOMATICO")
         except Exception as e:
             # El hilo de fondo no puede morir: si muere, la sincronización se apaga
             # sin que nadie se entere hasta que falten reservas en la agenda.

@@ -555,3 +555,41 @@ BEGIN
             (SELECT valor FROM config_estacion WHERE clave='nombre_estacion'),
             (SELECT COALESCE(MAX(version),0)+1 FROM sync_log));
 END;
+
+
+-- ---------------------------------------------------------------------------
+-- Historial de la sincronizacion con Opera Cloud
+-- ---------------------------------------------------------------------------
+-- Cada ciclo deja una fila aqui. Existe porque el estado del ultimo ciclo vivia
+-- SOLO en memoria: cada redespliegue de Railway lo borraba y la pantalla volvia a
+-- decir "nunca ejecutado", sin manera de distinguir "esta apagada" de "el
+-- contenedor reinicio hace un rato". Con eso nadie podia responder la pregunta que
+-- de verdad importa -- "?sincronizo ayer?" -- ni enterarse de que llevaba tres dias
+-- fallando.
+--
+-- No lleva disparador de sync_log a proposito: es diagnostico de ESTE servidor, no
+-- un dato de la operacion que haya que sincronizar con otra estacion.
+CREATE TABLE IF NOT EXISTS opera_ciclo (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- Momento local en que termino el ciclo, en ISO ('2026-09-07T17:28:47').
+    ocurrio_en TEXT NOT NULL,
+    -- 'OK' | 'SIN_CAMBIOS' | 'SIN_CONEXION' | 'ERROR_AL_CARGAR' | 'SIN_CONFIGURAR'...
+    resultado TEXT NOT NULL,
+    -- 'AUTOMATICO' | 'MANUAL'. Sin esto no se puede saber si el ciclo lo disparo el
+    -- reloj o alguien apretando el boton, que es justo lo que se pregunta cuando algo
+    -- se ve raro.
+    disparo TEXT NOT NULL DEFAULT 'AUTOMATICO',
+    reservas_cargadas INTEGER NOT NULL DEFAULT 0,
+    revisadas INTEGER NOT NULL DEFAULT 0,
+    descartadas INTEGER NOT NULL DEFAULT 0,
+    -- Si la descarga vino completa. Cuando es 0 no se cancelo ninguna reserva ausente.
+    completo INTEGER,
+    -- Cuanto tardo, para ver si se esta degradando.
+    segundos REAL,
+    -- El motivo del fallo, o los problemas secundarios de un ciclo que igual salio bien.
+    detalle TEXT,
+    ventana_desde TEXT,
+    ventana_hasta TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_opera_ciclo_fecha ON opera_ciclo (ocurrio_en DESC);

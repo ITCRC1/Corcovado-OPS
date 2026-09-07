@@ -523,6 +523,35 @@ todas.
 avisa de los que quedaron fuera. Está callado mientras todo esté bien: medido sobre la
 base real, de 1.164 tours ninguno caía fuera de su estadía.
 
+##### El historial: la única memoria que sobrevive a un reinicio
+
+El estado del último ciclo vive en memoria, así que **cada redespliegue de Railway lo
+borra** y la pantalla vuelve a decir *"nunca ejecutado"* — sin manera de distinguir eso
+de "está apagada". Con eso nadie podía responder la pregunta que de verdad importa:
+*¿sincronizó ayer?*
+
+Por eso cada ciclo deja una fila en la tabla `opera_ciclo`: cuándo, con qué resultado,
+**quién lo disparó** (`AUTOMATICO` o `MANUAL`), cuántas reservas y cuánto tardó. La
+pantalla muestra los últimos siete días agrupados; un día que no aparece es un día que no
+sincronizó, sea porque estaba apagada o porque el servidor estuvo caído.
+
+Se conservan los últimos 1.000 ciclos (unos 20 días a un ciclo cada media hora) y la
+purga va en el mismo `INSERT`. La vista previa no se anota: no cambia nada y solo
+ensuciaría el historial. Y anotar **nunca** puede tumbar un ciclo que ya salió bien —
+sería absurdo perder una sincronización por no poder escribir su propia bitácora.
+
+##### Cuidado con `dias_atras` en configuraciones viejas
+
+Los `config_opera.json` escritos antes de medir esto traen `dias_atras: 1`. La ventana ya
+se protegía sola con el piso de `DIAS_ATRAS_MINIMOS`, pero el número guardado seguía
+siendo el viejo: **la pantalla decía "1 día atrás" mientras el sistema consultaba 15**, y
+esa contradicción engaña justo cuando alguien está diagnosticando algo.
+
+Ahora `cargar_config()` sube al valor recomendado cualquier `dias_atras` que esté por
+debajo del piso, y lo deja escrito. Solo se corrige lo que está por debajo: un 20 o un 45
+es una elección deliberada y se respeta. El rótulo de la pantalla pinta los días
+**efectivos** (`ventana.dias_atras`), no los guardados.
+
 ##### Y después
 
 1. Con la vista previa limpia: pantalla **Importar** → **Sincronizar ahora**, una vez.

@@ -1541,6 +1541,7 @@ def opera_estado(user: dict = Depends(exige("importar"))):
     """Cómo va la conexión con Opera, para la pantalla de Importar."""
     cfg = opera_sync.cargar_config()
     desde, hasta = opera_sync.ventana(cfg)
+    atras, adelante = opera_sync.dias_de_ventana(cfg)
     faltan = opera_sync.faltantes()
     return {
         "configurado": not faltan,
@@ -1548,8 +1549,16 @@ def opera_estado(user: dict = Depends(exige("importar"))):
         # no salen nunca del servidor, ni siquiera hacia un usuario con permisos.
         "faltantes": faltan,
         "config": cfg,
-        "ventana": {"desde": desde, "hasta": hasta},
+        # Los días EFECTIVOS, que es lo que la pantalla debe mostrar. Antes se pintaba
+        # el valor guardado y podía contradecir a la ventana de al lado —"1 día atrás"
+        # sobre un rango de 15—, justo cuando alguien estaba diagnosticando algo.
+        "ventana": {"desde": desde, "hasta": hasta,
+                    "dias_atras": atras, "dias_adelante": adelante},
         "ultimo_ciclo": opera_sync.estado(),
+        # El historial sí sobrevive a un reinicio, así que es lo que permite responder
+        # "¿sincronizó ayer?" y ver una racha de fallos.
+        "por_dia": opera_sync.resumen_de_dias(7),
+        "historial": opera_sync.historial(15),
     }
 
 
