@@ -367,9 +367,44 @@ def texto_por_rutas(dato, rutas):
 
 
 def numero_de_confirmacion(reserva):
-    """El identificador de la reserva. Lo usa opera_cloud para no repetir páginas."""
+    """El número con el que el sistema identifica la reserva: el de CONFIRMACIÓN.
+
+    OJO, ESTO ES LA LLAVE DE TODO Y ES FÁCIL EQUIVOCARSE. Opera trae DOS números por
+    reserva, y son distintos SIEMPRE (medido: 68 de 68):
+
+        reservationIdList = [{type:'Reservation',   id:'75306130'},   # 8 dígitos
+                             {type:'Confirmation',  id:'599344391'}]  # 9 dígitos
+
+    El reporte en PDF imprime el de **confirmación**, y con ese número quedaron
+    guardadas las 783 reservas que ya tiene la base —y con él están enlazados sus
+    tours, sus amenidades y sus citas de spa—.
+
+    Al principio esto devolvía el primero de la lista, que es el de 'Reservation'. El
+    resultado: cada estadía que existía por las dos vías quedó DOS VECES en la base,
+    una fila por cada número, y nada lo impedía porque son llaves distintas. En la
+    pantalla se veía como ingresos duplicados y como el mismo huésped en dos
+    habitaciones.
+
+    Para pedirle el detalle a Opera hace falta el OTRO número: eso es
+    `id_de_reserva()`. Son dos cosas distintas y no se pueden mezclar.
+    """
+    if isinstance(reserva, dict):
+        for i in (reserva.get("reservationIdList") or []):
+            if isinstance(i, dict) and str(i.get("type") or "").lower() == "confirmation":
+                valor = str(i.get("id") or "").strip()
+                if valor:
+                    return valor
+    # Si esta instalación no trae el de confirmación, se usa lo que haya: es mejor
+    # cargar la reserva con el otro número que perderla.
     v = campo(reserva, "conf_no")
     return str(v).strip() if v else None
+
+
+# NOTA para quien siga esto: Opera trae también un identificador 'ParentReservation'
+# cuando la reserva salió de otra. Medido en la propiedad, apunta a reservas de GRUPO
+# —cinco cuartos colgando de un mismo padre que sigue activo—, no a cambios de
+# habitación, así que NO sirve para detectar una reserva reemplazada. Se deja anotado
+# para no volver a investigarlo desde cero.
 
 
 # ---------------------------------------------------------------------------

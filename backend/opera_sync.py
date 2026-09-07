@@ -257,8 +257,13 @@ def sincronizar(cargar=True):
     load_batch(lote, fuente_pdf=f"Opera Cloud {desde}/{hasta}",
                marcar_ausentes_como_canceladas=bool(completo),
                manda_en=manda)
+    # Las filas que dejó la versión que guardaba el número equivocado. Se pasan a la
+    # buena y se borran, o quedarían para siempre como reservas duplicadas.
+    unificadas = _unificar_numero_viejo(a_cargar)
+
     alertas = validar_todos_los_tours()
     alertas += _avisar_paquetes_desconocidos(detalles["desconocidos"])
+    alertas += _avisar_cuartos_con_dos_reservas()
 
     _anotar(ultimo_exito=datetime.datetime.now().isoformat(timespec="seconds"),
             resultado="OK", detalle=None, reservas_cargadas=len(a_cargar),
@@ -269,6 +274,7 @@ def sincronizar(cargar=True):
             "nuevas": len(nuevas), "cambiadas": len(cambiadas),
             "sin_cambio": len(iguales),
             "repaso_completo": repaso,
+            "duplicadas_unificadas": unificadas,
             "descartadas": descartadas,
             # De qué está mandando Opera. Se devuelve para que la pantalla pueda decir
             # con claridad qué sigue viniendo del PDF.
@@ -351,6 +357,173 @@ def _sumar_amenidades_de_opera(lote):
                 fechas.setdefault(a["amenidad"], a["fecha"])
         r["amenidades_detectadas"] = detectadas
         r["fechas_de_amenidad"] = fechas
+
+
+# Lo que cuelga de una reserva y hay que mover, no borrar, cuando se corrige su número:
+# es trabajo de la gente, no dato regenerable.
+#
+# Los tours y amenidades de origen 'PDF'/'OPERA' NO están aquí a propósito: se vuelven a
+# generar solos en este mismo ciclo desde la nota de Opera. Mover esos duplicaría.
+TRABAJO_A_MOVER = (
+    ("spa_cita", "conf_no", None),
+    ("tour_asignado", "conf_no", "IFNULL(origen,'PDF') = 'MANUAL'"),
+    ("amenidad_tarea", "conf_no", "origen = 'MANUAL'"),
+    ("restaurante_cambio", "conf_no", None),
+    ("restaurante_hora", "conf_no", None),
+)
+
+
+def _unificar_numero_viejo(reservas):
+    """Elimina las filas creadas con el número de reserva equivocado.
+
+    QUÉ PASÓ. Opera trae dos números por reserva, y el sistema guardaba el de
+    'Reservation' cuando el reporte en PDF —y por lo tanto toda la base— usa el de
+    'Confirmation'. Cada estadía que existía por las dos vías quedó dos veces, y en la
+    pantalla se veía como ingresos duplicados.
+
+    Corregir el número no alcanza: las filas mal numeradas ya están en la base y no se
+    van solas. Esto las busca y las elimina, pero ANTES mueve a la fila buena lo que
+    hizo la gente —una cita de spa, un tour agregado a mano, una amenidad escrita por
+    recepción, un cambio de restaurante—. Los tours y amenidades que genera la
+    sincronización no se mueven: se regeneran en este mismo ciclo, y moverlos los
+    duplicaría.
+
+    Solo toca filas cuya fuente sea la sincronización. Una fila que vino del PDF no se
+    borra nunca, pase lo que pase: es el respaldo de la operación.
+    """
+    from init_db import get_connection
+
+    pares = []
+    for r in reservas:
+        viejo = str(r.get("opera_id") or "").strip()
+        bueno = str(r.get("conf_no") or "").strip()
+        if viejo and bueno and viejo != bueno:
+            pares.append((viejo, bueno))
+    if not pares:
+        return 0
+
+    conn = get_connection()
+    unificadas = 0
+    try:
+        for viejo, bueno in pares:
+            fila = conn.execute(
+                "SELECT fuente_pdf FROM reserva WHERE conf_no = ?", (viejo,)).fetchone()
+            if not fila:
+                continue
+            fuente = str(fila["fuente_pdf"] or "")
+            if not fuente.startswith("Opera Cloud"):
+                # No la creó la sincronización: no es una duplicada nuestra y no se toca.
+                continue
+            # La fila buena tiene que existir antes de mover nada hacia ella.
+            if not conn.execute("SELECT 1 FROM reserva WHERE conf_no = ?",
+                                (bueno,)).fetchone():
+                continue
+
+            for tabla, columna, condicion in TRABAJO_A_MOVER:
+                donde = f"{columna} = ?" + (f" AND {condicion}" if condicion else "")
+                try:
+                    conn.execute(
+                        f"UPDATE OR IGNORE {tabla} SET {columna} = ? WHERE {donde}",
+                        (bueno, viejo))
+                except Exception:
+                    # Una tabla que no exista en una base vieja no puede detener la
+                    # limpieza: lo importante es no dejar la reserva duplicada.
+                    pass
+
+            # Y ahora lo que sí se regenera, más la fila.
+            conn.execute(
+                """DELETE FROM amenidad_area WHERE amenidad_id IN
+                     (SELECT id FROM amenidad_tarea WHERE conf_no = ?)""", (viejo,))
+            for tabla in ("amenidad_tarea", "tour_asignado", "huesped", "itinerario",
+                          "spa_enlace", "restaurante_historico"):
+                try:
+                    conn.execute(f"DELETE FROM {tabla} WHERE conf_no = ?", (viejo,))
+                except Exception:
+                    pass
+            conn.execute("DELETE FROM reserva WHERE conf_no = ?", (viejo,))
+            unificadas += 1
+        conn.commit()
+    finally:
+        conn.close()
+
+    if unificadas:
+        _anotar(detalle=f"{unificadas} reserva(s) duplicada(s) por el numero viejo, "
+                        f"unificadas")
+    return unificadas
+
+
+def _avisar_cuartos_con_dos_reservas():
+    """Avisa si un cuarto tiene dos reservas la misma noche.
+
+    Un cuarto no puede tener dos huéspedes a la vez, así que sobre datos correctos esto
+    está callado: medido contra Opera, 155 reservas ocupando cuarto a lo largo de 90
+    días, CERO solapes. Por eso sirve — cualquier solape es un problema de verdad.
+
+    Es justo el síntoma que reportó el hotel: "aparece duplicado el ingreso de la 7 y
+    la 21". Con este aviso, la próxima vez el sistema lo dice antes de que alguien lo
+    descubra mirando la hoja del día.
+
+    No borra nada. Cuál de las dos reservas está de más es una decisión de recepción:
+    puede ser una fila vieja, o puede ser un cambio de habitación mal registrado en
+    Opera. Adivinar y borrar la equivocada sería peor que avisar.
+    """
+    from init_db import get_connection
+
+    conn = get_connection()
+    mensajes = []
+    try:
+        filas = conn.execute(
+            """SELECT conf_no, room_no, nombre_principal, arr_date, dep_date
+                 FROM reserva
+                WHERE room_no IS NOT NULL AND room_no != ''
+                  AND IFNULL(res_status,'') NOT IN ('CANCELADA','SALIO')
+                  AND arr_date IS NOT NULL AND dep_date IS NOT NULL""").fetchall()
+
+        import validations as _val
+
+        ocupacion = {}
+        for f in filas:
+            llega, sale = _val._iso(f["arr_date"]), _val._iso(f["dep_date"])
+            if not llega or not sale:
+                continue
+            try:
+                n = datetime.date.fromisoformat(llega)
+                fin = datetime.date.fromisoformat(sale)
+            except ValueError:
+                continue
+            # El día de salida no cuenta: el cuarto queda libre esa noche.
+            vueltas = 0
+            while n < fin and vueltas < 60:
+                ocupacion.setdefault((str(f["room_no"]), n.isoformat()), []).append(f)
+                n += datetime.timedelta(days=1)
+                vueltas += 1
+
+        avisados = set()
+        for (cuarto, noche), lista in sorted(ocupacion.items()):
+            if len(lista) < 2:
+                continue
+            clave = (cuarto, tuple(sorted(str(x["conf_no"]) for x in lista)))
+            if clave in avisados:
+                continue          # el mismo par ya se avisó por otra noche
+            avisados.add(clave)
+            quienes = " y ".join(
+                f"{x['nombre_principal']} (reserva {x['conf_no']}, "
+                f"{x['arr_date']}→{x['dep_date']})" for x in lista)
+            msg = (f"La habitación {cuarto} tiene DOS reservas la noche del {noche}: "
+                   f"{quienes}. Revisar: puede ser una reserva vieja que quedó sin "
+                   f"actualizar, o un cambio de habitación mal registrado.")
+            ya = conn.execute(
+                "SELECT 1 FROM alerta WHERE tipo='CUARTO_DOBLE' AND mensaje=? "
+                "AND resuelto=0", (msg,)).fetchone()
+            if not ya:
+                conn.execute(
+                    "INSERT INTO alerta (tipo, referencia_id, mensaje) "
+                    "VALUES ('CUARTO_DOBLE', NULL, ?)", (msg,))
+            mensajes.append(msg)
+        conn.commit()
+    finally:
+        conn.close()
+    return mensajes
 
 
 def _avisar_paquetes_desconocidos(desconocidos):
