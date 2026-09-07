@@ -10,9 +10,10 @@ lo usa recepción para operar el día, y un dato inventado es peor que un dato a
 
 - **Nunca romper la operación.** Si Opera no responde, el ciclo falla en silencio y se
   reintenta más tarde. El sistema sigue trabajando con lo que ya tiene.
-- **No cancelar por dudas.** El cargador marca como CANCELADA toda reserva que no
-  venga en el lote. Eso solo se activa si se pudo garantizar que la descarga vino
-  completa; ante cualquier duda se carga sin cancelar nada.
+- **No cancelar por dudas.** El cargador marca como CANCELADA toda reserva que Opera
+  dejó de reportar. Eso solo se activa si se pudo garantizar que la descarga vino
+  completa, y se compara contra TODAS las reservas de la ventana —no contra las pocas
+  que se cargan en el ciclo—; ante cualquier duda se carga sin cancelar nada.
 - **No pisar el trabajo de recepción.** Los puntos de embarque deducidos de texto
   libre entran como "sin confirmar", para que recepción los valide.
 """
@@ -449,9 +450,15 @@ def _sincronizar(cargar=True):
         # Solo se permite cancelar ausentes si la descarga vino completa. Con una lista
         # parcial, "no vino en el lote" no significa "cancelada": significa que falta,
         # y cancelarla sacaría de la agenda a un huésped que sí llega.
+        #
+        # Y se le pasan TODAS las reservas de la ventana, no solo las que se cargan.
+        # 'lote' trae únicamente lo que cambió —eso es a propósito—, así que el lote no
+        # sirve para saber quién sigue vivo en Opera. Sin esta línea, un cambio en una
+        # reserva cancelaba a todas las que llegaban ese mismo día.
         load_batch(lote, fuente_pdf=f"Opera Cloud {desde}/{hasta}",
                    marcar_ausentes_como_canceladas=bool(completo),
-                   manda_en=manda)
+                   manda_en=manda,
+                   vistas_por_la_fuente=reservas)
     except Exception as e:
         detalle = f"{type(e).__name__}: {str(e).splitlines()[0][:250]}"
         _anotar(resultado="ERROR_AL_CARGAR", detalle=detalle)
@@ -849,6 +856,12 @@ def _separar_por_cambio(reservas):
     Una reserva sin marca se trata como cambiada: es mejor reescribirla de más que
     dejarla vieja. Pasa si Opera deja de mandar 'lastModifyDateTime', y en ese caso
     esto se degrada a lo de antes —cargar todo cada vez— en vez de dejar de funcionar.
+
+    Y una reserva que la base tiene por CANCELADA pero Opera reporta viva se recarga
+    SIEMPRE, aunque su marca coincida. Es la salida de un callejón sin salida: mientras
+    la marca coincidiera, el ciclo la daba por "sin cambios" y no volvía a mirarla
+    nunca, así que una cancelación equivocada se quedaba puesta para siempre. Con esto,
+    el propio ciclo repara lo que ya está mal en la base, sin que nadie toque nada.
     """
     from init_db import get_connection
 
@@ -856,8 +869,9 @@ def _separar_por_cambio(reservas):
     try:
         guardadas = {}
         for fila in conn.execute(
-                "SELECT conf_no, opera_modificado_en FROM reserva").fetchall():
-            guardadas[str(fila["conf_no"])] = fila["opera_modificado_en"]
+                "SELECT conf_no, opera_modificado_en, res_status FROM reserva").fetchall():
+            guardadas[str(fila["conf_no"])] = (fila["opera_modificado_en"],
+                                               fila["res_status"])
     except Exception:
         # Base sin la columna todavía (no se ha reiniciado el servidor): se cargan
         # todas, que es exactamente lo que hacía antes.
@@ -871,8 +885,13 @@ def _separar_por_cambio(reservas):
         if conf not in guardadas:
             nuevas.append(r)
             continue
+        marca_guardada, estado_guardado = guardadas[conf]
+        if (str(estado_guardado or "").upper() == "CANCELADA"
+                and str(r.get("res_status") or "").upper() != "CANCELADA"):
+            cambiadas.append(r)
+            continue
         marca = r.get("opera_modificado_en")
-        if not marca or str(marca) != str(guardadas[conf] or ""):
+        if not marca or str(marca) != str(marca_guardada or ""):
             cambiadas.append(r)
         else:
             iguales.append(r)

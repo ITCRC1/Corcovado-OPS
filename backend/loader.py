@@ -347,8 +347,45 @@ def _guardar_tours(cur, r, borrar_si_vacio=True):
         )
 
 
+def _aviso_de_cancelacion(nombre, hab, llegada, conf_no):
+    """El texto del aviso de cancelación. En un solo sitio, para poder retirarlo.
+
+    Lleva el número de reserva porque es lo único que no cambia: el nombre se corrige,
+    la habitación se cambia, la fecha se mueve. Sin él no había manera de reconocer el
+    aviso cuando la reserva volvía, y quedaba colgado para siempre.
+    """
+    return (f"Reserva cancelada: {nombre} (hab. {hab}, {llegada}, conf {conf_no}) "
+            f"ya no aparece en la información actualizada. "
+            f"Revisar tours y entradas asociadas.")
+
+
+def _retirar_aviso_de_cancelacion(cur, r, previo):
+    """Retira el aviso de cancelación de una reserva que volvió a estar viva.
+
+    Una reserva que la base tenía por CANCELADA y la fuente reporta viva es una
+    resurrección: o la cancelación era falsa, o en Opera la reinstalaron. En los dos
+    casos el aviso que quedó colgado ya no dice nada cierto, y una lista llena de avisos
+    falsos consigue que nadie mire los verdaderos.
+
+    Se retiran los avisos que llevan el número de reserva —el formato de ahora— y
+    también los que escribió la versión anterior, que no lo llevaban: esos se reconocen
+    por el nombre, la habitación y la fecha con los que la reserva estaba guardada.
+    """
+    if not previo or str(previo["estado"] or "").upper() != "CANCELADA":
+        return
+    if str(r.get("res_status") or "").upper() == "CANCELADA":
+        return
+    cur.execute(
+        """UPDATE alerta SET resuelto = 1
+           WHERE tipo = 'RESERVA_CANCELADA' AND resuelto = 0
+             AND (mensaje LIKE ? OR mensaje LIKE ?)""",
+        (f"%conf {r['conf_no']})%",
+         f"Reserva cancelada: {previo['nombre']} (hab. {previo['hab']}, "
+         f"{previo['llegada']})%"))
+
+
 def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_canceladas=True,
-               manda_en="TODO", origen_parcial="OPERA"):
+               manda_en="TODO", origen_parcial="OPERA", vistas_por_la_fuente=None):
     """Carga un lote de reservas ya procesado por el importador.
 
     'manda_en' dice DE QUÉ es dueña la fuente, por áreas: 'nucleo', 'regimen',
@@ -364,6 +401,12 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
 
     'origen_parcial' es la etiqueta con la que una fuente parcial marca SUS amenidades,
     para no pisar las de las otras.
+
+    'vistas_por_la_fuente' son TODAS las reservas que la fuente vio, no solo las que
+    trae este lote. Solo lo usa la regla de cancelación, y es la diferencia entre
+    cancelar bien y borrar el día de la operación: ver el comentario largo de esa regla,
+    más abajo. Una fuente que trae la hoja completa —el PDF— no lo pasa: su lote ya es
+    todo lo que vio.
 
     POR QUÉ ESTO EXISTE. Antes había un solo camino, el del PDF, que reescribe la
     reserva entera y regenera tours y amenidades. Correcto para el PDF; destructivo
@@ -388,14 +431,16 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
     conn = get_connection()
     cur = conn.cursor()
 
-    confs_en_pdf = []
-    fechas_en_pdf = set()
+    # Lo que trae ESTE lote, que es lo que se va a escribir. Ojo: no es lo mismo que
+    # todo lo que la fuente vio. La regla de cancelación necesita eso otro.
+    confs_del_lote = []
+    fechas_del_lote = set()
 
     for item in batch["reservas"]:
         r = item["reserva"]
-        confs_en_pdf.append(r["conf_no"])
+        confs_del_lote.append(r["conf_no"])
         if r.get("arr_date"):
-            fechas_en_pdf.add(r["arr_date"])
+            fechas_del_lote.add(r["arr_date"])
 
         # El grupo NO se arma desde la nota del reporte. Un texto escrito a mano no une
         # habitaciones solo: se propone en Reservas y recepción decide (sugerencias.py).
@@ -406,11 +451,17 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
         # Lo único que se conserva es la decisión ya tomada: si recepción confirmó el
         # grupo, el reporte no la pisa. Sin esto, cada importación borraría el trabajo
         # de recepción, porque la reserva se reescribe entera.
+        # Se leen también el estado y los datos con los que la reserva estaba guardada.
+        # Sirven para reconocer una RESURRECCIÓN —la base la tenía por cancelada y la
+        # fuente la reporta viva— y retirar el aviso de cancelación que quedó colgado.
         previo = cur.execute(
-            """SELECT r.grupo_id AS gid, g.confirmado_por_recepcion AS confirmado
+            """SELECT r.grupo_id AS gid, g.confirmado_por_recepcion AS confirmado,
+                      r.res_status AS estado, r.nombre_principal AS nombre,
+                      r.room_no AS hab, r.arr_date AS llegada
                FROM reserva r LEFT JOIN grupo g ON g.id = r.grupo_id
                WHERE r.conf_no = ?""", (r["conf_no"],)).fetchone()
         grupo_id = previo["gid"] if previo and previo["confirmado"] else None
+        _retirar_aviso_de_cancelacion(cur, r, previo)
 
         if por_areas:
             # Se escriben SOLO las columnas de las áreas que esta fuente manda. Si la
@@ -501,26 +552,69 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
         _guardar_rooming(cur, r)
         _guardar_tours(cur, r)
 
-    # Reservas que ya no aparecen en el PDF: se marcan como CANCELADA.
-    # Solo se revisan las fechas de llegada que SÍ vienen en este PDF, para no tocar
-    # reservas de periodos que este archivo no cubre (ej. si el PDF es de un solo día,
-    # no se cancelan las de todo el mes).
-    if marcar_ausentes_como_canceladas and confs_en_pdf and fechas_en_pdf:
-        marcadores_fecha = ",".join("?" for _ in fechas_en_pdf)
-        marcadores_conf = ",".join("?" for _ in confs_en_pdf)
+    # --- Reservas que la fuente ya no reporta: se marcan como CANCELADA ---
+    #
+    # LA DISTINCIÓN QUE IMPORTA, y que costó un día de operación: el LOTE son las
+    # reservas que se escriben; el UNIVERSO son TODAS las que la fuente vio. Esta regla
+    # necesita el universo. Confundirlos hace exactamente lo contrario de lo que se
+    # busca: en vez de reflejar las cancelaciones de la fuente, inventa cancelaciones.
+    #
+    # Cómo se rompió. Opera carga solo lo que cambió, a propósito —reescribir las 70
+    # reservas cada media hora borraría la marca de "esto cambió" que mira recepción—,
+    # así que su lote es un puñado de reservas. Con el lote como universo bastaba que
+    # UNA reserva de hoy cambiara para que la fecha de hoy entrara en la lista y todas
+    # las demás llegadas del día, intactas y solo sin cambios, quedaran CANCELADA. Fue
+    # lo que vio el hotel: un cambio de habitación por la mañana y media lista de
+    # llegadas del día en cancelada.
+    #
+    # El PDF no pasa 'vistas_por_la_fuente' y no le hace falta: trae la hoja completa,
+    # así que su lote ES su universo. Solo se miran las fechas de llegada que la fuente
+    # cubre, para no tocar periodos de los que no sabe nada.
+    if vistas_por_la_fuente is None:
+        confs_presentes, fechas_cubiertas = confs_del_lote, fechas_del_lote
+    else:
+        confs_presentes = [x["conf_no"] for x in vistas_por_la_fuente if x.get("conf_no")]
+        fechas_cubiertas = {x["arr_date"] for x in vistas_por_la_fuente if x.get("arr_date")}
+
+    if marcar_ausentes_como_canceladas and confs_presentes and fechas_cubiertas:
+        marcadores_fecha = ",".join("?" for _ in fechas_cubiertas)
+        marcadores_conf = ",".join("?" for _ in confs_presentes)
         ausentes = cur.execute(
             f"""SELECT conf_no, room_no, nombre_principal, arr_date FROM reserva
                 WHERE arr_date IN ({marcadores_fecha})
                   AND conf_no NOT IN ({marcadores_conf})
                   AND res_status != 'CANCELADA'""",
-            list(fechas_en_pdf) + confs_en_pdf,
+            list(fechas_cubiertas) + list(confs_presentes),
         ).fetchall()
+
+        # LA VÁLVULA. Si desaparecieron más reservas de las que la fuente reportó, el
+        # universo está mal y no hay nada que cancelar: hay algo que arreglar. Se avisa
+        # y no se toca ninguna.
+        #
+        # Con datos buenos no se dispara nunca: en un ciclo normal desaparecen cero o
+        # una sobre las setenta que sí vinieron. Está aquí como segunda línea, para que
+        # un error de este tipo no vuelva a llegar callado a la operación — una reserva
+        # borrada de la agenda no la nota nadie hasta que el huésped está en la puerta.
+        if len(ausentes) > len(confs_presentes):
+            mensaje = (
+                f"No se cancelaron {len(ausentes)} reservas que dejaron de aparecer: "
+                f"la fuente solo reportó {len(confs_presentes)} en esas fechas, así que "
+                f"la lista venía incompleta. Las reservas se dejaron como estaban. "
+                f"Revisar la sincronización antes de darlas por canceladas."
+            )
+            ya = cur.execute(
+                "SELECT 1 FROM alerta WHERE tipo='CANCELACION_SOSPECHOSA' AND mensaje=? "
+                "AND resuelto=0", (mensaje,)).fetchone()
+            if not ya:
+                cur.execute(
+                    "INSERT INTO alerta (tipo, referencia_id, mensaje) "
+                    "VALUES ('CANCELACION_SOSPECHOSA', NULL, ?)", (mensaje,))
+            ausentes = []
+
         for a in ausentes:
             cur.execute("UPDATE reserva SET res_status = 'CANCELADA' WHERE conf_no = ?", (a["conf_no"],))
-            mensaje = (
-                f"Reserva cancelada: {a['nombre_principal']} (hab. {a['room_no']}, {a['arr_date']}) "
-                f"ya no aparece en el PDF actualizado. Revisar tours y entradas asociadas."
-            )
+            mensaje = _aviso_de_cancelacion(a["nombre_principal"], a["room_no"],
+                                            a["arr_date"], a["conf_no"])
             ya = cur.execute(
                 "SELECT 1 FROM alerta WHERE tipo='RESERVA_CANCELADA' AND mensaje=? AND resuelto=0", (mensaje,)
             ).fetchone()
@@ -569,7 +663,7 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
     #
     # Se limpian solo si este reporte trajo reservas: con un PDF vacío o mal leído no se
     # borra nada.
-    if confs_en_pdf:
+    if confs_del_lote:
         import sinac
         sinac.limpiar_huerfanas(conn)
 
@@ -588,7 +682,7 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
     try:
         import json as _json
         import itinerario as _itin
-        for conf_no in confs_en_pdf:
+        for conf_no in confs_del_lote:
             datos = _itin.datos_de_reserva(conn, conf_no)
             if not datos:
                 continue
