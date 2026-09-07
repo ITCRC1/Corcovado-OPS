@@ -30,7 +30,22 @@ CONFIG_PATH = os.path.join(
 CONFIG_POR_DEFECTO = {
     "activo": False,
     "intervalo_minutos": 30,
-    "dias_atras": 1,
+    # CUÁNTOS DÍAS ATRÁS SE CONSULTA. Esto NO es un margen de cortesía: es lo que
+    # decide si el sistema sigue viendo a los huéspedes que YA ESTÁN EN CASA.
+    #
+    # Opera solo deja buscar por FECHA DE LLEGADA. Una estadía de 5 noches que empezó
+    # hace 3 días tiene su llegada 3 días atrás: si la ventana solo mira desde ayer,
+    # esa reserva queda FUERA y el sistema no la vuelve a mirar nunca. No se entera de
+    # que el huésped cambió de habitación, ni de que se fue, ni de que canceló.
+    #
+    # Con 'dias_atras: 1' eso pasó de verdad: un huésped que ya había salido de la
+    # habitación 01 seguía apareciendo EN CASA ahí, mientras el que llegaba ese día
+    # entraba bien. Dos reservas en el mismo cuarto, y parecía una duplicación.
+    #
+    # Medido sobre 259 estadías reales: la más larga fue de 8 noches (3 noches es lo
+    # normal). Se deja 30 para que ninguna quede afuera ni con margen holgado. Cuesta
+    # una página más de búsqueda por ciclo; el detalle solo se pide de lo que cambió.
+    "dias_atras": 30,
     "dias_adelante": 60,
     # Cada cuántas horas se repasa TODO, ignorando las marcas de modificación.
     #
@@ -95,10 +110,31 @@ def faltantes():
     return oc._faltantes()
 
 
+# Lo mínimo que se puede mirar hacia atrás, aunque alguien configure menos.
+#
+# Es un piso a propósito, no una preferencia. Poner menos días de los que dura una
+# estadía deja de ver a los huéspedes que están en casa —Opera solo busca por fecha de
+# llegada—, y el sistema pierde sus cambios de habitación, sus salidas y sus
+# cancelaciones sin dar ningún error. Ya pasó una vez con 'dias_atras: 1'.
+#
+# La estadía más larga medida en la propiedad fue de 8 noches; 15 deja margen.
+DIAS_ATRAS_MINIMOS = 15
+
+
 def ventana(cfg=None):
+    """El rango de fechas de llegada que se le pide a Opera.
+
+    Se respeta lo configurado, salvo que sea menos que DIAS_ATRAS_MINIMOS: ahí manda el
+    piso. Ver el comentario de 'dias_atras' en CONFIG_POR_DEFECTO para el porqué.
+    """
     cfg = cfg or cargar_config()
+    try:
+        atras = int(cfg.get("dias_atras", 30) or 0)
+    except (TypeError, ValueError):
+        atras = 30
+    atras = max(atras, DIAS_ATRAS_MINIMOS)
     hoy = datetime.date.today()
-    desde = hoy - datetime.timedelta(days=int(cfg.get("dias_atras", 1) or 0))
+    desde = hoy - datetime.timedelta(days=atras)
     hasta = hoy + datetime.timedelta(days=int(cfg.get("dias_adelante", 60) or 60))
     return desde.isoformat(), hasta.isoformat()
 
