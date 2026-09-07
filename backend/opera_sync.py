@@ -254,21 +254,54 @@ def sincronizar(cargar=True):
     # parcial, "no vino en el lote" no significa "cancelada": significa que falta, y
     # cancelarla sacaría de la agenda a un huésped que sí llega.
     manda = alcance_de_opera()
-    load_batch(lote, fuente_pdf=f"Opera Cloud {desde}/{hasta}",
-               marcar_ausentes_como_canceladas=bool(completo),
-               manda_en=manda)
-    # Las filas que dejó la versión que guardaba el número equivocado. Se pasan a la
-    # buena y se borran, o quedarían para siempre como reservas duplicadas.
-    unificadas = _unificar_numero_viejo(a_cargar)
+    try:
+        load_batch(lote, fuente_pdf=f"Opera Cloud {desde}/{hasta}",
+                   marcar_ausentes_como_canceladas=bool(completo),
+                   manda_en=manda)
+    except Exception as e:
+        # Cargar es lo único que no se puede dejar pasar: si falla, la base quedó a
+        # medias y hay que decirlo con el motivo, no con un "no se pudo".
+        detalle = f"{type(e).__name__}: {str(e).splitlines()[0][:250]}"
+        _anotar(resultado="ERROR_AL_CARGAR", detalle=detalle)
+        return {"estado": "ERROR_AL_CARGAR", "desde": desde, "hasta": hasta,
+                "mensaje": "Opera respondió bien, pero falló al guardar en la base",
+                "detalle": detalle}
 
-    alertas = validar_todos_los_tours()
-    alertas += _avisar_paquetes_desconocidos(detalles["desconocidos"])
-    alertas += _avisar_cuartos_con_dos_reservas()
+    # LO QUE SIGUE NO PUEDE TUMBAR EL CICLO.
+    #
+    # Son tareas de limpieza y de aviso: útiles, pero secundarias frente a tener las
+    # reservas al día. Sin esta separación, un error en cualquiera de ellas hacía que
+    # el botón «Sincronizar ahora» dijera "no se pudo sincronizar" AUNQUE las reservas
+    # ya se hubieran guardado bien —que es exactamente lo que reportó el hotel: los
+    # cambios entraban y el botón daba error—. Cada una se cuida sola y lo que falle
+    # queda anotado con su motivo.
+    problemas = []
 
+    def con_cuidado(nombre, funcion, por_defecto):
+        try:
+            return funcion()
+        except Exception as e:
+            problemas.append(f"{nombre}: {type(e).__name__}: "
+                             f"{str(e).splitlines()[0][:150]}")
+            return por_defecto
+
+    unificadas = con_cuidado("unificar duplicadas",
+                             lambda: _unificar_numero_viejo(a_cargar), 0)
+    alertas = con_cuidado("validar tours", validar_todos_los_tours, [])
+    alertas += con_cuidado("avisar paquetes sin mapear",
+                           lambda: _avisar_paquetes_desconocidos(
+                               detalles["desconocidos"]), [])
+    alertas += con_cuidado("avisar cuartos con dos reservas",
+                           _avisar_cuartos_con_dos_reservas, [])
+
+    # El ciclo fue bien: las reservas están al día. Si alguna limpieza falló, se dice,
+    # pero no se presenta como si la sincronización hubiera fracasado.
     _anotar(ultimo_exito=datetime.datetime.now().isoformat(timespec="seconds"),
-            resultado="OK", detalle=None, reservas_cargadas=len(a_cargar),
+            resultado="OK", detalle="; ".join(problemas) or None,
+            reservas_cargadas=len(a_cargar),
             descartadas=descartadas, completo=completo)
     return {"estado": "OK", "desde": desde, "hasta": hasta,
+            "problemas_secundarios": problemas,
             "revisadas": len(reservas),
             "reservas_cargadas": len(a_cargar),
             "nuevas": len(nuevas), "cambiadas": len(cambiadas),
@@ -425,6 +458,14 @@ def _unificar_numero_viejo(reservas):
                     conn.execute(
                         f"UPDATE OR IGNORE {tabla} SET {columna} = ? WHERE {donde}",
                         (bueno, viejo))
+                    # OJO: 'OR IGNORE' se salta en silencio la fila que choque con una
+                    # que ya exista en la fila buena (por ejemplo, la misma noche de
+                    # restaurante). Esa fila se queda apuntando a un número que está a
+                    # punto de borrarse, y ahí quedaba basura —o, en una tabla con
+                    # clave foránea, el borrado explotaba y tumbaba el ciclo entero—.
+                    # Lo que no se pudo mover se borra: la fila buena ya tiene su
+                    # propia versión de ese dato.
+                    conn.execute(f"DELETE FROM {tabla} WHERE {columna} = ?", (viejo,))
                 except Exception:
                     # Una tabla que no exista en una base vieja no puede detener la
                     # limpieza: lo importante es no dejar la reserva duplicada.
