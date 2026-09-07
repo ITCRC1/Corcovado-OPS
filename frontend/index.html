@@ -4528,12 +4528,24 @@ function escHtml(v) {
 
 const TEXTO_CICLO_OPERA = {
   OK: ["badge-ok", "al día"],
+  // 'Sin cambios' es un resultado BUENO: se consultó Opera y no había nada nuevo.
+  // Falta esta línea era lo que hacía que la pantalla lo mostrara como un error.
+  SIN_CAMBIOS: ["badge-ok", "al día, sin cambios"],
   SIN_CONEXION: ["badge-warn", "sin conexión con Opera"],
   SIN_CONFIGURAR: ["badge-warn", "falta configurar"],
   SIN_RESERVAS: ["badge-tour", "no llegaron reservas"],
+  ERROR_AL_CARGAR: ["badge-warn", "falló al guardar"],
   ERROR: ["badge-warn", "error"],
   "nunca ejecutado": ["badge-tour", "todavía no ha corrido"],
 };
+
+// Los resultados que significan que el ciclo TERMINÓ BIEN.
+//
+// Antes solo se reconocía 'OK', así que un ciclo perfectamente correcto en el que no
+// había nada que actualizar se anunciaba como «No se pudo sincronizar». Eso es lo que
+// veía el hotel cada vez que apretaba el botón después del primer ciclo: los cambios
+// ya habían entrado, no quedaba nada por traer, y la pantalla lo llamaba error.
+const CICLOS_QUE_SALIERON_BIEN = ["OK", "SIN_CAMBIOS"];
 
 function mostrarFormCredenciales() {
   const caja = document.getElementById("opera-cred-form");
@@ -4716,9 +4728,23 @@ async function operaSincronizar() {
   if (r.estado === "OK") {
     // No hace falta recargar esta pantalla: fetchAuth ya avisó del cambio de datos,
     // y las demás pantallas se ponen al día solas cuando se entra a ellas.
-    avisar(`${r.reservas_cargadas} reservas cargadas desde Opera`);
+    let texto = `${r.reservas_cargadas} reservas actualizadas desde Opera`;
+    if (r.duplicadas_unificadas) texto += ` · ${r.duplicadas_unificadas} duplicada(s) unificada(s)`;
+    avisar(texto);
+    // Si una limpieza secundaria falló, el ciclo igual salió bien, pero hay que
+    // decirlo: callarlo sería esconder un problema que alguien debe mirar.
+    if ((r.problemas_secundarios || []).length) {
+      avisar("Ojo: " + r.problemas_secundarios.join(" · "), true);
+    }
+  } else if (r.estado === "SIN_CAMBIOS") {
+    // Terminó bien y no había nada que traer. NO es un error.
+    avisar(`Ya estaba al día: ${r.sin_cambio || 0} reservas revisadas, ninguna cambió`);
   } else {
-    avisar(r.mensaje || r.detalle || "No se pudo sincronizar", true);
+    // Y si de verdad falló, que se vea el motivo. El estado siempre va incluido:
+    // un "no se pudo" a secas no deja por dónde empezar a buscar.
+    const motivo = r.mensaje || r.detalle || "";
+    avisar(`No se pudo sincronizar (${r.estado || "sin estado"})`
+           + (motivo ? `: ${motivo}` : ""), true);
   }
   pintarEstadoOpera();
 }
