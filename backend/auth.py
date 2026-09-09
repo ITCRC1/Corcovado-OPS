@@ -216,6 +216,15 @@ PANTALLAS = [
     ("usuarios", "Usuarios"),
     ("catalogo", "Catálogo"),
     ("publicacion", "Publicación"),
+    # Housekeeping, con el mismo trato que el spa y por lo mismo: quien lava no necesita
+    # ver el resto del sistema, y los avisos de un pedido nuevo se mandan a quien tenga
+    # este permiso — recepción y housekeeping.
+    #
+    # Va al FINAL de la lista a propósito. El menú de la interfaz resuelve la pantalla por
+    # POSICIÓN, y esta lista tiene que quedar en el mismo orden: meterla en medio movería
+    # el índice de todas las de abajo, y una desalineación ahí no da error, abre la
+    # pantalla equivocada.
+    ("housekeeping", "Housekeeping"),
 ]
 
 # Permisos que se aplican cuando el usuario no tiene una configuración propia.
@@ -240,6 +249,13 @@ PERFILES = {
     # está en casa, y el resumen del día. Tiene 'spa' en escribir, que es además lo que
     # hace que le lleguen los avisos de citas nuevas.
     "Spa": {"spa": "escribir", "reservas": "ver", "resumen": "ver"},
+    # Housekeeping: su pantalla y lo mínimo para saber quién está en casa. 'housekeeping'
+    # en escribir es además lo que le hace llegar los avisos de un pedido nuevo.
+    #
+    # Lleva también Amenidades porque hoy es donde ve sus tareas de habitación; si mañana
+    # se decide separarlo, se quita de aquí.
+    "Housekeeping": {"housekeeping": "escribir", "amenidades": "escribir",
+                     "reservas": "ver", "resumen": "ver"},
     "Solo lectura": {k: "ver" for k, _ in PANTALLAS},
 }
 

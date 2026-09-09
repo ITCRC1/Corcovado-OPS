@@ -21,6 +21,21 @@ se fija al importar el módulo, y las suites se contaminan entre ellas —una de
 reserva cancelada, otra renombra un restaurante—. Corriéndolas en fila sobre la misma
 carpeta salen fallos que no existen.
 
+## Qué fija `probar_pantallas.py`
+
+Que el menú de la interfaz y los permisos del servidor sigan alineados. La interfaz
+resuelve cada pantalla por **posición**: el índice del botón elige su permiso, su filtro,
+su cargador y si se refresca sola. Son cinco listas más la del servidor, y desalinearlas
+no da error — abre la pantalla equivocada, o esconde un botón a quien sí tiene permiso.
+Ya pasó al agregar el Spa: se desplegó bien y no le aparecía a nadie.
+
+## Qué fija `probar_housekeeping.py`
+
+Las tres reglas de la lavandería que el formulario de Google no podía tener: que se le
+diga al huésped si su ropa vuelve el mismo día, que el enlace sepa quién es y muera con la
+reserva, y que lo recogido quede escrito aunque el catálogo cambie después. Las tres
+fallan en silencio: nadie ve un error, simplemente alguien se queda sin su ropa.
+
 ## Qué fija `probar_carga_opera.py`
 
 La regla por la que entran a la base las actualizaciones de Opera. Está escrita porque

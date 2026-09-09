@@ -312,6 +312,95 @@ CREATE TABLE IF NOT EXISTS spa_enlace (
     creado_en TEXT DEFAULT (datetime('now'))
 );
 
+
+-- ============================================================
+-- HOUSEKEEPING — la lavandería
+-- ============================================================
+-- Mismo trato que el spa, y por las mismas razones: el huésped PIDE por un enlace que ya
+-- sabe quién es, y housekeeping CONFIRMA. Reemplaza al formulario de Google que se le
+-- mandaba por WhatsApp.
+--
+-- Lo que ese formulario no podía hacer, y esto sí:
+--
+--   · No le pide el nombre ni la habitación. Eran dos de sus seis preguntas y las dos
+--     eran el error fácil: quien escribía mal su cuarto no recibía su ropa. Y si el
+--     huésped se cambia de cuarto, la pantalla muestra dónde está AHORA.
+--   · Solo ofrece días de su estadía, y el enlace deja de servir cuando la reserva
+--     termina.
+--   · Le dice si su ropa vuelve el mismo día. El formulario le preguntaba la hora de
+--     recolección y no le contestaba nada; el reclamo llegaba al día siguiente.
+--   · Las cantidades son un número. La cuadrícula del formulario llegaba hasta 6 porque
+--     es lo que da Google Forms, no porque el hotel lave de a seis.
+
+-- Las prendas que se pueden mandar a lavar. Catálogo editable, como los servicios del
+-- spa: agregar 'Chaqueta' tiene que ser una fila, no un despliegue.
+--
+-- Con el nombre en los dos idiomas porque la lista la lee el HUÉSPED en su página (en
+-- inglés por omisión) y el PERSONAL en la suya (en español).
+CREATE TABLE IF NOT EXISTS hk_prenda (
+    codigo TEXT PRIMARY KEY,
+    nombre TEXT NOT NULL,                  -- como lo ve el personal
+    nombre_en TEXT,                        -- como lo ve el huésped
+    orden INTEGER NOT NULL DEFAULT 0,      -- para que salga en el orden del formulario
+    activo INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS hk_pedido (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conf_no TEXT REFERENCES reserva(conf_no),
+    -- Se copian igual que en el spa: un pedido puede entrar a mano sin reserva, y la
+    -- habitación del momento es la que housekeeping necesita para ir a recoger.
+    room_no TEXT,
+    nombre_huesped TEXT,
+    fecha TEXT NOT NULL,                   -- ISO, el día de la recolección
+    hora TEXT,                             -- 'HH:MM' preferida por el huésped
+    -- SOLICITADO | CONFIRMADO | RECOGIDO | ENTREGADO | CANCELADO
+    -- Dos pasos más que el spa, a pedido del hotel: "¿ya se la llevaron?" y "¿ya está
+    -- lista?" son dos preguntas distintas, y las dos llegaban a recepción.
+    estado TEXT NOT NULL DEFAULT 'SOLICITADO',
+    origen TEXT NOT NULL DEFAULT 'HUESPED',     -- HUESPED | RECEPCION
+    nota_huesped TEXT,                     -- lo que escribió él
+    nota_operacion TEXT,                   -- lo que anota housekeeping
+    atendido_por TEXT,
+    -- Cada paso con su hora. Es lo que después permite ajustar la hora tope con datos y
+    -- no de memoria: cuánto tarda de verdad el circuito.
+    confirmado_en TEXT,
+    recogido_en TEXT,
+    entregado_en TEXT,
+    cancelado_motivo TEXT,
+    -- Si al pedirlo la ropa alcanzaba a volver el mismo día. Se guarda lo que se le DIJO
+    -- al huésped y no se recalcula: si mañana se cambia la hora tope, lo que se prometió
+    -- ayer no cambia.
+    mismo_dia INTEGER,
+    creado_en TEXT DEFAULT (datetime('now'))
+);
+
+-- Lo que trae el pedido, una fila por prenda. Aparte y no en un campo de texto porque
+-- así se puede contar: cuántas camisetas se lavaron este mes es una pregunta que hoy no
+-- se puede contestar.
+CREATE TABLE IF NOT EXISTS hk_pedido_item (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pedido_id INTEGER NOT NULL REFERENCES hk_pedido(id) ON DELETE CASCADE,
+    prenda_codigo TEXT REFERENCES hk_prenda(codigo),
+    -- El nombre se COPIA al crear el pedido. Si housekeeping renombra o apaga una prenda,
+    -- el pedido de la semana pasada tiene que seguir diciendo qué se recogió: es el
+    -- registro de lo que se entregó, no un reflejo del catálogo de hoy.
+    prenda_nombre TEXT NOT NULL,
+    cantidad INTEGER NOT NULL DEFAULT 1
+);
+
+-- El enlace del huésped, por RESERVA y no por habitación, por lo mismo que en el spa:
+-- el código del QR de la puerta no cambia nunca y le serviría al huésped siguiente.
+--
+-- Es un token APARTE del de spa a propósito. Compartir uno solo sería más cómodo para
+-- recepción —un enlace por habitación en vez de dos— pero obligaría a tocar el spa, que
+-- ya está en producción. Si se decide unificarlos, se hace después y en un solo sitio.
+CREATE TABLE IF NOT EXISTS hk_enlace (
+    conf_no TEXT PRIMARY KEY REFERENCES reserva(conf_no),
+    token TEXT NOT NULL UNIQUE,
+    creado_en TEXT DEFAULT (datetime('now'))
+);
+
 -- Memoria del propio sistema, para las migraciones que necesitan recordar algo.
 --
 -- La primera que la usa: qué pantallas existían la última vez que se arrancó. Sin eso

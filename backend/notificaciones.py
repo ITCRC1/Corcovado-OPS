@@ -336,6 +336,50 @@ def aviso_cita_spa(cita):
            etiqueta="spa-cita", pantalla=7)
 
 
+def destinatarios_housekeeping(conn):
+    """Quien tenga permiso en la pantalla de Housekeeping: recepción y housekeeping.
+
+    Se miran los permisos, igual que en el spa. Aquí no es por datos de salud sino por lo
+    contrario: un pedido de lavandería no le interesa a nadie más, y mandárselo a todo el
+    personal es la vía rápida a que silencien la app y después se pierdan el aviso que sí
+    importaba.
+    """
+    import auth
+    filas = conn.execute(
+        "SELECT id, rol, permisos_json FROM usuario WHERE activo = 1").fetchall()
+    return [u["id"] for u in filas if auth.puede(dict(u), "housekeeping")]
+
+
+def aviso_pedido_housekeeping(pedido):
+    """Ropa que mandó un huésped por su enlace. Hay que confirmarla y pasar a recogerla.
+
+    Se abre en la pantalla de Housekeeping al tocarlo (la última del menú, índice 14).
+
+    Lleva la habitación, la hora y CUÁNTAS prendas, que es lo que decide si hay que ir
+    ahora o si aguanta: no es lo mismo un pantalón que catorce piezas.
+    """
+    if not habilitado():
+        return
+    from init_db import get_connection
+    conn = get_connection()
+    try:
+        destinos = destinatarios_housekeeping(conn)
+    finally:
+        conn.close()
+    if not destinos:
+        return
+    partes = [f"Hab. {pedido.get('room_no') or '?'}"]
+    if pedido.get("total"):
+        n = pedido["total"]
+        partes.append(f"{n} {'prenda' if n == 1 else 'prendas'}")
+    if pedido.get("fecha"):
+        partes.append(f"el {pedido['fecha']}")
+    if pedido.get("hora"):
+        partes.append(f"a las {pedido['hora']}")
+    enviar(destinos, "Lavandería por confirmar", " · ".join(partes),
+           etiqueta="hk-pedido", pantalla=14)
+
+
 def aviso_amenidades_importadas(conn, cuantas, para_manana=0):
     """Después de importar el PDF: UN aviso con el total, no uno por amenidad.
 

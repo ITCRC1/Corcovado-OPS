@@ -1,0 +1,297 @@
+"""
+Housekeeping: la lavandería.
+
+CÓMO FUNCIONA, Y POR QUÉ ASÍ
+----------------------------
+Igual que el spa, y a propósito: el huésped **pide** por un enlace que ya sabe quién es, y
+housekeeping **confirma**. Reemplaza al formulario de Google que hoy se le manda por
+WhatsApp.
+
+Lo que ese formulario no podía hacer, y esto sí:
+
+  · No le pregunta el nombre ni la habitación. Eran dos de sus seis preguntas y las dos
+    eran el error fácil: quien escribía mal su cuarto no recibía su ropa. Y si el huésped
+    se cambia de habitación, la pantalla muestra dónde está AHORA.
+  · Solo le ofrece días de su estadía, y el enlace deja de servir cuando la reserva
+    termina.
+  · Le dice si su ropa VUELVE EL MISMO DÍA. El formulario le preguntaba a qué hora quería
+    la recolección y no le contestaba nada; el reclamo llegaba al día siguiente. Este es
+    el aviso que le da valor al huésped, igual que el de choques en el spa: sin algo a
+    cambio, un formulario que solo le sirve al hotel no se llena.
+  · Las cantidades son un número. La cuadrícula del formulario llegaba hasta 6 porque es
+    lo que da Google Forms, no porque el hotel lave de a seis.
+
+El precio queda fuera, igual que en el spa: es otro proceso del hotel.
+"""
+import os
+import json
+import secrets
+
+CONFIG_PATH = os.path.join(
+    os.environ.get("HOTEL_DATA_DIR") or os.path.join(os.path.dirname(__file__), "..", "data"),
+    "config_housekeeping.json",
+)
+
+# Los valores del lodge. Se cambian desde la pantalla de Housekeeping.
+CONFIG_POR_DEFECTO = {
+    # Entre qué horas pasa housekeeping a recoger.
+    "abre": "07:00",
+    "cierra": "18:00",
+    # Cada cuántos minutos se le ofrecen horas al huésped. 30 da opciones sin marear.
+    "paso_minutos": 30,
+    # La hora TOPE para que la ropa vuelva el mismo día. Lo recogido después vuelve al día
+    # siguiente, y al huésped se le dice en el momento de pedirlo, no después.
+    #
+    # Este valor es una suposición razonable puesta para arrancar: hay que ajustarlo con
+    # housekeeping. Cambiarlo NO altera lo que ya se le prometió a un huésped — eso queda
+    # guardado en cada pedido.
+    "hora_tope_mismo_dia": "09:00",
+    # Tope por prenda. No es una regla del hotel: ataja el dedazo de quien teclea 111 en
+    # vez de 11 y deja a housekeeping esperando un bulto que no existe.
+    "max_por_prenda": 99,
+}
+
+ESTADOS = ("SOLICITADO", "CONFIRMADO", "RECOGIDO", "ENTREGADO", "CANCELADO")
+
+# El camino normal de un pedido. Se usa para no dejar saltar pasos hacia atrás sin querer:
+# de ENTREGADO no se vuelve a RECOGIDO por un toque de más en el teléfono.
+ORDEN_ESTADOS = {"SOLICITADO": 0, "CONFIRMADO": 1, "RECOGIDO": 2, "ENTREGADO": 3}
+
+# Los que siguen vivos: los que housekeeping tiene que atender.
+ESTADOS_ABIERTOS = ("SOLICITADO", "CONFIRMADO", "RECOGIDO")
+
+
+# ---------------------------------------------------------------------------
+# Configuración
+# ---------------------------------------------------------------------------
+
+def cargar_config():
+    cfg = dict(CONFIG_POR_DEFECTO)
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, encoding="utf-8-sig") as f:
+                guardada = json.load(f)
+            if isinstance(guardada, dict):
+                cfg.update({k: v for k, v in guardada.items() if k in CONFIG_POR_DEFECTO})
+        except (OSError, ValueError):
+            # Un archivo torcido no puede dejar a housekeeping sin horario: se siguen
+            # usando los valores por defecto.
+            pass
+    return cfg
+
+
+def guardar_config(cfg):
+    limpia = dict(CONFIG_POR_DEFECTO)
+    for clave in ("abre", "cierra", "hora_tope_mismo_dia"):
+        if cfg.get(clave) is not None:
+            valor = str(cfg[clave]).strip()
+            if valor == "":
+                # La hora tope se puede dejar vacía: es decir "aquí no prometemos plazo".
+                if clave == "hora_tope_mismo_dia":
+                    limpia[clave] = ""
+                    continue
+            if _minutos(valor) is None:
+                raise ValueError(f"«{valor}» no es una hora válida (va como 09:00).")
+            limpia[clave] = _hhmm(_minutos(valor))
+
+    for clave, minimo, maximo in (("paso_minutos", 5, 120), ("max_por_prenda", 1, 999)):
+        try:
+            limpia[clave] = max(minimo, min(int(cfg[clave]), maximo))
+        except (TypeError, ValueError, KeyError):
+            pass
+
+    if _minutos(limpia["cierra"]) <= _minutos(limpia["abre"]):
+        raise ValueError("La hora de cierre tiene que ser después de la de apertura.")
+
+    tope = limpia.get("hora_tope_mismo_dia")
+    if tope and not (_minutos(limpia["abre"]) <= _minutos(tope) <= _minutos(limpia["cierra"])):
+        raise ValueError(
+            "La hora tope tiene que caer dentro del horario de recolección: si está "
+            "fuera, o no la alcanza nadie o la alcanzan todos.")
+
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(limpia, f, ensure_ascii=False, indent=2)
+    return limpia
+
+
+# ---------------------------------------------------------------------------
+# Horas
+# ---------------------------------------------------------------------------
+
+def _minutos(hhmm):
+    """'09:30' -> 570. None si no es una hora."""
+    try:
+        h, m = str(hhmm).strip().split(":")[:2]
+        h, m = int(h), int(m)
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return h * 60 + m
+    except (ValueError, AttributeError, TypeError):
+        pass
+    return None
+
+
+def _hhmm(minutos):
+    return f"{minutos // 60:02d}:{minutos % 60:02d}"
+
+
+def normalizar_hora(hhmm):
+    m = _minutos(hhmm)
+    return _hhmm(m) if m is not None else None
+
+
+def horas_de_recoleccion(cfg=None):
+    """Las horas que se le ofrecen al huésped, dentro del horario de housekeeping.
+
+    A diferencia del spa, aquí NO se descuentan las ya tomadas: recoger ropa de dos
+    habitaciones a la misma hora no es un choque, es el mismo recorrido. Housekeeping
+    pasa por el pasillo una vez.
+    """
+    cfg = cfg or cargar_config()
+    abre, cierra = _minutos(cfg["abre"]), _minutos(cfg["cierra"])
+    paso = max(5, int(cfg.get("paso_minutos", 30)))
+    horas, h = [], abre
+    while h <= cierra:
+        horas.append(_hhmm(h))
+        h += paso
+    return horas
+
+
+def vuelve_mismo_dia(hora, cfg=None):
+    """¿La ropa recogida a esa hora vuelve hoy? None si el hotel no promete plazo.
+
+    Devuelve None —y no False— cuando no hay hora tope configurada, porque son cosas
+    distintas: 'vuelve mañana' es una promesa, 'no prometemos' es otra. La página del
+    huésped no debe decir la primera cuando el hotel quiso decir la segunda.
+    """
+    cfg = cfg or cargar_config()
+    tope = cfg.get("hora_tope_mismo_dia")
+    m_hora, m_tope = _minutos(hora), _minutos(tope)
+    if m_hora is None or m_tope is None:
+        return None
+    return m_hora <= m_tope
+
+
+# ---------------------------------------------------------------------------
+# El pedido
+# ---------------------------------------------------------------------------
+
+def limpiar_items(items, prendas_validas, cfg=None):
+    """Normaliza lo que llega del formulario. Devuelve (lista, problema).
+
+    `prendas_validas` es {codigo: nombre} del catálogo activo. Se copia el NOMBRE al
+    pedido: si housekeeping renombra la prenda mañana, el pedido de hoy tiene que seguir
+    diciendo qué se recogió.
+    """
+    cfg = cfg or cargar_config()
+    tope = int(cfg.get("max_por_prenda", 99))
+    limpios, vistos = [], set()
+
+    for it in (items or []):
+        codigo = str((it or {}).get("codigo") or "").strip()
+        if not codigo or codigo not in prendas_validas:
+            continue
+        if codigo in vistos:
+            return None, "Llegó la misma prenda dos veces."
+        try:
+            cantidad = int((it or {}).get("cantidad") or 0)
+        except (TypeError, ValueError):
+            return None, "Las cantidades tienen que ser números."
+        if cantidad <= 0:
+            continue                      # marcó la prenda y la dejó en cero: no va
+        if cantidad > tope:
+            return None, (f"{prendas_validas[codigo]}: {cantidad} es demasiado. "
+                          f"El tope por prenda es {tope}.")
+        vistos.add(codigo)
+        limpios.append({"codigo": codigo, "nombre": prendas_validas[codigo],
+                        "cantidad": cantidad})
+
+    if not limpios:
+        return None, "Marcá al menos una prenda con su cantidad."
+    return limpios, None
+
+
+def resumen_items(items):
+    """'3 camisetas · 2 pantalones largos', para el aviso y las listas."""
+    return " · ".join(f"{i['cantidad']} {i['nombre'].lower()}" for i in items)
+
+
+def total_prendas(items):
+    return sum(int(i.get("cantidad") or 0) for i in items)
+
+
+def siguiente_estado(actual):
+    """El paso natural desde donde está. None si ya terminó."""
+    orden = {v: k for k, v in ORDEN_ESTADOS.items()}
+    n = ORDEN_ESTADOS.get(actual)
+    if n is None:
+        return None
+    return orden.get(n + 1)
+
+
+def puede_pasar_a(actual, nuevo):
+    """¿Es un cambio de estado razonable? Devuelve (sí/no, motivo).
+
+    Se permite avanzar, cancelar, y volver UN paso atrás —housekeeping marca 'recogido'
+    por error y lo deshace—. Lo que no se permite es saltar del final al principio, que
+    solo pasa por un toque de más y borraría las horas ya anotadas.
+    """
+    if nuevo not in ESTADOS:
+        return False, "Ese estado no existe."
+    if actual == nuevo:
+        return False, "Ya está en ese estado."
+    if actual == "CANCELADO":
+        return False, "Ese pedido está cancelado."
+    if nuevo == "CANCELADO":
+        return True, None
+    a, b = ORDEN_ESTADOS.get(actual), ORDEN_ESTADOS.get(nuevo)
+    if a is None or b is None:
+        return False, "Ese cambio no tiene sentido."
+    if b < a - 1:
+        return False, ("De ahí no se puede volver tan atrás. Cancelá el pedido si hay "
+                       "que rehacerlo.")
+    return True, None
+
+
+# ---------------------------------------------------------------------------
+# El enlace personal del huésped
+# ---------------------------------------------------------------------------
+
+def token_de_reserva(conn, conf_no, crear=True):
+    """El código del enlace que se le manda al huésped. Se crea la primera vez.
+
+    Va por RESERVA y no por habitación, por lo mismo que en el spa: el código del QR de
+    la puerta no cambia nunca —se imprime y se pega— así que le serviría al huésped
+    siguiente. Este solo vale mientras esa reserva exista.
+    """
+    fila = conn.execute("SELECT token FROM hk_enlace WHERE conf_no = ?",
+                        (conf_no,)).fetchone()
+    if fila and dict(fila).get("token"):
+        return dict(fila)["token"]
+    if not crear:
+        return None
+    token = secrets.token_urlsafe(9)
+    conn.execute(
+        "INSERT INTO hk_enlace (conf_no, token) VALUES (?,?) "
+        "ON CONFLICT(conf_no) DO UPDATE SET token = excluded.token",
+        (conf_no, token))
+    conn.commit()
+    return token
+
+
+def reserva_de_token(conn, conf_no, token):
+    """La reserva si el código coincide, o None. Nunca dice cuál de los dos falló."""
+    if not conf_no or not token:
+        return None
+    fila = conn.execute("SELECT token FROM hk_enlace WHERE conf_no = ?",
+                        (conf_no,)).fetchone()
+    if not fila:
+        return None
+    if not secrets.compare_digest(str(dict(fila)["token"]), str(token)):
+        return None
+    r = conn.execute(
+        """SELECT conf_no, room_no, nombre_principal, arr_date, dep_date, res_status
+           FROM reserva WHERE conf_no = ?""", (conf_no,)).fetchone()
+    if not r or (dict(r)["res_status"] or "").upper() == "CANCELADA":
+        return None
+    return dict(r)

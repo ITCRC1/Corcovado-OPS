@@ -118,6 +118,22 @@ SERVICIOS_SPA = [
 # que la agenda pueda repartir citas desde el primer día sin tener que configurar nada.
 TERAPEUTAS_SPA = [("Terapeuta 1",), ("Terapeuta 2",)]
 
+# Las prendas de lavandería: las ocho del formulario de Google que se le manda hoy al
+# huésped, en el mismo orden.
+#
+# Dos erratas del original NO se heredan: decía "Long slevee shirts" y "preffer". La
+# lista es editable desde la pantalla, así que agregar 'Chaqueta' o 'Toalla' es una fila.
+PRENDAS_HK = [
+    ("SOCKS",  "Pares de medias",     "Pair of socks",      1),
+    ("SHORTS", "Pantalones cortos",   "Shorts",             2),
+    ("PANTS",  "Pantalones largos",   "Long pants",         3),
+    ("TSHIRT", "Camisetas",           "T-shirt",            4),
+    ("LSHIRT", "Camisas manga larga", "Long sleeve shirts", 5),
+    ("UNDER",  "Ropa interior",       "Underwear",          6),
+    ("BLOUSE", "Blusas",              "Blouse",             7),
+    ("DRESS",  "Vestidos",            "Dress",              8),
+]
+
 
 # Columnas agregadas después de que el sistema ya estaba en uso. El esquema se crea
 # con CREATE TABLE IF NOT EXISTS, así que en una base que ya existe estas columnas
@@ -193,6 +209,15 @@ INDICES = [
     ("idx_amenidad_area_area",
      "CREATE INDEX IF NOT EXISTS idx_amenidad_area_area ON amenidad_area (area)"),
     ("idx_entrada_sinac_fecha", "CREATE INDEX IF NOT EXISTS idx_entrada_sinac_fecha ON entrada_sinac (fecha)"),
+    # --- housekeeping ---
+    # La consulta de la pantalla: los pedidos de un día, en orden de hora de recolección.
+    ("idx_hk_pedido_fecha",
+     "CREATE INDEX IF NOT EXISTS idx_hk_pedido_fecha ON hk_pedido (fecha, hora)"),
+    # Y los de una reserva, que es lo que ve el huésped al abrir su enlace.
+    ("idx_hk_pedido_conf",
+     "CREATE INDEX IF NOT EXISTS idx_hk_pedido_conf ON hk_pedido (conf_no)"),
+    ("idx_hk_item_pedido",
+     "CREATE INDEX IF NOT EXISTS idx_hk_item_pedido ON hk_pedido_item (pedido_id)"),
     ("idx_alerta_resuelto", "CREATE INDEX IF NOT EXISTS idx_alerta_resuelto ON alerta (resuelto)"),
     ("idx_sugerencia_estado",
      "CREATE INDEX IF NOT EXISTS idx_sugerencia_estado ON sugerencia_grupo (estado)"),
@@ -613,12 +638,18 @@ def init_db(reset=False):
         "INSERT OR IGNORE INTO spa_terapeuta (nombre) VALUES (?)",
         TERAPEUTAS_SPA,
     )
+    cur.executemany(
+        """INSERT OR IGNORE INTO hk_prenda (codigo, nombre, nombre_en, orden)
+           VALUES (?,?,?,?)""",
+        PRENDAS_HK,
+    )
 
     conn.commit()
     conn.close()
     print(f"Base de datos inicializada en {DB_PATH}")
     print(f"Catálogo cargado: {len(TOURS)} tours, {len(BOTES)} botes, {len(GUIAS)} guías, "
-          f"{len(AMENIDADES)} amenidades, {len(SERVICIOS_SPA)} servicios de spa")
+          f"{len(AMENIDADES)} amenidades, {len(SERVICIOS_SPA)} servicios de spa, "
+          f"{len(PRENDAS_HK)} prendas de lavandería")
 
 
 if __name__ == "__main__":

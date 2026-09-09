@@ -14,6 +14,7 @@ Sistema local para la operación diaria de Sierpe y Drake. Funciona sin internet
 | **Entradas SINAC** | Control de compra con 15 días de anticipación, por urgencia |
 | **Amenidades** | Tareas por área (cocina, housekeeping, recepción…), incluidas alergias. Cada una con su día, su descripción editable y **varios departamentos**, donde cada uno marca su parte |
 | **Spa** | Agenda de tratamientos, ficha médica y consentimiento. El huésped pide por un enlace; el spa confirma |
+| **Housekeeping** | La lavandería. El huésped manda su ropa por un enlace; housekeeping confirma, recoge y entrega |
 | **Analítica** | Uso de botes y guías, movimiento por punto, ocupación y carga del spa |
 | **Resumen operación** | La hoja del día para todos los departamentos, por área |
 | **Importar PDF** | Cargar el reporte "Arrivals: Detailed" del PMS |
@@ -165,6 +166,51 @@ confirmadas**: una solicitud sin confirmar no es trabajo comprometido, y meterla
 número.
 
 El **precio queda fuera** a propósito: es otro proceso del hotel.
+
+## Housekeeping — la lavandería
+
+Mismo trato que el Spa, y por las mismas razones: el huésped **manda** su ropa por un
+enlace que ya sabe quién es, y housekeeping **confirma**. Reemplaza al formulario de
+Google que se le mandaba por WhatsApp.
+
+### El enlace del huésped
+
+En **Housekeeping** → **🔗 Enlace para el huésped**, uno por habitación. Se copia y se
+manda igual que antes. La diferencia con el formulario:
+
+- **No escribe su nombre ni su habitación.** Eran dos de sus seis preguntas y las dos eran
+  el error fácil: quien ponía 23 en vez de 32 no recibía su ropa. Y si se cambia de
+  cuarto, housekeeping ve dónde está **ahora**.
+- Solo se le ofrecen **días de su estadía**, y el enlace **deja de servir** al terminar la
+  reserva.
+- **Se le dice si su ropa vuelve el mismo día.** El formulario le preguntaba la hora de
+  recolección y no le contestaba nada; el reclamo llegaba al día siguiente.
+- **Las cantidades son un número.** La cuadrícula del formulario llegaba hasta 6 porque es
+  lo que da Google Forms, no porque el hotel lave de a seis: una familia de cuatro lo pasa
+  con la ropa interior de dos días.
+
+La página abre **en inglés** con botón EN / ES, y sale en el idioma del itinerario de ese
+huésped, igual que la del spa.
+
+### Lo que hace la pantalla
+
+- Los pedidos del día o de un rango, con la habitación, las prendas y el plazo
+- **Confirmar → Recogida → Entregada**, cada paso con su hora. Son dos pasos más que el
+  spa a pedido del hotel: «¿ya se la llevaron?» y «¿ya está lista?» son dos preguntas
+  distintas y las dos llegaban a recepción
+- **Nota** para lo que anota housekeeping, y **Cancelar** con motivo
+- **Horario y prendas**: entre qué horas se recoge, la hora tope del mismo día, y el
+  catálogo de prendas — agregar «Chaqueta» es una fila, no un despliegue
+
+### Dos detalles que importan
+
+**La hora tope hay que ajustarla.** Viene puesta en las **09:00** para arrancar, y es una
+suposición: hay que revisarla con housekeeping. Es lo único que el huésped gana llenando
+el formulario, así que conviene que sea la de verdad. Cambiarla **no** altera lo que ya se
+le prometió a un huésped: eso queda guardado en cada pedido.
+
+**Apagar una prenda no borra los pedidos viejos.** El nombre se copia al pedido, así que
+lo recogido la semana pasada sigue diciendo qué era aunque el catálogo cambie.
 
 ## La hoja del día se arma por RESERVA, no por habitación
 

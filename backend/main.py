@@ -2784,6 +2784,483 @@ def borrar_cita_spa(cita_id: int, user: dict = Depends(exige("spa", escribir=Tru
     return {"status": "ok"}
 
 
+# ===========================================================================
+# HOUSEKEEPING — la lavandería
+# ===========================================================================
+# Mismo trato que el spa: el huésped pide por su enlace, housekeeping confirma. Reemplaza
+# al formulario de Google que hoy se le manda por WhatsApp. El porqué de cada decisión
+# está en housekeeping.py.
+
+import housekeeping as _hk
+
+
+def _prendas_hk(conn, solo_activas=True):
+    cond = " WHERE activo = 1" if solo_activas else ""
+    return [dict(f) for f in conn.execute(
+        f"SELECT codigo, nombre, nombre_en, orden, activo FROM hk_prenda{cond} "
+        f"ORDER BY orden, nombre")]
+
+
+def _items_de(conn, ids):
+    """Las prendas de varios pedidos de una vez, para no consultar dentro del bucle."""
+    if not ids:
+        return {}
+    marcas = ",".join("?" * len(ids))
+    filas = conn.execute(
+        f"""SELECT pedido_id, prenda_codigo, prenda_nombre, cantidad
+            FROM hk_pedido_item WHERE pedido_id IN ({marcas})
+            ORDER BY id""", list(ids)).fetchall()
+    por_pedido = {}
+    for f in filas:
+        por_pedido.setdefault(f["pedido_id"], []).append(dict(f))
+    return por_pedido
+
+
+def _pedidos_hk(conn, desde=None, hasta=None, conf_no=None, incluir_canceladas=True):
+    """Los pedidos de un rango de días, con sus prendas.
+
+    La habitación que se devuelve es la de la RESERVA, no la copiada al pedir: si el
+    huésped se cambió de cuarto, housekeeping tiene que ir al de ahora. Es la misma
+    decisión que en el spa.
+    """
+    cond, params = [], []
+    if desde:
+        cond.append("p.fecha >= ?")
+        params.append(desde)
+    if hasta:
+        cond.append("p.fecha <= ?")
+        params.append(hasta)
+    if conf_no:
+        cond.append("p.conf_no = ?")
+        params.append(conf_no)
+    if not incluir_canceladas:
+        cond.append("p.estado != 'CANCELADO'")
+    donde = (" WHERE " + " AND ".join(cond)) if cond else ""
+
+    filas = conn.execute(
+        f"""SELECT p.*, r.room_no AS room_actual, r.nombre_principal
+            FROM hk_pedido p
+            LEFT JOIN reserva r ON r.conf_no = p.conf_no
+            {donde}
+            ORDER BY p.fecha, p.hora, p.id""", params).fetchall()
+    items = _items_de(conn, [f["id"] for f in filas])
+    salida = []
+    for f in filas:
+        d = dict(f)
+        d["room_no"] = d.pop("room_actual", None) or d.get("room_no")
+        d["nombre_huesped"] = d.get("nombre_principal") or d.get("nombre_huesped")
+        d.pop("nombre_principal", None)
+        d["items"] = items.get(f["id"], [])
+        d["total_prendas"] = sum(int(i["cantidad"] or 0) for i in d["items"])
+        d["resumen"] = " · ".join(
+            f"{i['cantidad']} {str(i['prenda_nombre']).lower()}" for i in d["items"])
+        salida.append(d)
+    return salida
+
+
+def _crear_pedido_hk(conn, datos, items, origen="RECEPCION"):
+    """Guarda el pedido y sus prendas. Devuelve el id."""
+    cfg = _hk.cargar_config()
+    hora = _hk.normalizar_hora(datos.get("hora"))
+    cur = conn.execute(
+        """INSERT INTO hk_pedido
+             (conf_no, room_no, nombre_huesped, fecha, hora, estado, origen,
+              nota_huesped, nota_operacion, mismo_dia)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        ((datos.get("conf_no") or "").strip() or None,
+         (datos.get("room_no") or "").strip() or None,
+         (datos.get("nombre_huesped") or "").strip() or None,
+         (datos.get("fecha") or "").strip(),
+         hora,
+         datos.get("estado") or ("SOLICITADO" if origen == "HUESPED" else "CONFIRMADO"),
+         origen,
+         (datos.get("nota_huesped") or "").strip() or None,
+         (datos.get("nota_operacion") or "").strip() or None,
+         # Lo que se le DIJO al huésped queda guardado. Si mañana se mueve la hora tope,
+         # lo prometido ayer no cambia.
+         None if _hk.vuelve_mismo_dia(hora, cfg) is None
+         else (1 if _hk.vuelve_mismo_dia(hora, cfg) else 0)))
+    pedido_id = cur.lastrowid
+    conn.executemany(
+        """INSERT INTO hk_pedido_item (pedido_id, prenda_codigo, prenda_nombre, cantidad)
+           VALUES (?,?,?,?)""",
+        [(pedido_id, i["codigo"], i["nombre"], i["cantidad"]) for i in items])
+    conn.commit()
+    return pedido_id
+
+
+# ---------- Catálogo y horario ----------
+
+@app.get("/api/housekeeping/catalogo")
+def catalogo_hk(user: dict = Depends(exige("housekeeping"))):
+    conn = get_connection()
+    try:
+        return {"prendas": _prendas_hk(conn, solo_activas=False),
+                "config": _hk.cargar_config(),
+                "estados": list(_hk.ESTADOS)}
+    finally:
+        conn.close()
+
+
+@app.post("/api/housekeeping/config")
+async def guardar_config_hk(payload: dict,
+                            user: dict = Depends(exige("housekeeping", escribir=True))):
+    try:
+        return {"status": "ok", "config": _hk.guardar_config(payload or {})}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/housekeeping/prenda")
+async def crear_prenda_hk(payload: dict,
+                          user: dict = Depends(exige("housekeeping", escribir=True))):
+    codigo = (payload.get("codigo") or "").strip().upper()
+    nombre = (payload.get("nombre") or "").strip()
+    if not codigo or not nombre:
+        raise HTTPException(status_code=400, detail="Hacen falta el código y el nombre.")
+    conn = get_connection()
+    try:
+        if conn.execute("SELECT 1 FROM hk_prenda WHERE codigo = ?", (codigo,)).fetchone():
+            raise HTTPException(status_code=400, detail=f"Ya existe la prenda {codigo}.")
+        orden = conn.execute(
+            "SELECT COALESCE(MAX(orden), 0) + 1 n FROM hk_prenda").fetchone()["n"]
+        conn.execute(
+            """INSERT INTO hk_prenda (codigo, nombre, nombre_en, orden)
+               VALUES (?,?,?,?)""",
+            (codigo, nombre, (payload.get("nombre_en") or "").strip() or None,
+             payload.get("orden") or orden))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/api/housekeeping/prenda/{codigo}/editar")
+async def editar_prenda_hk(codigo: str, payload: dict,
+                           user: dict = Depends(exige("housekeeping", escribir=True))):
+    """Corregir una prenda sin crear otra.
+
+    Igual que en el catálogo de tours y en el del spa: renombrar tiene que ser posible,
+    porque si no la gente crea una prenda nueva y quedan dos que son la misma.
+    """
+    campos, valores = [], []
+    for clave in ("nombre", "nombre_en", "orden"):
+        if clave in payload:
+            campos.append(f"{clave} = ?")
+            v = payload[clave]
+            valores.append(str(v).strip() if isinstance(v, str) else v)
+    if not campos:
+        return {"status": "ok"}
+    conn = get_connection()
+    try:
+        cur = conn.execute(f"UPDATE hk_prenda SET {', '.join(campos)} WHERE codigo = ?",
+                           valores + [codigo.upper()])
+        if not cur.rowcount:
+            raise HTTPException(status_code=404, detail="No existe esa prenda")
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/api/housekeeping/prenda/{codigo}/estado")
+async def estado_prenda_hk(codigo: str, payload: dict,
+                           user: dict = Depends(exige("housekeeping", escribir=True))):
+    """Apaga o enciende una prenda. NO se borra: los pedidos viejos la mencionan."""
+    conn = get_connection()
+    try:
+        cur = conn.execute("UPDATE hk_prenda SET activo = ? WHERE codigo = ?",
+                           (1 if payload.get("activo") else 0, codigo.upper()))
+        if not cur.rowcount:
+            raise HTTPException(status_code=404, detail="No existe esa prenda")
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+# ---------- Los pedidos ----------
+
+@app.get("/api/housekeeping/pedidos")
+def pedidos_hk(desde: str = None, hasta: str = None, conf_no: str = None,
+               user: dict = Depends(exige("housekeeping"))):
+    hoy = datetime.date.today().isoformat()
+    conn = get_connection()
+    try:
+        return {"pedidos": _pedidos_hk(conn, desde or hoy, hasta or desde or hoy,
+                                       conf_no=conf_no),
+                "config": _hk.cargar_config()}
+    finally:
+        conn.close()
+
+
+@app.post("/api/housekeeping/pedidos")
+async def crear_pedido_hk(payload: dict,
+                          user: dict = Depends(exige("housekeeping", escribir=True))):
+    """Un pedido tomado por teléfono o en el mostrador. Entra ya confirmado."""
+    if not (payload.get("fecha") or "").strip():
+        raise HTTPException(status_code=400, detail="Falta el día de la recolección.")
+    conn = get_connection()
+    try:
+        prendas = {p["codigo"]: p["nombre"] for p in _prendas_hk(conn)}
+        items, problema = _hk.limpiar_items(payload.get("items"), prendas)
+        if problema:
+            raise HTTPException(status_code=400, detail=problema)
+        pedido_id = _crear_pedido_hk(conn, payload, items, origen="RECEPCION")
+    finally:
+        conn.close()
+    return {"status": "ok", "id": pedido_id}
+
+
+@app.post("/api/housekeeping/pedidos/{pedido_id}/estado")
+async def estado_pedido_hk(pedido_id: int, payload: dict,
+                           user: dict = Depends(exige("housekeeping", escribir=True))):
+    """Confirmar, marcar recogido, marcar entregado o cancelar.
+
+    Cada paso anota SU hora. Es lo que después permite ajustar la hora tope con datos y
+    no de memoria.
+    """
+    nuevo = (payload.get("estado") or "").strip().upper()
+    conn = get_connection()
+    try:
+        fila = conn.execute("SELECT estado FROM hk_pedido WHERE id = ?",
+                            (pedido_id,)).fetchone()
+        if not fila:
+            raise HTTPException(status_code=404, detail="No existe ese pedido")
+        ok, motivo = _hk.puede_pasar_a(fila["estado"], nuevo)
+        if not ok:
+            raise HTTPException(status_code=400, detail=motivo)
+
+        campos = ["estado = ?"]
+        valores = [nuevo]
+        marca = {"CONFIRMADO": "confirmado_en", "RECOGIDO": "recogido_en",
+                 "ENTREGADO": "entregado_en"}.get(nuevo)
+        if marca:
+            campos.append(f"{marca} = datetime('now')")
+        if nuevo == "CANCELADO":
+            campos.append("cancelado_motivo = ?")
+            valores.append((payload.get("motivo") or "").strip() or None)
+        if payload.get("atendido_por"):
+            campos.append("atendido_por = ?")
+            valores.append(str(payload["atendido_por"]).strip()[:60])
+        elif nuevo in ("RECOGIDO", "ENTREGADO"):
+            campos.append("atendido_por = COALESCE(atendido_por, ?)")
+            valores.append(user.get("username") or user.get("nombre") or None)
+
+        conn.execute(f"UPDATE hk_pedido SET {', '.join(campos)} WHERE id = ?",
+                     valores + [pedido_id])
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/api/housekeeping/pedidos/{pedido_id}/nota")
+async def nota_pedido_hk(pedido_id: int, payload: dict,
+                         user: dict = Depends(exige("housekeeping", escribir=True))):
+    conn = get_connection()
+    try:
+        cur = conn.execute("UPDATE hk_pedido SET nota_operacion = ? WHERE id = ?",
+                           ((payload.get("nota") or "").strip() or None, pedido_id))
+        if not cur.rowcount:
+            raise HTTPException(status_code=404, detail="No existe ese pedido")
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+@app.delete("/api/housekeeping/pedidos/{pedido_id}")
+def borrar_pedido_hk(pedido_id: int,
+                     user: dict = Depends(exige("housekeeping", escribir=True))):
+    """Borra un pedido del todo. Solo los que nunca se confirmaron.
+
+    Uno ya recogido o entregado es historia de lo que se hizo con la ropa de un huésped:
+    ese se cancela, y queda el registro de que existió.
+    """
+    conn = get_connection()
+    try:
+        fila = conn.execute("SELECT estado FROM hk_pedido WHERE id = ?",
+                            (pedido_id,)).fetchone()
+        if not fila:
+            raise HTTPException(status_code=404, detail="No existe ese pedido")
+        if fila["estado"] != "SOLICITADO":
+            raise HTTPException(
+                status_code=400,
+                detail=("Solo se borran los pedidos que nunca se confirmaron. "
+                        "Este cancélalo: queda el registro de que existió."))
+        conn.execute("DELETE FROM hk_pedido WHERE id = ?", (pedido_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+# ---------- Los enlaces que se le mandan al huésped ----------
+
+@app.get("/api/housekeeping/enlaces")
+def enlaces_hk(desde: str = None, hasta: str = None,
+               user: dict = Depends(exige("housekeeping", escribir=True))):
+    """Un enlace por habitación, para mandarlo por WhatsApp igual que el del formulario.
+
+    La diferencia con el formulario de Google es que este ya sabe quién es el huésped: no
+    escribe su nombre ni su habitación, que eran dos de sus seis preguntas y las dos, el
+    error fácil.
+    """
+    hoy = datetime.date.today().isoformat()
+    desde = desde or hoy
+    hasta = hasta or (datetime.date.today() + datetime.timedelta(days=14)).isoformat()
+    conn = get_connection()
+    try:
+        filas = conn.execute(
+            f"""SELECT conf_no, room_no, nombre_principal, arr_date, dep_date
+                FROM reserva
+                WHERE res_status != 'CANCELADA'
+                  AND {sql_fecha('arr_date')} <= ?
+                  AND {sql_fecha('dep_date')} >= ?
+                ORDER BY CAST(room_no AS INTEGER)""",
+            (yymmdd(hasta), yymmdd(desde))).fetchall()
+        import hk_pagina as _pag
+        salida = []
+        for f in filas:
+            d = dict(f)
+            d["token"] = _hk.token_de_reserva(conn, d["conf_no"])
+            # El enlace sale en el idioma del ITINERARIO de ese huésped, igual que el del
+            # spa: así el que copia recepción ya va en su idioma y nadie tiene que
+            # acordarse. El huésped lo cambia igual con el botón EN/ES.
+            d["idioma"] = _pag.idioma_valido(_idioma_del_itinerario(conn, d["conf_no"]))
+            d["ruta"] = f"/housekeeping/{d['conf_no']}/{d['token']}"
+            if d["idioma"] != _pag.IDIOMA_POR_DEFECTO:
+                d["ruta"] += f"?idioma={d['idioma']}"
+            d["pedidos"] = conn.execute(
+                "SELECT COUNT(*) n FROM hk_pedido WHERE conf_no = ? AND estado != 'CANCELADO'",
+                (d["conf_no"],)).fetchone()["n"]
+            salida.append(d)
+        base = (pub.cargar_config().get("base_url") or "").rstrip("/")
+        return {"base_url": base, "huespedes": salida}
+    finally:
+        conn.close()
+
+
+# ---------- La página del huésped ----------
+
+def _datos_publicos_hk(conn, reserva):
+    llegada, salida = _noches_de_estadia(reserva)
+    cfg = _hk.cargar_config()
+    mios = _pedidos_hk(conn, conf_no=reserva["conf_no"], incluir_canceladas=False)
+    return {
+        "conf_no": reserva["conf_no"],
+        "room_no": reserva["room_no"],
+        "nombre": reserva["nombre_principal"],
+        "estadia_desde": llegada,
+        "estadia_hasta": salida,
+        "prendas": [{"codigo": p["codigo"],
+                     "nombre": p["nombre_en"] or p["nombre"]}
+                    for p in _prendas_hk(conn)],
+        "config": cfg,
+        "horas": _hk.horas_de_recoleccion(cfg),
+        "mis_pedidos": [
+            {"id": m["id"], "fecha": m["fecha"], "hora": m["hora"],
+             "estado": m["estado"], "resumen": m["resumen"],
+             "mismo_dia": m["mismo_dia"]}
+            for m in mios],
+    }
+
+
+@app.get("/api/housekeeping/publico/{conf_no}/{token}")
+def hk_publico_datos(conf_no: str, token: str):
+    """Lo que la página del huésped necesita. Sin datos de nadie más."""
+    conn = get_connection()
+    try:
+        reserva = _hk.reserva_de_token(conn, conf_no, token)
+        if not reserva:
+            raise HTTPException(status_code=404, detail="Enlace no válido")
+        return _datos_publicos_hk(conn, reserva)
+    finally:
+        conn.close()
+
+
+@app.post("/api/housekeeping/publico/{conf_no}/{token}")
+async def hk_publico_pedir(conf_no: str, token: str, payload: dict):
+    """El huésped manda su ropa. Entra como SOLICITADO y housekeeping confirma."""
+    conn = get_connection()
+    try:
+        reserva = _hk.reserva_de_token(conn, conf_no, token)
+        if not reserva:
+            raise HTTPException(status_code=404, detail="Enlace no válido")
+
+        fecha = (payload.get("fecha") or "").strip()
+        if not fecha:
+            raise HTTPException(status_code=400, detail="Falta el día de la recolección.")
+        llegada, salida = _noches_de_estadia(reserva)
+        if llegada and salida and not (llegada <= fecha <= salida):
+            raise HTTPException(
+                status_code=400,
+                detail="Ese día no cae dentro de tu estadía.")
+
+        # Un tope por reserva, igual que en el spa: el enlace es público y sin esto una
+        # sola habitación podría llenar la lista de housekeeping.
+        ya = conn.execute(
+            """SELECT COUNT(*) n FROM hk_pedido
+               WHERE conf_no = ? AND estado IN ('SOLICITADO','CONFIRMADO','RECOGIDO')""",
+            (conf_no,)).fetchone()["n"]
+        if ya >= 10:
+            raise HTTPException(
+                status_code=429,
+                detail=("Ya hay varios pedidos abiertos para esta habitación. "
+                        "Habla con recepción para agregar otro."))
+
+        prendas = {p["codigo"]: (p["nombre_en"] or p["nombre"]) for p in _prendas_hk(conn)}
+        items, problema = _hk.limpiar_items(payload.get("items"), prendas)
+        if problema:
+            raise HTTPException(status_code=400, detail=problema)
+
+        datos = {
+            "conf_no": conf_no,
+            "room_no": reserva["room_no"],
+            "nombre_huesped": reserva["nombre_principal"],
+            "fecha": fecha,
+            "hora": payload.get("hora"),
+            "nota_huesped": payload.get("nota"),
+            "estado": "SOLICITADO",
+        }
+        pedido_id = _crear_pedido_hk(conn, datos, items, origen="HUESPED")
+        respuesta = _datos_publicos_hk(conn, reserva)
+    finally:
+        conn.close()
+
+    # Aviso al celular de recepción y de housekeeping. Va después de guardar: si el aviso
+    # falla, el pedido ya está anotado.
+    try:
+        import notificaciones as notif
+        notif.aviso_pedido_housekeeping(
+            {"room_no": reserva["room_no"], "fecha": fecha,
+             "hora": _hk.normalizar_hora(payload.get("hora")),
+             "resumen": _hk.resumen_items(items),
+             "total": _hk.total_prendas(items)})
+    except Exception as e:
+        print(f"[avisos] no se pudo avisar del pedido de lavandería: "
+              f"{type(e).__name__}: {e}")
+
+    return {"status": "ok", "id": pedido_id, **respuesta}
+
+
+@app.get("/housekeeping/{conf_no}/{token}", response_class=HTMLResponse)
+def pagina_hk_huesped(conf_no: str, token: str, idioma: str = None):
+    """La página que abre el huésped con su enlace de lavandería."""
+    conn = get_connection()
+    try:
+        reserva = _hk.reserva_de_token(conn, conf_no, token)
+        if not reserva:
+            raise HTTPException(status_code=404, detail="Enlace no válido")
+        if not idioma:
+            idioma = _idioma_del_itinerario(conn, conf_no)
+    finally:
+        conn.close()
+    import hk_pagina
+    return HTMLResponse(hk_pagina.html(conf_no, token, idioma))
+
+
 from fastapi.responses import Response
 import exports
 
