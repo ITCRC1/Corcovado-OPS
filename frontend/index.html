@@ -2132,7 +2132,10 @@ async function loadAgenda(fecha, desde, hasta) {
   const [rows, cat, tras] = await Promise.all([
     fetchAuth(url).then(r => r.json()),
     getCatalogo(),
-    fetchAuth(urlTras).then(r => r.json()).catch(() => null),
+    // El fallo se DEVUELVE, no se traga: seccionTraslados lo muestra. Devolviendo null
+    // la sección desaparecía de la pantalla y no había forma de saber que existía.
+    fetchAuth(urlTras).then(r => r.json())
+      .catch(e => ({ detail: "No hubo respuesta del servidor (" + e.message + ")." })),
   ]);
   // Conflictos de horario y quién está libre ese día
   let conflictos = [], dispo = {};
@@ -2230,7 +2233,20 @@ async function loadAgenda(fecha, desde, hasta) {
 // Las corridas las arma el servidor a partir de las reservas, así que aquí no se crean ni
 // se borran: solo se les pone quién va. Ver backend/traslados.py.
 function seccionTraslados(d) {
-  if (!d) return "";
+  // Si la petición no trajo corridas, hay que decir POR QUÉ. Antes esto devolvía "" y
+  // la sección entera desaparecía de la pantalla sin dejar rastro: quien la buscara
+  // pensaría que el sistema no se actualizó, cuando lo que pasó fue que se cayó la red
+  // o que su usuario no tiene el permiso. Una sección que se esconde sola es
+  // indistinguible de una que no existe.
+  if (!d || !d.corridas) {
+    return `<div style="margin-bottom:16px;">
+      <p style="font-weight:600;font-size:13px;margin:0 0 6px;">Ingresos y salidas por locación</p>
+      <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:10px 12px;font-size:12.5px;">
+        No se pudieron cargar los traslados.
+        ${d && d.detail ? `<br><span style="font-size:11.5px;">${escaparHTML(d.detail)}</span>`
+                        : `<br><span style="font-size:11.5px;">Revisá la conexión y volvé a entrar a la pantalla.</span>`}
+      </div></div>`;
+  }
   const R = d.resumen || {};
   if (!(d.corridas || []).length) {
     return `<div style="margin-bottom:16px;">
