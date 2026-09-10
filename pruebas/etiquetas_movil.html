@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<title>Etiquetas del teléfono — comprobación</title>
+<style>
+  body { font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; padding: 16px 18px;
+         max-width: 860px; margin: 0 auto; color: #24291F; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  p.d { color: #6b6757; margin: 0 0 16px; font-size: 12.5px; }
+  table { border-collapse: collapse; margin: 0 0 18px; font-size: 12px; }
+  th, td { border: 1px solid #ddd; padding: 4px 7px; text-align: left; }
+  th { background: #f3f1ea; }
+  #veredicto { font-size: 16px; font-weight: 700; padding: 10px 12px; border-radius: 8px;
+               margin: 0 0 14px; }
+  .bien { background: #E8F0E4; color: #2E5A2E; }
+  .mal  { background: #FBE9E9; color: #9B2C2C; }
+  pre { background: #FAF8F2; border: 1px solid #e5e2d8; border-radius: 8px;
+        padding: 11px 12px; overflow-x: auto; font-size: 12px; }
+  .MAL { color: #9B2C2C; font-weight: 700; }
+</style>
+
+<h1>Las etiquetas del teléfono cuentan el <code>rowspan</code></h1>
+<p class="d">
+  Abrí este archivo en un navegador. Lee <code>adaptarTablasMovil()</code> del
+  <code>frontend/index.html</code> de al lado —no una copia— y la corre sobre la misma
+  estructura de tabla que arma la agenda de tours, con la celda del huésped abarcando dos
+  tours. Si alguna etiqueta no cae donde debe, lo dice.
+</p>
+<p class="d">
+  Por qué existe: la etiqueta se elegía por la posición de la celda en su fila, y en el
+  segundo tour de una reserva la celda del huésped no existe, así que todas se corrían
+  una a la izquierda. En el teléfono se leía la asignación de guías bajo el título
+  «Grupo» y los botes bajo «Guía» — el dato correcto con el nombre equivocado, que es la
+  peor forma de equivocarse porque nadie duda de lo que está leyendo.
+</p>
+
+<div id="veredicto">Leyendo…</div>
+
+<!-- La MISMA estructura que arma loadAgenda(): huésped y pax con rowspan, dos tours.
+     data-real dice qué etiqueta le corresponde de verdad a cada celda. -->
+<table id="agenda">
+  <tr><th>Huésped / Hab.</th><th>Tour</th><th>Fecha del tour</th><th>Grupo</th>
+      <th>Guía</th><th>Bote</th><th>Pax</th><th></th></tr>
+  <tr>
+    <td rowspan="2">Ana Mora · 07</td>
+    <td data-real="Tour">MANGROVE</td>
+    <td data-real="Fecha del tour">2026-09-12</td>
+    <td data-real="Grupo">A</td>
+    <td data-real="Guía">Luis</td>
+    <td data-real="Bote">Osa I</td>
+    <td rowspan="2">3</td>
+    <td data-real="">Guardar</td>
+  </tr>
+  <tr>
+    <td data-real="Tour">NW</td>
+    <td data-real="Fecha del tour">2026-09-13</td>
+    <td data-real="Grupo">B</td>
+    <td data-real="Guía">Marta</td>
+    <td data-real="Bote">Osa II</td>
+    <td data-real="">Guardar</td>
+  </tr>
+</table>
+
+<!-- Con colspan, para que el arreglo del rowspan no rompa las otras tablas -->
+<table id="conColspan">
+  <tr><th>Uno</th><th>Dos</th><th>Tres</th></tr>
+  <tr><td data-real="Uno">a</td><td data-real="Dos">b</td><td data-real="Tres">c</td></tr>
+  <tr><td colspan="3" data-real="Uno">un pie que abarca las tres</td></tr>
+</table>
+
+<pre id="detalle"></pre>
+
+<script>
+// Se saca la función del index.html de verdad. Copiada a mano, esta comprobación pasaría
+// contra una versión que ya no es la que corre en el teléfono.
+fetch("../frontend/index.html")
+  .then(r => r.ok ? r.text() : Promise.reject(r.status))
+  .then(html => {
+    const i = html.indexOf("function adaptarTablasMovil(");
+    if (i < 0) throw new Error("no se encontró adaptarTablasMovil() en el index.html");
+    let nivel = 0, j = i;
+    for (; j < html.length; j++) {
+      if (html[j] === "{") nivel++;
+      else if (html[j] === "}" && --nivel === 0) { j++; break; }
+    }
+    // eslint-disable-next-line no-new-func
+    new Function(html.slice(i, j) + "\nwindow.__adaptar = adaptarTablasMovil;")();
+    comprobar(window.__adaptar);
+  })
+  .catch(e => {
+    document.getElementById("veredicto").className = "mal";
+    document.getElementById("veredicto").textContent =
+      "No se pudo leer el index.html: " + e + ". Si el navegador bloquea el archivo " +
+      "local, levantá la carpeta con:  python -m http.server";
+  });
+
+function comprobar(adaptar) {
+  adaptar();
+  let malas = 0, total = 0, txt = "";
+  document.querySelectorAll("td[data-real]").forEach(td => {
+    total++;
+    const esperada = td.getAttribute("data-real");
+    const puesta = td.getAttribute("data-etiqueta");
+    const bien = esperada === puesta;
+    if (!bien) malas++;
+    txt += `${bien ? "ok " : "MAL"}  ${td.textContent.trim().padEnd(24)}`
+         + ` le toca "${esperada}"   recibió "${puesta}"\n`;
+  });
+  const v = document.getElementById("veredicto");
+  v.className = malas ? "mal" : "bien";
+  v.textContent = malas
+    ? `${malas} de ${total} etiquetas mal puestas`
+    : `${total}/${total} etiquetas correctas`;
+  document.getElementById("detalle").innerHTML =
+    txt.split("\n").map(l => l.startsWith("MAL")
+      ? `<span class="MAL">${l}</span>` : l).join("\n");
+}
+</script>
+</html>

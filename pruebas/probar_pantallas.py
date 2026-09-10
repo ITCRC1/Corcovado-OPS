@@ -55,7 +55,66 @@ def _cargadores(html):
     return [x.strip() for x in m.group(1).replace("\n", " ").split(",") if x.strip()]
 
 
+def _funcion(html, nombre):
+    """El cuerpo de una función de JavaScript, contando las llaves."""
+    i = html.find(f"function {nombre}(")
+    if i < 0:
+        return None
+    nivel, j = 0, i
+    while j < len(html):
+        if html[j] == "{":
+            nivel += 1
+        elif html[j] == "}":
+            nivel -= 1
+            if nivel == 0:
+                return html[i:j + 1]
+        j += 1
+    return None
+
+
 # ---------------------------------------------------------------------------
+
+def las_etiquetas_del_telefono_cuentan_el_rowspan(c):
+    """En el telefono las tablas se vuelven tarjetas y cada dato lleva su etiqueta.
+
+    La etiqueta la pone adaptarTablasMovil() leyendo el encabezado, y durante un tiempo
+    la eligio por la POSICION de la celda en su fila. Con eso, cualquier tabla que use
+    rowspan queda mal etiquetada sin dar ningun error: en la agenda de tours la celda del
+    huesped abarca todos los tours de la reserva, asi que en el segundo tour esa celda no
+    existe y las etiquetas se corren una a la izquierda. En el telefono se leia la
+    asignacion de guias bajo el titulo «Grupo» y los botes bajo «Guia».
+
+    Es la peor forma de equivocarse: el dato es correcto y el nombre no, asi que nadie
+    duda de lo que esta leyendo. Lo reporto el hotel desde la app del telefono.
+
+    Esto es una comprobacion de TEXTO —no hay navegador aqui— y sirve para que nadie
+    vuelva a la version por posicion. La comprobacion de verdad, con un navegador y la
+    tabla real, esta en pruebas/etiquetas_movil.html: se abre y dice 16/16.
+    """
+    html = _html()
+    fn = _funcion(html, "adaptarTablasMovil")
+    c.cierto(fn is not None, "adaptarTablasMovil sigue existiendo")
+    if not fn:
+        return
+    c.cierto("rowspan" in fn,
+             "tiene en cuenta el rowspan al decidir la columna de cada celda")
+    c.cierto("colspan" in fn, "y el colspan")
+    # La forma vieja: la etiqueta salia del indice de la celda dentro de la fila.
+    c.igual(re.search(r"forEach\(\s*\(\s*celda\s*,\s*i\s*\)", fn) is not None, False,
+            "ya no elige la etiqueta por la posicion de la celda en su fila")
+
+    # Y que la tabla que lo destapo siga usando rowspan: si algun dia deja de usarlo, esta
+    # prueba dejaria de proteger nada y conviene enterarse.
+    #
+    # Se ancla en «Fecha del tour», que solo esta en la agenda: «Huésped / Hab.» tambien
+    # es el encabezado de la hoja del dia, y buscando por ahi se media la tabla
+    # equivocada — que no usa rowspan y hacia fallar la comprobacion.
+    i = html.find("<th>Fecha del tour</th>")
+    c.cierto(i > 0, "se encuentra la tabla de la agenda de tours")
+    if i > 0:
+        c.cierto("rowspan" in html[i:i + 1400],
+                 "la agenda de tours sigue uniendo filas con rowspan")
+
 
 def los_botones_del_menu_van_numerados_en_orden(c):
     """Un salto o un repetido aquí manda a la pantalla de al lado sin avisar."""
@@ -153,6 +212,7 @@ PRUEBAS = [
     el_menu_y_los_permisos_del_servidor_dicen_lo_mismo,
     las_que_se_refrescan_solas_existen,
     housekeeping_quedo_enganchada_en_las_cinco_listas,
+    las_etiquetas_del_telefono_cuentan_el_rowspan,
 ]
 
 

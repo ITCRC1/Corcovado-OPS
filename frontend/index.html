@@ -787,18 +787,49 @@ function aplicarPantallaPedida() {
 // En el teléfono las tablas se dibujan como tarjetas, y cada dato necesita su etiqueta.
 // Se toma del encabezado de la propia tabla, así vale para todas —las de hoy y las que
 // se agreguen— sin tener que escribir la etiqueta a mano en cada celda.
+//
+// LA COLUMNA SE CALCULA, NO SE CUENTA. Antes se usaba la posición de la celda dentro de
+// su fila (`titulos[i]`), y con eso una tabla que use `rowspan` queda MAL ETIQUETADA sin
+// dar ningún error: en la agenda de tours la celda del huésped abarca todos los tours de
+// la reserva, así que en el segundo tour esa celda no existe y todas las etiquetas se
+// corrían una a la izquierda. En el teléfono se leía la asignación de guías bajo el
+// título «Grupo» y los botes bajo «Guía» — con los datos correctos y el nombre
+// equivocado, que es la peor forma de equivocarse: nadie duda de lo que está leyendo.
+//
+// Así que se rastrea qué columna ocupa realmente cada celda, teniendo en cuenta lo que
+// las filas de arriba siguen ocupando con su rowspan. Es lo mismo que hace el navegador
+// para dibujar la tabla.
 function adaptarTablasMovil(raiz) {
   (raiz || document).querySelectorAll("table:not([data-adaptada])").forEach(tabla => {
     const encabezados = [...tabla.querySelectorAll("tr")]
       .find(f => f.querySelector("th"));
     if (!encabezados) return;
-    const titulos = [...encabezados.querySelectorAll("th")].map(t => t.textContent.trim());
+
+    // Un th con colspan da su nombre a todas las columnas que abarca.
+    const titulos = [];
+    [...encabezados.querySelectorAll("th")].forEach(t => {
+      const cols = parseInt(t.getAttribute("colspan") || "1", 10) || 1;
+      for (let k = 0; k < cols; k++) titulos.push(t.textContent.trim());
+    });
+
+    // columna -> cuántas filas MÁS la sigue ocupando un rowspan de arriba
+    const ocupadas = {};
     tabla.querySelectorAll("tr").forEach(fila => {
-      [...fila.children].forEach((celda, i) => {
+      let col = 0;
+      const nuevas = {};
+      [...fila.children].forEach(celda => {
+        while (ocupadas[col] > 0) col++;        // esa columna la puso una fila anterior
+        const filas = parseInt(celda.getAttribute("rowspan") || "1", 10) || 1;
+        const cols = parseInt(celda.getAttribute("colspan") || "1", 10) || 1;
         if (celda.tagName === "TD" && !celda.hasAttribute("data-etiqueta")) {
-          celda.setAttribute("data-etiqueta", titulos[i] || "");
+          celda.setAttribute("data-etiqueta", titulos[col] || "");
         }
+        if (filas > 1) for (let k = 0; k < cols; k++) nuevas[col + k] = filas - 1;
+        col += cols;
       });
+      // Cierra la fila: lo que venía de arriba gastó una, y lo nuevo empieza a contar.
+      Object.keys(ocupadas).forEach(k => { if (ocupadas[k] > 0) ocupadas[k]--; });
+      Object.keys(nuevas).forEach(k => { ocupadas[k] = nuevas[k]; });
     });
     tabla.setAttribute("data-adaptada", "1");
   });
