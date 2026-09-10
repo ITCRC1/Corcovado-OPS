@@ -156,6 +156,36 @@ CREATE TABLE IF NOT EXISTS tour_asignado (
     creado_en TEXT DEFAULT (datetime('now'))
 );
 
+-- Quién lleva cada traslado de entrada o salida del lodge.
+--
+-- Una CORRIDA es un viaje del bote: fecha + dirección + punto + hora. Lo que la
+-- distingue de otra del mismo día y punto es la HORA, no un número de grupo: el lodge
+-- manda el mismo bote con el mismo guía varias veces, sobre todo por Drake, donde cada
+-- vuelo llega a una hora distinta.
+--
+-- Aquí solo va la ASIGNACIÓN. Los huéspedes de cada corrida, su pax y sus horas se
+-- derivan de las reservas cada vez que se consulta (ver traslados.py): así no hay nada
+-- que se pueda desincronizar cuando cambia un vuelo o se cancela una reserva.
+--
+-- La hora es parte de la identidad de la corrida, así que va en la clave. Se guarda como
+-- texto vacío —no NULL— cuando todavía no se sabe: en SQLite dos NULL no chocan entre sí
+-- bajo UNIQUE, así que con NULL se habrían podido crear dos corridas «sin hora» para el
+-- mismo punto y el mismo día.
+CREATE TABLE IF NOT EXISTS traslado (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fecha TEXT NOT NULL,              -- ISO (2026-09-11)
+    tipo TEXT NOT NULL,               -- 'entrada' | 'salida'
+    punto TEXT NOT NULL,              -- 'Sierpe' | 'Drake'
+    hora TEXT NOT NULL DEFAULT '',    -- 'HH:MM', o '' si todavía no se sabe
+    guia_nombre TEXT REFERENCES guia(nombre),
+    bote_nombre TEXT REFERENCES bote(nombre),
+    nota TEXT,
+    creado_en TEXT DEFAULT (datetime('now')),
+    UNIQUE(fecha, tipo, punto, hora)
+);
+
+CREATE INDEX IF NOT EXISTS idx_traslado_fecha ON traslado(fecha);
+
 -- Sospechas de que varias habitaciones son familia o vienen juntas.
 -- El sistema no las une solo: las propone y recepción decide. La clave es la lista de
 -- números de reserva ordenada, para que una sospecha descartada NO vuelva a preguntarse

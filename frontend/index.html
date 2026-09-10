@@ -2042,7 +2042,13 @@ async function loadAgenda(fecha, desde, hasta) {
   if (fecha === null) F.modo = "rango";              // se pidió ver un rango
   if (fecha === undefined) fecha = F.modo === "dia" ? F.fecha : null;
   let url = fecha ? `${API}/api/tours/agenda?fecha=${fecha}` : `${API}/api/tours/agenda?desde=${F.desde}&hasta=${F.hasta}`;
-  const [rows, cat] = await Promise.all([fetchAuth(url).then(r => r.json()), getCatalogo()]);
+  const urlTras = fecha ? `${API}/api/traslados?fecha=${fecha}`
+                        : `${API}/api/traslados?desde=${F.desde}&hasta=${F.hasta}`;
+  const [rows, cat, tras] = await Promise.all([
+    fetchAuth(url).then(r => r.json()),
+    getCatalogo(),
+    fetchAuth(urlTras).then(r => r.json()).catch(() => null),
+  ]);
   // Conflictos de horario y quién está libre ese día
   let conflictos = [], dispo = {};
   if (fecha) {
@@ -2096,6 +2102,7 @@ async function loadAgenda(fecha, desde, hasta) {
           <p style="margin:0 0 6px;font-weight:600;">⚠ ${conflictos.length} conflicto${conflictos.length>1?'s':''} de asignación</p>
           ${conflictos.map(x => `<p style="margin:0 0 3px;">${x.mensaje}</p>`).join("")}
         </div>` : ""}
+      ${seccionTraslados(tras)}
       ${resumenPorTour(rows)}
       ${rows.length ? `
       <table>
@@ -2127,6 +2134,109 @@ async function loadAgenda(fecha, desde, hasta) {
       </p>` : `<p class="empty">No hay tours para esta fecha.<small>Si esperabas alguno, revisa que el PDF de reservas esté importado y que la fecha sea la correcta.</small></p>`}
     </div>
   `;
+}
+
+// ---------- INGRESOS Y SALIDAS POR LOCACIÓN ----------
+//
+// Una CORRIDA es un viaje del bote: fecha + dirección + punto + hora. Lo que la separa
+// de otra del mismo día y punto es la HORA, no un grupo: el lodge manda el mismo bote con
+// el mismo guía varias veces, sobre todo por Drake, donde cada vuelo llega a una hora.
+//
+// Las corridas las arma el servidor a partir de las reservas, así que aquí no se crean ni
+// se borran: solo se les pone quién va. Ver backend/traslados.py.
+function seccionTraslados(d) {
+  if (!d) return "";
+  const R = d.resumen || {};
+  if (!(d.corridas || []).length) {
+    return `<div style="margin-bottom:16px;">
+      <p style="font-weight:600;font-size:13px;margin:0 0 6px;">Ingresos y salidas por locación</p>
+      <p class="empty" style="padding:14px 12px;">Nadie entra ni sale en estas fechas.<small>Las corridas salen de las reservas: aparecen solas en cuanto haya un ingreso o una salida con su punto.</small></p>
+    </div>`;
+  }
+
+  const puedo = puedeEscribir("agenda");
+  const opcG = (actual) => `<option value="">Sin asignar</option>` + (d.guias || [])
+    .map(g => `<option value="${escaparHTML(g.nombre)}"${g.nombre === actual ? " selected" : ""}>${escaparHTML(g.nombre)}</option>`).join("");
+  const opcB = (actual) => `<option value="">Sin asignar</option>` + (d.botes || [])
+    .filter(b => b.gestionado_por_hotel || b.nombre === actual)
+    .map(b => `<option value="${escaparHTML(b.nombre)}"${b.nombre === actual ? " selected" : ""}>${escaparHTML(b.nombre)}${b.capacidad_max ? ` (${b.capacidad_max})` : ""}</option>`).join("");
+
+  const fila = (c) => {
+    // La clave de la corrida viaja en el propio control: no hay id porque la corrida no
+    // existe como fila hasta que se le asigna algo.
+    const k = [c.fecha, c.tipo, c.punto, c.hora].map(x => encodeURIComponent(x)).join("|");
+    const quienes = c.huespedes.map(h =>
+      `${escaparHTML(h.room_no || "?")} ${escaparHTML((h.nombre || "").split(",")[0])}`).join(" · ");
+    return `<tr>
+      <td>${escaparHTML(c.fecha)}</td>
+      <td><span class="badge ${c.tipo === "entrada" ? "badge-ok" : "badge-warn"}">${c.tipo === "entrada" ? "Entra" : "Sale"}</span></td>
+      <td><strong>${escaparHTML(c.punto)}</strong></td>
+      <td>${c.hora
+            ? escaparHTML(c.hora)
+            : `<span style="color:var(--warn-text);font-size:11.5px;">${escaparHTML(c.hora_origen || "sin hora")}</span>`}</td>
+      <td>${c.huespedes.length} hab.
+        <br><span style="font-size:10.5px;color:var(--muted);">${quienes}</span></td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums;"><strong>${c.pax}</strong></td>
+      <td>${puedo
+            ? `<select onchange="asignarTraslado('${k}','guia',this.value)">${opcG(c.guia_nombre)}</select>`
+            : escaparHTML(c.guia_nombre || "Sin asignar")}</td>
+      <td>${puedo
+            ? `<select onchange="asignarTraslado('${k}','bote',this.value)">${opcB(c.bote_nombre)}</select>`
+            : escaparHTML(c.bote_nombre || "Sin asignar")}
+        ${c.aviso_capacidad ? `<br><span style="font-size:10.5px;color:var(--danger-text);">no cabe</span>` : ""}</td>
+    </tr>`;
+  };
+
+  const avisos = (d.conflictos || []).concat(
+    (d.corridas || []).map(c => c.aviso_capacidad).filter(Boolean));
+
+  return `
+    <div style="margin-bottom:18px;">
+      <p style="font-weight:600;font-size:13px;margin:0 0 2px;">
+        Ingresos y salidas por locación · ${R.corridas} corrida${R.corridas === 1 ? "" : "s"} · ${R.pax} pax
+        ${R.sin_guia ? `<span style="color:var(--warn-text);"> · ${R.sin_guia} sin guía</span>` : ""}
+        ${R.sin_bote ? `<span style="color:var(--warn-text);"> · ${R.sin_bote} sin bote</span>` : ""}
+      </p>
+      <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">
+        Quién va al muelle de Sierpe o a la pista de Drake. Los que se mueven a la misma
+        hora van en la misma corrida; el mismo bote puede hacer varios viajes al día.
+        ${R.sin_hora ? `<strong>${R.sin_hora} corrida${R.sin_hora === 1 ? "" : "s"} sin hora:</strong> falta el vuelo de esos huéspedes y hasta que se sepa no se les puede poner viaje.` : ""}
+      </p>
+      ${avisos.length ? `
+        <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12.5px;">
+          ${avisos.map(a => `<p style="margin:0 0 3px;">⚠ ${escaparHTML(a)}</p>`).join("")}
+        </div>` : ""}
+      <table style="font-size:12.5px;">
+        <tr><th style="width:88px;">Fecha</th><th style="width:64px;">Dir.</th>
+            <th style="width:74px;">Punto</th><th style="width:64px;">Hora</th>
+            <th>Habitaciones</th><th style="width:50px;text-align:right;">Pax</th>
+            <th style="width:150px;">Guía</th><th style="width:150px;">Bote</th></tr>
+        ${d.corridas.map(fila).join("")}
+      </table>
+    </div>`;
+}
+
+async function asignarTraslado(clave, campo, valor) {
+  const [fecha, tipo, punto, hora] = clave.split("|").map(decodeURIComponent);
+  const cuerpo = { fecha, tipo, punto, hora };
+  cuerpo[campo] = valor;                    // vacío = quitar la asignación
+  const res = await fetchAuth(`${API}/api/traslados/asignar`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(cuerpo),
+  });
+  if (!res.ok) {
+    avisar((await res.json().catch(() => ({}))).detail || "No se pudo asignar", true);
+    return;
+  }
+  const d = await res.json();
+  avisar(valor ? `${campo === "guia" ? "Guía" : "Bote"} asignado` : "Asignación quitada");
+  const panel = document.getElementById("ag-alertas");
+  if (panel) {
+    panel.innerHTML = (d.alertas || []).length
+      ? `<div style="background:var(--warn-bg);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--warn-text);">${d.alertas.map(a => `⚠ ${escaparHTML(a)}`).join("<br>")}</div>`
+      : "";
+  }
+  loadAgenda();
 }
 
 // Cuántas salidas hay de cada tour, con su pax y lo que falta por asignar.
@@ -2280,8 +2390,19 @@ async function loadTransporte(fecha, desde, hasta) {
     ? `${r.hora_efectiva}${r.hora_origen === "del PDF" ? ""
         : ` <span style="font-size:10px;color:var(--muted);">${r.hora_origen}</span>`}`
     : `<span style="color:var(--warn-text);">${r.hora_origen}</span>`;
-  const filaE = r => `<tr><td>${r.arr_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${r.punto_entrada||"-"}</td><td>${celdaHora(r)}</td><td>${r.adl+r.chl}</td></tr>`;
-  const filaS = r => `<tr><td>${r.dep_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${r.punto_salida||"-"}</td><td>${celdaHora(r)}</td><td>${r.adl+r.chl}</td></tr>`;
+  // Quién lo lleva. Se asigna en la Agenda de tours —«Ingresos y salidas por locación»—
+  // y se muestra aquí porque esta es la pantalla que se mira el día del movimiento:
+  // decir el punto y la hora sin decir quién va es justo lo que había que preguntar
+  // por radio. Si falta, se dice en rojo: es alguien que puede quedarse esperando.
+  const celdaQuien = r => {
+    const g = r.guia_traslado, b = r.bote_traslado;
+    if (!g && !b) return `<span style="color:var(--warn-text);font-size:11.5px;">sin asignar</span>`;
+    return `${g ? escaparHTML(g) : `<span style="color:var(--warn-text);">sin guía</span>`}`
+         + `<br><span style="font-size:10.5px;color:var(--muted);">`
+         + `${b ? escaparHTML(b) : `<span style="color:var(--warn-text);">sin bote</span>`}</span>`;
+  };
+  const filaE = r => `<tr><td>${r.arr_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${r.punto_entrada||"-"}</td><td>${celdaHora(r)}</td><td>${celdaQuien(r)}</td><td>${r.adl+r.chl}</td></tr>`;
+  const filaS = r => `<tr><td>${r.dep_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${r.punto_salida||"-"}</td><td>${celdaHora(r)}</td><td>${celdaQuien(r)}</td><td>${r.adl+r.chl}</td></tr>`;
   app.innerHTML = `
     <div class="card">
       <div class="header">
@@ -2301,9 +2422,9 @@ async function loadTransporte(fecha, desde, hasta) {
         </div>
       </div>
       <p style="font-weight:600;font-size:14px;">Entradas</p>
-      ${d.entradas.length ? `<table><tr><th>Fecha</th><th>Hab.</th><th>Huésped</th><th>Punto</th><th>Hora</th><th>Pax</th></tr>${d.entradas.map(filaE).join("")}</table>` : `<p class="empty">Nadie ingresa este día.<small>Cambia la fecha con las flechas para revisar otro día.</small></p>`}
+      ${d.entradas.length ? `<table><tr><th>Fecha</th><th>Hab.</th><th>Huésped</th><th>Punto</th><th>Hora</th><th>Guía / bote</th><th>Pax</th></tr>${d.entradas.map(filaE).join("")}</table>` : `<p class="empty">Nadie ingresa este día.<small>Cambia la fecha con las flechas para revisar otro día.</small></p>`}
       <p style="font-weight:600;font-size:14px;margin-top:16px;">Salidas</p>
-      ${d.salidas.length ? `<table><tr><th>Fecha</th><th>Hab.</th><th>Huésped</th><th>Punto</th><th>Hora</th><th>Pax</th></tr>${d.salidas.map(filaS).join("")}</table>` : `<p class="empty">Nadie sale este día.</p>`}
+      ${d.salidas.length ? `<table><tr><th>Fecha</th><th>Hab.</th><th>Huésped</th><th>Punto</th><th>Hora</th><th>Guía / bote</th><th>Pax</th></tr>${d.salidas.map(filaS).join("")}</table>` : `<p class="empty">Nadie sale este día.</p>`}
       ${pendientes.length && puedeEscribir("transporte") ? `
         <p style="font-weight:600;font-size:14px;margin-top:20px;color:var(--warn-text);">⚠ Pendientes de confirmar (${pendientes.length})</p>
         <p style="font-size:12px;color:var(--muted);margin:0 0 8px;">El PDF menciona un ingreso o salida, pero no indica claramente si es por Sierpe o Drake.</p>

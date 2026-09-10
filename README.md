@@ -9,8 +9,8 @@ Sistema local para la operación diaria de Sierpe y Drake. Funciona sin internet
 |---|---|
 | **Dashboard** | El día de hoy: quién entra, sale y está en casa, tours, alertas y la preparación de mañana |
 | **Reservas** | Listado con colores por estado, búsqueda, detalle completo e itinerario de cada huésped. Desde el itinerario se le agregan o quitan tours, y quedan cargados en la operación |
-| **Agenda de tours** | Asignar guía y bote, dividir salidas en grupos, con aviso de conflictos de horario |
-| **Transporte** | Entradas y salidas por Sierpe o Drake, con horas de vuelo |
+| **Agenda de tours** | Asignar guía y bote, dividir salidas en grupos, con aviso de conflictos de horario. Incluye **los ingresos y salidas por locación**: quién va al muelle de Sierpe o a la pista de Drake |
+| **Transporte** | Entradas y salidas por Sierpe o Drake, con horas de vuelo y **quién lleva a cada huésped** |
 | **Entradas SINAC** | Control de compra con 15 días de anticipación, por urgencia |
 | **Amenidades** | Tareas por área (cocina, housekeeping, recepción…), incluidas alergias. Cada una con su día, su descripción editable y **varios departamentos**, donde cada uno marca su parte |
 | **Spa** | Agenda de tratamientos, ficha médica y consentimiento. El huésped pide por un enlace; el spa confirma |
@@ -202,6 +202,52 @@ huésped, igual que la del spa.
 - **Horario y prendas**: entre qué horas se recoge, la hora tope del mismo día, el **IVA**
   y el catálogo de prendas con su **precio por pieza** — agregar «Chaqueta» es una fila,
   no un despliegue
+
+## Los traslados: quién entra y quién sale
+
+Los tours ya tenían guía y bote asignados; los **ingresos y salidas** no. Y son el
+momento más delicado del día: si nadie va al muelle de Sierpe o a la pista de Drake, el
+huésped se queda tirado con las maletas en un lugar sin señal. La pantalla de Transporte
+decía a qué hora y por dónde, pero no quién lo lleva.
+
+Se asigna en **Agenda de tours → Ingresos y salidas por locación**, y aparece también en
+**Transporte**, que es la pantalla que se mira el día del movimiento.
+
+### La corrida se distingue por la HORA, no por un grupo
+
+Una **corrida** es un viaje del bote: fecha + dirección + punto + hora. El lodge manda el
+**mismo bote con el mismo guía varias veces al día**, sobre todo por Drake, donde cada
+vuelo llega a una hora distinta. Por eso no hay grupos A/B/C como en los tours: lo que
+separa una corrida de otra es la hora.
+
+### Las corridas se derivan de las reservas
+
+No se crean a mano. Quienes se mueven a la misma hora, por el mismo punto y en la misma
+dirección van juntos —que es exactamente lo que pasa en la práctica: los del vuelo de las
+9 suben al mismo bote—. Lo **único** que se guarda es a quién se le asignó cada corrida.
+
+Eso tiene tres consecuencias, y las tres son a favor:
+
+- No hay nada que se pueda desincronizar. Si se cancela una reserva, desaparece de su
+  corrida sin que nadie tenga que acordarse.
+- **Si a un huésped le mueven el vuelo, su corrida nueva aparece SIN ASIGNAR.** Es lo
+  correcto: cambió el viaje, hay que volver a decidir quién va. Arrastrar una asignación
+  a una hora que nadie confirmó es lo que deja a alguien esperando en la pista.
+- El que todavía no tiene hora de vuelo **no se esconde**: sale en una corrida «sin
+  hora», marcada. Es justo el que hay que resolver.
+
+### Lo que avisa
+
+- **Que no cabe la gente en el bote**, diciendo cuántos lugares faltan. Los botes
+  privados o externos no tienen tope: los pone la agencia y el lodge no decide cuánta
+  gente le cabe, así que avisar ahí sería un aviso que nadie puede resolver.
+- **Que un guía o un bote está en dos traslados a la misma hora.** A distinta hora no
+  avisa: hacer varios viajes al día es lo normal, y un aviso falso enseña a ignorar los
+  verdaderos.
+
+La comparación de horas va **en minutos, no en letras**: del PDF llegan como `09:00` y
+los horarios fijos del lodge como `11:30 a.m.`. Comparando los textos, un guía en Sierpe
+a las «9:00 a.m.» y en Drake a las «09:00» no salía como choque, y es el mismo momento.
 
 ### Los precios
 

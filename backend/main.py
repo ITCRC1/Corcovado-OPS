@@ -745,46 +745,15 @@ def agenda(fecha: str = None, desde: str = None, hasta: str = None, user: dict =
 
 
 def _hora_traslado(fila, es_entrada):
-    """Hora a la que de verdad se mueve el huésped, según lo ya dispuesto por el lodge.
+    """La hora real del traslado. La regla vive en traslados.py.
 
-    La pantalla de Transporte mostraba solo lo que viniera escrito en el PDF, y por eso
-    salían tantas líneas en blanco: por Sierpe el bote sale a la misma hora todos los
-    días y el PDF no la repite, y en las salidas por Sierpe la hora estaba fija en "—".
-
-    El orden es: lo que diga el PDF manda; si no dice nada, se aplica la regla del punto.
-
-      · Sierpe → horario fijo del bote (llegada y salida).
-      · Drake, llegada → la hora del vuelo; sin vuelo no se puede saber.
-      · Drake, salida  → el bote, calculado hacia atrás desde el vuelo, la misma cuenta
-        que se le imprime al huésped en su itinerario.
-
-    Devuelve (hora, origen). El origen sirve para que recepción distinga de un vistazo
-    lo confirmado de lo que sigue pendiente de verdad.
+    Se movió allí porque es la que decide en qué CORRIDA va cada huésped —los que se
+    mueven a la misma hora suben al mismo bote— y la asignación de guía y bote depende
+    de ella. Las dos tienen que leer exactamente lo mismo: si esta pantalla dijera una
+    hora y la corrida se armara con otra, alguien quedaría fuera del bote que le toca.
     """
-    import catalogo_itinerario as cat
-    import itinerario as _itin
-
-    if es_entrada:
-        punto = (fila.get("punto_entrada") or "").lower()
-        if fila.get("hora_vuelo_entrada"):
-            return fila["hora_vuelo_entrada"], "del PDF"
-        if fila.get("arr_time"):
-            return fila["arr_time"], "del PDF"
-        if punto == "sierpe":
-            return cat.SIERPE_BOTE_LLEGADA, "horario fijo de Sierpe"
-        if punto == "drake":
-            return None, "falta la hora del vuelo"
-        return None, "falta el punto"
-
-    punto = (fila.get("punto_salida") or "").lower()
-    if punto == "sierpe":
-        return cat.SIERPE_SALIDA["bote"], "horario fijo de Sierpe"
-    if punto == "drake":
-        logistica = _itin.calcular_logistica_salida(fila.get("hora_vuelo_salida"))
-        if logistica:
-            return logistica["bote"], "calculado del vuelo"
-        return None, "falta la hora del vuelo"
-    return None, "falta el punto"
+    import traslados as _tras
+    return _tras.hora_de_traslado(fila, es_entrada)
 
 
 @app.get("/api/transporte")
@@ -814,11 +783,29 @@ def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: di
     ).fetchall()
     conn.close()
 
+    # Quién lleva cada corrida, para poder decirlo aquí también. Esta pantalla es la que
+    # se mira el día del movimiento: mostrar el punto y la hora sin decir quién va es
+    # justo lo que hacía falta preguntar por radio.
+    import traslados as _tras
+    conn2 = get_connection()
+    try:
+        puestas = _tras.asignaciones(conn2)
+    finally:
+        conn2.close()
+
     def con_hora(filas, es_entrada):
         salida = []
+        tipo = "entrada" if es_entrada else "salida"
         for f in filas:
             d = dict(f)
             d["hora_efectiva"], d["hora_origen"] = _hora_traslado(d, es_entrada)
+            punto = _tras.normalizar_punto(
+                d.get("punto_entrada") if es_entrada else d.get("punto_salida"))
+            fecha_iso = _tras._iso(d.get("arr_date") if es_entrada else d.get("dep_date"))
+            clave = (fecha_iso, tipo, punto, d["hora_efectiva"] or _tras.SIN_HORA)
+            puesta = puestas.get(clave) or {}
+            d["guia_traslado"] = puesta.get("guia_nombre")
+            d["bote_traslado"] = puesta.get("bote_nombre")
             salida.append(d)
         return salida
 
@@ -3633,6 +3620,84 @@ def cambiar_grupo_operativo(tour_id: int, grupo: str, user: dict = Depends(exige
     conn.close()
     alertas = validar_tour_asignado(tour_id)
     return {"status": "ok", "grupo": grupo, "alertas": alertas}
+
+
+# ---------------------------------------------------------------------------
+# Traslados: quién lleva y quién trae
+# ---------------------------------------------------------------------------
+# Las corridas se DERIVAN de las reservas y solo se guarda la asignación. Ver
+# traslados.py, que explica por qué la hora es parte de la identidad de la corrida.
+
+@app.get("/api/traslados")
+def traslados_listar(fecha: str = None, desde: str = None, hasta: str = None,
+                     user: dict = Depends(exige("agenda", "transporte"))):
+    """Los viajes de bote que hay que cubrir, con su guía y su bote.
+
+    Se lee con permiso de Agenda o de Transporte: es el mismo dato visto desde los dos
+    lados —quien asigna y quien coordina el día del movimiento—.
+    """
+    import traslados as _tras
+    if fecha:
+        desde = hasta = fecha
+    if not desde or not hasta:
+        hoy = datetime.date.today()
+        desde = desde or hoy.isoformat()
+        hasta = hasta or (hoy + datetime.timedelta(days=7)).isoformat()
+
+    conn = get_connection()
+    try:
+        lista = _tras.corridas(conn, desde, hasta)
+        guias = [dict(r) for r in conn.execute(
+            "SELECT nombre, es_externo FROM guia WHERE activo = 1 ORDER BY nombre")]
+        botes = [dict(r) for r in conn.execute(
+            "SELECT nombre, capacidad_max, gestionado_por_hotel FROM bote "
+            "WHERE activo = 1 ORDER BY nombre")]
+    finally:
+        conn.close()
+
+    return {
+        "desde": desde, "hasta": hasta,
+        "corridas": lista,
+        "resumen": _tras.resumen(lista),
+        "conflictos": _tras.conflictos(lista),
+        "guias": guias,
+        "botes": botes,
+    }
+
+
+@app.post("/api/traslados/asignar")
+async def traslados_asignar(payload: dict,
+                            user: dict = Depends(exige("agenda", escribir=True))):
+    """Pone el guía y el bote de una corrida.
+
+    La corrida se identifica por fecha + tipo + punto + hora, no por un id: no existe
+    como fila hasta que alguien le asigna algo, porque sale de las reservas. Así no hay
+    que crearla antes de poder usarla, ni limpiarla si el vuelo se mueve.
+    """
+    import traslados as _tras
+    conn = get_connection()
+    try:
+        ok, problema = _tras.asignar(
+            conn,
+            (payload.get("fecha") or "").strip(),
+            payload.get("tipo"),
+            payload.get("punto"),
+            payload.get("hora"),
+            guia=payload.get("guia"),
+            bote=payload.get("bote"),
+            nota=payload.get("nota"))
+        if problema:
+            raise HTTPException(status_code=400, detail=problema)
+        fecha = (payload.get("fecha") or "").strip()
+        lista = _tras.corridas(conn, fecha, fecha)
+    finally:
+        conn.close()
+
+    avisos = _tras.conflictos(lista)
+    for c in lista:
+        if c["aviso_capacidad"]:
+            avisos.append(c["aviso_capacidad"])
+    return {"status": "ok", "alertas": avisos}
 
 
 @app.get("/api/tours/grupos-disponibles")
