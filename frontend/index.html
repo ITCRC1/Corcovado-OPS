@@ -4161,55 +4161,43 @@ async function mostrarEnlacesHk() {
   if (!res.ok) { avisar("No se pudieron cargar los enlaces", true); return; }
   const d = await res.json();
   const base = d.base_url || location.origin;
-  // Se guardan aparte para copiarlos: meter la dirección dentro de un onclick la rompe
-  // en cuanto lleva un apóstrofo o un signo de interrogación.
-  window._hkEnlaces = (d.huespedes || []).map(h => ({ ...h, url: base + h.ruta }));
-
-  const filas = window._hkEnlaces.map((h, i) => `<tr>
-      <td><strong>${escaparHTML(h.room_no || "—")}</strong></td>
-      <td>${escaparHTML(h.nombre_principal || "")}</td>
-      <td style="font-size:11.5px;">${escaparHTML(h.arr_date || "")} – ${escaparHTML(h.dep_date || "")}</td>
-      <td>${h.pedidos || ""}</td>
-      <td><button class="btn" onclick="copiarEnlaceHk(${i})">Copiar</button></td>
-    </tr>`).join("");
-
   window._hkGeneral = base + (d.ruta_general || "");
 
   modalHk(`
     <p style="font-weight:600;font-size:17px;margin:0;color:var(--forest-dark);">Enlace de lavandería</p>
 
-    <!-- EL ENLACE ÚNICO va primero porque es el que se manda: uno solo para todo el
-         hotel, que se pega en el grupo de WhatsApp y no hay que buscar cuál toca. -->
-    <p style="font-size:13px;color:var(--muted);margin:6px 0 6px;">
-      Este es el enlace para mandar. Es <strong>uno solo para todos</strong>: en el
-      formulario el huésped escribe su nombre y su habitación.</p>
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+    <p style="font-size:13px;color:var(--muted);margin:6px 0 10px;">
+      <strong>Uno solo para todo el hotel.</strong> Se copia y se pega en el grupo de
+      WhatsApp: no hay que buscar cuál le toca a cada habitación.</p>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
       <code style="flex:1;background:#F7FAF5;border:1px solid var(--border);border-radius:6px;
-                   padding:9px 11px;font-size:12.5px;word-break:break-all;">${escaparHTML(window._hkGeneral)}</code>
+                   padding:11px 13px;font-size:13px;word-break:break-all;">${escaparHTML(window._hkGeneral)}</code>
       <button class="btn btn-primary" onclick="copiarEnlaceGeneralHk()">Copiar</button>
     </div>
-    <p style="font-size:11.5px;color:var(--muted);margin:0 0 16px;">
-      Si el sistema no reconoce la habitación que escribió, el pedido <strong>entra
-      igual</strong> y queda marcado para que housekeeping lo resuelva — no se pierde.
-      <button class="btn" style="padding:3px 9px;font-size:11px;margin-left:6px;"
-              onclick="rehacerEnlaceGeneralHk()">Cambiar el enlace</button>
-      <span style="display:block;margin-top:3px;">Cambiarlo hace que el anterior deje de
-      abrir. Sirve si se filtró fuera del hotel.</span></p>
-
-    <p style="font-weight:600;font-size:13.5px;margin:16px 0 2px;color:var(--forest-dark);">
-      Y si querés mandarle el suyo a una habitación</p>
-    <p style="font-size:12px;color:var(--muted);margin:2px 0 10px;">
-      Estos son por reserva: ya saben quién es, así que no le preguntan el nombre ni la
-      habitación y solo le ofrecen días de su estadía. Siguen funcionando.</p>
     ${!d.base_url ? `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:11px 13px;margin-bottom:12px;font-size:12.5px;">
       Todavía no hay una dirección de internet configurada, así que el enlace se armó con
       <code>${escaparHTML(location.origin)}</code>. Si el huésped lo va a abrir desde fuera
       del lodge, ponla en la pantalla <strong>Publicación</strong>.</div>` : ""}
-    ${filas ? `<table style="font-size:12.5px;">
-        <tr><th style="width:60px;">Hab.</th><th>Huésped</th><th style="width:118px;">Estadía</th>
-            <th style="width:62px;">Pedidos</th><th style="width:96px;"></th></tr>
-        ${filas}</table>`
-      : `<p class="empty">No hay huéspedes en casa ni por llegar en las próximas dos semanas.</p>`}
+
+    <p style="font-weight:600;font-size:13.5px;margin:14px 0 2px;color:var(--forest-dark);">
+      Cómo lo ve el huésped</p>
+    <p style="font-size:12.5px;color:var(--muted);margin:2px 0 4px;">
+      Escribe <strong>el número de su habitación</strong> y el sistema busca quién está
+      en ella: la orden queda a nombre del huésped tal como está en la reserva, no como
+      él lo escriba. Si la reconoce se lo confirma y ya no le pide nada más.</p>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 4px;">
+      Si <strong>no</strong> la reconoce, se lo dice para que revise el número, y le pide
+      el nombre. El pedido <strong>entra igual</strong> y queda marcado para que
+      housekeeping lo resuelva — no se pierde.</p>
+    <p style="font-size:11.5px;color:var(--muted);margin:0 0 14px;">
+      La página nunca muestra el nombre de quien está en la habitación: este enlace lo
+      tiene todo el hotel, y si lo mostrara, cualquiera probaría del 01 al 30 y tendría
+      la lista de quién duerme en cada cuarto.</p>
+
+    <button class="btn" onclick="rehacerEnlaceGeneralHk()">Cambiar el enlace</button>
+    <p style="font-size:11.5px;color:var(--muted);margin:6px 0 0;">
+      Genera uno nuevo y el anterior deja de abrir. Sirve si el enlace se filtró fuera
+      del hotel. Hay que volver a mandarlo.</p>
   `);
 }
 

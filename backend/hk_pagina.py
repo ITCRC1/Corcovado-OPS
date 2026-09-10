@@ -39,10 +39,15 @@ TEXTOS = {
         "ya_pedido": "What you've sent us",
         "pide_t": "Send your laundry",
         "pide_d": "We pick up between {abre} and {cierra}.",
-        "tu_nombre": "Your name",
-        "tu_habitacion": "Room number",
+        "tu_habitacion": "Your room number",
         "tu_habitacion_ayuda": "— as it appears on your key",
-        "falta_quien": "Please add your name and your room number.",
+        "tu_nombre": "Your name",
+        "tu_nombre_ayuda": "— only if we don't recognise your room",
+        "hab_ok": "We found your booking. Your laundry will go under your name.",
+        "hab_no": "We don't recognise that room. Check the number — or write your name "
+                  "below and send it anyway; housekeeping will sort it out.",
+        "falta_quien": "Please add your room number.",
+        "falta_nombre": "We don't recognise that room, so please write your name.",
         "dia": "Day",
         "hora": "Pick-up time",
         "hora_ayuda": "— tap the one that suits you",
@@ -89,10 +94,15 @@ TEXTOS = {
         "ya_pedido": "Lo que nos mandaste",
         "pide_t": "Mandá tu ropa",
         "pide_d": "Pasamos a recoger entre las {abre} y las {cierra}.",
-        "tu_nombre": "Tu nombre",
-        "tu_habitacion": "Número de habitación",
+        "tu_habitacion": "Tu número de habitación",
         "tu_habitacion_ayuda": "— el que dice tu llave",
-        "falta_quien": "Poné tu nombre y el número de tu habitación.",
+        "tu_nombre": "Tu nombre",
+        "tu_nombre_ayuda": "— solo si no reconocemos tu habitación",
+        "hab_ok": "Encontramos tu reserva. Tu ropa va a nombre tuyo.",
+        "hab_no": "No reconocemos esa habitación. Revisá el número — o escribí tu "
+                  "nombre abajo y mandalo igual; housekeeping lo resuelve.",
+        "falta_quien": "Poné el número de tu habitación.",
+        "falta_nombre": "No reconocemos esa habitación, así que poné tu nombre.",
         "dia": "Día",
         "hora": "Hora de recolección",
         "hora_ayuda": "— tocá la que te sirva",
@@ -286,6 +296,9 @@ let IDIOMA = "{{IDIOMA}}";
 let DATOS = null;
 let ELEGIDO = { fecha: "", hora: "", items: {}, nota: "", nombre: "", room_no: "" };
 let ENVIANDO = false;
+// null = todavía no se preguntó · true = la habitación existe · false = no se reconoce
+let RECONOCIDA = null;
+let _timerHab = null;
 
 // La elección de idioma se recuerda en el propio teléfono: al volver a abrir el enlace
 // no hay que cambiarla otra vez.
@@ -412,6 +425,46 @@ function cambiar(codigo, delta) {
 
 function ponerHora(h) { ELEGIDO.hora = h; dibujar(); }
 
+// Al escribir la habitación se le pregunta al servidor si la reconoce. Se espera a que
+// deje de teclear: preguntando en cada tecla, "12" haría tres consultas y la de "1"
+// podría contestar después que la de "12" y dejar el aviso equivocado en pantalla.
+//
+// NO se redibuja la pantalla al escribir —solo al llegar la respuesta y solo si cambió
+// el resultado—: redibujar le sacaría el cursor del campo a mitad de un número.
+function cambiarHabitacion(valor) {
+  ELEGIDO.room_no = valor;
+  clearTimeout(_timerHab);
+  const previo = RECONOCIDA;
+  if (!valor.trim()) {
+    RECONOCIDA = null;
+    if (previo !== null) dibujar();
+    return;
+  }
+  _timerHab = setTimeout(() => comprobarHabitacion(valor), 450);
+}
+
+async function comprobarHabitacion(valor) {
+  try {
+    const r = await fetch(`${RUTA}/comprobar`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ room_no: valor, nombre: ELEGIDO.nombre }),
+    });
+    if (!r.ok) return;
+    const d = await r.json();
+    // Si mientras tanto siguió escribiendo, esta respuesta ya no corresponde.
+    if (ELEGIDO.room_no !== valor) return;
+    const antes = RECONOCIDA;
+    RECONOCIDA = !!d.reconocida;
+    if (antes !== RECONOCIDA) {
+      dibujar();
+      // Se le devuelve el cursor al campo, que el redibujado se lo quitó.
+      const campo = document.getElementById("q-hab");
+      if (campo) { campo.focus(); campo.setSelectionRange(campo.value.length, campo.value.length); }
+    }
+  } catch (e) { /* sin señal se manda igual: el servidor vuelve a comprobar */ }
+}
+
 function avisoMismoDia() {
   const tope = DATOS.config && DATOS.config.hora_tope_mismo_dia;
   // Sin hora tope el hotel no promete plazo, y entonces no se dice nada: inventar una
@@ -443,19 +496,33 @@ function dibujar() {
   const cfg = DATOS.config || {};
   let h = "";
 
-  // Con el enlace general la página no sabe quién es: se lo pregunta. Con el enlace de
-  // la reserva ya lo sabe y no le hace perder el tiempo.
+  // Con el enlace general la página no sabe quién es. LA HABITACIÓN ES LA LLAVE: con
+  // ella el sistema encuentra la reserva y la ropa va a nombre del huésped tal como
+  // está en el sistema del hotel. El nombre solo se le pide si no se reconoce.
   if (GENERAL) {
     h += `<div class="tarjeta">
       <h2>${esc(T("pide_t"))}</h2>
-      <label for="q-nom">${esc(T("tu_nombre"))}</label>
-      <input type="text" id="q-nom" autocomplete="name" value="${esc(ELEGIDO.nombre)}"
-             oninput="ELEGIDO.nombre=this.value;">
       <label for="q-hab">${esc(T("tu_habitacion"))}
         <span class="ayuda">${esc(T("tu_habitacion_ayuda"))}</span></label>
       <input type="text" id="q-hab" inputmode="numeric" value="${esc(ELEGIDO.room_no)}"
-             oninput="ELEGIDO.room_no=this.value;">
-    </div>`;
+             oninput="cambiarHabitacion(this.value);">`;
+
+    if (RECONOCIDA === true) {
+      h += `<div class="aviso bien" style="margin-top:10px;">${esc(T("hab_ok"))}</div>`;
+    } else if (RECONOCIDA === false) {
+      h += `<div class="aviso" style="margin-top:10px;">${esc(T("hab_no"))}</div>`;
+    }
+
+    // El nombre solo aparece cuando hace falta: si la habitación se reconoció, pedirlo
+    // sería una pregunta de más —y una oportunidad más de equivocarse—.
+    if (RECONOCIDA === false) {
+      h += `<label for="q-nom">${esc(T("tu_nombre"))}
+              <span class="ayuda">${esc(T("tu_nombre_ayuda"))}</span></label>
+            <input type="text" id="q-nom" autocomplete="name"
+                   value="${esc(ELEGIDO.nombre)}"
+                   oninput="ELEGIDO.nombre=this.value;">`;
+    }
+    h += `</div>`;
   }
 
   // Con el enlace general no hay saludo ni lista de pedidos previos —no se sabe de
@@ -563,12 +630,14 @@ function dibujar() {
           oninput="ELEGIDO.nota=this.value;">${esc(ELEGIDO.nota)}</textarea>`;
 
   h += `<div class="aviso" style="margin-top:16px;">${esc(T("aviso_no_es_firme"))}</div>`;
-  const faltaQuien = GENERAL && (!ELEGIDO.nombre.trim() || !ELEGIDO.room_no.trim());
+  const faltaHab = GENERAL && !ELEGIDO.room_no.trim();
+  const faltaNom = GENERAL && RECONOCIDA === false && !ELEGIDO.nombre.trim();
   h += `<button class="enviar" id="enviar" onclick="enviar()"
-          ${(!ELEGIDO.fecha || totalElegido() === 0 || ENVIANDO || faltaQuien) ? "disabled" : ""}>
+          ${(!ELEGIDO.fecha || totalElegido() === 0 || ENVIANDO || faltaHab || faltaNom) ? "disabled" : ""}>
         ${esc(ENVIANDO ? T("enviando") : T("enviar"))}</button>`;
-  if (faltaQuien && totalElegido() > 0) {
-    h += `<p class="total-nota" style="color:var(--aviso-t);">${esc(T("falta_quien"))}</p>`;
+  if ((faltaHab || faltaNom) && totalElegido() > 0) {
+    h += `<p class="total-nota" style="color:var(--aviso-t);">${
+      esc(faltaHab ? T("falta_quien") : T("falta_nombre"))}</p>`;
   }
   h += `<p id="error" class="aviso" style="display:none;"></p>`;
   h += `</div><p class="pie">${esc(T("pie"))}</p>`;
@@ -578,10 +647,11 @@ function dibujar() {
 
 async function enviar() {
   if (ENVIANDO) return;
-  // Con el enlace general, sin nombre y habitación el pedido no le sirve a nadie:
-  // housekeeping no sabría a qué puerta ir.
-  if (GENERAL && (!ELEGIDO.nombre.trim() || !ELEGIDO.room_no.trim())) {
-    return mostrarError(T("falta_quien"));
+  // La habitación siempre: sin ella housekeeping no sabe a qué puerta ir. El nombre
+  // solo cuando la habitación no se reconoció, porque ahí es lo único que queda.
+  if (GENERAL && !ELEGIDO.room_no.trim()) return mostrarError(T("falta_quien"));
+  if (GENERAL && RECONOCIDA === false && !ELEGIDO.nombre.trim()) {
+    return mostrarError(T("falta_nombre"));
   }
   if (!ELEGIDO.fecha) return mostrarError(T("elige_dia"));
   if (totalElegido() === 0) return mostrarError(T("elige_prenda"));

@@ -3157,49 +3157,23 @@ def borrar_pedido_hk(pedido_id: int,
 @app.get("/api/housekeeping/enlaces")
 def enlaces_hk(desde: str = None, hasta: str = None,
                user: dict = Depends(exige("housekeeping", escribir=True))):
-    """Un enlace por habitación, para mandarlo por WhatsApp igual que el del formulario.
+    """El enlace de lavandería. Es UNO SOLO para todo el hotel.
 
-    La diferencia con el formulario de Google es que este ya sabe quién es el huésped: no
-    escribe su nombre ni su habitación, que eran dos de sus seis preguntas y las dos, el
-    error fácil.
+    Antes esto devolvía un enlace por habitación y la pantalla los listaba para copiarlos
+    de a uno. Se quitaron: con el enlace único no se ocupan, y tener las dos cosas en la
+    misma ventana solo daba la duda de cuál mandar.
+
+    Las rutas del enlace por reserva NO se borraron: siguen abriendo. Los que ya se le
+    mandaron a un huésped que está en casa tienen que seguir funcionando — dejarlos en
+    404 sería romperle el pedido a alguien a mitad de su estadía, sin ganar nada.
     """
-    hoy = datetime.date.today().isoformat()
-    desde = desde or hoy
-    hasta = hasta or (datetime.date.today() + datetime.timedelta(days=14)).isoformat()
-    conn = get_connection()
-    try:
-        filas = conn.execute(
-            f"""SELECT conf_no, room_no, nombre_principal, arr_date, dep_date
-                FROM reserva
-                WHERE res_status != 'CANCELADA'
-                  AND {sql_fecha('arr_date')} <= ?
-                  AND {sql_fecha('dep_date')} >= ?
-                ORDER BY CAST(room_no AS INTEGER)""",
-            (yymmdd(hasta), yymmdd(desde))).fetchall()
-        import hk_pagina as _pag
-        salida = []
-        for f in filas:
-            d = dict(f)
-            d["token"] = _hk.token_de_reserva(conn, d["conf_no"])
-            # El enlace sale en el idioma del ITINERARIO de ese huésped, igual que el del
-            # spa: así el que copia recepción ya va en su idioma y nadie tiene que
-            # acordarse. El huésped lo cambia igual con el botón EN/ES.
-            d["idioma"] = _pag.idioma_valido(_idioma_del_itinerario(conn, d["conf_no"]))
-            d["ruta"] = f"/housekeeping/{d['conf_no']}/{d['token']}"
-            if d["idioma"] != _pag.IDIOMA_POR_DEFECTO:
-                d["ruta"] += f"?idioma={d['idioma']}"
-            d["pedidos"] = conn.execute(
-                "SELECT COUNT(*) n FROM hk_pedido WHERE conf_no = ? AND estado != 'CANCELADO'",
-                (d["conf_no"],)).fetchone()["n"]
-            salida.append(d)
-        base = (pub.cargar_config().get("base_url") or "").rstrip("/")
-        # El enlace ÚNICO, que es el que se manda normalmente. Los de cada reserva
-        # quedan abajo, para cuando haga falta mandárselo a una habitación concreta.
-        return {"base_url": base,
-                "ruta_general": f"/housekeeping/general/{_hk.token_general()}",
-                "huespedes": salida}
-    finally:
-        conn.close()
+    base = (pub.cargar_config().get("base_url") or "").rstrip("/")
+    # 'huespedes' se deja vacía y no se quita: la pantalla vieja que siga cargada en
+    # algún navegador la recorre, y sin la clave reventaría en vez de mostrar la lista
+    # vacía. Cuesta una línea y evita un error en la pantalla de alguien.
+    return {"base_url": base,
+            "ruta_general": f"/housekeeping/general/{_hk.token_general()}",
+            "huespedes": []}
 
 
 # ---------- La página del huésped ----------
@@ -3347,6 +3321,32 @@ def hk_general_datos(token: str):
         conn.close()
 
 
+@app.post("/api/housekeeping/general/{token}/comprobar")
+async def hk_general_comprobar(token: str, payload: dict):
+    """¿Reconocemos esa habitación? Se contesta SIN decir quién está en ella.
+
+    Sirve para que el huésped se dé cuenta en el momento de que escribió mal el número,
+    que es el error que este enlace reintrodujo al no saber ya quién lo abre.
+
+    NO devuelve el nombre a propósito. Este enlace lo tiene todo el hotel: si la página
+    contestara «habitación 12 → Ana Mora», cualquiera probaría del 01 al 30 y tendría la
+    lista completa de quién duerme en cada cuarto. Eso es justo lo que un hotel no puede
+    dejar circular. La orden SÍ se guarda con el nombre real de la reserva; lo que no
+    viaja de vuelta al navegador es el nombre.
+    """
+    if not _hk.token_general_valido(token):
+        raise HTTPException(status_code=404, detail="Enlace no válido")
+    room_no = (payload.get("room_no") or "").strip()[:10]
+    if not room_no:
+        return {"reconocida": False}
+    conn = get_connection()
+    try:
+        reserva, _ = _hk.buscar_reserva(conn, payload.get("nombre"), room_no)
+    finally:
+        conn.close()
+    return {"reconocida": bool(reserva)}
+
+
 @app.post("/api/housekeeping/general/{token}")
 async def hk_general_pedir(token: str, payload: dict):
     """El huésped manda su ropa desde el enlace único, diciendo quién es.
@@ -3362,9 +3362,8 @@ async def hk_general_pedir(token: str, payload: dict):
 
     nombre = (payload.get("nombre") or "").strip()[:80]
     room_no = (payload.get("room_no") or "").strip()[:10]
-    if not nombre or not room_no:
-        raise HTTPException(status_code=400,
-                            detail="Hacen falta tu nombre y tu habitación.")
+    if not room_no:
+        raise HTTPException(status_code=400, detail="Falta tu número de habitación.")
     fecha = (payload.get("fecha") or "").strip()
     if not fecha:
         raise HTTPException(status_code=400, detail="Falta el día de la recolección.")
@@ -3372,6 +3371,17 @@ async def hk_general_pedir(token: str, payload: dict):
     conn = get_connection()
     try:
         reserva, motivo = _hk.buscar_reserva(conn, nombre, room_no, fecha)
+
+        # La habitación es la llave. Si se reconoce, el nombre lo pone el PMS y no lo
+        # que haya escrito el huésped: así la orden queda bajo el nombre con el que la
+        # reserva existe en el sistema, que es como housekeeping y recepción la buscan.
+        # El nombre solo hace falta cuando NO se reconoce la habitación — ahí es lo
+        # único que queda para saber de quién es la ropa.
+        if not reserva and not nombre:
+            raise HTTPException(
+                status_code=400,
+                detail=("No reconocemos esa habitación. Revisa el número, o escribe "
+                        "tu nombre para que housekeeping pueda ubicarte."))
 
         # El tope de pedidos abiertos. Con reserva se cuenta por reserva, como siempre;
         # sin ella, por habitación — el enlace es público y sin tope una sola persona

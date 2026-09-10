@@ -283,26 +283,31 @@ El enlace que se manda es **uno solo para todo el hotel**. Se copia desde
 **🔗 Enlace para el huésped** y se pega en el grupo de WhatsApp; no hay que buscar cuál
 le toca a cada habitación.
 
-Como ese enlace no puede saber quién lo abrió, el formulario **sí le pregunta el nombre
-y la habitación**. Es el precio de mandar uno solo, y se paga a sabiendas: eran las dos
-preguntas que se contestaban mal en el formulario de Google. Lo que se hace para que
-cueste menos:
+**La habitación es la llave.** El huésped escribe su número de cuarto y el sistema busca
+quién está en él: la orden queda a nombre del huésped **tal como está en la reserva**, no
+como él lo escriba. Es una sola pregunta, y la respuesta la valida el sistema.
 
-- El sistema **empareja** lo que escribió con una reserva en casa. Da igual que ponga
-  `7` o `07`.
-- Si **no la encuentra**, el pedido entra igual, con el nombre y la habitación tal como
-  los escribió y marcado en la nota de operación. Rechazarlo sería repetir el fallo del
-  formulario de Google: quien ponía 23 en vez de 32 no recibía su ropa y no se enteraba
-  nadie. Así housekeeping lo ve y lo resuelve.
-- Si la encuentra, manda la habitación de **la reserva**, no la que escribió: si el
-  huésped se cambió de cuarto, hay que ir a donde está ahora.
+- Da igual que ponga `7` o `07`.
+- Si la reconoce, se lo **confirma** en el momento —«encontramos tu reserva»— y no le
+  pide nada más. Esa confirmación es lo que le permite darse cuenta de que se equivocó
+  de número, que era el error que este enlace reintrodujo al dejar de saber quién lo abre.
+- Si **no** la reconoce, se lo dice y le pide el nombre. El pedido **entra igual**,
+  marcado en la nota de operación. Rechazarlo sería repetir el fallo del formulario de
+  Google: quien ponía 23 en vez de 32 no recibía su ropa y no se enteraba nadie.
+- Si la encuentra, se guarda la habitación de **la reserva**: si el huésped se cambió de
+  cuarto, hay que ir a donde está ahora.
+
+**La página nunca muestra el nombre de quien está en la habitación.** Confirma que
+existe, y nada más. Este enlace lo tiene todo el hotel: si contestara «habitación 12 →
+Ana Mora», cualquiera probaría del 01 al 30 y tendría la lista de quién duerme en cada
+cuarto.
 
 El enlace se puede **cambiar** desde la misma ventana. El anterior deja de abrir — que
 es el punto: sirve si se filtró fuera del hotel.
 
-**Los enlaces por reserva siguen funcionando.** Quedan listados debajo para mandárselo a
-una habitación concreta: esos ya saben quién es, no le preguntan nada y solo le ofrecen
-días de su estadía.
+**Los enlaces por reserva se quitaron de la pantalla**, porque con el único no se
+ocupan. Las rutas siguen abriendo a propósito: los que ya se le mandaron a un huésped
+que está en casa tienen que seguir funcionando.
 
 ### El IVA
 
