@@ -359,6 +359,17 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
         return sum((x["adl"] or 0) + (x["chl"] or 0) for x in l)
 
     # --- Movimiento por punto de embarque (Sierpe / Drake) ---
+    # Cada línea trae QUIÉN la lleva. El guía y el bote se asignan en la Agenda de tours
+    # («Ingresos y salidas por locación») y se leen aquí por la corrida a la que
+    # pertenece cada huésped: fecha + dirección + punto + hora.
+    #
+    # La hora de la corrida NO es la que se muestra: la que se muestra es la del vuelo,
+    # y por Sierpe el PDF no la trae porque el bote sale siempre a la misma. Usando esa
+    # para buscar, todos los de Sierpe se quedarían sin guía en pantalla aunque lo
+    # tengan asignado. Por eso se pregunta con la MISMA regla que arma las corridas.
+    import traslados as _tras
+    puestas = _tras.asignaciones(conn, [fecha])
+
     puntos = {}
     for tipo, filas, campo in (("entradas", ingresos, "punto_entrada"),
                                ("salidas", salidas, "punto_salida")):
@@ -371,11 +382,22 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
             hora = f.get("hora_vuelo_entrada") or f.get("arr_time") if tipo == "entradas" \
                    else f.get("hora_vuelo_salida")
             vuelo = f.get("vuelo_entrada") if tipo == "entradas" else f.get("vuelo_salida")
+
+            es_entrada = tipo == "entradas"
+            hora_corrida, _ = _tras.hora_de_traslado(f, es_entrada)
+            puesta = puestas.get((fecha, "entrada" if es_entrada else "salida",
+                                  _tras.normalizar_punto(f.get(campo)),
+                                  hora_corrida or _tras.SIN_HORA)) or {}
+
             k["detalle"].append({
-                "tipo": "Entrada" if tipo == "entradas" else "Salida",
+                "tipo": "Entrada" if es_entrada else "Salida",
                 "room_no": f["room_no"], "nombre": f["nombre_principal"],
                 "pax": (f["adl"] or 0) + (f["chl"] or 0),
                 "hora": hora, "vuelo": vuelo,
+                # La hora real del bote, que por Sierpe no viene en el PDF.
+                "hora_traslado": hora_corrida,
+                "guia": puesta.get("guia_nombre"),
+                "bote": puesta.get("bote_nombre"),
             })
 
     # --- Tours del día (para guías y operación) ---

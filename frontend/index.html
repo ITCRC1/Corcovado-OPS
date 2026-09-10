@@ -5015,13 +5015,30 @@ function detalleResumen(campo) {
   if (esPunto) {
     const nombre = campo.slice(6);
     const p = (d.puntos || []).find(x => x.punto === nombre);
+    // Quién lo lleva. Se asigna en la Agenda de tours («Ingresos y salidas por
+    // locación») y se muestra aquí porque este es el resumen que se reparte por la
+    // mañana: decir a qué hora y por dónde sin decir quién va deja el dato a medias.
+    const sinAsignar = p.detalle.filter(x => !x.guia && !x.bote).length;
+    const quien = x => {
+      if (!x.guia && !x.bote) return `<span style="color:var(--warn-text);">sin asignar</span>`;
+      return `${x.guia ? escaparHTML(x.guia) : `<span style="color:var(--warn-text);">sin guía</span>`}`
+           + `<br><span style="font-size:11px;color:var(--muted);">`
+           + `${x.bote ? escaparHTML(x.bote) : `<span style="color:var(--warn-text);">sin bote</span>`}</span>`;
+    };
     panel.innerHTML = `<div class="detail-panel">
-      <p style="font-weight:600;margin:0 0 8px;">${nombre} — ${p.detalle.length} movimiento(s)</p>
-      <table><tr><th>Tipo</th><th>Hab.</th><th>Huésped</th><th>Pax</th><th>Vuelo</th><th>Hora</th></tr>
+      <p style="font-weight:600;margin:0 0 8px;">${escaparHTML(nombre)} — ${p.detalle.length} movimiento(s)
+        ${sinAsignar ? `<span style="font-weight:400;color:var(--warn-text);font-size:12.5px;"> · ${sinAsignar} sin guía ni bote</span>` : ""}</p>
+      <table><tr><th>Tipo</th><th>Hab.</th><th>Huésped</th><th>Pax</th><th>Vuelo</th><th>Hora</th><th>Guía / bote</th></tr>
       ${p.detalle.map(x => `<tr class="${x.tipo === 'Entrada' ? 'fila-entra' : 'fila-sale'}">
-        <td>${x.tipo}</td><td>${x.room_no}</td><td>${x.nombre}</td>
-        <td>${x.pax}</td><td>${x.vuelo || '—'}</td><td>${x.hora || '—'}</td></tr>`).join("")}
-      </table></div>`;
+        <td>${x.tipo}</td><td>${x.room_no}</td><td>${escaparHTML(x.nombre || "")}</td>
+        <td>${x.pax}</td><td>${escaparHTML(x.vuelo || '—')}</td>
+        <td>${escaparHTML(x.hora || x.hora_traslado || '—')}</td>
+        <td>${quien(x)}</td></tr>`).join("")}
+      </table>
+      ${sinAsignar ? `<p style="font-size:11.5px;color:var(--muted);margin:8px 0 0;">
+        El guía y el bote se asignan en <strong>Agenda de tours → Ingresos y salidas por
+        locación</strong>.</p>` : ""}
+      </div>`;
     return;
   }
 

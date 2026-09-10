@@ -210,8 +210,16 @@ momento más delicado del día: si nadie va al muelle de Sierpe o a la pista de 
 huésped se queda tirado con las maletas en un lugar sin señal. La pantalla de Transporte
 decía a qué hora y por dónde, pero no quién lo lleva.
 
-Se asigna en **Agenda de tours → Ingresos y salidas por locación**, y aparece también en
-**Transporte**, que es la pantalla que se mira el día del movimiento.
+Se asigna en **Agenda de tours → Ingresos y salidas por locación**, y aparece en las dos
+pantallas donde hacía falta:
+
+- **Transporte**, que es la que se mira el día del movimiento.
+- **Resumen de operación → Movimiento por punto de embarque**: al tocar Sierpe o Drake,
+  cada línea dice quién la lleva, y arriba cuántas quedan sin cubrir.
+
+En el Resumen la búsqueda va por la **hora real del bote**, no por la del vuelo: por
+Sierpe el PDF no trae hora —el bote sale siempre a la misma— y buscando por esa, los de
+Sierpe habrían salido «sin asignar» teniendo guía puesto.
 
 ### La corrida se distingue por la HORA, no por un grupo
 
