@@ -21,11 +21,25 @@ Lo que ese formulario no podía hacer, y esto sí:
   · Las cantidades son un número. La cuadrícula del formulario llegaba hasta 6 porque es
     lo que da Google Forms, no porque el hotel lave de a seis.
 
-El precio queda fuera, igual que en el spa: es otro proceso del hotel.
+  · Le dice CUÁNTO va a pagar antes de mandar la ropa: subtotal, IVA y total, calculados
+    con el precio de cada prenda y la cantidad que eligió. El formulario no tenía precios,
+    así que el número aparecía por primera vez en la cuenta del cuarto.
+
+LA CUENTA
+---------
+Todo en CENTAVOS enteros, nunca en decimales: sumando floats, doce veces 2.10 da
+25.199999999999996 y ese número acabaría impreso en la cuenta de un huésped. El impuesto
+se saca una vez sobre el subtotal, con `Decimal` y ROUND_HALF_UP, porque el `round()` de
+Python redondea al par y se llevaría un céntimo por pedido.
+
+Y la cuenta se CONGELA en el pedido —precio, porcentaje y total—, igual que el nombre de
+la prenda y el plazo del mismo día: cambiar la lista o el IVA afecta a los pedidos nuevos,
+nunca a los ya cotizados.
 """
 import os
 import json
 import secrets
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 
 CONFIG_PATH = os.path.join(
     os.environ.get("HOTEL_DATA_DIR") or os.path.join(os.path.dirname(__file__), "..", "data"),
@@ -49,6 +63,12 @@ CONFIG_POR_DEFECTO = {
     # Tope por prenda. No es una regla del hotel: ataja el dedazo de quien teclea 111 en
     # vez de 11 y deja a housekeeping esperando un bulto que no existe.
     "max_por_prenda": 99,
+    # El impuesto que se le suma al subtotal. Va aquí y no escrito en el código porque el
+    # IVA ya cambió antes en Costa Rica y va a volver a cambiar; el día que pase, es un
+    # campo de la pantalla y no un despliegue.
+    #
+    # Los precios del catálogo se cargan SIN impuesto: esto se les suma al final.
+    "iva_porcentaje": 13,
 }
 
 # La moneda en que se le cotiza al huésped. Está aquí, en un solo sitio, para que
@@ -104,6 +124,28 @@ def guardar_config(cfg):
             limpia[clave] = max(minimo, min(int(cfg[clave]), maximo))
         except (TypeError, ValueError, KeyError):
             pass
+
+    if "iva_porcentaje" in cfg:
+        crudo = str(cfg["iva_porcentaje"]).strip().replace("%", "").replace(",", ".")
+        if crudo == "":
+            limpia["iva_porcentaje"] = 0      # sin impuesto: no se le suma nada
+        else:
+            try:
+                valor = Decimal(crudo)
+            except InvalidOperation:
+                raise ValueError("El IVA va como 13 (el número, sin el signo).")
+            # Un «nan» o un «inf» pasan por Decimal sin quejarse, y comparar un nan con
+            # <= no da False: revienta con InvalidOperation. Se descartan antes.
+            if not valor.is_finite() or not 0 <= valor <= 100:
+                raise ValueError("El IVA tiene que estar entre 0 y 100.")
+            # Dos decimales como máximo. No es un capricho de formato: la página del
+            # huésped calcula el impuesto con este mismo número, y para que le dé al
+            # centavo lo mismo que al servidor los dos tienen que partir de un número
+            # corto.
+            valor = valor.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            # Entero cuando lo es, para que la pantalla diga «IVA 13%» y no «IVA 13.0%».
+            limpia["iva_porcentaje"] = (int(valor) if valor == valor.to_integral_value()
+                                        else float(valor))
 
     if _minutos(limpia["cierra"]) <= _minutos(limpia["abre"]):
         raise ValueError("La hora de cierre tiene que ser después de la de apertura.")
@@ -213,7 +255,7 @@ def formato_precio(centavos):
 
 
 def total_de(items):
-    """(centavos, completo). 'completo' es False si alguna prenda no tenía precio.
+    """(centavos, completo) del SUBTOTAL, sin impuesto.
 
     Se devuelven los dos porque un total al que le falta una prenda no es un total: al
     huésped hay que decirle que está incompleto, no darle un número que no va a coincidir
@@ -227,6 +269,40 @@ def total_de(items):
             continue
         total += int(precio) * int(i.get("cantidad") or 0)
     return total, completo
+
+
+def iva_de(subtotal_centavos, porcentaje):
+    """El impuesto sobre un subtotal, en centavos, redondeado COMERCIALMENTE.
+
+    Media unidad se sube, que es lo que hace una factura. El round() de Python redondea
+    al par —round(136.5) da 136— así que sobre un subtotal de $10.50 el hotel cobraría un
+    céntimo de menos, y la suma de la pantalla no cuadraría con la del sistema contable.
+    """
+    if not porcentaje or subtotal_centavos <= 0:
+        return 0
+    bruto = Decimal(int(subtotal_centavos)) * Decimal(str(porcentaje)) / Decimal(100)
+    return int(bruto.quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
+def cuenta_de(items, cfg=None):
+    """La cuenta completa de un pedido: subtotal, impuesto y total.
+
+    El impuesto se calcula UNA vez sobre el subtotal y no línea por línea. Sumando el
+    redondeo de cada línea, un pedido de doce prendas puede quedar dos o tres céntimos
+    lejos del 13% del subtotal, y entonces el desglose que ve el huésped no suma el total
+    que ve debajo.
+    """
+    cfg = cfg or cargar_config()
+    porcentaje = cfg.get("iva_porcentaje") or 0
+    subtotal, completo = total_de(items)
+    impuesto = iva_de(subtotal, porcentaje)
+    return {
+        "subtotal_centavos": subtotal,
+        "iva_centavos": impuesto,
+        "iva_porcentaje": porcentaje,
+        "total_centavos": subtotal + impuesto,
+        "completo": completo,
+    }
 
 
 # ---------------------------------------------------------------------------

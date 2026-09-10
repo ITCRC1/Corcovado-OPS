@@ -377,10 +377,16 @@ CREATE TABLE IF NOT EXISTS hk_pedido (
     -- al huésped y no se recalcula: si mañana se cambia la hora tope, lo que se prometió
     -- ayer no cambia.
     mismo_dia INTEGER,
-    -- El total cotizado, en centavos. Se guarda sumado y no se recalcula al mostrarlo,
-    -- por lo mismo que 'mismo_dia': es lo que se le prometió a esta persona ese día.
-    -- NULL cuando alguna prenda del pedido no tenía precio puesto: entonces el total
-    -- está incompleto y decir un número sería mentir.
+    -- La cuenta cotizada, en centavos, y el porcentaje de impuesto que se le aplicó.
+    -- Los tres se guardan y no se recalculan al mostrarlos, por lo mismo que 'mismo_dia':
+    -- es lo que se le prometió a esta persona ese día. Si mañana el IVA pasa a 14%, este
+    -- pedido tiene que seguir diciendo 13% y el mismo monto.
+    --
+    -- Quedan en NULL cuando alguna prenda del pedido no tenía precio puesto: entonces la
+    -- cuenta está incompleta y decir un número sería mentir.
+    subtotal_centavos INTEGER,
+    iva_centavos INTEGER,
+    iva_porcentaje REAL,
     total_centavos INTEGER,
     creado_en TEXT DEFAULT (datetime('now'))
 );

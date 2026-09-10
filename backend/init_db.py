@@ -157,6 +157,12 @@ COLUMNAS_NUEVAS = [
     ("hk_prenda", "precio_centavos", "INTEGER"),
     ("hk_pedido_item", "precio_centavos", "INTEGER"),
     ("hk_pedido", "total_centavos", "INTEGER"),
+    # El desglose del impuesto. Los pedidos hechos antes de esto quedan con estas tres en
+    # NULL, y eso es correcto: se cotizaron sin IVA y su total sigue siendo el que se les
+    # dijo. La pantalla no les muestra la línea de impuesto.
+    ("hk_pedido", "subtotal_centavos", "INTEGER"),
+    ("hk_pedido", "iva_centavos", "INTEGER"),
+    ("hk_pedido", "iva_porcentaje", "REAL"),
 ]
 
 

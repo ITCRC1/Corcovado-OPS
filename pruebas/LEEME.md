@@ -36,6 +36,12 @@ diga al huésped si su ropa vuelve el mismo día, que el enlace sepa quién es y
 reserva, y que lo recogido quede escrito aunque el catálogo cambie después. Las tres
 fallan en silencio: nadie ve un error, simplemente alguien se queda sin su ropa.
 
+Y la cuenta, que falla igual de callada: los centavos enteros, el impuesto sacado una vez
+sobre el subtotal y no prenda por prenda, y el medio centavo que **sube** —el `round()` de
+Python redondea al par y se llevaría un centavo por pedido sin que nadie sepa de dónde
+salió—. También que el precio lo ponga el catálogo y nunca el formulario: la página del
+huésped es pública.
+
 ## Qué fija `probar_carga_opera.py`
 
 La regla por la que entran a la base las actualizaciones de Opera. Está escrita porque

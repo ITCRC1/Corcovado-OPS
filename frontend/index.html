@@ -3792,7 +3792,7 @@ async function loadHousekeeping(fecha, desde, hasta) {
         <table style="font-size:12.5px;">
           <tr><th style="width:88px;">Fecha</th><th style="width:60px;">Hora</th>
               <th style="width:62px;">Hab.</th><th>Huésped</th><th>Prendas</th>
-              <th style="width:78px;text-align:right;">Total</th>
+              <th style="width:130px;text-align:right;">Total</th>
               <th style="width:112px;">Estado</th>
               ${puedeEscribir("housekeeping") ? "<th style='width:190px;'></th>" : ""}</tr>
           ${pedidos.map(filaPedidoHk).join("")}
@@ -3820,7 +3820,12 @@ function filaPedidoHk(p) {
     <td>${escaparHTML(p.resumen || "—")}
       ${plazo ? `<br><span style="font-size:11px;color:var(--muted);">${plazo}</span>` : ""}</td>
     <td style="text-align:right;font-variant-numeric:tabular-nums;">
-      ${p.total ? `<strong>${escaparHTML(p.total)}</strong>`
+      ${p.total ? `<strong>${escaparHTML(p.total)}</strong>${p.iva_centavos
+          // El desglose, con el porcentaje que se le cobró a ESTE pedido: es lo que hay
+          // que poder leer cuando el huésped pregunta por qué el total no es la suma de
+          // las prendas.
+          ? `<br><span style="font-size:10.5px;color:var(--muted);white-space:nowrap;">${escaparHTML(p.subtotal)} + IVA ${escaparHTML(p.iva_porcentaje)}% ${escaparHTML(p.iva)}</span>`
+          : ""}`
         : p.total_incompleto
           ? `<span style="font-size:11px;color:var(--warn-text);">a consultar</span>`
           : `<span style="color:var(--muted);">—</span>`}</td>
@@ -3943,10 +3948,18 @@ async function mostrarHorarioHk() {
         <input type="time" id="hk-tope" value="${escaparHTML(c.hora_tope_mismo_dia || "")}"></label>
       <label>Cada cuántos minutos se ofrece una hora
         <input type="number" id="hk-paso" min="5" max="120" value="${c.paso_minutos ?? 30}"></label>
+      <label>IVA (%)
+        <input id="hk-iva" inputmode="decimal" placeholder="13"
+               value="${c.iva_porcentaje ?? ""}"></label>
     </div>
     <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0;">
       Dejar la hora tope vacía significa que no se promete plazo, y entonces la página del
       huésped no le dice nada sobre cuándo vuelve.</p>
+    <p style="font-size:11.5px;color:var(--muted);margin:4px 0 0;">
+      El IVA se le suma al subtotal y le aparece al huésped como su propio renglón, con el
+      porcentaje escrito. En 0 —o vacío— no se cobra impuesto y el huésped solo ve el
+      total. <strong>El porcentaje se congela en cada pedido:</strong> si mañana cambia, un
+      pedido de ayer sigue diciendo el que se le cobró.</p>
     <button class="btn btn-primary" style="margin-top:12px;" onclick="guardarHorarioHk()">Guardar horario</button>
 
     <p style="font-weight:600;font-size:15px;margin:22px 0 2px;color:var(--forest-dark);">Prendas</p>
@@ -3981,6 +3994,10 @@ async function guardarHorarioHk() {
       cierra: document.getElementById("hk-cierra").value,
       hora_tope_mismo_dia: document.getElementById("hk-tope").value,
       paso_minutos: Number(document.getElementById("hk-paso").value) || 30,
+      // Va como texto, sin Number(): vacío tiene que llegar vacío para que el servidor lo
+      // entienda como «sin impuesto». Un Number("") es 0 y daría lo mismo, pero un
+      // Number("13,5") es NaN y ahí se perdería lo que la persona escribió.
+      iva_porcentaje: document.getElementById("hk-iva").value,
     }),
   });
   if (!res.ok) return avisar((await res.json().catch(() => ({}))).detail || "No se pudo", true);

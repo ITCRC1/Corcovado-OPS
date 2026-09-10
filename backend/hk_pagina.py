@@ -44,6 +44,8 @@ TEXTOS = {
         "hora_ayuda": "— tap the one that suits you",
         "prendas": "What are you sending?",
         "prendas_ayuda": "Tap + for each item. Leave the rest at zero.",
+        "subtotal": "Subtotal",
+        "iva": "VAT {pct}%",
         "total": "Total",
         "total_ayuda": "Charged to your room.",
         "total_parcial": "Some items don't have a price listed — reception will confirm "
@@ -88,6 +90,8 @@ TEXTOS = {
         "hora_ayuda": "— tocá la que te sirva",
         "prendas": "¿Qué nos mandás?",
         "prendas_ayuda": "Tocá + por cada prenda. El resto dejalo en cero.",
+        "subtotal": "Subtotal",
+        "iva": "IVA {pct}%",
         "total": "Total",
         "total_ayuda": "Se carga a tu habitación.",
         "total_parcial": "Algunas prendas no tienen precio en la lista — recepción te las "
@@ -194,11 +198,17 @@ _PLANTILLA = r"""<!doctype html>
   .prenda .nombre { flex:1; font-size:15.5px; }
   .prenda .precio { font-size:13px; color:var(--suave); min-width:52px; text-align:right; }
   .prenda.puesta .precio { color:var(--verde); font-weight:600; }
-  /* El total, pegado al final de la lista para que se lea como su cierre y no como otra
+  /* La cuenta, pegada al final de la lista para que se lea como su cierre y no como otra
      cosa suelta. Va tabular: los números tienen que alinearse al cambiar de cantidad. */
-  .total { display:flex; justify-content:space-between; align-items:baseline;
-           border-top:2px solid var(--verde); margin-top:-1px; padding:13px 12px;
-           background:#F7FAF5; border-radius:0 0 10px 10px; }
+  .cuenta { border-top:2px solid var(--verde); margin-top:-1px; padding:11px 12px 13px;
+            background:#F7FAF5; border-radius:0 0 10px 10px; }
+  .linea { display:flex; justify-content:space-between; align-items:baseline;
+           font-size:14.5px; color:var(--suave); padding:2px 0; }
+  .linea .cifra { font-variant-numeric:tabular-nums; }
+  .total { display:flex; justify-content:space-between; align-items:baseline; }
+  /* La raya sobre el total solo cuando hay algo arriba. Sin impuesto el total va solo
+     dentro de la cuenta y una raya suelta ahí parece un error de dibujo. */
+  .linea + .total { margin-top:7px; padding-top:9px; border-top:1px solid var(--borde); }
   .total .etiqueta-total { font-weight:600; font-size:15px; }
   .total .cifra { font-size:22px; font-weight:600; color:var(--verde);
                   font-variant-numeric:tabular-nums; }
@@ -321,22 +331,53 @@ function precioDe(codigo) {
   return p && p.precio_centavos != null ? p.precio_centavos : null;
 }
 
+// El impuesto sobre el subtotal, en centavos enteros y redondeado COMERCIALMENTE (el
+// medio centavo sube).
+//
+// Se calcula sin dividir en decimales a propósito. Esta cuenta la hace también el
+// servidor, con Decimal, y las dos tienen que dar el MISMO entero: si el teléfono dijera
+// $1.36 y la cuenta del cuarto $1.37, el huésped tiene razón en reclamar y el hotel no
+// tiene con qué contestarle. Con num y den enteros la división es exacta —el porcentaje
+// no pasa de dos decimales, así que en milésimas cabe entero— y el resto decide el
+// redondeo sin depender de cómo caiga un float.
+function ivaDe(subtotalCentavos, porcentaje) {
+  const pct = Number(porcentaje) || 0;
+  if (pct <= 0 || subtotalCentavos <= 0) return 0;
+  const num = subtotalCentavos * Math.round(pct * 1000);
+  const den = 100 * 1000;
+  const entero = Math.floor(num / den);
+  const resto = num - entero * den;
+  return entero + (resto * 2 >= den ? 1 : 0);
+}
+
 // Se suma en CENTAVOS enteros. Sumando decimales, doce veces 2.10 da 25.199999999999996,
 // y ese número acabaría en la pantalla de un huésped.
+//
+// El impuesto se saca UNA vez sobre el subtotal, no línea por línea: redondeando cada
+// prenda y sumando después, doce prendas pueden desviar el total varios centavos del que
+// va a salir en la factura.
 function cuentaElegida() {
-  let centavos = 0, completo = true;
+  let subtotal = 0, completo = true;
   for (const [codigo, cantidad] of Object.entries(ELEGIDO.items)) {
     const precio = precioDe(codigo);
     if (precio == null) { completo = false; continue; }
-    centavos += precio * cantidad;
+    subtotal += precio * cantidad;
   }
-  return { centavos, completo };
+  const porcentaje = Number((DATOS.config || {}).iva_porcentaje) || 0;
+  const iva = ivaDe(subtotal, porcentaje);
+  return { subtotal, iva, porcentaje, total: subtotal + iva, completo };
 }
 
 function comoPlata(centavos) {
   const m = (DATOS && DATOS.moneda) || "$";
   return m + (centavos / 100).toLocaleString(IDIOMA === "es" ? "es-CR" : "en-US",
     { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// «13», no «13.0»; y con coma decimal en español, que es como se escribe acá.
+function comoPorcentaje(pct) {
+  return Number(pct).toLocaleString(IDIOMA === "es" ? "es-CR" : "en-US",
+    { maximumFractionDigits: 2 });
 }
 
 function cambiar(codigo, delta) {
@@ -446,14 +487,24 @@ function dibujar() {
       </div></div>`;
   });
 
-  // El total solo aparece cuando ya eligió algo: un "$0.00" antes de tocar nada no le
+  // La cuenta solo aparece cuando ya eligió algo: un "$0.00" antes de tocar nada no le
   // dice nada a nadie.
   const cuenta = cuentaElegida();
   if (totalElegido() > 0) {
+    h += `<div class="cuenta">`;
+    // Subtotal e impuesto solo si hay impuesto. Con el IVA en cero, una línea que diga
+    // «Subtotal» y otra igual debajo que diga «Total» no informa: confunde.
+    if (cuenta.iva > 0) {
+      h += `<div class="linea"><span>${esc(T("subtotal"))}</span>
+              <span class="cifra">${esc(comoPlata(cuenta.subtotal))}</span></div>
+            <div class="linea">
+              <span>${esc(rellenar(T("iva"), { pct: comoPorcentaje(cuenta.porcentaje) }))}</span>
+              <span class="cifra">${esc(comoPlata(cuenta.iva))}</span></div>`;
+    }
     h += `<div class="total">
-      <span class="etiqueta-total">${esc(T("total"))}</span>
-      <span class="cifra">${esc(comoPlata(cuenta.centavos))}</span>
-    </div>`;
+        <span class="etiqueta-total">${esc(T("total"))}</span>
+        <span class="cifra">${esc(comoPlata(cuenta.total))}</span>
+      </div></div>`;
   }
   h += `</div>`;
   if (totalElegido() > 0) {

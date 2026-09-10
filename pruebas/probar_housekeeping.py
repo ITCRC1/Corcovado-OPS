@@ -240,6 +240,101 @@ def el_precio_lo_pone_el_catalogo_y_no_el_formulario(c):
 
 
 # ---------------------------------------------------------------------------
+# El impuesto — un renglon aparte, y al centavo
+# ---------------------------------------------------------------------------
+
+CFG_13 = dict(hk.CONFIG_POR_DEFECTO, iva_porcentaje=13)
+
+
+def el_iva_va_como_su_propio_renglon(c):
+    """El huesped tiene que poder ver de donde sale el total: subtotal, impuesto y suma.
+    Un total solo, mas alto que las prendas que eligio, parece un error de la pagina."""
+    limpiar()
+    items, _ = hk.limpiar_items(
+        [{"codigo": "TSHIRT", "cantidad": 3}, {"codigo": "SOCKS", "cantidad": 2}],
+        CON_PRECIO)
+    cuenta = hk.cuenta_de(items, CFG_13)
+    c.igual(cuenta["subtotal_centavos"], 1050, "tres camisetas y dos pares de medias")
+    c.igual(cuenta["iva_centavos"], 137, "el 13% de 10.50 son 1.365, o sea 1.37")
+    c.igual(cuenta["total_centavos"], 1187, "y el total es la suma de los dos")
+    c.igual(cuenta["iva_porcentaje"], 13, "con el porcentaje escrito, para poder mostrarlo")
+    c.igual(hk.formato_precio(cuenta["total_centavos"]), "$11.87", "asi se imprime")
+
+
+def el_medio_centavo_de_impuesto_sube(c):
+    """El round() de Python redondea al PAR: round(136.5) da 136, no 137. Un centavo de
+    menos por pedido no se nota hasta que la contabilidad no cuadra a fin de mes, y
+    entonces no hay como saber de donde salio."""
+    limpiar()
+    c.igual(hk.iva_de(1050, 13), 137, "1.365 pasan el medio y suben a 1.37")
+    c.igual(hk.iva_de(1010, 13), 131, "1.313 no lo pasan y se quedan en 1.31")
+    c.igual(hk.iva_de(1000, 13), 130, "y el 13% de 10.00 es exacto")
+    c.igual(hk.iva_de(0, 13), 0, "sin subtotal no hay impuesto")
+
+
+def el_impuesto_se_saca_una_vez_sobre_el_subtotal(c):
+    """Redondeando prenda por prenda y sumando despues, doce prendas se desvian cuatro
+    centavos del total que va a salir en la factura."""
+    limpiar()
+    prendas = {"X": {"nombre": "X", "precio_centavos": 210}}
+    items, _ = hk.limpiar_items([{"codigo": "X", "cantidad": 12}], prendas)
+    cuenta = hk.cuenta_de(items, CFG_13)
+    c.igual(cuenta["subtotal_centavos"], 2520, "doce por 2.10 son 25.20")
+    c.igual(cuenta["iva_centavos"], 328, "el 13% de 25.20 son 3.276, o sea 3.28")
+    c.igual(cuenta["iva_centavos"] == 12 * hk.iva_de(210, 13), False,
+            "linea por linea daria 3.24, y eso es lo que NO se hace")
+
+
+def sin_iva_configurado_el_total_es_el_subtotal(c):
+    """Poner el impuesto en cero tiene que dejar la cuenta como estaba antes de que
+    existiera, sin un renglon de 0.00 que no dice nada."""
+    limpiar()
+    items, _ = hk.limpiar_items([{"codigo": "TSHIRT", "cantidad": 2}], CON_PRECIO)
+    cuenta = hk.cuenta_de(items, dict(hk.CONFIG_POR_DEFECTO, iva_porcentaje=0))
+    c.igual(cuenta["iva_centavos"], 0, "sin porcentaje no se suma nada")
+    c.igual(cuenta["total_centavos"], cuenta["subtotal_centavos"],
+            "y el total es el subtotal")
+
+
+def una_prenda_sin_precio_no_da_un_total_con_impuesto(c):
+    """Si falta una linea, el subtotal esta incompleto y el impuesto sobre un subtotal
+    incompleto tambien lo esta. El pedido se guarda SIN cuenta y recepcion la cierra."""
+    limpiar()
+    items, _ = hk.limpiar_items(
+        [{"codigo": "TSHIRT", "cantidad": 2}, {"codigo": "DRESS", "cantidad": 1}],
+        CON_PRECIO)
+    cuenta = hk.cuenta_de(items, CFG_13)
+    c.igual(cuenta["completo"], False, "la cuenta queda marcada como incompleta")
+    c.igual(cuenta["subtotal_centavos"], 500, "con lo que si se pudo sumar")
+
+
+def el_porcentaje_se_escribe_como_se_escribe(c):
+    """Se teclea 13, 13% o 13,5, y las tres se entienden. Y lo que no es un porcentaje se
+    rechaza en la cara de quien lo escribio, no en silencio: guardar un 0 porque alguien
+    escribio 'trece' dejaria de cobrar el impuesto sin que nadie se enterara."""
+    limpiar()
+    base = {"abre": "07:00", "cierra": "18:00"}
+
+    def guardado(valor):
+        return hk.guardar_config(dict(base, iva_porcentaje=valor))["iva_porcentaje"]
+
+    c.igual(guardado("13"), 13, "el numero solo")
+    c.igual(guardado("13%"), 13, "con el signo pegado")
+    c.igual(guardado(13.0), 13, "un 13.0 se guarda como 13, para que diga «IVA 13%»")
+    c.igual(guardado("13,5"), 13.5, "con coma decimal, que es como se escribe aca")
+    c.igual(guardado(""), 0, "vacio es 'sin impuesto'")
+    c.igual(guardado("13.456"), 13.46,
+            "mas de dos decimales se recortan: la pagina calcula con este mismo numero")
+
+    for malo in ("trece", "-1", "101", "nan"):
+        try:
+            guardado(malo)
+            c.cierto(False, f"'{malo}' no deberia poder guardarse como IVA")
+        except ValueError:
+            c.cierto(True, f"'{malo}' se rechaza con un aviso")
+
+
+# ---------------------------------------------------------------------------
 # Los estados — dos pasos más que el spa, a pedido del hotel
 # ---------------------------------------------------------------------------
 
@@ -372,6 +467,12 @@ PRUEBAS = [
     una_prenda_sin_precio_deja_el_total_incompleto,
     el_precio_viaja_copiado_en_el_pedido,
     el_precio_lo_pone_el_catalogo_y_no_el_formulario,
+    el_iva_va_como_su_propio_renglon,
+    el_medio_centavo_de_impuesto_sube,
+    el_impuesto_se_saca_una_vez_sobre_el_subtotal,
+    sin_iva_configurado_el_total_es_el_subtotal,
+    una_prenda_sin_precio_no_da_un_total_con_impuesto,
+    el_porcentaje_se_escribe_como_se_escribe,
     el_pedido_avanza_por_su_camino,
     se_puede_deshacer_un_paso_pero_no_volver_al_principio,
     un_pedido_cancelado_no_revive,

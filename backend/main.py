@@ -2863,8 +2863,10 @@ def _pedidos_hk(conn, desde=None, hasta=None, conf_no=None, incluir_canceladas=T
         d["total_prendas"] = sum(int(i["cantidad"] or 0) for i in d["items"])
         d["resumen"] = " · ".join(
             f"{i['cantidad']} {str(i['prenda_nombre']).lower()}" for i in d["items"])
-        # El total COTIZADO, no uno recalculado con los precios de hoy: es lo que se le
-        # dijo a esta persona ese día.
+        # La cuenta COTIZADA, no una recalculada con los precios ni el IVA de hoy: es lo
+        # que se le dijo a esta persona ese día.
+        d["subtotal"] = _hk.formato_precio(d.get("subtotal_centavos"))
+        d["iva"] = _hk.formato_precio(d.get("iva_centavos"))
         d["total"] = _hk.formato_precio(d.get("total_centavos"))
         d["total_incompleto"] = (d.get("total_centavos") is None
                                  and any(i["precio_centavos"] is None for i in d["items"]))
@@ -2876,15 +2878,17 @@ def _crear_pedido_hk(conn, datos, items, origen="RECEPCION"):
     """Guarda el pedido y sus prendas. Devuelve el id."""
     cfg = _hk.cargar_config()
     hora = _hk.normalizar_hora(datos.get("hora"))
-    # El total se guarda sumado. Si a alguna prenda le falta el precio queda en NULL: un
-    # total al que le falta una línea no es un total, y decirlo igual sería darle al
-    # huésped un número que no va a coincidir con su cuenta.
-    suma, completo = _hk.total_de(items)
+    # La cuenta se guarda desglosada y con el porcentaje del día. Si a alguna prenda le
+    # falta el precio queda todo en NULL: una cuenta a la que le falta una línea no es una
+    # cuenta, y decirla igual sería darle al huésped un número que no va a coincidir.
+    cuenta = _hk.cuenta_de(items, cfg)
+    completo = cuenta["completo"]
     cur = conn.execute(
         """INSERT INTO hk_pedido
              (conf_no, room_no, nombre_huesped, fecha, hora, estado, origen,
-              nota_huesped, nota_operacion, mismo_dia, total_centavos)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+              nota_huesped, nota_operacion, mismo_dia,
+              subtotal_centavos, iva_centavos, iva_porcentaje, total_centavos)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         ((datos.get("conf_no") or "").strip() or None,
          (datos.get("room_no") or "").strip() or None,
          (datos.get("nombre_huesped") or "").strip() or None,
@@ -2898,7 +2902,10 @@ def _crear_pedido_hk(conn, datos, items, origen="RECEPCION"):
          # lo prometido ayer no cambia.
          None if _hk.vuelve_mismo_dia(hora, cfg) is None
          else (1 if _hk.vuelve_mismo_dia(hora, cfg) else 0),
-         suma if completo else None))
+         cuenta["subtotal_centavos"] if completo else None,
+         cuenta["iva_centavos"] if completo else None,
+         cuenta["iva_porcentaje"] if completo else None,
+         cuenta["total_centavos"] if completo else None))
     pedido_id = cur.lastrowid
     conn.executemany(
         """INSERT INTO hk_pedido_item

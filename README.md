@@ -199,9 +199,9 @@ huésped, igual que la del spa.
   spa a pedido del hotel: «¿ya se la llevaron?» y «¿ya está lista?» son dos preguntas
   distintas y las dos llegaban a recepción
 - **Nota** para lo que anota housekeeping, y **Cancelar** con motivo
-- **Horario y prendas**: entre qué horas se recoge, la hora tope del mismo día, y el
-  catálogo de prendas con su **precio por pieza** — agregar «Chaqueta» es una fila, no un
-  despliegue
+- **Horario y prendas**: entre qué horas se recoge, la hora tope del mismo día, el **IVA**
+  y el catálogo de prendas con su **precio por pieza** — agregar «Chaqueta» es una fila,
+  no un despliegue
 
 ### Los precios
 
@@ -223,8 +223,29 @@ Tres decisiones que evitan un reclamo:
 Todo se guarda en **centavos enteros**. Sumando decimales, doce veces 2.10 da
 25.199999999999996, y ese número acabaría impreso en la cuenta de un huésped.
 
-El total **no le suma impuestos**: se cobra lo que esté cargado en la lista. Si algún día
-hace falta desglosar el IVA, es una línea más.
+### El IVA
+
+Al final de la cuenta el huésped ve tres renglones: **Subtotal**, **IVA 13 %** con su
+monto, y **Total**. El porcentaje se configura en **Horario y prendas** —no está escrito
+en el código, porque el IVA en Costa Rica ya cambió antes y va a volver a cambiar— y
+dejarlo en **0** apaga el impuesto: la cuenta vuelve a ser un solo renglón de total, sin
+un «IVA $0.00» que no le dice nada a nadie.
+
+Tres cosas que hacen que el número cuadre:
+
+- **El porcentaje se congela en cada pedido**, igual que el precio. Si mañana pasa a 14 %,
+  un pedido de ayer sigue diciendo «IVA 13 %» y el mismo monto. La pantalla de
+  housekeeping muestra ese desglose bajo el total, que es lo que hay que poder leer cuando
+  el huésped pregunta por qué el total no es la suma de las prendas.
+- **El impuesto se saca una vez sobre el subtotal**, no prenda por prenda. Redondeando
+  cada línea y sumando después, doce prendas se desvían cuatro centavos del total que sale
+  en la factura.
+- **El medio centavo sube.** El `round()` de Python redondea al par —`round(136.5)` da
+  136—, así que la cuenta va con `Decimal` y `ROUND_HALF_UP`. La página del huésped hace
+  la misma cuenta con enteros, sin dividir en decimales, para que le dé **exactamente** lo
+  mismo que al servidor: si el teléfono dijera $1.36 y la cuenta del cuarto $1.37, el
+  huésped tiene razón en reclamar y el hotel no tiene con qué contestarle. Por eso el
+  porcentaje se guarda con dos decimales como máximo.
 
 ### Dos detalles que importan
 
