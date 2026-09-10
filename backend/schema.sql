@@ -342,6 +342,11 @@ CREATE TABLE IF NOT EXISTS hk_prenda (
     nombre TEXT NOT NULL,                  -- como lo ve el personal
     nombre_en TEXT,                        -- como lo ve el huésped
     orden INTEGER NOT NULL DEFAULT 0,      -- para que salga en el orden del formulario
+    -- El precio por pieza, en CENTAVOS enteros. En coma flotante, sumar doce veces 2.10
+    -- da 25.199999999999996, y ese número acaba impreso en la cuenta de un huésped.
+    -- NULL = sin precio puesto todavía: al huésped se le dice «a consultar» en vez de
+    -- inventarle un cero.
+    precio_centavos INTEGER,
     activo INTEGER NOT NULL DEFAULT 1
 );
 
@@ -372,6 +377,11 @@ CREATE TABLE IF NOT EXISTS hk_pedido (
     -- al huésped y no se recalcula: si mañana se cambia la hora tope, lo que se prometió
     -- ayer no cambia.
     mismo_dia INTEGER,
+    -- El total cotizado, en centavos. Se guarda sumado y no se recalcula al mostrarlo,
+    -- por lo mismo que 'mismo_dia': es lo que se le prometió a esta persona ese día.
+    -- NULL cuando alguna prenda del pedido no tenía precio puesto: entonces el total
+    -- está incompleto y decir un número sería mentir.
+    total_centavos INTEGER,
     creado_en TEXT DEFAULT (datetime('now'))
 );
 
@@ -386,7 +396,12 @@ CREATE TABLE IF NOT EXISTS hk_pedido_item (
     -- el pedido de la semana pasada tiene que seguir diciendo qué se recogió: es el
     -- registro de lo que se entregó, no un reflejo del catálogo de hoy.
     prenda_nombre TEXT NOT NULL,
-    cantidad INTEGER NOT NULL DEFAULT 1
+    cantidad INTEGER NOT NULL DEFAULT 1,
+    -- El precio por pieza AL MOMENTO DE PEDIR, copiado por lo mismo que el nombre: si
+    -- housekeeping sube la lista el mes que viene, el pedido de la semana pasada tiene
+    -- que seguir diciendo lo que se le cotizó. Un huésped que ve un total en su teléfono
+    -- y otro en su cuenta no vuelve a confiar en ninguno de los dos.
+    precio_centavos INTEGER
 );
 
 -- El enlace del huésped, por RESERVA y no por habitación, por lo mismo que en el spa:

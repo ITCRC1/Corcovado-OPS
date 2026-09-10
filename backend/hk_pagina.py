@@ -44,6 +44,11 @@ TEXTOS = {
         "hora_ayuda": "— tap the one that suits you",
         "prendas": "What are you sending?",
         "prendas_ayuda": "Tap + for each item. Leave the rest at zero.",
+        "total": "Total",
+        "total_ayuda": "Charged to your room.",
+        "total_parcial": "Some items don't have a price listed — reception will confirm "
+                         "those with you.",
+        "a_consultar": "on request",
         "nota": "Anything else we should know",
         "nota_ayuda": "Stains, delicate fabrics, anything at all.",
         "enviar": "Send to housekeeping",
@@ -83,6 +88,11 @@ TEXTOS = {
         "hora_ayuda": "— tocá la que te sirva",
         "prendas": "¿Qué nos mandás?",
         "prendas_ayuda": "Tocá + por cada prenda. El resto dejalo en cero.",
+        "total": "Total",
+        "total_ayuda": "Se carga a tu habitación.",
+        "total_parcial": "Algunas prendas no tienen precio en la lista — recepción te las "
+                         "confirma.",
+        "a_consultar": "a consultar",
         "nota": "Algo que debamos saber",
         "nota_ayuda": "Manchas, telas delicadas, lo que sea.",
         "enviar": "Mandar a housekeeping",
@@ -182,6 +192,17 @@ _PLANTILLA = r"""<!doctype html>
   .prenda:last-child { border-bottom:none; }
   .prenda.puesta { background:#F7FAF5; }
   .prenda .nombre { flex:1; font-size:15.5px; }
+  .prenda .precio { font-size:13px; color:var(--suave); min-width:52px; text-align:right; }
+  .prenda.puesta .precio { color:var(--verde); font-weight:600; }
+  /* El total, pegado al final de la lista para que se lea como su cierre y no como otra
+     cosa suelta. Va tabular: los números tienen que alinearse al cambiar de cantidad. */
+  .total { display:flex; justify-content:space-between; align-items:baseline;
+           border-top:2px solid var(--verde); margin-top:-1px; padding:13px 12px;
+           background:#F7FAF5; border-radius:0 0 10px 10px; }
+  .total .etiqueta-total { font-weight:600; font-size:15px; }
+  .total .cifra { font-size:22px; font-weight:600; color:var(--verde);
+                  font-variant-numeric:tabular-nums; }
+  .total-nota { font-size:12.5px; color:var(--suave); margin:6px 2px 0; }
   .contador { display:flex; align-items:center; gap:0; }
   .contador button { width:38px; height:38px; font-size:20px; font-family:inherit;
     line-height:1; cursor:pointer; border:1px solid var(--borde); background:#fff;
@@ -295,6 +316,29 @@ function totalElegido() {
   return Object.values(ELEGIDO.items).reduce((a, b) => a + (b || 0), 0);
 }
 
+function precioDe(codigo) {
+  const p = (DATOS.prendas || []).find(x => x.codigo === codigo);
+  return p && p.precio_centavos != null ? p.precio_centavos : null;
+}
+
+// Se suma en CENTAVOS enteros. Sumando decimales, doce veces 2.10 da 25.199999999999996,
+// y ese número acabaría en la pantalla de un huésped.
+function cuentaElegida() {
+  let centavos = 0, completo = true;
+  for (const [codigo, cantidad] of Object.entries(ELEGIDO.items)) {
+    const precio = precioDe(codigo);
+    if (precio == null) { completo = false; continue; }
+    centavos += precio * cantidad;
+  }
+  return { centavos, completo };
+}
+
+function comoPlata(centavos) {
+  const m = (DATOS && DATOS.moneda) || "$";
+  return m + (centavos / 100).toLocaleString(IDIOMA === "es" ? "es-CR" : "en-US",
+    { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 function cambiar(codigo, delta) {
   const tope = (DATOS.config && DATOS.config.max_por_prenda) || 99;
   const ahora = ELEGIDO.items[codigo] || 0;
@@ -350,6 +394,8 @@ function dibujar() {
       let cuando = `${p.fecha}${p.hora ? " · " + p.hora : ""}`;
       if (p.mismo_dia === 1) cuando += " · " + T("vuelve_hoy");
       else if (p.mismo_dia === 0) cuando += " · " + T("vuelve_manana");
+      // El total que se le COTIZÓ ese día, no uno recalculado con la lista de hoy.
+      if (p.total) cuando += " · " + p.total;
       h += `<div class="mio"><div><div>${esc(p.resumen || "")}</div>
         <div class="cuando">${esc(cuando)}</div></div>
         <span class="etiqueta ${listo ? "ok" : ""}">${esc(est)}</span></div>`;
@@ -384,8 +430,14 @@ function dibujar() {
         <div class="prendas">`;
   (DATOS.prendas || []).forEach((p) => {
     const n = ELEGIDO.items[p.codigo] || 0;
+    // Con cantidad puesta se muestra el SUBTOTAL de esa línea, no el precio unitario:
+    // es lo que el huésped quiere comprobar cuando el total no le cuadra.
+    const cifra = p.precio_centavos == null
+      ? T("a_consultar")
+      : (n ? comoPlata(p.precio_centavos * n) : comoPlata(p.precio_centavos));
     h += `<div class="prenda ${n ? "puesta" : ""}">
       <div class="nombre">${esc(p.nombre)}</div>
+      <div class="precio">${esc(cifra)}</div>
       <div class="contador">
         <button type="button" onclick="cambiar('${esc(p.codigo)}',-1)" ${n ? "" : "disabled"}
                 aria-label="menos">−</button>
@@ -393,7 +445,23 @@ function dibujar() {
         <button type="button" onclick="cambiar('${esc(p.codigo)}',1)" aria-label="más">+</button>
       </div></div>`;
   });
+
+  // El total solo aparece cuando ya eligió algo: un "$0.00" antes de tocar nada no le
+  // dice nada a nadie.
+  const cuenta = cuentaElegida();
+  if (totalElegido() > 0) {
+    h += `<div class="total">
+      <span class="etiqueta-total">${esc(T("total"))}</span>
+      <span class="cifra">${esc(comoPlata(cuenta.centavos))}</span>
+    </div>`;
+  }
   h += `</div>`;
+  if (totalElegido() > 0) {
+    h += `<p class="total-nota">${esc(T("total_ayuda"))}</p>`;
+    if (!cuenta.completo) {
+      h += `<p class="total-nota">${esc(T("total_parcial"))}</p>`;
+    }
+  }
 
   h += `<label for="nota" style="margin-top:18px;">${esc(T("nota"))}
           <span class="ayuda">${esc(T("nota_ayuda"))}</span></label>

@@ -151,6 +151,12 @@ COLUMNAS_NUEVAS = [
     ("tour_asignado", "origen", "TEXT NOT NULL DEFAULT 'PDF'"),
     # La marca de modificación de Opera, para no reprocesar lo que no cambió.
     ("reserva", "opera_modificado_en", "TEXT"),
+    # Los precios de la lavandería. Van aquí y no solo en schema.sql porque las tablas de
+    # housekeeping ya existen en la base instalada: el CREATE TABLE IF NOT EXISTS no corre
+    # y las columnas nuevas no aparecerían solas.
+    ("hk_prenda", "precio_centavos", "INTEGER"),
+    ("hk_pedido_item", "precio_centavos", "INTEGER"),
+    ("hk_pedido", "total_centavos", "INTEGER"),
 ]
 
 

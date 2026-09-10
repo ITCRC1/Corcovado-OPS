@@ -200,7 +200,31 @@ huésped, igual que la del spa.
   distintas y las dos llegaban a recepción
 - **Nota** para lo que anota housekeeping, y **Cancelar** con motivo
 - **Horario y prendas**: entre qué horas se recoge, la hora tope del mismo día, y el
-  catálogo de prendas — agregar «Chaqueta» es una fila, no un despliegue
+  catálogo de prendas con su **precio por pieza** — agregar «Chaqueta» es una fila, no un
+  despliegue
+
+### Los precios
+
+Cada prenda lleva su **precio por pieza en dólares**, editable en la misma fila de
+**Horario y prendas**. El formulario del huésped multiplica por la cantidad y le muestra
+el **total** antes de mandar la ropa, con la aclaración de que se carga a la habitación.
+
+Tres decisiones que evitan un reclamo:
+
+- **El precio se copia al pedido.** Cambiar la lista afecta a los pedidos **nuevos**; los
+  ya hechos conservan el que se les cotizó. Un huésped que ve un total en su teléfono y
+  otro en su cuenta no vuelve a confiar en ninguno de los dos.
+- **Una prenda sin precio sale como «a consultar»**, no como cero, y el pedido queda
+  marcado como total incompleto. Un total al que le falta una línea no es un total.
+- **El precio lo pone el catálogo, nunca el formulario.** La página del huésped es
+  pública: si el precio viajara en la petición, cualquiera podría mandarse veinte camisas
+  a cero.
+
+Todo se guarda en **centavos enteros**. Sumando decimales, doce veces 2.10 da
+25.199999999999996, y ese número acabaría impreso en la cuenta de un huésped.
+
+El total **no le suma impuestos**: se cobra lo que esté cargado en la lista. Si algún día
+hace falta desglosar el IVA, es una línea más.
 
 ### Dos detalles que importan
 

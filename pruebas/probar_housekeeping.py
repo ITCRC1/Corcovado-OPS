@@ -155,6 +155,91 @@ def el_nombre_de_la_prenda_se_copia_al_pedido(c):
 
 
 # ---------------------------------------------------------------------------
+# Los precios — lo que el formulario de Google no calculaba
+# ---------------------------------------------------------------------------
+
+CON_PRECIO = {
+    "TSHIRT": {"nombre": "T-shirt", "precio_centavos": 250},
+    "SOCKS": {"nombre": "Pair of socks", "precio_centavos": 150},
+    "DRESS": {"nombre": "Dress", "precio_centavos": None},
+}
+
+
+def el_precio_se_escribe_como_se_escribe(c):
+    """Quien carga la lista teclea 2.50, 2,50 o $2.50. Rechazarle la coma seria hacerle
+    perder el tiempo con algo que se entiende perfectamente."""
+    limpiar()
+    c.igual(hk.centavos_de("2.50"), 250, "con punto")
+    c.igual(hk.centavos_de("2,50"), 250, "con coma")
+    c.igual(hk.centavos_de("$2.50"), 250, "con el simbolo pegado")
+    c.igual(hk.centavos_de(" 3 "), 300, "un entero con espacios")
+    c.igual(hk.centavos_de(""), None, "vacio es 'sin precio', no cero")
+    c.igual(hk.centavos_de(None), None, "y nada tambien")
+    c.igual(hk.centavos_de("gratis"), False, "una palabra no es un precio")
+    c.igual(hk.centavos_de("-5"), False, "ni un precio negativo")
+
+
+def los_centavos_no_se_pierden_al_redondear(c):
+    """int(2.99*100) da 298 porque 2.99 no es exacto en binario. Ese centavo perdido
+    aparece en la cuenta de un huesped."""
+    limpiar()
+    c.igual(hk.centavos_de("2.99"), 299, "2.99 tienen que ser 299 centavos, no 298")
+    c.igual(hk.centavos_de("8.29"), 829, "y 8.29 tienen que ser 829")
+
+
+def el_total_es_precio_por_cantidad(c):
+    limpiar()
+    items, _ = hk.limpiar_items(
+        [{"codigo": "TSHIRT", "cantidad": 3}, {"codigo": "SOCKS", "cantidad": 2}],
+        CON_PRECIO)
+    total, completo = hk.total_de(items)
+    c.igual(total, 3 * 250 + 2 * 150, "tres camisetas y dos pares de medias")
+    c.igual(completo, True, "y el total esta completo")
+    c.igual(hk.formato_precio(total), "$10.50", "se muestra con dos decimales")
+
+
+def sumar_muchas_veces_no_arrastra_decimales(c):
+    """Doce veces 2.10 en coma flotante da 25.199999999999996. En centavos, 2520."""
+    limpiar()
+    prendas = {"X": {"nombre": "X", "precio_centavos": 210}}
+    items, _ = hk.limpiar_items([{"codigo": "X", "cantidad": 12}], prendas)
+    total, _ = hk.total_de(items)
+    c.igual(total, 2520, "doce por 2.10 son 25.20 exactos")
+    c.igual(hk.formato_precio(total), "$25.20", "y se imprimen asi")
+
+
+def una_prenda_sin_precio_deja_el_total_incompleto(c):
+    """Un total al que le falta una linea no es un total: decirlo igual le daria al
+    huesped un numero que no va a coincidir con su cuenta."""
+    limpiar()
+    items, _ = hk.limpiar_items(
+        [{"codigo": "TSHIRT", "cantidad": 2}, {"codigo": "DRESS", "cantidad": 1}],
+        CON_PRECIO)
+    total, completo = hk.total_de(items)
+    c.igual(completo, False, "con una prenda sin precio, el total esta incompleto")
+    c.igual(total, 500, "y lo que se pudo sumar sigue siendo correcto")
+
+
+def el_precio_viaja_copiado_en_el_pedido(c):
+    """Si housekeeping sube la lista el mes que viene, el pedido de la semana pasada
+    tiene que seguir diciendo lo que se cotizo. Un huesped que ve un total en su telefono
+    y otro en su cuenta no vuelve a confiar en ninguno de los dos."""
+    limpiar()
+    items, _ = hk.limpiar_items([{"codigo": "TSHIRT", "cantidad": 1}], CON_PRECIO)
+    c.igual(items[0]["precio_centavos"], 250, "el precio va con la linea del pedido")
+
+
+def el_precio_lo_pone_el_catalogo_y_no_el_formulario(c):
+    """La pagina del huesped es publica: si el precio viajara en la peticion, cualquiera
+    podria mandarse veinte camisas a cero."""
+    limpiar()
+    items, _ = hk.limpiar_items(
+        [{"codigo": "TSHIRT", "cantidad": 20, "precio_centavos": 0}], CON_PRECIO)
+    c.igual(items[0]["precio_centavos"], 250,
+            "el precio que venga en la peticion se ignora")
+
+
+# ---------------------------------------------------------------------------
 # Los estados — dos pasos más que el spa, a pedido del hotel
 # ---------------------------------------------------------------------------
 
@@ -280,6 +365,13 @@ PRUEBAS = [
     un_pedido_sin_ninguna_prenda_no_entra,
     una_prenda_que_no_existe_se_ignora,
     el_nombre_de_la_prenda_se_copia_al_pedido,
+    el_precio_se_escribe_como_se_escribe,
+    los_centavos_no_se_pierden_al_redondear,
+    el_total_es_precio_por_cantidad,
+    sumar_muchas_veces_no_arrastra_decimales,
+    una_prenda_sin_precio_deja_el_total_incompleto,
+    el_precio_viaja_copiado_en_el_pedido,
+    el_precio_lo_pone_el_catalogo_y_no_el_formulario,
     el_pedido_avanza_por_su_camino,
     se_puede_deshacer_un_paso_pero_no_volver_al_principio,
     un_pedido_cancelado_no_revive,

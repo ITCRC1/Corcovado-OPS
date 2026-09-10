@@ -2796,9 +2796,12 @@ import housekeeping as _hk
 
 def _prendas_hk(conn, solo_activas=True):
     cond = " WHERE activo = 1" if solo_activas else ""
-    return [dict(f) for f in conn.execute(
-        f"SELECT codigo, nombre, nombre_en, orden, activo FROM hk_prenda{cond} "
-        f"ORDER BY orden, nombre")]
+    filas = [dict(f) for f in conn.execute(
+        f"SELECT codigo, nombre, nombre_en, orden, activo, precio_centavos "
+        f"FROM hk_prenda{cond} ORDER BY orden, nombre")]
+    for f in filas:
+        f["precio"] = _hk.formato_precio(f["precio_centavos"])
+    return filas
 
 
 def _items_de(conn, ids):
@@ -2807,12 +2810,18 @@ def _items_de(conn, ids):
         return {}
     marcas = ",".join("?" * len(ids))
     filas = conn.execute(
-        f"""SELECT pedido_id, prenda_codigo, prenda_nombre, cantidad
+        f"""SELECT pedido_id, prenda_codigo, prenda_nombre, cantidad, precio_centavos
             FROM hk_pedido_item WHERE pedido_id IN ({marcas})
             ORDER BY id""", list(ids)).fetchall()
     por_pedido = {}
     for f in filas:
-        por_pedido.setdefault(f["pedido_id"], []).append(dict(f))
+        d = dict(f)
+        d["precio"] = _hk.formato_precio(d["precio_centavos"])
+        # El subtotal de la línea, ya calculado: es lo que housekeeping revisa contra la
+        # bolsa cuando el huésped pregunta de dónde salió el total.
+        d["subtotal"] = (_hk.formato_precio(d["precio_centavos"] * (d["cantidad"] or 0))
+                         if d["precio_centavos"] is not None else "")
+        por_pedido.setdefault(f["pedido_id"], []).append(d)
     return por_pedido
 
 
@@ -2854,6 +2863,11 @@ def _pedidos_hk(conn, desde=None, hasta=None, conf_no=None, incluir_canceladas=T
         d["total_prendas"] = sum(int(i["cantidad"] or 0) for i in d["items"])
         d["resumen"] = " · ".join(
             f"{i['cantidad']} {str(i['prenda_nombre']).lower()}" for i in d["items"])
+        # El total COTIZADO, no uno recalculado con los precios de hoy: es lo que se le
+        # dijo a esta persona ese día.
+        d["total"] = _hk.formato_precio(d.get("total_centavos"))
+        d["total_incompleto"] = (d.get("total_centavos") is None
+                                 and any(i["precio_centavos"] is None for i in d["items"]))
         salida.append(d)
     return salida
 
@@ -2862,11 +2876,15 @@ def _crear_pedido_hk(conn, datos, items, origen="RECEPCION"):
     """Guarda el pedido y sus prendas. Devuelve el id."""
     cfg = _hk.cargar_config()
     hora = _hk.normalizar_hora(datos.get("hora"))
+    # El total se guarda sumado. Si a alguna prenda le falta el precio queda en NULL: un
+    # total al que le falta una línea no es un total, y decirlo igual sería darle al
+    # huésped un número que no va a coincidir con su cuenta.
+    suma, completo = _hk.total_de(items)
     cur = conn.execute(
         """INSERT INTO hk_pedido
              (conf_no, room_no, nombre_huesped, fecha, hora, estado, origen,
-              nota_huesped, nota_operacion, mismo_dia)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+              nota_huesped, nota_operacion, mismo_dia, total_centavos)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         ((datos.get("conf_no") or "").strip() or None,
          (datos.get("room_no") or "").strip() or None,
          (datos.get("nombre_huesped") or "").strip() or None,
@@ -2879,12 +2897,15 @@ def _crear_pedido_hk(conn, datos, items, origen="RECEPCION"):
          # Lo que se le DIJO al huésped queda guardado. Si mañana se mueve la hora tope,
          # lo prometido ayer no cambia.
          None if _hk.vuelve_mismo_dia(hora, cfg) is None
-         else (1 if _hk.vuelve_mismo_dia(hora, cfg) else 0)))
+         else (1 if _hk.vuelve_mismo_dia(hora, cfg) else 0),
+         suma if completo else None))
     pedido_id = cur.lastrowid
     conn.executemany(
-        """INSERT INTO hk_pedido_item (pedido_id, prenda_codigo, prenda_nombre, cantidad)
-           VALUES (?,?,?,?)""",
-        [(pedido_id, i["codigo"], i["nombre"], i["cantidad"]) for i in items])
+        """INSERT INTO hk_pedido_item
+             (pedido_id, prenda_codigo, prenda_nombre, cantidad, precio_centavos)
+           VALUES (?,?,?,?,?)""",
+        [(pedido_id, i["codigo"], i["nombre"], i["cantidad"], i.get("precio_centavos"))
+         for i in items])
     conn.commit()
     return pedido_id
 
@@ -2918,6 +2939,11 @@ async def crear_prenda_hk(payload: dict,
     nombre = (payload.get("nombre") or "").strip()
     if not codigo or not nombre:
         raise HTTPException(status_code=400, detail="Hacen falta el código y el nombre.")
+    precio = _hk.centavos_de(payload.get("precio"))
+    if precio is False:
+        raise HTTPException(
+            status_code=400,
+            detail="El precio va como 2.50. Déjalo vacío si todavía no lo tienes.")
     conn = get_connection()
     try:
         if conn.execute("SELECT 1 FROM hk_prenda WHERE codigo = ?", (codigo,)).fetchone():
@@ -2925,10 +2951,10 @@ async def crear_prenda_hk(payload: dict,
         orden = conn.execute(
             "SELECT COALESCE(MAX(orden), 0) + 1 n FROM hk_prenda").fetchone()["n"]
         conn.execute(
-            """INSERT INTO hk_prenda (codigo, nombre, nombre_en, orden)
-               VALUES (?,?,?,?)""",
+            """INSERT INTO hk_prenda (codigo, nombre, nombre_en, orden, precio_centavos)
+               VALUES (?,?,?,?,?)""",
             (codigo, nombre, (payload.get("nombre_en") or "").strip() or None,
-             payload.get("orden") or orden))
+             payload.get("orden") or orden, precio))
         conn.commit()
     finally:
         conn.close()
@@ -2949,6 +2975,16 @@ async def editar_prenda_hk(codigo: str, payload: dict,
             campos.append(f"{clave} = ?")
             v = payload[clave]
             valores.append(str(v).strip() if isinstance(v, str) else v)
+    # El precio se cambia aquí y afecta a los pedidos NUEVOS. Los ya hechos conservan el
+    # que se cotizó: por eso el precio viaja copiado en cada línea del pedido.
+    if "precio" in payload:
+        precio = _hk.centavos_de(payload["precio"])
+        if precio is False:
+            raise HTTPException(
+                status_code=400,
+                detail="El precio va como 2.50. Déjalo vacío si todavía no lo tienes.")
+        campos.append("precio_centavos = ?")
+        valores.append(precio)
     if not campos:
         return {"status": "ok"}
     conn = get_connection()
@@ -3002,7 +3038,11 @@ async def crear_pedido_hk(payload: dict,
         raise HTTPException(status_code=400, detail="Falta el día de la recolección.")
     conn = get_connection()
     try:
-        prendas = {p["codigo"]: p["nombre"] for p in _prendas_hk(conn)}
+        # El precio sale del catálogo, no del formulario: es lo que impide que un pedido
+        # llegue con los precios puestos por quien lo mandó.
+        prendas = {p["codigo"]: {"nombre": p["nombre"],
+                                 "precio_centavos": p["precio_centavos"]}
+                   for p in _prendas_hk(conn)}
         items, problema = _hk.limpiar_items(payload.get("items"), prendas)
         if problema:
             raise HTTPException(status_code=400, detail=problema)
@@ -3155,14 +3195,18 @@ def _datos_publicos_hk(conn, reserva):
         "estadia_desde": llegada,
         "estadia_hasta": salida,
         "prendas": [{"codigo": p["codigo"],
-                     "nombre": p["nombre_en"] or p["nombre"]}
+                     "nombre": p["nombre_en"] or p["nombre"],
+                     # En centavos, para que la página sume enteros y no decimales.
+                     "precio_centavos": p["precio_centavos"],
+                     "precio": p["precio"]}
                     for p in _prendas_hk(conn)],
+        "moneda": _hk.MONEDA,
         "config": cfg,
         "horas": _hk.horas_de_recoleccion(cfg),
         "mis_pedidos": [
             {"id": m["id"], "fecha": m["fecha"], "hora": m["hora"],
              "estado": m["estado"], "resumen": m["resumen"],
-             "mismo_dia": m["mismo_dia"]}
+             "mismo_dia": m["mismo_dia"], "total": m["total"]}
             for m in mios],
     }
 
@@ -3210,7 +3254,11 @@ async def hk_publico_pedir(conf_no: str, token: str, payload: dict):
                 detail=("Ya hay varios pedidos abiertos para esta habitación. "
                         "Habla con recepción para agregar otro."))
 
-        prendas = {p["codigo"]: (p["nombre_en"] or p["nombre"]) for p in _prendas_hk(conn)}
+        # Con el nombre en inglés, que es el que va a ver el huésped en su pedido, y el
+        # precio del catálogo — nunca el que venga en la petición: esta página es pública.
+        prendas = {p["codigo"]: {"nombre": p["nombre_en"] or p["nombre"],
+                                 "precio_centavos": p["precio_centavos"]}
+                   for p in _prendas_hk(conn)}
         items, problema = _hk.limpiar_items(payload.get("items"), prendas)
         if problema:
             raise HTTPException(status_code=400, detail=problema)

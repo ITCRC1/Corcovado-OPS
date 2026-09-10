@@ -51,6 +51,11 @@ CONFIG_POR_DEFECTO = {
     "max_por_prenda": 99,
 }
 
+# La moneda en que se le cotiza al huésped. Está aquí, en un solo sitio, para que
+# cambiarla sea una línea: los huéspedes del lodge son internacionales y la página abre en
+# inglés, así que se cotiza en dólares.
+MONEDA = "$"
+
 ESTADOS = ("SOLICITADO", "CONFIRMADO", "RECOGIDO", "ENTREGADO", "CANCELADO")
 
 # El camino normal de un pedido. Se usa para no dejar saltar pasos hacia atrás sin querer:
@@ -173,15 +178,72 @@ def vuelve_mismo_dia(hora, cfg=None):
 
 
 # ---------------------------------------------------------------------------
+# Precios
+# ---------------------------------------------------------------------------
+# Todo en CENTAVOS enteros. En coma flotante, sumar doce veces 2.10 da
+# 25.199999999999996, y ese número acabaría impreso en la cuenta de un huésped.
+
+def centavos_de(texto):
+    """'2.50', '2,50', '$2.50' o 2.5 -> 250. None si está vacío, False si no es un precio.
+
+    Se aceptan la coma y el símbolo porque quien carga la lista escribe como escribe, y
+    rechazarle '2,50' por la coma sería hacerle perder el tiempo con algo que se entiende
+    perfectamente.
+    """
+    if texto is None:
+        return None
+    t = str(texto).strip().replace(MONEDA, "").replace(" ", "").replace(",", ".")
+    if t == "":
+        return None
+    try:
+        valor = float(t)
+    except ValueError:
+        return False
+    if valor < 0:
+        return False
+    # round() antes de int(): int(2.99*100) da 298 porque 2.99 no es exacto en binario.
+    return int(round(valor * 100))
+
+
+def formato_precio(centavos):
+    """250 -> '$2.50'. Cadena vacía si no hay precio puesto."""
+    if centavos is None:
+        return ""
+    return f"{MONEDA}{centavos / 100:,.2f}"
+
+
+def total_de(items):
+    """(centavos, completo). 'completo' es False si alguna prenda no tenía precio.
+
+    Se devuelven los dos porque un total al que le falta una prenda no es un total: al
+    huésped hay que decirle que está incompleto, no darle un número que no va a coincidir
+    con su cuenta.
+    """
+    total, completo = 0, True
+    for i in items:
+        precio = i.get("precio_centavos")
+        if precio is None:
+            completo = False
+            continue
+        total += int(precio) * int(i.get("cantidad") or 0)
+    return total, completo
+
+
+# ---------------------------------------------------------------------------
 # El pedido
 # ---------------------------------------------------------------------------
 
 def limpiar_items(items, prendas_validas, cfg=None):
     """Normaliza lo que llega del formulario. Devuelve (lista, problema).
 
-    `prendas_validas` es {codigo: nombre} del catálogo activo. Se copia el NOMBRE al
-    pedido: si housekeeping renombra la prenda mañana, el pedido de hoy tiene que seguir
-    diciendo qué se recogió.
+    `prendas_validas` es {codigo: nombre} o {codigo: {'nombre':…, 'precio_centavos':…}}
+    del catálogo activo. Se copian al pedido el NOMBRE y el PRECIO: si housekeeping
+    renombra la prenda o sube la lista mañana, el pedido de hoy tiene que seguir diciendo
+    qué se recogió y cuánto se cotizó.
+
+    El precio sale del CATÁLOGO, nunca de lo que mande el formulario. La página es
+    pública: si el precio viajara en la petición, cualquiera podría mandarse un pedido de
+    veinte camisas a cero.
     """
     cfg = cfg or cargar_config()
     tope = int(cfg.get("max_por_prenda", 99))
@@ -197,14 +259,19 @@ def limpiar_items(items, prendas_validas, cfg=None):
             cantidad = int((it or {}).get("cantidad") or 0)
         except (TypeError, ValueError):
             return None, "Las cantidades tienen que ser números."
+
+        prenda = prendas_validas[codigo]
+        nombre = prenda if isinstance(prenda, str) else prenda.get("nombre")
+        precio = None if isinstance(prenda, str) else prenda.get("precio_centavos")
+
         if cantidad <= 0:
             continue                      # marcó la prenda y la dejó en cero: no va
         if cantidad > tope:
-            return None, (f"{prendas_validas[codigo]}: {cantidad} es demasiado. "
+            return None, (f"{nombre}: {cantidad} es demasiado. "
                           f"El tope por prenda es {tope}.")
         vistos.add(codigo)
-        limpios.append({"codigo": codigo, "nombre": prendas_validas[codigo],
-                        "cantidad": cantidad})
+        limpios.append({"codigo": codigo, "nombre": nombre, "cantidad": cantidad,
+                        "precio_centavos": precio})
 
     if not limpios:
         return None, "Marcá al menos una prenda con su cantidad."

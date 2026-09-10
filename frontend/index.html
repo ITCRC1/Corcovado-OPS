@@ -3792,6 +3792,7 @@ async function loadHousekeeping(fecha, desde, hasta) {
         <table style="font-size:12.5px;">
           <tr><th style="width:88px;">Fecha</th><th style="width:60px;">Hora</th>
               <th style="width:62px;">Hab.</th><th>Huésped</th><th>Prendas</th>
+              <th style="width:78px;text-align:right;">Total</th>
               <th style="width:112px;">Estado</th>
               ${puedeEscribir("housekeeping") ? "<th style='width:190px;'></th>" : ""}</tr>
           ${pedidos.map(filaPedidoHk).join("")}
@@ -3818,6 +3819,11 @@ function filaPedidoHk(p) {
       ${p.nota_operacion ? `<br><span style="font-size:11px;color:var(--muted);">${escaparHTML(p.nota_operacion)}</span>` : ""}</td>
     <td>${escaparHTML(p.resumen || "—")}
       ${plazo ? `<br><span style="font-size:11px;color:var(--muted);">${plazo}</span>` : ""}</td>
+    <td style="text-align:right;font-variant-numeric:tabular-nums;">
+      ${p.total ? `<strong>${escaparHTML(p.total)}</strong>`
+        : p.total_incompleto
+          ? `<span style="font-size:11px;color:var(--warn-text);">a consultar</span>`
+          : `<span style="color:var(--muted);">—</span>`}</td>
     <td><span style="background:${e.fondo};color:${e.color};padding:2px 8px;border-radius:var(--r-pill);font-size:11px;font-weight:600;white-space:nowrap;">${e.texto}</span></td>
     ${puedeEscribir("housekeeping") ? `<td>
       ${siguiente ? `<button class="btn btn-primary" style="padding:4px 9px;font-size:11.5px;"
@@ -3908,10 +3914,17 @@ async function mostrarEnlacesHk() {
 async function mostrarHorarioHk() {
   const d = await (await fetchAuth(`${API}/api/housekeeping/catalogo`)).json();
   const c = d.config || {};
+  // El precio va como campo editable en la propia fila y no en una ventana aparte:
+  // cargar la lista es teclear ocho números seguidos, y abrir un diálogo por prenda lo
+  // haría tres veces más lento. Se guarda al salir del campo.
   const prendas = (d.prendas || []).map(p => `<tr style="${p.activo ? "" : "opacity:.5;"}">
       <td style="font-family:monospace;font-size:11px;">${escaparHTML(p.codigo)}</td>
       <td>${escaparHTML(p.nombre)}</td>
       <td style="color:var(--muted);">${escaparHTML(p.nombre_en || "")}</td>
+      <td><input value="${p.precio_centavos == null ? "" : (p.precio_centavos / 100).toFixed(2)}"
+            placeholder="—" inputmode="decimal"
+            style="width:76px;text-align:right;font-size:12.5px;padding:3px 6px;"
+            onchange="precioPrendaHk('${escaparHTML(p.codigo)}', this)"></td>
       <td><button class="btn" style="padding:3px 8px;font-size:11px;"
             onclick="estadoPrendaHk('${escaparHTML(p.codigo)}', ${p.activo ? 0 : 1})">
           ${p.activo ? "Apagar" : "Encender"}</button></td>
@@ -3941,13 +3954,20 @@ async function mostrarHorarioHk() {
       Las que ve el huésped en su formulario. Apagar una no borra los pedidos viejos:
       siguen diciendo qué se recogió.</p>
     <table style="font-size:12.5px;">
-      <tr><th style="width:80px;">Código</th><th>Nombre</th><th>En inglés</th><th style="width:90px;"></th></tr>
+      <tr><th style="width:80px;">Código</th><th>Nombre</th><th>En inglés</th>
+          <th style="width:86px;">Precio ($)</th><th style="width:90px;"></th></tr>
       ${prendas}
     </table>
-    <div style="display:grid;grid-template-columns:90px 1fr 1fr auto;gap:8px;margin-top:10px;">
+    <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0;">
+      El precio es por pieza, en dólares, y el formulario del huésped multiplica por la
+      cantidad y le muestra el total. Dejarlo vacío hace que esa prenda le salga como
+      «a consultar» en vez de como cero. <strong>Cambiar un precio afecta a los pedidos
+      nuevos:</strong> los ya hechos conservan el que se les cotizó.</p>
+    <div style="display:grid;grid-template-columns:90px 1fr 1fr 86px auto;gap:8px;margin-top:12px;">
       <input id="hk-p-cod" placeholder="CÓDIGO" style="text-transform:uppercase;">
       <input id="hk-p-nom" placeholder="Nombre en español">
       <input id="hk-p-en" placeholder="Name in English">
+      <input id="hk-p-precio" placeholder="0.00" inputmode="decimal" style="text-align:right;">
       <button class="btn btn-primary" onclick="agregarPrendaHk()">Agregar</button>
     </div>
   `);
@@ -3978,11 +3998,27 @@ async function agregarPrendaHk() {
     body: JSON.stringify({
       codigo, nombre,
       nombre_en: (document.getElementById("hk-p-en").value || "").trim(),
+      precio: (document.getElementById("hk-p-precio").value || "").trim(),
     }),
   });
   if (!res.ok) return avisar((await res.json().catch(() => ({}))).detail || "No se pudo", true);
   avisar("Prenda agregada");
   mostrarHorarioHk();
+}
+
+async function precioPrendaHk(codigo, campo) {
+  const res = await fetchAuth(`${API}/api/housekeeping/prenda/${codigo}/editar`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ precio: campo.value }),
+  });
+  if (!res.ok) {
+    avisar((await res.json().catch(() => ({}))).detail || "No se pudo guardar", true);
+    campo.focus();
+    return;
+  }
+  // No se vuelve a dibujar la ventana: quien está cargando la lista está tecleando
+  // precio tras precio, y redibujar le sacaría el cursor de la fila siguiente.
+  avisar(`Precio de ${codigo} guardado`);
 }
 
 async function estadoPrendaHk(codigo, activo) {
