@@ -344,6 +344,22 @@
     border: none; border-radius: var(--r-sm); padding: 8px 12px; font-weight: 600;
     font-size: 12.5px; cursor: pointer; }
   .instalar-aviso .cerrar { background: transparent; color: #9FB6A8; padding: 8px 4px; }
+
+  /* Aviso de versión nueva EN EL TELÉFONO.
+     El sello de la barra no cabe en pantalla chica y queda oculto, así que sin esto el
+     celular se quedaba corriendo la versión vieja sin decir nada y sin nada que tocar:
+     la única salida era cerrar la app y volver a abrirla, sin saber por qué. En la
+     computadora no aparece, porque ahí el sello ya avisa. */
+  .aviso-version {
+    position: fixed; left: 10px; right: 10px; bottom: calc(84px + env(safe-area-inset-bottom));
+    background: #E5A93B; color: #3A2B08; border-radius: var(--r-md);
+    padding: 12px 14px; font-size: 13px; font-weight: 600; z-index: 1100;
+    display: flex; gap: 10px; align-items: center;
+    box-shadow: 0 6px 22px rgba(0,0,0,.25);
+  }
+  .aviso-version button { flex: 0 0 auto; background: #3A2B08; color: #F5F1E8;
+    border: none; border-radius: var(--r-sm); padding: 8px 14px; font-weight: 600;
+    font-size: 13px; cursor: pointer; }
   .filterbar input, .filterbar select, select, input[type=date], input[type=text] { font-size: 13px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; }
   .note-tag { display:inline-block; font-size:10px; padding:1px 6px; border-radius:4px; margin-right:6px; font-weight:600; }
   .note-ingreso { background:#E6F1FB; color:#0C447C; }
@@ -906,13 +922,35 @@ function mostrarSelloVersion() {
                             : "Versión desconocida";
 }
 
+function recargarAVersionNueva() {
+  // Con un parámetro distinto cada vez, para que ni el navegador ni ningún intermedio
+  // puedan devolver la copia que ya tenían.
+  location.replace(location.pathname + "?v=" + Date.now());
+}
+
 function avisarVersionNueva(versionServidor) {
   const el = document.getElementById("sello-version");
-  if (!el || el.classList.contains("vieja")) return;   // ya está avisado
-  el.classList.add("vieja");
-  el.textContent = "versión nueva · recargar";
-  el.title = `Abierta: ${VERSION_PAGINA}\nEn el servidor: ${versionServidor}`;
-  el.onclick = () => location.replace(location.pathname + "?v=" + Date.now());
+  if (el && !el.classList.contains("vieja")) {
+    el.classList.add("vieja");
+    el.textContent = "versión nueva · recargar";
+    el.title = `Abierta: ${VERSION_PAGINA}\nEn el servidor: ${versionServidor}`;
+    el.onclick = recargarAVersionNueva;
+  }
+
+  // En el teléfono el sello está OCULTO —no cabe en la barra—, así que ahí el aviso
+  // tiene que ir por su cuenta. Sin esto el celular seguía con la versión vieja sin
+  // decir nada y sin nada que tocar: ya pasó, y desde el teléfono no había forma de
+  // saber que había que cerrar la app y volver a abrirla.
+  if (esMovil() && !document.querySelector(".aviso-version")) {
+    const caja = document.createElement("div");
+    caja.className = "aviso-version";
+    caja.innerHTML = `<span style="flex:1;">Hay una versión nueva del sistema.</span>`;
+    const boton = document.createElement("button");
+    boton.textContent = "Recargar";
+    boton.onclick = recargarAVersionNueva;
+    caja.appendChild(boton);
+    document.body.appendChild(caja);
+  }
 }
 
 // ---------- Refresco automático entre computadoras ----------
