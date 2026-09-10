@@ -39,6 +39,10 @@ TEXTOS = {
         "ya_pedido": "What you've sent us",
         "pide_t": "Send your laundry",
         "pide_d": "We pick up between {abre} and {cierra}.",
+        "tu_nombre": "Your name",
+        "tu_habitacion": "Room number",
+        "tu_habitacion_ayuda": "— as it appears on your key",
+        "falta_quien": "Please add your name and your room number.",
         "dia": "Day",
         "hora": "Pick-up time",
         "hora_ayuda": "— tap the one that suits you",
@@ -85,6 +89,10 @@ TEXTOS = {
         "ya_pedido": "Lo que nos mandaste",
         "pide_t": "Mandá tu ropa",
         "pide_d": "Pasamos a recoger entre las {abre} y las {cierra}.",
+        "tu_nombre": "Tu nombre",
+        "tu_habitacion": "Número de habitación",
+        "tu_habitacion_ayuda": "— el que dice tu llave",
+        "falta_quien": "Poné tu nombre y el número de tu habitación.",
         "dia": "Día",
         "hora": "Hora de recolección",
         "hora_ayuda": "— tocá la que te sirva",
@@ -135,10 +143,18 @@ def idioma_valido(idioma):
     return corto if corto in TEXTOS else IDIOMA_POR_DEFECTO
 
 
-def html(conf_no, token, idioma=None):
+def html(conf_no, token, idioma=None, general=False):
+    """La página. En modo GENERAL no sabe quién la abrió y se lo pregunta.
+
+    El enlace por reserva sabía quién era el huésped y por eso no le preguntaba nada;
+    el enlace único no puede saberlo, así que el formulario recupera las dos preguntas
+    —nombre y habitación— que el de Google hacía. Es el precio de mandar un solo
+    enlace, y se paga a propósito.
+    """
     return (_PLANTILLA
-            .replace("{{CONF}}", conf_no)
+            .replace("{{CONF}}", conf_no or "")
             .replace("{{TOKEN}}", token)
+            .replace("{{GENERAL}}", "true" if general else "false")
             .replace("{{IDIOMA}}", idioma_valido(idioma))
             .replace("{{TEXTOS}}", json.dumps(TEXTOS, ensure_ascii=False)))
 
@@ -259,10 +275,16 @@ _PLANTILLA = r"""<!doctype html>
 <script>
 const CONF = "{{CONF}}";
 const TOKEN = "{{TOKEN}}";
+// GENERAL: el enlace es uno solo para todo el hotel y la página no sabe quién la abrió,
+// así que le pregunta el nombre y la habitación. Con el enlace por reserva no hace
+// falta: ese ya sabe quién es.
+const GENERAL = {{GENERAL}};
+const RUTA = GENERAL ? `/api/housekeeping/general/${TOKEN}`
+                     : `/api/housekeeping/publico/${CONF}/${TOKEN}`;
 const TEXTOS = {{TEXTOS}};
 let IDIOMA = "{{IDIOMA}}";
 let DATOS = null;
-let ELEGIDO = { fecha: "", hora: "", items: {}, nota: "" };
+let ELEGIDO = { fecha: "", hora: "", items: {}, nota: "", nombre: "", room_no: "" };
 let ENVIANDO = false;
 
 // La elección de idioma se recuerda en el propio teléfono: al volver a abrir el enlace
@@ -303,7 +325,7 @@ function marcarIdioma() {
 
 async function cargar() {
   try {
-    const r = await fetch(`/api/housekeeping/publico/${CONF}/${TOKEN}`);
+    const r = await fetch(RUTA);
     if (!r.ok) throw new Error("enlace");
     DATOS = await r.json();
     if (!ELEGIDO.fecha) ELEGIDO.fecha = hoyDentroDeLaEstadia();
@@ -421,11 +443,32 @@ function dibujar() {
   const cfg = DATOS.config || {};
   let h = "";
 
-  h += `<div class="tarjeta">
-    <h2>${esc(rellenar(T("hola"), { nombre: (DATOS.nombre || "").split(",")[0] }))}</h2>
+  // Con el enlace general la página no sabe quién es: se lo pregunta. Con el enlace de
+  // la reserva ya lo sabe y no le hace perder el tiempo.
+  if (GENERAL) {
+    h += `<div class="tarjeta">
+      <h2>${esc(T("pide_t"))}</h2>
+      <label for="q-nom">${esc(T("tu_nombre"))}</label>
+      <input type="text" id="q-nom" autocomplete="name" value="${esc(ELEGIDO.nombre)}"
+             oninput="ELEGIDO.nombre=this.value;">
+      <label for="q-hab">${esc(T("tu_habitacion"))}
+        <span class="ayuda">${esc(T("tu_habitacion_ayuda"))}</span></label>
+      <input type="text" id="q-hab" inputmode="numeric" value="${esc(ELEGIDO.room_no)}"
+             oninput="ELEGIDO.room_no=this.value;">
+    </div>`;
+  }
+
+  // Con el enlace general no hay saludo ni lista de pedidos previos —no se sabe de
+  // quién serían—, así que esa tarjeta no se dibuja: una tarjeta vacía se ve como algo
+  // que no cargó.
+  const haySaludo = !GENERAL || (DATOS.mis_pedidos || []).length > 0;
+  if (haySaludo) h += `<div class="tarjeta">`;
+  if (!GENERAL) {
+    h += `<h2>${esc(rellenar(T("hola"), { nombre: (DATOS.nombre || "").split(",")[0] }))}</h2>
     <p class="sub">${esc(rellenar(T("habitacion"), {
       hab: DATOS.room_no || "—", desde: DATOS.estadia_desde || "", hasta: DATOS.estadia_hasta || "",
     }))}</p>`;
+  }
 
   if (DATOS.mis_pedidos && DATOS.mis_pedidos.length) {
     h += `<label style="margin-top:6px;">${esc(T("ya_pedido"))}</label>`;
@@ -442,10 +485,10 @@ function dibujar() {
         <span class="etiqueta ${listo ? "ok" : ""}">${esc(est)}</span></div>`;
     });
   }
-  h += `</div>`;
+  if (haySaludo) h += `</div>`;
 
   h += `<div class="tarjeta">
-    <h2>${esc(T("pide_t"))}</h2>
+    ${GENERAL ? "" : `<h2>${esc(T("pide_t"))}</h2>`}
     <p class="sub">${esc(rellenar(T("pide_d"), { abre: cfg.abre || "", cierra: cfg.cierra || "" }))}</p>
 
     <label for="f">${esc(T("dia"))}</label>
@@ -520,9 +563,13 @@ function dibujar() {
           oninput="ELEGIDO.nota=this.value;">${esc(ELEGIDO.nota)}</textarea>`;
 
   h += `<div class="aviso" style="margin-top:16px;">${esc(T("aviso_no_es_firme"))}</div>`;
+  const faltaQuien = GENERAL && (!ELEGIDO.nombre.trim() || !ELEGIDO.room_no.trim());
   h += `<button class="enviar" id="enviar" onclick="enviar()"
-          ${(!ELEGIDO.fecha || totalElegido() === 0 || ENVIANDO) ? "disabled" : ""}>
+          ${(!ELEGIDO.fecha || totalElegido() === 0 || ENVIANDO || faltaQuien) ? "disabled" : ""}>
         ${esc(ENVIANDO ? T("enviando") : T("enviar"))}</button>`;
+  if (faltaQuien && totalElegido() > 0) {
+    h += `<p class="total-nota" style="color:var(--aviso-t);">${esc(T("falta_quien"))}</p>`;
+  }
   h += `<p id="error" class="aviso" style="display:none;"></p>`;
   h += `</div><p class="pie">${esc(T("pie"))}</p>`;
 
@@ -531,6 +578,11 @@ function dibujar() {
 
 async function enviar() {
   if (ENVIANDO) return;
+  // Con el enlace general, sin nombre y habitación el pedido no le sirve a nadie:
+  // housekeeping no sabría a qué puerta ir.
+  if (GENERAL && (!ELEGIDO.nombre.trim() || !ELEGIDO.room_no.trim())) {
+    return mostrarError(T("falta_quien"));
+  }
   if (!ELEGIDO.fecha) return mostrarError(T("elige_dia"));
   if (totalElegido() === 0) return mostrarError(T("elige_prenda"));
 
@@ -539,18 +591,25 @@ async function enviar() {
   try {
     const items = Object.entries(ELEGIDO.items)
       .map(([codigo, cantidad]) => ({ codigo, cantidad }));
-    const r = await fetch(`/api/housekeeping/publico/${CONF}/${TOKEN}`, {
+    const cuerpo_envio = {
+      fecha: ELEGIDO.fecha, hora: ELEGIDO.hora, nota: ELEGIDO.nota, items,
+    };
+    if (GENERAL) {
+      cuerpo_envio.nombre = ELEGIDO.nombre.trim();
+      cuerpo_envio.room_no = ELEGIDO.room_no.trim();
+    }
+    const r = await fetch(RUTA, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        fecha: ELEGIDO.fecha, hora: ELEGIDO.hora,
-        nota: ELEGIDO.nota, items,
-      }),
+      body: JSON.stringify(cuerpo_envio),
     });
     const cuerpo = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(cuerpo.detail || "No se pudo enviar");
-    DATOS = cuerpo;
-    ELEGIDO = { fecha: ELEGIDO.fecha, hora: "", items: {}, nota: "" };
+    // Con el enlace general la respuesta no trae los datos de la página —no puede, no
+    // hay huésped— así que se conserva lo que ya estaba cargado.
+    if (!GENERAL) DATOS = cuerpo;
+    ELEGIDO = { fecha: ELEGIDO.fecha, hora: "", items: {}, nota: "",
+                nombre: ELEGIDO.nombre, room_no: ELEGIDO.room_no };
     ENVIANDO = false;
     gracias();
   } catch (e) {

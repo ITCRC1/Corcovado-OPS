@@ -449,6 +449,72 @@ def el_catalogo_arranca_con_las_prendas_del_formulario(c):
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# El enlace UNICO — uno para todo el hotel
+# ---------------------------------------------------------------------------
+
+def el_enlace_general_es_uno_solo_y_estable(c):
+    """Se manda una vez y tiene que seguir sirviendo. Si cambiara solo, el que ya se
+    pego en el grupo de WhatsApp dejaria de abrir sin que nadie lo pidiera."""
+    limpiar()
+    t1 = hk.token_general()
+    t2 = hk.token_general()
+    c.igual(t1, t2, "pedirlo dos veces da el mismo")
+    c.cierto(len(t1) >= 10, "y es lo bastante largo para no adivinarse")
+    c.igual(hk.token_general_valido(t1), True, "el bueno abre")
+    c.igual(hk.token_general_valido("inventado"), False, "uno inventado no")
+    c.igual(hk.token_general_valido(""), False, "y vacio tampoco")
+
+
+def guardar_el_horario_no_borra_el_enlace_general(c):
+    """La configuracion se reescribe entera al guardar el horario. Sin cuidado, eso
+    borraba el enlace y todos los que ya se mandaron dejaban de abrir."""
+    limpiar()
+    antes = hk.token_general()
+    hk.guardar_config({"abre": "06:00", "cierra": "20:00", "paso_minutos": 15})
+    c.igual(hk.token_general(), antes, "el enlace sobrevive a guardar el horario")
+    c.igual(hk.cargar_config()["abre"], "06:00", "y el horario si se guardo")
+
+
+def cambiar_el_enlace_general_invalida_el_anterior(c):
+    """Es el punto de poder cambiarlo: sirve cuando el enlace se filtro fuera del
+    hotel, y para eso el viejo TIENE que dejar de abrir."""
+    limpiar()
+    viejo = hk.token_general()
+    nuevo = hk.rehacer_token_general()
+    c.cierto(nuevo != viejo, "sale uno distinto")
+    c.igual(hk.token_general_valido(viejo), False, "y el anterior deja de abrir")
+    c.igual(hk.token_general_valido(nuevo), True, "el nuevo abre")
+
+
+def la_habitacion_escrita_se_empareja_con_la_reserva(c):
+    """El huesped escribe '07' o '7' y en el PMS puede estar de las dos formas."""
+    limpiar()
+    cargar([reserva("880001", "07", LLEGADA, SALIDA)])
+    conn = conexion()
+    for escrito in ("07", "7", " 7 "):
+        r, motivo = hk.buscar_reserva(conn, "Huesped 880001", escrito)
+        c.igual(r["conf_no"] if r else None, "880001",
+                f"escribiendo «{escrito}» se encuentra la reserva")
+    conn.close()
+
+
+def una_habitacion_que_no_existe_no_pierde_el_pedido(c):
+    """Quien escribia 23 en vez de 32 en el formulario de Google no recibia su ropa y
+    nadie se enteraba. Aqui no se encuentra la reserva, pero se DICE por que, y el
+    pedido se guarda igual con lo que la persona escribio."""
+    limpiar()
+    cargar([reserva("880002", "07", LLEGADA, SALIDA)])
+    conn = conexion()
+    r, motivo = hk.buscar_reserva(conn, "Quien sea", "99")
+    c.igual(r, None, "no se inventa una reserva")
+    c.cierto(motivo and "99" in motivo, "y se dice cual habitacion no aparecio")
+    r2, m2 = hk.buscar_reserva(conn, "Quien sea", "")
+    c.igual(r2, None, "sin habitacion tampoco")
+    c.cierto(m2, "y tambien se dice por que")
+    conn.close()
+
+
 PRUEBAS = [
     la_hora_tope_decide_si_la_ropa_vuelve_hoy,
     sin_hora_tope_el_hotel_no_promete_nada,
@@ -481,6 +547,11 @@ PRUEBAS = [
     un_codigo_inventado_no_abre_nada,
     el_enlace_deja_de_servir_si_la_reserva_se_cancela,
     el_catalogo_arranca_con_las_prendas_del_formulario,
+    el_enlace_general_es_uno_solo_y_estable,
+    guardar_el_horario_no_borra_el_enlace_general,
+    cambiar_el_enlace_general_invalida_el_anterior,
+    la_habitacion_escrita_se_empareja_con_la_reserva,
+    una_habitacion_que_no_existe_no_pierde_el_pedido,
 ]
 
 

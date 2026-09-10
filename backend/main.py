@@ -3193,7 +3193,11 @@ def enlaces_hk(desde: str = None, hasta: str = None,
                 (d["conf_no"],)).fetchone()["n"]
             salida.append(d)
         base = (pub.cargar_config().get("base_url") or "").rstrip("/")
-        return {"base_url": base, "huespedes": salida}
+        # El enlace ÚNICO, que es el que se manda normalmente. Los de cada reserva
+        # quedan abajo, para cuando haga falta mandárselo a una habitación concreta.
+        return {"base_url": base,
+                "ruta_general": f"/housekeeping/general/{_hk.token_general()}",
+                "huespedes": salida}
     finally:
         conn.close()
 
@@ -3307,6 +3311,154 @@ async def hk_publico_pedir(conf_no: str, token: str, payload: dict):
               f"{type(e).__name__}: {e}")
 
     return {"status": "ok", "id": pedido_id, **respuesta}
+
+
+# ---------------------------------------------------------------------------
+# El enlace ÚNICO de lavandería
+# ---------------------------------------------------------------------------
+# Uno solo para todo el hotel, en vez de uno por reserva. Con este, el formulario sí le
+# pregunta el nombre y la habitación al huésped. Ver housekeeping.token_general().
+
+@app.get("/api/housekeeping/general/{token}")
+def hk_general_datos(token: str):
+    """Lo que necesita la página cuando no sabe quién la abrió.
+
+    NO devuelve reservas ni pedidos de nadie: el enlace es uno solo y lo tiene todo el
+    mundo, así que aquí no puede viajar el dato de ningún huésped. Solo el catálogo de
+    prendas, las horas y la configuración.
+    """
+    if not _hk.token_general_valido(token):
+        raise HTTPException(status_code=404, detail="Enlace no válido")
+    conn = get_connection()
+    try:
+        cfg = _hk.cargar_config()
+        return {
+            "general": True,
+            "prendas": [{"codigo": p["codigo"],
+                         "nombre": p["nombre_en"] or p["nombre"],
+                         "precio_centavos": p["precio_centavos"],
+                         "precio": p["precio"]}
+                        for p in _prendas_hk(conn)],
+            "moneda": _hk.MONEDA,
+            "config": {k: v for k, v in cfg.items() if k != "token_general"},
+            "horas": _hk.horas_de_recoleccion(cfg),
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/housekeeping/general/{token}")
+async def hk_general_pedir(token: str, payload: dict):
+    """El huésped manda su ropa desde el enlace único, diciendo quién es.
+
+    Si lo que escribió coincide con una reserva en casa, el pedido queda ligado a ella.
+    Si NO coincide, el pedido entra igual con el nombre y la habitación tal como los
+    escribió, marcado en la nota de operación. Rechazarlo sería repetir el fallo del
+    formulario de Google: quien ponía 23 en vez de 32 no recibía su ropa y nadie se
+    enteraba. Aquí housekeeping ve el pedido y lo resuelve.
+    """
+    if not _hk.token_general_valido(token):
+        raise HTTPException(status_code=404, detail="Enlace no válido")
+
+    nombre = (payload.get("nombre") or "").strip()[:80]
+    room_no = (payload.get("room_no") or "").strip()[:10]
+    if not nombre or not room_no:
+        raise HTTPException(status_code=400,
+                            detail="Hacen falta tu nombre y tu habitación.")
+    fecha = (payload.get("fecha") or "").strip()
+    if not fecha:
+        raise HTTPException(status_code=400, detail="Falta el día de la recolección.")
+
+    conn = get_connection()
+    try:
+        reserva, motivo = _hk.buscar_reserva(conn, nombre, room_no, fecha)
+
+        # El tope de pedidos abiertos. Con reserva se cuenta por reserva, como siempre;
+        # sin ella, por habitación — el enlace es público y sin tope una sola persona
+        # podría llenar la lista de housekeeping.
+        if reserva:
+            ya = conn.execute(
+                """SELECT COUNT(*) n FROM hk_pedido WHERE conf_no = ?
+                   AND estado IN ('SOLICITADO','CONFIRMADO','RECOGIDO')""",
+                (reserva["conf_no"],)).fetchone()["n"]
+        else:
+            ya = conn.execute(
+                """SELECT COUNT(*) n FROM hk_pedido WHERE room_no = ?
+                   AND estado IN ('SOLICITADO','CONFIRMADO','RECOGIDO')""",
+                (room_no,)).fetchone()["n"]
+        if ya >= 10:
+            raise HTTPException(
+                status_code=429,
+                detail=("Ya hay varios pedidos abiertos para esta habitación. "
+                        "Habla con recepción para agregar otro."))
+
+        prendas = {p["codigo"]: {"nombre": p["nombre_en"] or p["nombre"],
+                                 "precio_centavos": p["precio_centavos"]}
+                   for p in _prendas_hk(conn)}
+        items, problema = _hk.limpiar_items(payload.get("items"), prendas)
+        if problema:
+            raise HTTPException(status_code=400, detail=problema)
+
+        nota_op = None
+        if not reserva:
+            nota_op = f"Escrito por el huésped desde el enlace general — {motivo}."
+        elif motivo:
+            nota_op = f"Enlace general — {motivo}."
+
+        datos = {
+            "conf_no": reserva["conf_no"] if reserva else None,
+            # La habitación de la RESERVA cuando se encontró: si el huésped se cambió de
+            # cuarto, housekeeping tiene que ir a donde está ahora, no a donde él cree.
+            "room_no": (reserva["room_no"] if reserva else room_no),
+            "nombre_huesped": (reserva["nombre_principal"] if reserva else nombre),
+            "fecha": fecha,
+            "hora": payload.get("hora"),
+            "nota_huesped": payload.get("nota"),
+            "nota_operacion": nota_op,
+            "estado": "SOLICITADO",
+        }
+        pedido_id = _crear_pedido_hk(conn, datos, items, origen="HUESPED")
+        room_final = datos["room_no"]
+    finally:
+        conn.close()
+
+    try:
+        import notificaciones as notif
+        notif.aviso_pedido_housekeeping(
+            {"room_no": room_final, "fecha": fecha,
+             "hora": _hk.normalizar_hora(payload.get("hora")),
+             "resumen": _hk.resumen_items(items),
+             "total": _hk.total_prendas(items)})
+    except Exception as e:
+        print(f"[avisos] no se pudo avisar del pedido de lavandería: "
+              f"{type(e).__name__}: {e}")
+
+    return {"status": "ok", "id": pedido_id, "reconocida": bool(reserva)}
+
+
+@app.get("/housekeeping", response_class=HTMLResponse)
+@app.get("/housekeeping/", response_class=HTMLResponse)
+def pagina_hk_general_sin_codigo():
+    """Sin el código no se abre, pero se explica en vez de dar un 404 pelado."""
+    raise HTTPException(
+        status_code=404,
+        detail="Falta el código del enlace. Pídele a recepción el enlace de lavandería.")
+
+
+@app.get("/housekeeping/general/{token}", response_class=HTMLResponse)
+def pagina_hk_general(token: str, idioma: str = None):
+    """La página de lavandería del enlace único."""
+    if not _hk.token_general_valido(token):
+        raise HTTPException(status_code=404, detail="Enlace no válido")
+    import hk_pagina
+    return HTMLResponse(hk_pagina.html(None, token, idioma, general=True))
+
+
+@app.post("/api/housekeeping/enlace-general/rehacer")
+def hk_rehacer_enlace_general(user: dict = Depends(exige("housekeeping", escribir=True))):
+    """Cambia el enlace general. El anterior deja de abrir — que es el punto: sirve
+    para cuando el enlace se filtró fuera del hotel."""
+    return {"status": "ok", "token": _hk.rehacer_token_general()}
 
 
 @app.get("/housekeeping/{conf_no}/{token}", response_class=HTMLResponse)

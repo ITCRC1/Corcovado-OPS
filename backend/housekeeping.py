@@ -69,6 +69,9 @@ CONFIG_POR_DEFECTO = {
     #
     # Los precios del catálogo se cargan SIN impuesto: esto se les suma al final.
     "iva_porcentaje": 13,
+    # El código del ÚNICO enlace que se le manda al huésped. Vacío hasta que alguien
+    # abre la pantalla la primera vez; ver token_general().
+    "token_general": "",
 }
 
 # La moneda en que se le cotiza al huésped. Está aquí, en un solo sitio, para que
@@ -105,8 +108,25 @@ def cargar_config():
     return cfg
 
 
+def _escribir_config(cfg):
+    """Escribe la configuración tal cual, sin validar horarios.
+
+    La usa el enlace general: cambiarlo no tiene nada que ver con el horario, y pasarlo
+    por guardar_config() lo obligaría a revalidar horas que nadie tocó.
+    """
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump({k: v for k, v in cfg.items() if k in CONFIG_POR_DEFECTO},
+                  f, ensure_ascii=False, indent=2)
+    return cfg
+
+
 def guardar_config(cfg):
     limpia = dict(CONFIG_POR_DEFECTO)
+    # El enlace general NO se toca al guardar el horario. `limpia` arranca de los
+    # valores por defecto, así que sin esto guardar el horario borraría el enlace y
+    # todos los que ya se mandaron dejarían de abrir, sin que nadie lo pidiera.
+    limpia["token_general"] = cargar_config().get("token_general", "")
     for clave in ("abre", "cierra", "hora_tope_mismo_dia"):
         if cfg.get(clave) is not None:
             valor = str(cfg[clave]).strip()
@@ -399,6 +419,91 @@ def puede_pasar_a(actual, nuevo):
 # ---------------------------------------------------------------------------
 # El enlace personal del huésped
 # ---------------------------------------------------------------------------
+
+def token_general(crear=True):
+    """El código del ÚNICO enlace que se manda a todo el mundo.
+
+    POR QUÉ UN SOLO ENLACE. El de cada reserva sabía quién era el huésped y por eso el
+    formulario no le preguntaba el nombre ni la habitación —que eran justamente las dos
+    preguntas que se contestaban mal en el formulario de Google—. Pero significaba
+    copiar un enlace distinto por habitación, y eso no se sostiene: el hotel lo manda
+    por WhatsApp, muchas veces a un grupo, y necesita UNO que sirva para todos.
+
+    Se decidió por logística interna, sabiendo lo que cuesta: el huésped vuelve a
+    escribir su habitación y puede equivocarse. Lo que se hace para que cueste menos
+    está en `buscar_reserva`: el sistema intenta emparejar lo que escribió con una
+    reserva de verdad, y si no lo consigue el pedido entra igual, marcado, en vez de
+    perderse.
+
+    El enlace por reserva NO se quita: sigue funcionando para quien ya lo tenga y para
+    mandarlo a una habitación concreta cuando haga falta.
+
+    El código va en la configuración y no en una tabla porque es UNO solo. Se puede
+    cambiar desde la pantalla, y al cambiarlo el anterior deja de servir — que es lo que
+    hace falta si el enlace se filtra fuera del hotel.
+    """
+    cfg = cargar_config()
+    actual = (cfg.get("token_general") or "").strip()
+    if actual:
+        return actual
+    if not crear:
+        return None
+    nuevo = secrets.token_urlsafe(9)
+    cfg["token_general"] = nuevo
+    _escribir_config(cfg)
+    return nuevo
+
+
+def rehacer_token_general():
+    """Cambia el enlace general. El anterior deja de abrir."""
+    cfg = cargar_config()
+    cfg["token_general"] = secrets.token_urlsafe(9)
+    _escribir_config(cfg)
+    return cfg["token_general"]
+
+
+def token_general_valido(token):
+    esperado = token_general(crear=False)
+    if not esperado or not token:
+        return False
+    return secrets.compare_digest(str(token), str(esperado))
+
+
+def buscar_reserva(conn, nombre, room_no, fecha=None):
+    """Intenta emparejar lo que escribió el huésped con una reserva que esté en casa.
+
+    Devuelve (reserva o None, motivo). Es BEST EFFORT a propósito: si no se encuentra,
+    el pedido se guarda igual con lo que la persona escribió. Rechazarlo sería repetir
+    el fallo del formulario de Google, donde quien ponía 23 en vez de 32 simplemente no
+    recibía su ropa —y no se enteraba nadie—.
+
+    Se busca por habitación entre las reservas que están en casa hoy, que es el dato que
+    de verdad importa para ir a recoger. El nombre solo se usa para desempatar cuando
+    dos reservas comparten habitación, cosa que pasa el día del cambio.
+    """
+    room = (room_no or "").strip().lstrip("0") or (room_no or "").strip()
+    if not room:
+        return None, "no escribió la habitación"
+
+    filas = conn.execute(
+        """SELECT conf_no, room_no, nombre_principal, arr_date, dep_date
+           FROM reserva
+           WHERE res_status NOT IN ('CANCELADA','SALIO')
+             AND REPLACE(LTRIM(room_no,'0'),' ','') = ?""",
+        (room.replace(" ", ""),)).fetchall()
+    if not filas:
+        return None, f"no hay ninguna habitación {room} en casa"
+    if len(filas) == 1:
+        return dict(filas[0]), None
+
+    # Dos reservas en el mismo cuarto: se desempata por apellido.
+    apellido = (nombre or "").strip().lower().split()
+    for f in filas:
+        completo = (f["nombre_principal"] or "").lower()
+        if any(p and p in completo for p in apellido):
+            return dict(f), None
+    return dict(filas[0]), "varias reservas en esa habitación; se tomó la primera"
+
 
 def token_de_reserva(conn, conf_no, crear=True):
     """El código del enlace que se le manda al huésped. Se crea la primera vez.
