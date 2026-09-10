@@ -928,6 +928,39 @@ function recargarAVersionNueva() {
   location.replace(location.pathname + "?v=" + Date.now());
 }
 
+// ¿Se puede recargar sin que nadie pierda nada de lo que está haciendo?
+//
+// Se reusan los mismos tres frenos que ya decidían si refrescar los datos, porque la
+// pregunta es la misma: hay un detalle abierto encima, hay algo elegido sin guardar, o
+// la pantalla es una de las que no se refrescan solas (Importar PDF, Usuarios, Catálogo
+// y Analítica — en las tres primeras una recarga borraría el archivo elegido o un
+// formulario a medio llenar).
+function sePuedeRecargarSinPerderNada() {
+  if (!PANTALLAS_QUE_SE_REFRESCAN.includes(window._pantallaActiva)) return false;
+  if (document.querySelector(".modal-fondo")) return false;
+  if (hayCambiosSinGuardar()) return false;
+  return true;
+}
+
+// Una sola recarga automática por cada versión del servidor.
+//
+// Sin este freno habría riesgo de bucle: si por algún motivo la página vuelve a cargar
+// con un sello distinto del que dice el servidor —dos instancias desplegadas a la vez,
+// por ejemplo— se recargaría sin parar, y un bucle de recargas es mucho peor que una
+// versión vieja: deja el sistema inusable en vez de solo atrasado.
+function yaSeIntentoRecargarPor(versionServidor) {
+  const clave = "cwl_recarga_intentada";
+  try {
+    if (sessionStorage.getItem(clave) === versionServidor) return true;
+    sessionStorage.setItem(clave, versionServidor);
+    return false;
+  } catch (e) {
+    // Sin sessionStorage no hay forma de saber si ya se intentó, así que no se
+    // arriesga el bucle: se avisa y que la persona decida.
+    return true;
+  }
+}
+
 function avisarVersionNueva(versionServidor) {
   const el = document.getElementById("sello-version");
   if (el && !el.classList.contains("vieja")) {
@@ -1009,9 +1042,23 @@ async function revisarCambios() {
     if (!res.ok) return;
     const datos = await res.json();
     version = datos.version;
-    // Si el servidor fue actualizado mientras esto estaba abierto, se avisa en el sello
-    // en vez de recargar por sorpresa: puede haber trabajo a medio hacer en pantalla.
+    // El servidor fue actualizado mientras esto estaba abierto.
+    //
+    // Si no hay nada a medio hacer, se RECARGA SOLA. Antes solo se avisaba, y en el
+    // teléfono eso no alcanzaba: la app no vuelve a cargar la página al traerla al
+    // frente, así que se quedaba con la versión vieja indefinidamente. Y el aviso
+    // tampoco resolvía, porque el aviso vive en la página nueva: hacía falta recargar
+    // para recibir el aviso de que hay que recargar.
+    //
+    // Con algo a medio hacer NO se recarga: ahí sí se avisa y decide la persona. Ese
+    // era el motivo original de no recargar, y sigue valiendo — solo que ahora se
+    // pregunta si aplica en vez de suponer que siempre aplica.
     if (datos.version_sistema && VERSION_PAGINA && datos.version_sistema !== VERSION_PAGINA) {
+      if (sePuedeRecargarSinPerderNada()
+          && !yaSeIntentoRecargarPor(datos.version_sistema)) {
+        recargarAVersionNueva();
+        return;
+      }
       avisarVersionNueva(datos.version_sistema);
     }
   } catch (e) { return; }
