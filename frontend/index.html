@@ -4999,14 +4999,20 @@ async function loadResumenOperacion(fecha) {
 
     ${(d.restricciones_cocina.length || (d.restricciones_cocina_salen || []).length) ? `
     <div class="card">
-      <p class="title">Cocina — restricciones y alergias</p>
+      <p class="title">Cocina — restricciones, alergias e inclusiones</p>
       <p class="subtitle" style="margin-bottom:12px;">De los huéspedes que están en el hotel y de los que entran hoy</p>
       ${d.restricciones_cocina.length ? `
       <table>
-        <tr><th>Hab.</th><th>Huésped</th><th>Detalle</th></tr>
+        <tr><th>Hab.</th><th>Huésped</th><th>Qué</th><th>Detalle</th></tr>
         ${d.restricciones_cocina.map(x => `<tr class="fila-sale">
           <td><strong>${x.room_no}</strong>${etiquetaGrupo(x.conf_no)}</td><td>${x.nombre_principal}</td>
-          <td><strong>${x.detalle || x.amenidad}</strong>${x.detalle ? `<br><span style="font-size:11px;color:var(--muted);">${x.tarea}</span>` : ''}</td>
+          <!-- El nombre de la amenidad va en su propia columna. Antes solo se veía el
+               detalle, y con las bebidas incluidas eso se leía al revés: «jugo natural»
+               suelto en una lista titulada «restricciones y alergias» se entiende como
+               que el huésped NO puede tomarlo. Una alergia dice qué no servir; una
+               inclusión, qué servir sin cobrar. No se pueden confundir. -->
+          <td><span class="badge ${x.amenidad === 'Bebidas incluidas' ? 'badge-ok' : 'badge-warn'}">${escaparHTML(x.amenidad || '')}</span></td>
+          <td><strong>${escaparHTML(x.detalle || x.tarea || '')}</strong>${x.detalle ? `<br><span style="font-size:11px;color:var(--muted);">${escaparHTML(x.tarea || '')}</span>` : ''}</td>
         </tr>`).join("")}
       </table>` : `<p class="empty">Ninguna entre los huéspedes que están y los que entran.</p>`}
 

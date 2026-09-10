@@ -93,6 +93,18 @@ AMENIDADES = [
     ("Restricción alimentaria / alergia", "AVISAR A COCINA antes del check-in — revisar el detalle en la reserva", "Cocina"),
     ("Requerimiento de movilidad / accesibilidad", "Coordinar habitación accesible y apoyo en traslados", "Recepción/Operaciones"),
     ("Cuna / bebé", "Notificar a housekeeping para colocar cuna en la habitación", "Housekeeping"),
+    # El área es exactamente "Cocina" —no "Cocina/Servicio"— a propósito: la hoja del día
+    # busca el área con ese texto exacto y NO la parte por la barra, así que con
+    # "Cocina/Servicio" esto no aparecería en el bloque de cocina. Le pasa hoy a la cena
+    # privada, que tiene su propio sitio en la pantalla y no lo necesita.
+    #
+    # La tarea dice «revisar qué incluye» y no afirma qué trae: el reconocimiento es
+    # generoso, y es mejor mandar a mirar la reserva que asegurarle algo equivocado a
+    # quien está sirviendo la mesa.
+    ("Bebidas incluidas",
+     "REVISAR QUÉ BEBIDAS INCLUYE la tarifa antes de servir y antes de cobrar — "
+     "el detalle está en la reserva",
+     "Cocina"),
 ]
 
 

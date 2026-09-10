@@ -217,7 +217,11 @@ def _guardar_amenidades(cur, r, llegada_iso, origen="PDF"):
             fecha = None
         else:
             fecha = llegada_iso
-        detalle = None
+        # El trozo de texto por el que se reconoció la amenidad. Antes esto quedaba en
+        # None y a cocina le llegaba «Restricción alimentaria / alergia» sin decir de
+        # qué: el dato venía en el reporte y se perdía aquí. Lo que recepción haya
+        # escrito a mano sigue mandando —se resuelve unas líneas más abajo—.
+        detalle = (r.get("detalles_de_amenidad") or {}).get(nombre)
         estado = "PENDIENTE"
         editado = 0
         # Lo que recepción ya había hecho sobre esta misma amenidad manda sobre lo que

@@ -62,6 +62,45 @@ AMENIDADES_PATRONES = [
     )),
     ("Requerimiento de movilidad / accesibilidad", r"silla\s+de\s+rueda|wheelchair|movilidad\s+reducida|accesibilidad"),
     ("Cuna / bebé", r"\bcuna\b|\bcrib\b|beb[ée]\s+de\s+|pack\s?n\s?play"),
+    # QUÉ BEBIDAS TRAE INCLUIDA LA TARIFA.
+    #
+    # Se maneja igual que una restricción alimentaria y por la misma razón: es algo que
+    # quien sirve la mesa TIENE que saber antes de servir. La diferencia es el signo —una
+    # alergia dice qué NO servir, esto dice qué servir sin cobrar— y por eso va como
+    # amenidad aparte y no dentro de la restricción: leer «refresco» en una lista de
+    # alergias se entiende exactamente al revés.
+    #
+    # Tampoco encaja en el régimen: el régimen es UN valor por reserva (desayuno y cena,
+    # pensión completa…) y una reserva puede incluir refresco Y jugo natural. Como
+    # amenidad puede haber varias y cada una lleva su detalle.
+    #
+    # Si esto se detecta de más, lo que pasa es que alguien revisa la reserva de gusto;
+    # si se detecta de menos, se le cobra al huésped algo que traía pagado y hay reclamo
+    # en el check-out. Por eso la tarea dice «revisar qué incluye» en vez de afirmarlo.
+    # Los patrones salieron de LEER las reservas reales de Opera, no de imaginar cómo
+    # se escribiría. Las tres formas que aparecen hoy en el PMS:
+    #
+    #   · «Paquete 2N/3D+Pensión completa, incluyendo jugo del día o gaseosa»
+    #   · «PAQUETE 4D/3N+FULL BOARD+JUGO NATURAL DEL DIA»
+    #   · «Paquete 3N/4D + Pensión completa + Bebida natural + PNC»
+    #
+    # La tercera es la que enseña algo: «Bebida natural» no dice «incluida» en ninguna
+    # parte. Un patrón que exigiera la palabra «incluye» la perdía, y esa reserva se
+    # habría quedado sin el aviso — que es justo el fallo que esto viene a evitar.
+    ("Bebidas incluidas", (
+        r"refresco|gaseosa|"
+        # «jugo natural», «bebida natural», «jugo del día», y sus plurales
+        r"(?:jugo|bebida)s?\s+natural(?:es)?|"
+        r"(?:jugo|bebida)s?\s+del\s+d[íi]a|"
+        r"natural\s+juice|juice\s+of\s+the\s+day|"
+        # «incluyendo jugo…», «incluye bebida…», «… incluido» hasta tres palabras de por
+        # medio, que es como el PMS separa el paquete de lo que trae.
+        r"inclu\w*\s+(?:\w+\s+){0,3}(?:jugo|bebida|gaseosa|refresco|soda)|"
+        r"(?:jugo|bebida|gaseosa|refresco|soda)s?\s+(?:\w+\s+){0,2}inclu\w*|"
+        r"soft\s*drinks?|"
+        r"beverages?\s+included|includes?\s+beverages?|juice\s+included|"
+        r"barra\s+libre|open\s+bar|todo\s+incluido|all\s+inclusive"
+    )),
 ]
 
 # Se mantiene la lista simple por compatibilidad con código existente
@@ -138,15 +177,95 @@ def clasificar_notas(notas_libres):
     }
 
 
+def _texto_de(reserva):
+    return (reserva.get("texto_completo")
+            or f"{reserva.get('adicionales_raw','')} {reserva.get('notas','')}")
+
+
+_NEGACION = re.compile(r"\b(?:no|sin|not|without)\b", re.IGNORECASE)
+
+# Amenidades donde una negación cambia el significado y hay que descartar la
+# coincidencia. Real, encontrada en Opera: «FULLBOARD ( bebidas no incluidas)». Marcar
+# esa reserva como «Bebidas incluidas» es PEOR que no marcarla: el salonero regalaría
+# bebidas, o le diría al huésped que trae algo que no trae.
+#
+# NO se aplica a todas: en la restricción alimentaria el «no» es parte de la señal
+# —«no seafood», «no pork», «no come cerdo»— y descartarla ahí perdería justamente las
+# alergias, que es lo más grave que se puede perder.
+SENSIBLES_A_LA_NEGACION = frozenset({"Bebidas incluidas"})
+
+
+def _coincidencia(nombre, patron, texto):
+    """La primera coincidencia que NO esté negada, o None.
+
+    Se mira dentro de lo que coincidió y un poco antes: «bebidas no incluidas» trae el
+    «no» dentro, y «sin bebidas» justo delante. Si hay otra mención más adelante que no
+    esté negada, esa vale — una reserva puede decir las dos cosas.
+    """
+    if nombre not in SENSIBLES_A_LA_NEGACION:
+        return re.search(patron, texto, re.IGNORECASE)
+    for m in re.finditer(patron, texto, re.IGNORECASE):
+        antes = texto[max(0, m.start() - 12):m.start()]
+        if _NEGACION.search(m.group(0)) or _NEGACION.search(antes):
+            continue
+        return m
+    return None
+
+
 def detectar_amenidades(reserva):
     """Devuelve los nombres exactos del catálogo de amenidades mencionadas en la reserva.
     Busca en 'Adicionales' y en las notas libres, tolerando variantes de escritura."""
-    texto = reserva.get("texto_completo") or f"{reserva.get('adicionales_raw','')} {reserva.get('notas','')}"
+    texto = _texto_de(reserva)
     encontradas = []
     for nombre_catalogo, patron in AMENIDADES_PATRONES:
-        if re.search(patron, texto, re.IGNORECASE) and nombre_catalogo not in encontradas:
+        if (_coincidencia(nombre_catalogo, patron, texto)
+                and nombre_catalogo not in encontradas):
             encontradas.append(nombre_catalogo)
     return encontradas
+
+
+# Cuánto texto se guarda alrededor de lo que se reconoció. Suficiente para entender de
+# qué se trata, corto para que quepa en una fila de la hoja del día.
+DETALLE_CONTEXTO = 60
+DETALLE_MAXIMO = 160
+
+
+def detallar_amenidades(reserva):
+    """{nombre de amenidad: el trozo de texto por el que se reconoció}.
+
+    POR QUÉ HACE FALTA. Hasta ahora una amenidad detectada se guardaba con el detalle
+    VACÍO, así que a cocina le llegaba «Restricción alimentaria / alergia» sin decir de
+    qué era la alergia. El dato estaba en el reporte y se perdía en el camino: solo
+    aparecía si recepción lo volvía a escribir a mano. Con lo mismo pasaba con todo el
+    resto — «Cuna / bebé» sin decir para qué edad, «Cena privada» sin decir qué noche.
+
+    Se guarda el fragmento y no el texto entero de la reserva: entero no cabe en la hoja
+    del día y ahí dentro va también información de otras cosas. Se recorta por palabras
+    completas, porque un detalle cortado a la mitad de una palabra se lee peor que uno
+    corto.
+
+    El detalle que haya escrito recepción SIEMPRE manda sobre esto: ver loader.py.
+    """
+    texto = _texto_de(reserva)
+    if not texto.strip():
+        return {}
+    salida = {}
+    for nombre_catalogo, patron in AMENIDADES_PATRONES:
+        m = _coincidencia(nombre_catalogo, patron, texto)
+        if not m or nombre_catalogo in salida:
+            continue
+        desde = max(0, m.start() - DETALLE_CONTEXTO)
+        hasta = min(len(texto), m.end() + DETALLE_CONTEXTO)
+        trozo = " ".join(texto[desde:hasta].split())
+        # Se tiran la primera y la última palabra si quedaron cortadas por el recorte.
+        if desde > 0 and " " in trozo:
+            trozo = trozo.split(" ", 1)[1]
+        if hasta < len(texto) and " " in trozo:
+            trozo = trozo.rsplit(" ", 1)[0]
+        trozo = trozo.strip(" ·-,;:")[:DETALLE_MAXIMO]
+        if trozo:
+            salida[nombre_catalogo] = trozo
+    return salida
 
 
 def to_iso_date(arr_date_ddmmyy, dia_num):
@@ -248,6 +367,8 @@ def build_review_batch_desde_reservas(reservas):
         r["grupo_link"] = detect_group_link(r)
         r.update(clasificar_notas(r["notas"]))
         r["amenidades_detectadas"] = detectar_amenidades(r)
+        # Con qué texto se reconoció cada una, para que el detalle no se pierda.
+        r["detalles_de_amenidad"] = detallar_amenidades(r)
         r["regimen"] = detectar_regimen(r)
 
     grupo_de = build_group_sets(reservas)
