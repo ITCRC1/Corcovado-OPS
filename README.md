@@ -203,6 +203,48 @@ huésped, igual que la del spa.
   y el catálogo de prendas con su **precio por pieza** — agregar «Chaqueta» es una fila,
   no un despliegue
 
+## Las abreviaturas de tours (catálogo 2027)
+
+El lodge fijó códigos nuevos y **cuatro modalidades** por tour:
+
+| Se escribe | Significa |
+|---|---|
+| `PNC` | regular / compartido |
+| `C-PNC` | cortesía (Complementary) |
+| `PRV-PNC` | privado, con cargo |
+| `PRV\|CPL-PNC` | privado **y** cortesía |
+
+Van **en el comentario de la reserva**, y ya están en uso: hoy hay reservas que dicen
+`PAQUETE 4D/3N+PENSION COMPLETA CPL C-BT+C-CIS+C-NGW`.
+
+**El prefijo no convierte un tour en otro.** Un PNC privado sigue siendo la caminata a
+San Pedrillo, con su horario, su bote y su entrada del SINAC. Cambia cómo se opera y
+cómo se cobra, y eso se anota aparte — si fuera otro tour, la hoja del día mostraría dos
+salidas donde hay una.
+
+Se reconocen por los dos caminos, el comentario y los paquetes de Opera, y **desde una
+sola tabla de equivalencias**: dos listas que digan lo mismo terminan separándose, y
+entonces el mismo código significa una cosa según por dónde entre.
+
+### Lo que el documento pide distinguir, y el sistema distingue
+
+- **MGS ≠ MGX.** MGS es el tour completo de manglar; MGX es la experiencia incluida en
+  el traslado. MGX entra como **traslado, no como tour**: tratarlo como tour pondría una
+  salida en la hoja del día que no existe, con guía y bote apartados.
+- **PNC ≠ SIR.** San Pedrillo y Sirena son caminatas distintas con horarios distintos.
+- **CID ≠ DSD.** El buceo de Isla del Caño y el Discovery Scuba son actividades
+  distintas; el documento lo dice expresamente.
+- **TT, BT y TRB** son transportes, no tours.
+
+### Los seis tours nuevos entran sin horario
+
+`KSJ`, `DSD`, `SFF`, `CLW`, `HDA` y `NGW` no tenían equivalente. Entran al catálogo
+**sin horario, sin bote y sin entrada del SINAC**, a propósito: el documento da el
+nombre y la modalidad, no la operación. Cuánto dura un Kayak a San Josecito o cuánta
+gente lleva un guía no está escrito en ninguna parte, y ponerlo a ojo llenaría la hoja
+del día de horarios que nadie comprobó. Se completan desde **Catálogo**, sin tocar
+código — es lo mismo que ya pasa con Claro del Bosque y el Spa.
+
 ## Los traslados: quién entra y quién sale
 
 Los tours ya tenían guía y bote asignados; los **ingresos y salidas** no. Y son el

@@ -65,6 +65,71 @@ TOURS_POR_RAIZ = {
 }
 
 # ---------------------------------------------------------------------------
+# El catálogo de abreviaturas 2027
+# ---------------------------------------------------------------------------
+# 23 códigos base, con el nombre estandarizado que fijó el lodge. Sirven para dos cosas:
+# traducir el código al tour que el sistema ya opera, y darle a cada uno un nombre
+# legible en pantalla en vez de tres letras.
+#
+# La columna del medio es la EQUIVALENCIA con el catálogo actual, y está puesta solo
+# donde el propio documento la deja sin ambigüedad —dice el nombre completo del tour en
+# español y en inglés—. Donde no hay equivalente, va None y el código entra al catálogo
+# como un tour nuevo: es mejor un tour nuevo sin horario, que recepción completa, que
+# meterlo dentro de otro y que la hoja del día mande el bote equivocado.
+#
+# (código, equivalente en el catálogo actual, nombre ES, nombre EN)
+CATALOGO_2027 = [
+    ("PNC", "PNC",       "Caminata al Parque Nacional Corcovado · San Pedrillo",
+                          "Hiking to Corcovado National Park · San Pedrillo Station"),
+    ("SIR", "SIRENA",    "Caminata al Parque Nacional Corcovado · Sirena",
+                          "Hiking to Corcovado National Park · Sirena Station"),
+    ("EBT", "PAJAREO",   "Tour de avistamiento de aves en los jardines",
+                          "Early Bird Tour Around the Gardens"),
+    ("HBR", "CABALGATA", "Excursión a caballo", "Horseback Riding"),
+    ("CIS", "SNORKEL",   "Snorkeling en la Reserva Biológica Isla del Caño",
+                          "Caño Island Snorkeling"),
+    ("CID", "BUCEO",     "Buceo en la Reserva Biológica Isla del Caño",
+                          "Caño Island Scuba Diving"),
+    ("MGS", "MANGLAR",   "Tour al manglar de Sierpe", "Sierpe Mangrove Tour"),
+    ("WDM", "BALLENAS",  "Experiencia de monitoreo de ballenas y delfines",
+                          "Whale and Dolphin Monitoring Experience"),
+    ("CBE", "CLARO",     "Expedición a Claro del Bosque", "Claro del Bosque Expedition"),
+    ("TNE", "TREENET",   "Experiencia Tree Net", "Tree Net Experience"),
+    ("NW",  "NW",        "Caminata nocturna", "Night Walk"),
+    ("GTT", "GTT",       "Experiencia Garden to Table", "Garden to Table Experience"),
+    ("SFH", "PESCA",     "Pesca deportiva · medio día", "Sportfishing · Half Day"),
+
+    # Sin equivalente en el catálogo actual: entran como tours nuevos.
+    ("KSJ", None, "Kayak a San Josecito", "Kayak to San Josecito"),
+    # El documento lo dice expresamente: «Actividad distinta de CID; no requiere usar el
+    # mismo código». Por eso NO se mapea a BUCEO.
+    ("DSD", None, "Discovery Scuba Diving", "Discovery Scuba Diving"),
+    ("SFF", None, "Pesca deportiva · día completo", "Sportfishing · Full Day"),
+    ("CLW", None, "Pared de escalada", "Climbing Wall"),
+    ("HDA", None, "Media jornada de aventura", "Half-Day Adventure"),
+    ("NGW", None, "Caminata naturalista en los jardines", "Naturalist Garden Walk"),
+]
+
+# Códigos del catálogo que NO son un tour de la agenda.
+#
+# MGX es el caso que el documento subraya: «Incluido en traslado; no tarifado como tour
+# separado», y «no usar MGS y MGX como sinónimos». Tratarlo como tour pondría una salida
+# de manglar en la hoja del día que no existe, con su guía y su bote apartados.
+TRASLADOS_2027 = {
+    "MGX": "Experiencia de manglar durante el traslado Sierpe-CWL",
+    "TT":  "Transporte terrestre",
+    "BT":  "Transporte en bote",
+    "TRB": "Trasbordo en bote",
+}
+
+# Nombre legible de cada código base, para las pantallas.
+NOMBRES_2027 = {c: es for c, _, es, _ in CATALOGO_2027}
+NOMBRES_2027.update(TRASLADOS_2027)
+NOMBRES_EN_2027 = {c: en for c, _, _, en in CATALOGO_2027}
+
+# Las tablas se completan más abajo, cuando SIN_OPERACION_POR_RAIZ ya existe.
+
+# ---------------------------------------------------------------------------
 # Comidas -> de aquí sale el régimen
 # ---------------------------------------------------------------------------
 COMIDAS_POR_RAIZ = {
@@ -113,6 +178,14 @@ POR_DEFINIR = {
 TIPOS = ("tour", "comida", "amenidad", "traslado", "tarifa", "cortesia",
          "gastronomia", "desconocido")
 
+# Se suma el catálogo 2027 a las tablas de siempre, ahora que todas existen.
+#
+# Los que tienen equivalente apuntan al tour que el sistema ya opera. Los que no, se
+# mapean a sí mismos: el tour existe con ese código y entra al catálogo en init_db. Sin
+# esto saldrían como desconocidos y esas reservas no generarían su salida.
+TOURS_POR_RAIZ.update({c: (eq or c) for c, eq, _, _ in CATALOGO_2027})
+SIN_OPERACION_POR_RAIZ.update({c: "traslado" for c in TRASLADOS_2027})
+
 
 def raiz(codigo):
     """'CIS30' -> 'CIS'. Le quita el sufijo de descuento del final.
@@ -123,6 +196,54 @@ def raiz(codigo):
     limpio = (codigo or "").strip().upper()
     sin_sufijo = re.sub(r"(?:WEB|\d{2,4})$", "", limpio)
     return sin_sufijo or limpio
+
+
+# ---------------------------------------------------------------------------
+# La nomenclatura nueva: prefijos de modalidad
+# ---------------------------------------------------------------------------
+# El catálogo de abreviaturas 2027 del lodge define cuatro formas para cada tour:
+#
+#     PNC              regular / compartido
+#     C-PNC            cortesía (Complementary) compartida
+#     PRV-PNC          privado, con cargo
+#     PRV|CPL-PNC      privado y además cortesía
+#
+# YA SE ESTÁN USANDO. En las reservas de Opera de hoy aparece
+# «PAQUETE 4D/3N+PENSION COMPLETA CPL C-BT+C-CIS+C-NGW»: tres códigos con prefijo. Sin
+# entenderlos, el sistema los daba por DESCONOCIDOS —lo que es correcto, mejor avisar
+# que adivinar— pero esas reservas se quedaban sin sus tours en la hoja del día.
+#
+# El documento escribe el cuarto caso de dos maneras: 'PRV|CPL-PNC' en la tabla de
+# reglas y 'PRV|CPLPNC' en la tabla maestra. Se aceptan las dos, y también 'PRV|C-'.
+# Discutir cuál es la buena no le sirve a nadie; lo que sirve es que ninguna se pierda.
+_PREFIJOS = re.compile(
+    r"^(?:(?P<prv>PRV)\s*\|\s*(?P<cpl1>CPL|C)-?|"       # PRV|CPL-  PRV|C-  PRV|CPL
+    r"(?P<prv2>PRV)-|"                                   # PRV-
+    r"(?P<cpl2>CPL|C)-)",                                # C-  CPL-
+    re.IGNORECASE)
+
+
+def descomponer(codigo):
+    """'PRV|CPL-PNC' -> ('PNC', privado=True, cortesia=True).
+
+    Devuelve (base, privado, cortesia). La base sale con el sufijo de descuento ya
+    quitado, para que entre en las mismas tablas que el resto.
+
+    El prefijo no cambia QUÉ tour es: un PNC privado sigue siendo la caminata a San
+    Pedrillo, con su horario, su bote y su entrada del SINAC. Cambia cómo se opera y
+    cómo se cobra, y eso se guarda aparte en vez de convertirlo en otro tour — si fuera
+    otro tour, la hoja del día mostraría dos salidas donde hay una.
+    """
+    limpio = (codigo or "").strip().upper()
+    m = _PREFIJOS.match(limpio)
+    if not m:
+        return raiz(limpio), False, False
+    privado = bool(m.group("prv") or m.group("prv2"))
+    cortesia = bool(m.group("cpl1") or m.group("cpl2"))
+    resto = limpio[m.end():].strip("-| ")
+    if not resto:                      # era solo el prefijo: no se inventa una base
+        return raiz(limpio), False, False
+    return raiz(resto), privado, cortesia
 
 
 def clasificar(codigo, descripcion=""):
@@ -138,12 +259,15 @@ def clasificar(codigo, descripcion=""):
     El orden importa: primero el código EXACTO (por DINP vs DINP30), después la raíz.
     """
     limpio = (codigo or "").strip().upper()
-    base = {"codigo": limpio, "descripcion": (descripcion or "").strip()}
+    # La modalidad va SIEMPRE en la respuesta, sea cual sea el tipo: un traslado también
+    # puede venir como C-BT, y quien factura necesita saber que es cortesía.
+    r, privado, cortesia = descomponer(limpio)
+    base = {"codigo": limpio, "descripcion": (descripcion or "").strip(),
+            "base": r, "privado": privado, "cortesia": cortesia}
 
     if limpio in AMENIDADES_EXACTAS:
         return {**base, "tipo": "amenidad", "valor": AMENIDADES_EXACTAS[limpio]}
 
-    r = raiz(limpio)
     if r in TOURS_POR_RAIZ:
         return {**base, "tipo": "tour", "valor": TOURS_POR_RAIZ[r]}
     if r in COMIDAS_POR_RAIZ:
@@ -153,6 +277,24 @@ def clasificar(codigo, descripcion=""):
 
     return {**base, "tipo": "desconocido", "valor": None,
             "nota": POR_DEFINIR.get(limpio) or POR_DEFINIR.get(r) or ""}
+
+
+def nombre_de(codigo, idioma="es"):
+    """El nombre legible de un código, con su modalidad. '' si no se reconoce.
+
+    'C-PNC' -> 'Caminata al Parque Nacional Corcovado · San Pedrillo (cortesía)'
+    """
+    r, privado, cortesia = descomponer(codigo)
+    tabla = NOMBRES_EN_2027 if str(idioma).lower().startswith("en") else NOMBRES_2027
+    nombre = tabla.get(r) or NOMBRES_2027.get(r) or ""
+    if not nombre:
+        return ""
+    marcas = []
+    if privado:
+        marcas.append("privado" if tabla is NOMBRES_2027 else "private")
+    if cortesia:
+        marcas.append("cortesía" if tabla is NOMBRES_2027 else "complimentary")
+    return f"{nombre} ({' · '.join(marcas)})" if marcas else nombre
 
 
 def regimen_de(comidas):

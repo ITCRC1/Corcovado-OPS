@@ -67,6 +67,29 @@ TOURS = [
     ("TREENET", "Treenet", "16:00", "18:00", None, None, 4, 0, 0, 0, None),
 ]
 
+# Los tours del catálogo de abreviaturas 2027 que NO tienen equivalente en la lista de
+# arriba. Entran para que una reserva que los use genere su salida en vez de quedar como
+# «paquete desconocido».
+#
+# VAN SIN HORARIO A PROPÓSITO, y sin bote ni entrada del SINAC. El documento da el
+# nombre y la modalidad, no la operación: cuánto dura un Kayak a San Josecito, cuánta
+# gente lleva un guía o si el Discovery Scuba necesita bote no está escrito en ninguna
+# parte, y ponerlo a ojo llenaría la hoja del día de horarios inventados que nadie
+# comprobó. Sin horario el sistema ya sabe comportarse —lo mismo hace con Claro del
+# Bosque y el Spa— y el itinerario del huésped pide completarlo.
+#
+# Se editan desde la pantalla de Catálogo, sin tocar código.
+TOURS_2027_NUEVOS = [
+    ("KSJ", "Kayak a San Josecito"),
+    ("DSD", "Discovery Scuba Diving"),
+    ("SFF", "Pesca deportiva · día completo"),
+    ("CLW", "Pared de escalada"),
+    ("HDA", "Media jornada de aventura"),
+    ("NGW", "Caminata naturalista en los jardines"),
+]
+TOURS += [(cod, nombre, None, None, None, None, 8, 0, 0, 0, None)
+          for cod, nombre in TOURS_2027_NUEVOS]
+
 BOTES = [
     ("CHULIN", 13, 1),
     ("COATI", 10, 1),

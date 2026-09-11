@@ -189,6 +189,44 @@ TOUR_ALIASES = {
     "SPA TREATMENT": "SPA",
 }
 
+# ---------------------------------------------------------------------------
+# El catálogo de abreviaturas 2027
+# ---------------------------------------------------------------------------
+# Los códigos nuevos del lodge van escritos en el COMENTARIO de la reserva —el propio
+# documento lo dice: «La nomenclatura no modifica la estructura del comentario»— así que
+# es aquí donde hay que reconocerlos, no solo en los paquetes de Opera.
+#
+# Ya están en uso: «PENSION COMPLETA CPL C-BT+C-CIS+C-NGW». Sin esto, esos tours no se
+# creaban y no aparecían en la hoja del día — sin dar ningún error.
+#
+# Se leen de opera_paquetes para que haya UNA sola tabla de equivalencias. Dos listas
+# que digan lo mismo se separan, y entonces el mismo código significa una cosa leyendo
+# el comentario y otra leyendo el paquete.
+def _alias_2027():
+    from opera_paquetes import CATALOGO_2027
+    return {cod: (equivalente or cod) for cod, equivalente, _, _ in CATALOGO_2027}
+
+
+TOUR_ALIASES.update(_alias_2027())
+
+# El prefijo de modalidad, para anotarlo en la salida. 'C-CIS' ya se reconoce como CIS
+# —el guion es límite de palabra— pero sin esto se perdería que era una cortesía.
+_MODALIDAD = re.compile(
+    r"(?:(?P<prv>PRV)\s*\|\s*(?:CPL|C)-?|(?P<prv2>PRV)-|(?P<cpl>CPL|C)-)\s*$",
+    re.IGNORECASE)
+
+
+def modalidad_antes_de(texto, posicion):
+    """(privado, cortesia) leyendo lo que hay justo antes del código en el texto.
+
+    Se mira solo lo pegado al código: 'C-CIS' es una cortesía, pero un 'CPL' suelto tres
+    palabras antes puede estar hablando de otra cosa de la reserva.
+    """
+    m = _MODALIDAD.search(texto[max(0, posicion - 12):posicion])
+    if not m:
+        return False, False
+    return bool(m.group("prv") or m.group("prv2")), bool(m.group("cpl"))
+
 
 def extract_text(pdf_path):
     lines = []
@@ -524,7 +562,19 @@ def procesar_linea(line, current, section):
                                 conf = numeros[idx]
                             elif len(numeros) == 1:
                                 conf = numeros[0]
-                            current["operacion"].append({"dia": dia, "tour": code, "conf_entrada": conf})
+                            # La modalidad del catálogo 2027, si el código venía con
+                            # prefijo. No cambia QUÉ tour es —un PNC privado sigue
+                            # siendo la caminata a San Pedrillo— pero sí cómo se opera
+                            # y cómo se cobra, así que se anota.
+                            privado = cortesia = False
+                            m_cod = re.search(rf"\b{re.escape(code)}\b", resto,
+                                              re.IGNORECASE)
+                            if m_cod:
+                                privado, cortesia = modalidad_antes_de(resto,
+                                                                       m_cod.start())
+                            current["operacion"].append(
+                                {"dia": dia, "tour": code, "conf_entrada": conf,
+                                 "privado": privado, "cortesia": cortesia})
                     # Lo que sobra en la línea después de quitar tours conocidos, alias, números de
                     # confirmación y modificadores conocidos (ej. "PRIV" de "privado"): si no es
                     # solo puntuación/espacios, es una actividad que no está en el catálogo
