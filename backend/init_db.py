@@ -93,19 +93,11 @@ AMENIDADES = [
     ("Restricción alimentaria / alergia", "AVISAR A COCINA antes del check-in — revisar el detalle en la reserva", "Cocina"),
     ("Requerimiento de movilidad / accesibilidad", "Coordinar habitación accesible y apoyo en traslados", "Recepción/Operaciones"),
     ("Cuna / bebé", "Notificar a housekeeping para colocar cuna en la habitación", "Housekeeping"),
-    # El área es exactamente "Cocina" —no "Cocina/Servicio"— a propósito: la hoja del día
-    # busca el área con ese texto exacto y NO la parte por la barra, así que con
-    # "Cocina/Servicio" esto no aparecería en el bloque de cocina. Le pasa hoy a la cena
-    # privada, que tiene su propio sitio en la pantalla y no lo necesita.
-    #
-    # La tarea dice «revisar qué incluye» y no afirma qué trae: el reconocimiento es
-    # generoso, y es mejor mandar a mirar la reserva que asegurarle algo equivocado a
-    # quien está sirviendo la mesa.
-    ("Bebidas incluidas",
-     "REVISAR QUÉ BEBIDAS INCLUYE la tarifa antes de servir y antes de cobrar — "
-     "el detalle está en la reserva",
-     "Cocina"),
 ]
+# Nota: las BEBIDAS INCLUIDAS estuvieron aquí un día y se quitaron. No son una amenidad:
+# una amenidad es algo que hay que PREPARAR —la cuna, la decoración, la canasta— y esto
+# no se prepara, se sabe. Van en reserva.bebidas_incluidas y se muestran junto al régimen
+# en la hoja de restaurantes, que es donde el salonero mira antes de servir.
 
 
 # Los tratamientos del spa, con los nombres y las duraciones EXACTAS del formulario que
@@ -175,6 +167,11 @@ COLUMNAS_NUEVAS = [
     ("hk_pedido", "subtotal_centavos", "INTEGER"),
     ("hk_pedido", "iva_centavos", "INTEGER"),
     ("hk_pedido", "iva_porcentaje", "REAL"),
+    # Lo que la reserva trae pagado además de las comidas. Va junto al régimen y se
+    # muestra en la hoja de restaurantes: el salonero lo necesita antes de servir y
+    # antes de pasar la cuenta.
+    ("reserva", "bebidas_incluidas", "TEXT"),
+    ("reserva", "cortesia", "TEXT"),
 ]
 
 
@@ -313,6 +310,7 @@ def _migrar(conn):
     _arreglar_entradas_sinac(conn)
     _sembrar_areas_de_amenidades(conn)
     _limpiar_grupos_sueltos(conn)
+    _quitar_bebidas_de_amenidades(conn)
     _purgar_sesiones(conn)
     # Al final, con las tablas ya creadas y los duplicados ya limpios.
     _crear_indices(conn)
@@ -347,6 +345,25 @@ def _sembrar_areas_de_amenidades(conn):
         conn.commit()
         print(f"Departamentos de amenidades sembrados: {n}")
     return n
+
+
+def _quitar_bebidas_de_amenidades(conn):
+    """Borra las tareas de «Bebidas incluidas», que estuvieron un día como amenidad.
+
+    Se sacaron del catálogo porque no lo son: una amenidad es algo que hay que PREPARAR
+    y esto no se prepara, se sabe. Ahora va en reserva.bebidas_incluidas.
+
+    Si no se borraran, las que se hubieran creado quedarían para siempre en la lista de
+    tareas pendientes de cocina, sin nada que hacer y sin forma de cerrarlas — y una
+    lista con tareas que no se pueden completar deja de leerse entera.
+    """
+    n = conn.execute(
+        "DELETE FROM amenidad_tarea WHERE amenidad = 'Bebidas incluidas'").rowcount
+    conn.execute(
+        "DELETE FROM amenidad_catalogo WHERE nombre = 'Bebidas incluidas'")
+    if n:
+        conn.commit()
+        print(f"Se quitaron {n} amenidades de «Bebidas incluidas»: ahora van con el régimen.")
 
 
 def _limpiar_grupos_sueltos(conn):

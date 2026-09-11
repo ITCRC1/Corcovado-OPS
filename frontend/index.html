@@ -3714,6 +3714,28 @@ function detalleRest(cual) {
     return `<span style="font-size:11px;color:var(--muted);" title="El PDF no indicó el régimen">sin dato</span>`;
   };
 
+  // Lo demás que trae pagado la reserva, junto al régimen y no en otra pantalla: se
+  // decide en el mismo momento, con el plato en la mano. Las bebidas dicen qué servir
+  // sin cobrar; la cortesía, que la cuenta no se le pasa al huésped.
+  //
+  // Va el TEXTO de la reserva y no un sí/no: «CPL en hospedaje» y «CPL boat transfer»
+  // no son lo mismo, y quien pasa la cuenta necesita leer cuál de los dos es. El
+  // reconocimiento es generoso a propósito, así que se muestra la fuente para que la
+  // persona decida, no una afirmación del sistema.
+  const notasReserva = x => {
+    const n = [];
+    if (x.bebidas) {
+      n.push(`<span class="badge badge-ok" title="${escaparHTML(x.bebidas)}">bebidas incluidas</span>`);
+    }
+    if (x.cortesia) {
+      n.push(`<span class="badge" style="background:#EADCF7;color:#4A2A72;font-weight:600;"
+                    title="${escaparHTML(x.cortesia)}">cortesía (CPL)</span>`);
+    }
+    if (!n.length) return "";
+    const fuente = [x.bebidas, x.cortesia].filter(Boolean).join(" · ");
+    return `<br>${n.join(" ")}<br><span style="font-size:10px;color:var(--muted);">${escaparHTML(fuente)}</span>`;
+  };
+
   panel.innerHTML = `<div class="detail-panel">
     <p style="font-weight:600;margin:0 0 8px;">${titulo} — ${lista.length} habitación(es),
       ${lista.reduce((s,x)=>s+x.pax,0)} pax</p>
@@ -3735,7 +3757,7 @@ function detalleRest(cual) {
         <td>${x.nombre}${x.grupo ? ' <span class="badge badge-tour">grupo</span>' : ''}</td>
         <td>${x.pax}</td>
         <td style="font-size:11.5px;color:var(--muted);">${x.noche_estadia || 1} de ${x.noches}</td>
-        <td>${celdaComida(x)}</td>
+        <td>${celdaComida(x)}${notasReserva(x)}</td>
         <td>${x.tipo === 'ENTRA' ? '<span class="badge badge-warn">entra</span>' : ''}
             ${x.fijo ? `<span class="badge badge-tour">${x.fijo}</span>` : ''}
             ${x.manual ? '<span class="badge badge-ok">cambio manual</span>' : ''}</td>

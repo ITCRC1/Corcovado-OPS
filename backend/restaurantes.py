@@ -96,7 +96,8 @@ def _reservas_base(conn, cache=None):
     base = []
     for fila in conn.execute(
         """SELECT conf_no, room_no, nombre_principal, adl, chl, arr_date, dep_date,
-                  grupo_id, block_code, forzar_restaurante, regimen
+                  grupo_id, block_code, forzar_restaurante, regimen,
+                  bebidas_incluidas, cortesia
            FROM reserva WHERE res_status != 'CANCELADA'""").fetchall():
         r = dict(fila)
         llega, sale = _a_fecha(r["arr_date"]), _a_fecha(r["dep_date"])
@@ -632,6 +633,12 @@ def distribuir(conn, fecha, cache=None):
                 "regimen": r.get("regimen"),
                 "regimen_texto": texto_regimen(r.get("regimen")),
                 "incluye_esta_comida": incluye_comida(r.get("regimen"), comida),
+                # Y lo demás que trae pagado, que también se decide antes de servir:
+                # qué bebidas incluye y si la reserva es de cortesía. Va el TEXTO de la
+                # reserva, no un sí/no: «CPL en hospedaje» y «CPL boat transfer» no son
+                # lo mismo, y quien pasa la cuenta necesita leer cuál de los dos es.
+                "bebidas": r.get("bebidas_incluidas"),
+                "cortesia": r.get("cortesia"),
             })
         return out
 

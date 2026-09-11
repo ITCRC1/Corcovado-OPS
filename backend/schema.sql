@@ -105,6 +105,13 @@ CREATE TABLE IF NOT EXISTS reserva (
     -- PENSION_COMPLETA | DESAYUNO_CENA | SOLO_DESAYUNO | COMEDOR_TRABAJADORES | NULL
     -- NULL significa que el PDF no lo dijo, no que no tenga comidas.
     regimen TEXT,
+    -- Lo que la reserva trae pagado además de las comidas. Va junto al régimen y no
+    -- como amenidad: una amenidad es algo que hay que PREPARAR —la cuna, la canasta de
+    -- frutas— y esto no se prepara, se sabe antes de servir.
+    -- Guardan el TEXTO de la reserva por el que se reconocieron, no un sí/no: el hotel
+    -- decide leyéndolo, porque «CPL en hospedaje» y «CPL boat transfer» no son lo mismo.
+    bebidas_incluidas TEXT,
+    cortesia TEXT,
     hora_vuelo_entrada TEXT,
     hora_vuelo_salida TEXT,
     vuelo_entrada TEXT,

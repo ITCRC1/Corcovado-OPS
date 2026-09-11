@@ -512,8 +512,8 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                 punto_salida, punto_entrada_sin_confirmar, punto_salida_sin_confirmar,
                 hora_vuelo_entrada, hora_vuelo_salida, vuelo_entrada, vuelo_salida, nota_ingreso,
                 nota_en_casa, nota_salida, notas_operacion, notas_libres, fuente_pdf, block_code,
-                regimen)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                regimen, bebidas_incluidas, cortesia)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 r["conf_no"], grupo_id, r["room_no"], r["nombre_principal"], r["company_travel_agent"],
                 r["arr_date"], r["dep_date"], r["arr_time"], r["room_type"], r["adl"], r["chl"], r["rooms"],
@@ -525,6 +525,7 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                 r.get("nota_ingreso"), r.get("nota_en_casa"), r.get("nota_salida"),
                 " · ".join(r.get("notas_operacion") or []) or None, r["notas"], fuente_pdf,
                 r.get("block_code"), r.get("regimen"),
+                r.get("bebidas_incluidas"), r.get("cortesia"),
             ),
         )
 
