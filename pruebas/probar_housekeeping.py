@@ -499,6 +499,43 @@ def la_habitacion_escrita_se_empareja_con_la_reserva(c):
     conn.close()
 
 
+def la_habitacion_no_devuelve_a_quien_ya_se_fue(c):
+    """EL FALLO QUE HUBO. La misma habitacion la ocupa gente distinta cada pocos dias.
+
+    Buscando solo por numero salia cualquier reserva que ese cuarto hubiera tenido
+    alguna vez, y la ropa quedaba a nombre de alguien que se fue hace un mes. Ya le
+    habia pasado a la hoja del dia —65 de 66 restricciones de cocina eran de reservas
+    de enero, marzo y mayo— y esta busqueda lo repitio.
+    """
+    limpiar()
+    viejo = HOY - datetime.timedelta(days=40)
+    futuro = HOY + datetime.timedelta(days=30)
+    cargar([
+        # Mismo cuarto, tres reservas: una que ya termino, una que esta AHORA y una que
+        # llega el mes que viene.
+        reserva("990001", "12", ddmmyy(viejo), ddmmyy(viejo + datetime.timedelta(days=4))),
+        reserva("990002", "12", LLEGADA, SALIDA),
+        reserva("990003", "12", ddmmyy(futuro), ddmmyy(futuro + datetime.timedelta(days=3))),
+    ])
+    conn = conexion()
+    r, motivo = hk.buscar_reserva(conn, "", "12")
+    c.igual(r["conf_no"] if r else None, "990002",
+            "devuelve la reserva que esta en casa HOY")
+
+    # Y para una recoleccion de manana, la misma: la estadia la cubre.
+    manana = (HOY + datetime.timedelta(days=1)).isoformat()
+    r2, _ = hk.buscar_reserva(conn, "", "12", manana)
+    c.igual(r2["conf_no"] if r2 else None, "990002",
+            "y para manana tambien, porque la estadia llega")
+
+    # En una fecha en la que no hay nadie en ese cuarto, no se inventa un dueno.
+    entre = (HOY + datetime.timedelta(days=20)).isoformat()
+    r3, m3 = hk.buscar_reserva(conn, "", "12", entre)
+    c.igual(r3, None, "en un dia sin nadie en ese cuarto no devuelve a nadie")
+    c.cierto(m3 and "12" in m3, "y dice que no hay nadie en esa habitacion ese dia")
+    conn.close()
+
+
 def una_habitacion_que_no_existe_no_pierde_el_pedido(c):
     """Quien escribia 23 en vez de 32 en el formulario de Google no recibia su ropa y
     nadie se enteraba. Aqui no se encuentra la reserva, pero se DICE por que, y el
@@ -551,6 +588,7 @@ PRUEBAS = [
     guardar_el_horario_no_borra_el_enlace_general,
     cambiar_el_enlace_general_invalida_el_anterior,
     la_habitacion_escrita_se_empareja_con_la_reserva,
+    la_habitacion_no_devuelve_a_quien_ya_se_fue,
     una_habitacion_que_no_existe_no_pierde_el_pedido,
 ]
 

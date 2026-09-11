@@ -477,22 +477,46 @@ def buscar_reserva(conn, nombre, room_no, fecha=None):
     el fallo del formulario de Google, donde quien ponía 23 en vez de 32 simplemente no
     recibía su ropa —y no se enteraba nadie—.
 
-    Se busca por habitación entre las reservas que están en casa hoy, que es el dato que
-    de verdad importa para ir a recoger. El nombre solo se usa para desempatar cuando
-    dos reservas comparten habitación, cosa que pasa el día del cambio.
+    SE FILTRA POR FECHA, y esto es lo importante. Una habitación se reutiliza cada pocos
+    días: buscar solo por número devuelve todas las reservas que ese cuarto tuvo alguna
+    vez, y la ropa acaba a nombre de alguien que se fue en marzo. Ya le pasó a este
+    sistema en la hoja del día —65 de 66 restricciones de cocina eran de reservas
+    viejas— y está escrito en el README; esta función lo repitió y hubo que corregirlo.
+
+    Se busca la reserva que cubra el DÍA DE LA RECOLECCIÓN, no la de hoy: el huésped
+    puede pedir que le recojan mañana, y quien esté en ese cuarto ese día es quien
+    importa. El nombre solo se usa para desempatar cuando dos reservas comparten
+    habitación, cosa que pasa el día del cambio.
     """
+    import datetime
+    import init_db
+
     room = (room_no or "").strip().lstrip("0") or (room_no or "").strip()
     if not room:
         return None, "no escribió la habitación"
 
+    try:
+        dia = datetime.date.fromisoformat((fecha or "").strip())
+    except ValueError:
+        dia = datetime.date.today()
+    # Las fechas se guardan como 'DD-MM-YY' y se comparan reordenadas a 'YY-MM-DD'.
+    # La expresión se toma de init_db para que sea LA MISMA que usa el resto del
+    # sistema: dos versiones que se separen darían resultados distintos para el mismo
+    # día, y eso no daría error, daría una lista mal filtrada.
+    clave = dia.strftime("%y-%m-%d")
+    arr, dep = init_db._iso_de("arr_date"), init_db._iso_de("dep_date")
+
     filas = conn.execute(
-        """SELECT conf_no, room_no, nombre_principal, arr_date, dep_date
-           FROM reserva
-           WHERE res_status NOT IN ('CANCELADA','SALIO')
-             AND REPLACE(LTRIM(room_no,'0'),' ','') = ?""",
-        (room.replace(" ", ""),)).fetchall()
+        f"""SELECT conf_no, room_no, nombre_principal, arr_date, dep_date
+            FROM reserva
+            WHERE res_status NOT IN ('CANCELADA','SALIO')
+              AND REPLACE(LTRIM(room_no,'0'),' ','') = ?
+              AND {arr} <= ?
+              AND (dep_date IS NULL OR {dep} >= ?)
+            ORDER BY {arr} DESC""",
+        (room.replace(" ", ""), clave, clave)).fetchall()
     if not filas:
-        return None, f"no hay ninguna habitación {room} en casa"
+        return None, f"no hay ninguna habitación {room} en casa el {dia.isoformat()}"
     if len(filas) == 1:
         return dict(filas[0]), None
 
