@@ -212,7 +212,13 @@ def _sin_negar(patron, texto):
 
 
 def _fragmento(texto, m, contexto=None, maximo=None):
-    """El trozo de texto alrededor de lo que se reconoció, recortado por palabras."""
+    """El trozo de texto alrededor de lo que se reconoció, recortado por palabras.
+
+    El corte se marca con «…» del lado donde quedó texto afuera. No es adorno: sin la
+    marca, «RESERVA CPL SOLICITADA POR… + FULLBOARD ( bebidas no» se lee como una frase
+    terminada y dice lo contrario de lo que dice la reserva completa —«bebidas no
+    incluidas»—. Quien pasa la cuenta tiene que poder ver que hay más antes de decidir.
+    """
     contexto = DETALLE_CONTEXTO if contexto is None else contexto
     maximo = DETALLE_MAXIMO if maximo is None else maximo
     desde, hasta = max(0, m.start() - contexto), min(len(texto), m.end() + contexto)
@@ -221,7 +227,16 @@ def _fragmento(texto, m, contexto=None, maximo=None):
         trozo = trozo.split(" ", 1)[1]
     if hasta < len(texto) and " " in trozo:
         trozo = trozo.rsplit(" ", 1)[0]
-    return trozo.strip(" ·-,;:")[:maximo]
+    trozo = trozo.strip(" ·-,;:")
+    if not trozo:
+        return trozo
+    # Las marcas cuentan dentro del máximo: el largo es lo que tiene que caber en la
+    # celda de la hoja, y da igual si lo que la llena es texto o puntos suspensivos.
+    inicio = "…" if desde > 0 else ""
+    falta_al_final = hasta < len(texto) or len(inicio) + len(trozo) + 1 > maximo
+    fin = "…" if falta_al_final else ""
+    cabe = maximo - len(inicio) - len(fin)
+    return inicio + trozo[:cabe].strip(" ·-,;:") + fin
 
 
 def detectar_bebidas(reserva):

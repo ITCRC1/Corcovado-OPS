@@ -203,6 +203,24 @@ def el_detalle_no_es_la_reserva_entera(c):
              "y conserva lo que se reconocio, no un trozo cualquiera")
 
 
+def el_corte_del_detalle_se_ve(c):
+    """Un corte sin marcar miente. El caso real: la reserva dice «FULLBOARD ( bebidas no
+    incluidas)» y el trozo terminaba en «( bebidas no», que se lee como frase completa y
+    dice lo contrario. La marca «…» le avisa a quien pasa la cuenta que hay mas."""
+    largo = "relleno " * 60 + REAL_ALERGIAS + " relleno" * 60
+    d = importer.detallar_amenidades(reserva_con(largo))
+    trozo = d.get("Restricción alimentaria / alergia", "")
+    c.cierto(trozo.startswith("…"), "se marca que hay texto antes")
+    c.cierto(trozo.endswith("…"), "y que hay texto despues")
+    c.cierto(len(trozo) <= importer.DETALLE_MAXIMO,
+             "las marcas caben dentro del maximo, no lo estiran")
+
+    corto = importer.detallar_amenidades(reserva_con(REAL_ALERGIAS))
+    entero = corto.get("Restricción alimentaria / alergia", "")
+    c.cierto("…" not in entero,
+             "y cuando NO se corto nada no se marca nada")
+
+
 def sin_texto_no_hay_detalle_inventado(c):
     c.igual(importer.detallar_amenidades(reserva_con("")), {},
             "sin texto no se inventa nada")
@@ -238,17 +256,61 @@ def el_catalogo_y_los_patrones_no_se_desincronizan(c):
             "toda amenidad que se detecta esta en el catalogo")
 
 
-def las_bebidas_y_la_cortesia_llegan_a_la_reserva(c):
-    """Se guardan en la reserva, no como tarea: es lo que se lee junto al regimen."""
-    import importer as imp
-    lote = [{"conf_no": "1", "texto_completo": REAL_BEBIDA_NATURAL,
-             "adicionales_raw": "", "notas": "", "operacion": [], "arr_date": "11-09-26"}]
-    # Se llama al mismo paso que usa el importador para rellenar la reserva.
-    for r in lote:
-        r["bebidas_incluidas"] = imp.detectar_bebidas(r)
-        r["cortesia"] = imp.detectar_cortesia(r)
-    c.cierto(lote[0]["bebidas_incluidas"], "la reserva lleva sus bebidas")
-    c.igual(lote[0]["cortesia"], None, "y sin cortesia si el texto no la menciona")
+def las_bebidas_y_la_cortesia_LLEGAN_A_LA_BASE(c):
+    """De punta a punta, por el camino REAL de carga.
+
+    Esto no es una comprobacion de mas. Hay DOS caminos de escritura en el loader: el
+    INSERT completo, y uno que arma las columnas segun lo que la fuente manda —el que
+    usa Opera—. Las dos columnas nuevas estaban solo en el primero, asi que la deteccion
+    funcionaba, el importador las ponia en el diccionario... y llegaban NULL a la base.
+    Sin dar ningun error. Se descubrio mirando la pantalla, no las pruebas.
+    """
+    from comun import base_limpia, cargar, conexion, reserva
+    base_limpia().close()
+    cargar([
+        reserva("700001", "01", "01-01-26", "05-01-26",
+                texto_completo=REAL_BEBIDA_NATURAL),
+        reserva("700002", "02", "01-01-26", "05-01-26",
+                texto_completo="PAQUETE 3D/2N+ FULLBOARD CPL EN HOSPEDAJE Y BOTE"),
+        reserva("700003", "03", "01-01-26", "05-01-26",
+                texto_completo="Paquete 3N/4D + Pensión completa"),
+    ])
+    conn = conexion()
+    filas = {r["conf_no"]: dict(r) for r in conn.execute(
+        "SELECT conf_no, regimen, bebidas_incluidas, cortesia FROM reserva")}
+    conn.close()
+
+    c.cierto(filas["700001"]["bebidas_incluidas"],
+             "la bebida llega a la base, no solo al diccionario")
+    c.cierto("Bebida natural" in (filas["700001"]["bebidas_incluidas"] or ""),
+             "y con el texto que lo dice")
+    c.cierto(filas["700002"]["cortesia"], "la cortesia tambien llega")
+    c.igual(filas["700003"]["bebidas_incluidas"], None,
+            "y la que no trae nada queda vacia, no inventada")
+    c.igual(filas["700001"]["regimen"], "PENSION_COMPLETA",
+            "el regimen sigue guardandose igual")
+
+
+def toda_columna_nueva_esta_en_las_dos_rutas(c):
+    """El guardia contra el fallo de arriba: una columna que se escriba por el INSERT
+    completo y no este repartida por area se queda en NULL cuando carga Opera."""
+    import loader
+    import re as _re
+    import inspect as _ins
+    src = _ins.getsource(loader)
+    m = _re.search(r"INSERT OR REPLACE INTO reserva \((.*?)\)\s*VALUES", src, _re.S)
+    c.cierto(m is not None, "se encuentra el INSERT completo")
+    if not m:
+        return
+    cols = {x.strip() for x in m.group(1).replace("\n", " ").split(",")}
+    por_area = set()
+    for columnas in loader.COLUMNAS_POR_AREA.values():
+        por_area.update(columnas)
+    # Estas se escriben aparte y a proposito: no pertenecen a ningun area de la fuente.
+    aparte = {"conf_no", "grupo_id", "fuente_pdf", "guia_confirmado"}
+    huerfanas = sorted(cols - por_area - aparte)
+    c.igual(huerfanas, [],
+            "toda columna del INSERT esta repartida en COLUMNAS_POR_AREA")
 
 
 PRUEBAS = [
@@ -266,10 +328,12 @@ PRUEBAS = [
     una_reserva_puede_traer_las_dos_cosas,
     se_guarda_el_trozo_por_el_que_se_reconocio,
     el_detalle_no_es_la_reserva_entera,
+    el_corte_del_detalle_se_ve,
     sin_texto_no_hay_detalle_inventado,
     el_regimen_sigue_saliendo_de_los_mismos_textos,
     el_catalogo_y_los_patrones_no_se_desincronizan,
-    las_bebidas_y_la_cortesia_llegan_a_la_reserva,
+    las_bebidas_y_la_cortesia_LLEGAN_A_LA_BASE,
+    toda_columna_nueva_esta_en_las_dos_rutas,
 ]
 
 

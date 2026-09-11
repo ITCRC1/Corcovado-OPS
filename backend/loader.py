@@ -73,7 +73,15 @@ COLUMNAS_DEL_NUCLEO = (
 # que la fuente manda; las demás se quedan como estaban.
 COLUMNAS_POR_AREA = {
     "nucleo": COLUMNAS_DEL_NUCLEO,
-    "regimen": ("regimen",),
+    # Con el régimen van las bebidas incluidas y la cortesía: las tres dicen qué trae
+    # pagado la reserva y las tres salen del mismo texto, así que se escriben juntas.
+    #
+    # Estar en esta lista NO es opcional. Hay dos caminos de escritura: el INSERT OR
+    # REPLACE de abajo, que usa la fuente completa, y este, que arma las columnas según
+    # lo que la fuente manda y es el que usa Opera. Una columna que falte aquí se guarda
+    # por el primer camino y se queda en NULL por el segundo —sin dar ningún error—, que
+    # es exactamente lo que pasó con estas dos.
+    "regimen": ("regimen", "bebidas_incluidas", "cortesia"),
     "textos": ("nota_ingreso", "nota_en_casa", "nota_salida", "notas_operacion",
                "notas_libres", "guia_sugerido"),
     "transporte": ("punto_entrada", "punto_salida", "punto_entrada_sin_confirmar",
