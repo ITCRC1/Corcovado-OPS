@@ -4834,6 +4834,17 @@ async function guardarHorarioSpa() {
 // se puede mover de día o pasar a un rango. `fecha` nula significa "ver rango".
 // Aquí el rango es lo habitual —un informe de un solo día dice poco—, pero se abre
 // en hoy para que todas las pantallas se comporten igual.
+// Un mes de calendario COMPLETO, del 1 al último día. Importa que sea exacto: el
+// informe reconoce el mes entero y entonces se compara con el mes anterior de
+// calendario en vez de con «los 30 días de antes», que es lo que se quiere leer.
+function verMesAnalitica(cuantosAtras) {
+  const hoy = new Date();
+  const ini = new Date(hoy.getFullYear(), hoy.getMonth() + cuantosAtras, 1);
+  const fin = new Date(hoy.getFullYear(), hoy.getMonth() + cuantosAtras + 1, 0);
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  loadAnalitica(null, iso(ini), iso(fin));
+}
+
 async function loadAnalitica(fecha, desdeNuevo, hastaNuevo) {
   setActive(8);
   const F = FILTROS.analitica;
@@ -4863,8 +4874,10 @@ async function loadAnalitica(fecha, desdeNuevo, hastaNuevo) {
           <input type="date" id="an-desde" value="${F.desde}">
           <input type="date" id="an-hasta" value="${F.hasta}">
           <button class="btn" onclick="loadAnalitica(null, document.getElementById('an-desde').value, document.getElementById('an-hasta').value)">Ver rango</button>
+          <button class="btn" onclick="verMesAnalitica(0)" title="Del día 1 al último del mes">Este mes</button>
+          <button class="btn" onclick="verMesAnalitica(-1)">Mes pasado</button>
           <button class="btn" onclick="descargar('analitica', {desde:'${desde}', hasta:'${hasta}'}, 'xlsx')">⬇ Excel</button>
-          <button class="btn" onclick="descargar('analitica', {desde:'${desde}', hasta:'${hasta}'}, 'pdf')">⬇ PDF</button>
+          <button class="btn" onclick="descargar('analitica', {desde:'${desde}', hasta:'${hasta}'}, 'pdf')">⬇ Informe PDF</button>
         </div>
       </div>
       <p class="subtitle">${desde === hasta ? desde : `${desde} a ${hasta}`}</p>

@@ -3669,32 +3669,22 @@ def export_restaurantes(fecha: str, formato: str = "xlsx", user: dict = Depends(
 
 
 @app.get("/api/export/analitica")
-def export_analitica(desde: str, hasta: str, formato: str = "xlsx", user: dict = Depends(exige("analitica"))):
-    conn = get_connection()
-    uso_botes = [dict(r) for r in conn.execute(
-        """SELECT bote_nombre, COUNT(*) tours FROM tour_asignado
-           WHERE fecha BETWEEN ? AND ? AND bote_nombre IS NOT NULL
-           GROUP BY bote_nombre ORDER BY tours DESC""", (desde, hasta)).fetchall()]
-    por_guia = [dict(r) for r in conn.execute(
-        """SELECT guia_nombre, COUNT(*) tours FROM tour_asignado
-           WHERE fecha BETWEEN ? AND ? AND guia_nombre IS NOT NULL
-           GROUP BY guia_nombre ORDER BY tours DESC""", (desde, hasta)).fetchall()]
-    movimiento = [dict(r) for r in conn.execute(
-        f"""SELECT punto_entrada AS punto, SUM(adl + chl) pax FROM reserva
-           WHERE {sql_fecha('arr_date')} BETWEEN ? AND ? AND punto_entrada IS NOT NULL
-           GROUP BY punto_entrada""", (yymmdd(desde), yymmdd(hasta))).fetchall()]
-    conn.close()
+def export_analitica(desde: str, hasta: str, formato: str = "xlsx",
+                     user: dict = Depends(exige("analitica"))):
+    """El informe de operación del periodo. La regla vive en informe.py.
 
-    combinado = (
-        [{"seccion": "Uso de botes", "item": r["bote_nombre"], "valor": r["tours"]} for r in uso_botes]
-        + [{"seccion": "Actividades por guía", "item": r["guia_nombre"], "valor": r["tours"]} for r in por_guia]
-        + [{"seccion": "Movimiento por punto", "item": r["punto"], "valor": r["pax"]} for r in movimiento]
-    )
-    columns = [("seccion", "Sección"), ("item", "Detalle"), ("valor", "Valor")]
-    titulo = "Analítica Operativa — Corcovado Wilderness Lodge"
-    subt = f"{desde} a {hasta}"
-    buf = exports.to_xlsx(columns, combinado, titulo) if formato == "xlsx" else exports.to_pdf(columns, combinado, titulo, subt)
-    return export_response(buf, "analitica", formato)
+    Sirve cualquier rango: un día, un mes o lo que se pida. El informe se adapta solo
+    —con qué se compara y cómo grafica la tendencia— pero el formato es el mismo, que es
+    justamente lo que hace que se pueda leer uno al lado del otro.
+    """
+    import informe
+    conn = get_connection()
+    try:
+        buf = (informe.libro(conn, desde, hasta) if formato == "xlsx"
+               else informe.una_pagina(conn, desde, hasta))
+    finally:
+        conn.close()
+    return export_response(buf, f"informe-{desde}_{hasta}", formato)
 
 
 @app.post("/api/reservas/{conf_no}/transporte")
