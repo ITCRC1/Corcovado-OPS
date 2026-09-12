@@ -3795,11 +3795,16 @@ function detalleRest(cual) {
       ⚠ <strong>${sinComida.length} habitación(es)</strong> con ${esCena ? "la cena" : "el almuerzo"} NO incluido:
       ${sinComida.map(x => `hab. ${x.room_no || "—"} (${x.regimen_texto})`).join(" · ")}.
       Se les cobra aparte.</div>` : ""}
-    ${esCena && lista.some(x => x.grupo) && puedeEscribir("restaurantes") ? `
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin:0 0 9px;cursor:pointer;">
+    ${lista.some(x => x.grupo) && puedeEscribir("restaurantes") ? `
+      ${esCena ? `<label style="display:flex;align-items:center;gap:6px;font-size:12px;margin:0 0 6px;cursor:pointer;">
         <input type="checkbox" id="hora-toda-la-mesa" checked>
         <span>Al poner una hora, aplicarla a todo el grupo
           <span style="color:var(--muted);">— destildá esto para partir una mesa en dos turnos</span></span>
+      </label>` : ""}
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin:0 0 9px;cursor:pointer;">
+        <input type="checkbox" id="mover-todo-el-grupo" checked>
+        <span>Al cambiar de restaurante, mover a todo el grupo
+          <span style="color:var(--muted);">— destildá esto para sacar una sola habitación</span></span>
       </label>` : ""}
     <table>
       <tr><th>Hab.</th><th>Huésped</th><th>Pax</th><th>Noche</th><th>${esCena ? "Cena" : "Almuerzo"}</th><th></th>
@@ -3822,17 +3827,32 @@ function detalleRest(cual) {
       </tr>`).join("")}
     </table>
     ${esCena ? '<p style="font-size:11px;color:var(--muted);margin-top:8px;">La hora de cada mesa la registra el salonero en la mañana. Las habitaciones marcadas <span class="badge badge-tour">grupo</span> comparten mesa: al poner la hora a una, se le pone al resto del grupo.</p>' : ""}
+    ${lista.some(x => x.grupo) ? '<p style="font-size:11px;color:var(--muted);margin-top:4px;">Lo mismo al cambiar de restaurante: el grupo se mueve entero. No se llevan las habitaciones que ya estén puestas a mano en otro restaurante ni las que tengan cena privada — el cartel las nombra.</p>' : ""}
   </div>`;
 }
 
 async function cambiarRestaurante(fecha, confNo, comida, restaurante) {
+  // Destildar la casilla saca una sola habitación del grupo. Por defecto van todas: el
+  // reparto automático no separa a un grupo, y el botón tampoco debería.
+  const todos = document.getElementById("mover-todo-el-grupo");
   const res = await fetchAuth(`${API}/api/restaurantes/cambiar`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fecha, conf_no: confNo, comida, restaurante }),
+    body: JSON.stringify({ fecha, conf_no: confNo, comida, restaurante,
+                           solo_esta: !!(todos && !todos.checked) }),
   });
   if (!res.ok) { avisar((await res.json()).detail || "No se pudo cambiar", true); return; }
   const d = await res.json();
-  avisar(d.aviso_capacidad ? d.aviso_capacidad : `Cambiado a ${restaurante}`, !!d.aviso_capacidad);
+
+  // Un solo cartel, como en la hora: avisar() reutiliza el mismo elemento y dos seguidos
+  // se pisan. Se dice a quién se llevó y a quién NO, porque lo segundo es lo que hay que
+  // mirar antes de sentar a la gente.
+  const habs = (d.grupo || []).map(c => `hab. ${c.room_no || "?"}`).join(", ");
+  const exc = (d.excepciones || []).map(c => `hab. ${c.room_no || "?"} (${c.motivo})`);
+  let msg = `Cambiado a ${restaurante}`;
+  if (habs) msg += ` — con el grupo: ${habs}`;
+  if (exc.length) msg += `. Sin mover: ${exc.join(", ")}`;
+  if (d.aviso_capacidad) msg += `. ${d.aviso_capacidad}`;
+  avisar(msg, !!(d.aviso_capacidad || exc.length));
   loadRestaurantes();
 }
 

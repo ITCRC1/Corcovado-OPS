@@ -5661,9 +5661,12 @@ async def restaurantes_marcar_restriccion(
 def restaurantes_cambiar(payload: dict, user: dict = Depends(current_user)):
     """Cambia de restaurante a una reserva en una fecha concreta.
 
-    Afecta solo ese día y esa reserva. Se permite aunque el restaurante quede por
-    encima de su tope: recepción sabe si la cocina puede absorberlo, pero el
-    sistema lo advierte.
+    Si la reserva va en grupo, se lleva al grupo entero: el reparto automático no separa
+    a un grupo y el cambio a mano tampoco debe hacerlo. Mandar `solo_esta` mueve
+    únicamente esa reserva. La regla está en restaurantes.mover_grupo.
+
+    Se permite aunque el restaurante quede por encima de su tope: recepción sabe si la
+    cocina puede absorberlo, pero el sistema lo advierte.
     """
     auth.requiere_permiso(user, "restaurantes")
     import restaurantes as rest
@@ -5675,25 +5678,32 @@ def restaurantes_cambiar(payload: dict, user: dict = Depends(current_user)):
         raise HTTPException(status_code=400, detail="Faltan datos o el restaurante no es válido")
 
     conn = get_connection()
-    conn.execute(
-        """INSERT INTO restaurante_cambio (fecha, conf_no, comida, restaurante, motivo)
-           VALUES (?,?,?,?,?)
-           ON CONFLICT(fecha, conf_no, comida) DO UPDATE SET
-             restaurante = excluded.restaurante, motivo = excluded.motivo,
-             creado_en = datetime('now')""",
-        (fecha, conf_no, comida, restaurante, payload.get("motivo") or "solicitud del huésped"))
+    aplicadas, excepciones = rest.mover_grupo(
+        conn, fecha, conf_no, comida, restaurante,
+        solo_esta=bool(payload.get("solo_esta")),
+        motivo=payload.get("motivo") or "solicitud del huésped")
     conn.commit()
     datos = rest.distribuir(conn, fecha)
     conn.close()
 
-    # El itinerario del huésped cambió, así que se republica el sitio del QR
+    # El itinerario del huésped cambió, así que se republica el sitio del QR. Una sola
+    # vez para todo el grupo: es un trabajo caro y el resultado es el mismo.
     _publicar_en_segundo_plano()
-    aviso = None
+
+    # El aviso mira el restaurante al que se movió. Antes solo miraba Terra Kitchen, así
+    # que llevar un grupo de doce a Bar el Bosque podía pasarse de sus 45 en silencio —y
+    # moviendo grupos enteros eso deja de ser un caso raro—.
     bloque = datos["cena"] if comida == "CENA" else datos["almuerzo"]
-    if restaurante == rest.TERRA and bloque["pax_tk"] > bloque["cap_tk"]:
-        aviso = (f"Terra Kitchen queda con {bloque['pax_tk']} pax y su tope es "
-                 f"{bloque['cap_tk']}. Avisa a cocina.")
-    return {"status": "ok", "distribucion": datos, "aviso_capacidad": aviso}
+    if restaurante == rest.TERRA:
+        pax, cap, donde = bloque["pax_tk"], bloque["cap_tk"], rest.TERRA
+    else:
+        pax, cap, donde = (bloque.get("pax_bosque"), bloque.get("cap_bosque"),
+                           rest.BOSQUE)
+    aviso = None
+    if pax is not None and cap is not None and pax > cap:
+        aviso = f"{donde} queda con {pax} pax y su tope es {cap}. Avisa a cocina."
+    return {"status": "ok", "distribucion": datos, "aviso_capacidad": aviso,
+            "grupo": aplicadas, "excepciones": excepciones}
 
 
 @app.delete("/api/restaurantes/cambiar")

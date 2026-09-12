@@ -28,8 +28,12 @@ Reglas de la operación (definidas con el hotel):
   5. La cena privada queda fija en Bar el Bosque y cuenta para sus 45 lugares: aunque
      se sirva en la piscina, ocupa servicio.
 
-  6. El cambio manual afecta una sola fecha y una sola reserva, pero sí queda en
-     el historial para que la rotación de los días siguientes lo tome en cuenta.
+  6. El cambio manual afecta una sola fecha, pero se lleva al GRUPO entero: la regla 3
+     vale también cuando mueve una persona y no el reparto. Antes no era así, y mover
+     una habitación dejaba a las otras siete de la agencia en el otro restaurante.
+     Quien esté separado a propósito —con su propio cambio manual— o tenga cena privada
+     se queda donde está y se informa. Queda en el historial para que la rotación de los
+     días siguientes lo tome en cuenta.
 
 La rotación no alterna de forma rígida: se mide por proporción de cenas en cada
 restaurante, así se autocorrige cuando una noche no se pudo cumplir.
@@ -480,6 +484,62 @@ def companeros_de_mesa(conn, fecha, conf_no):
              "nombre": r["nombre_principal"]}
             for r in cenan
             if r["clave_grupo"] == yo["clave_grupo"] and r["conf_no"] != conf_no]
+
+
+def mover_grupo(conn, fecha, conf_no, comida, restaurante, solo_esta=False,
+                motivo="solicitud del huésped"):
+    """Mueve una reserva de restaurante y, si va en grupo, se lleva a los suyos.
+
+    El reparto automático NUNCA separa a un grupo (ver _agrupar), pero el cambio manual
+    sí lo hacía: movía una habitación sola y las otras siete de la agencia se quedaban en
+    el otro restaurante. La regla del módulo decía una cosa y el botón hacía otra, y lo
+    descubría el salonero con la gente ya sentada.
+
+    Quién NO se arrastra, y por qué:
+
+      · Quien ya tiene su propio cambio manual a un sitio distinto. Alguien lo separó a
+        propósito —«esta pareja cena aparte»— y volver a juntarla desharía esa decisión
+        sin avisar. Se informa en vez de pisarla.
+      · Quien tiene cena privada esa noche. No está en la mesa del grupo: está en la
+        piscina. Moverlo de restaurante no significa nada y le quitaría el sitio que su
+        cena privada ocupa en Bar el Bosque.
+
+    Devuelve (aplicadas, excepciones). No hace commit: lo hace quien llama, una sola vez.
+    """
+    if isinstance(fecha, str):
+        fecha = datetime.date.fromisoformat(fecha)
+    comida = (comida or "CENA").upper()
+
+    manuales = _cambios_manuales(conn, fecha)
+    anterior = (manuales.get((conf_no, comida)) or {}).get("restaurante")
+
+    def escribir(cn):
+        conn.execute(
+            """INSERT INTO restaurante_cambio (fecha, conf_no, comida, restaurante, motivo)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(fecha, conf_no, comida) DO UPDATE SET
+                 restaurante = excluded.restaurante, motivo = excluded.motivo,
+                 creado_en = datetime('now')""",
+            (_iso(fecha), cn, comida, restaurante, motivo))
+
+    escribir(conf_no)
+    if solo_esta:
+        return [], []
+
+    privadas = _cenas_privadas(conn, fecha) if comida == "CENA" else set()
+    aplicadas, excepciones = [], []
+    for c in companeros_de_mesa(conn, fecha, conf_no):
+        cn = c["conf_no"]
+        if cn in privadas:
+            excepciones.append(dict(c, motivo="tiene cena privada"))
+            continue
+        suyo = (manuales.get((cn, comida)) or {}).get("restaurante")
+        if suyo and suyo != anterior and suyo != restaurante:
+            excepciones.append(dict(c, motivo=f"ya estaba puesta a mano en {suyo}"))
+            continue
+        escribir(cn)
+        aplicadas.append(c)
+    return aplicadas, excepciones
 
 
 def distribuir(conn, fecha, cache=None):
