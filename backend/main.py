@@ -3510,181 +3510,88 @@ def export_response(buf, filename, formato):
     )
 
 
-@app.get("/api/export/reservas")
-def export_reservas(desde: str = None, hasta: str = None, formato: str = "xlsx", user: dict = Depends(exige("reservas"))):
-    conn = get_connection()
-    query = """SELECT r.*, g.confianza FROM reserva r LEFT JOIN grupo g ON g.id = r.grupo_id"""
-    params = ()
+def _rango_de_informe(fecha=None, desde=None, hasta=None):
+    """El periodo del informe. Un día suelto es un rango de un día.
+
+    Sin nada, el mes en curso: es lo que se quiere ver al abrir, y un informe necesita
+    un periodo —antes estos botones aceptaban «todas», que en un informe no significa
+    nada porque no hay contra qué comparar.
+    """
+    if fecha:
+        return fecha, fecha
     if desde and hasta:
-        query += f" WHERE {sql_fecha('r.arr_date')} BETWEEN ? AND ?"
-        params = (yymmdd(desde), yymmdd(hasta))
-    query += " ORDER BY r.arr_date, r.room_no"
-    rows = [dict(r) for r in conn.execute(query, params).fetchall()]
-    conn.close()
-    for r in rows:
-        r["pax"] = r["adl"] + r["chl"]
-    columns = [
-        ("conf_no", "N° Reserva"), ("room_no", "Hab."), ("nombre_principal", "Huésped"),
-        ("arr_date", "Ingreso"), ("dep_date", "Salida"), ("pax", "Pax"),
-        ("res_status", "Estatus"), ("confianza", "Grupo"),
-    ]
-    titulo = "Reservas — Corcovado Wilderness Lodge"
-    subt = f"{desde or '(todas)'} a {hasta or ''}"
-    buf = exports.to_xlsx(columns, rows, titulo) if formato == "xlsx" else exports.to_pdf(columns, rows, titulo, subt)
-    return export_response(buf, "reservas", formato)
+        return desde, hasta
+    hoy = datetime.date.today()
+    import calendar as _cal
+    return (desde or hoy.replace(day=1).isoformat(),
+            hasta or hoy.replace(day=_cal.monthrange(hoy.year, hoy.month)[1]).isoformat())
+
+
+def _informe(area, nombre, fecha=None, desde=None, hasta=None, formato="xlsx"):
+    """El informe de un área. UNA definición por área, en informes_areas.py.
+
+    Todos los botones pasan por aquí, que es lo que hace que el informe de Restaurantes
+    se lea igual que el de Analítica y que el PDF y el Excel no puedan decir cosas
+    distintas: salen de la misma definición.
+    """
+    import informes_areas
+    d0, d1 = _rango_de_informe(fecha, desde, hasta)
+    conn = get_connection()
+    try:
+        buf = informes_areas.construir(area, conn, d0, d1, formato)
+    finally:
+        conn.close()
+    return export_response(buf, f"{nombre}-{d0}_{d1}", formato)
+
+
+@app.get("/api/export/reservas")
+def export_reservas(desde: str = None, hasta: str = None, formato: str = "xlsx",
+                    user: dict = Depends(exige("reservas"))):
+    return _informe("reservas", "reservations", desde=desde, hasta=hasta, formato=formato)
 
 
 @app.get("/api/export/agenda")
-def export_agenda(fecha: str = None, desde: str = None, hasta: str = None, formato: str = "xlsx", user: dict = Depends(exige("agenda"))):
-    conn = get_connection()
-    query = """SELECT ta.fecha, ta.tour_codigo, ta.guia_nombre, ta.bote_nombre, ta.pax,
-                      r.nombre_principal, r.room_no
-               FROM tour_asignado ta JOIN reserva r ON r.conf_no = ta.conf_no"""
-    params = ()
-    if fecha:
-        query += " WHERE ta.fecha = ?"
-        params = (fecha,)
-    elif desde and hasta:
-        query += " WHERE ta.fecha BETWEEN ? AND ?"
-        params = (desde, hasta)
-    query += " ORDER BY ta.fecha, ta.tour_codigo"
-    rows = [dict(r) for r in conn.execute(query, params).fetchall()]
-    conn.close()
-    columns = [
-        ("fecha", "Fecha"), ("tour_codigo", "Tour"), ("nombre_principal", "Huésped"), ("room_no", "Hab."),
-        ("guia_nombre", "Guía"), ("bote_nombre", "Bote"), ("pax", "Pax"),
-    ]
-    titulo = "Agenda de Tours — Corcovado Wilderness Lodge"
-    subt = fecha or f"{desde} a {hasta}"
-    buf = exports.to_xlsx(columns, rows, titulo) if formato == "xlsx" else exports.to_pdf(columns, rows, titulo, subt)
-    return export_response(buf, "agenda_tours", formato)
+def export_agenda(fecha: str = None, desde: str = None, hasta: str = None,
+                  formato: str = "xlsx", user: dict = Depends(exige("agenda"))):
+    return _informe("agenda", "tour-agenda", fecha, desde, hasta, formato)
 
 
 @app.get("/api/export/transporte")
-def export_transporte(fecha: str = None, desde: str = None, hasta: str = None, formato: str = "xlsx", user: dict = Depends(exige("transporte"))):
-    conn = get_connection()
-    if fecha:
-        cond_e, params_e = "arr_date = ?", (ddmmyy(fecha),)
-        cond_s, params_s = "dep_date = ?", (ddmmyy(fecha),)
-    else:
-        cond_e = f"{sql_fecha('arr_date')} BETWEEN ? AND ?"
-        cond_s = f"{sql_fecha('dep_date')} BETWEEN ? AND ?"
-        params_e = params_s = (yymmdd(desde), yymmdd(hasta))
-    entradas = [dict(r) for r in conn.execute(
-        f"SELECT room_no, nombre_principal, punto_entrada, arr_time, hora_vuelo_entrada, adl, chl, arr_date FROM reserva WHERE {cond_e}", params_e).fetchall()]
-    salidas = [dict(r) for r in conn.execute(
-        f"SELECT room_no, nombre_principal, punto_salida, hora_vuelo_salida, adl, chl, dep_date FROM reserva WHERE {cond_s}", params_s).fetchall()]
-    conn.close()
-    for r in entradas + salidas:
-        r["pax"] = r["adl"] + r["chl"]
-        r["tipo"] = "Entrada" if "arr_date" in r else "Salida"
-    # La hora sale de la misma regla que usa la pantalla: por Sierpe el horario fijo
-    # del bote, por Drake el vuelo (o el bote calculado desde él). Antes el Excel
-    # copiaba solo lo escrito en el PDF y salía en blanco en casi todas las salidas.
-    for r in entradas:
-        r["fecha"] = r["arr_date"]; r["punto"] = r["punto_entrada"]
-        hora, origen = _hora_traslado(r, True)
-        r["hora"], r["hora_origen"] = hora or "—", origen
-    for r in salidas:
-        r["fecha"] = r["dep_date"]; r["punto"] = r["punto_salida"]
-        hora, origen = _hora_traslado(r, False)
-        r["hora"], r["hora_origen"] = hora or "—", origen
-    rows = entradas + salidas
-    columns = [("fecha", "Fecha"), ("tipo", "Tipo"), ("room_no", "Hab."), ("nombre_principal", "Huésped"),
-               ("punto", "Punto"), ("hora", "Hora"), ("hora_origen", "Según"), ("pax", "Pax")]
-    titulo = "Transporte — Corcovado Wilderness Lodge"
-    subt = fecha or f"{desde} a {hasta}"
-    buf = exports.to_xlsx(columns, rows, titulo) if formato == "xlsx" else exports.to_pdf(columns, rows, titulo, subt)
-    return export_response(buf, "transporte", formato)
+def export_transporte(fecha: str = None, desde: str = None, hasta: str = None,
+                      formato: str = "xlsx", user: dict = Depends(exige("transporte"))):
+    return _informe("transporte", "arrivals-departures", fecha, desde, hasta, formato)
 
 
 @app.get("/api/export/entradas-sinac")
-def export_entradas(desde: str = None, hasta: str = None, formato: str = "xlsx", user: dict = Depends(exige("sinac"))):
-    conn = get_connection()
-    query = "SELECT * FROM entrada_sinac"
-    params = ()
-    if desde and hasta:
-        query += " WHERE fecha BETWEEN ? AND ?"
-        params = (desde, hasta)
-    query += " ORDER BY fecha"
-    rows = [dict(r) for r in conn.execute(query, params).fetchall()]
-    conn.close()
-    columns = [("fecha", "Fecha"), ("tour_codigo", "Actividad"), ("pax_total_grupo", "Pax + guía"),
-               ("conf_entrada", "Conf."), ("estado", "Estado")]
-    titulo = "Entradas SINAC — Corcovado Wilderness Lodge"
-    subt = f"{desde or '(todas)'} a {hasta or ''}"
-    buf = exports.to_xlsx(columns, rows, titulo) if formato == "xlsx" else exports.to_pdf(columns, rows, titulo, subt)
-    return export_response(buf, "entradas_sinac", formato)
+def export_entradas(desde: str = None, hasta: str = None, formato: str = "xlsx",
+                    user: dict = Depends(exige("sinac"))):
+    return _informe("sinac", "park-entries", desde=desde, hasta=hasta, formato=formato)
 
 
 @app.get("/api/export/resumen-operacion")
-def export_resumen(fecha: str, formato: str = "xlsx", user: dict = Depends(exige("resumen"))):
-    conn = get_connection()
-    tours = [dict(r) for r in conn.execute(
-        """SELECT ta.tour_codigo, ta.guia_nombre, ta.bote_nombre, SUM(ta.pax) pax_total
-           FROM tour_asignado ta WHERE ta.fecha = ?
-           GROUP BY ta.tour_codigo, ta.guia_nombre, ta.bote_nombre""", (fecha,)).fetchall()]
-    conn.close()
-    columns = [("tour_codigo", "Tour"), ("guia_nombre", "Guía"), ("bote_nombre", "Bote"), ("pax_total", "Pax total")]
-    titulo = "Resumen de Operación — Corcovado Wilderness Lodge"
-    buf = exports.to_xlsx(columns, tours, titulo) if formato == "xlsx" else exports.to_pdf(columns, tours, titulo, fecha)
-    return export_response(buf, f"resumen_operacion_{fecha}", formato)
+def export_resumen(fecha: str, formato: str = "xlsx",
+                   user: dict = Depends(exige("resumen"))):
+    return _informe("resumen", "daily-summary", fecha=fecha, formato=formato)
 
 
 @app.get("/api/export/restaurantes")
-def export_restaurantes(fecha: str, formato: str = "xlsx", user: dict = Depends(exige("restaurantes"))):
-    """Distribución del día para imprimir o pasarle a cocina y al salonero."""
-    import restaurantes as rest
-    conn = get_connection()
-    try:
-        d = rest.distribuir(conn, fecha)
-    finally:
-        conn.close()
-
-    filas = []
-    for comida, bloque in (("Almuerzo", d["almuerzo"]), ("Cena", d["cena"])):
-        for restaurante, clave in ((rest.TERRA, "terra_kitchen"), (rest.BOSQUE, "bar_el_bosque")):
-            for x in bloque[clave]:
-                filas.append({
-                    "comida": comida, "restaurante": restaurante,
-                    "room_no": x["room_no"], "nombre": x["nombre"], "pax": x["pax"],
-                    "tipo": "Entra" if x["tipo"] == "ENTRA" else "En casa",
-                    "noche": f"{x.get('noche_estadia') or 1} de {x['noches']}",
-                    "hora": x.get("hora") or "",
-                    "nota": x.get("fijo") or ("cambio manual" if x.get("manual") else ""),
-                })
-    columns = [
-        ("comida", "Comida"), ("restaurante", "Restaurante"), ("room_no", "Hab."),
-        ("nombre", "Huésped"), ("pax", "Pax"), ("tipo", "Situación"),
-        ("noche", "Noche"), ("hora", "Hora mesa"), ("nota", "Observación"),
-    ]
-    titulo = "Distribución de restaurantes — Corcovado Wilderness Lodge"
-    c = d["cena"]
-    subt = (f"{fecha} · Cena: Terra Kitchen {c['pax_tk']} / Bar el Bosque {c['pax_bosque']} "
-            f"(diferencia {c['diferencia']}) · Almuerzo: Terra Kitchen "
-            f"{d['almuerzo']['pax_tk']} / Bar el Bosque {d['almuerzo']['pax_bosque']}")
-    buf = (exports.to_xlsx(columns, filas, titulo) if formato == "xlsx"
-           else exports.to_pdf(columns, filas, titulo, subt))
-    return export_response(buf, f"restaurantes_{fecha}", formato)
+def export_restaurantes(fecha: str = None, desde: str = None, hasta: str = None,
+                        formato: str = "xlsx",
+                        user: dict = Depends(exige("restaurantes"))):
+    return _informe("restaurantes", "restaurants", fecha, desde, hasta, formato)
 
 
 @app.get("/api/export/analitica")
-def export_analitica(desde: str, hasta: str, formato: str = "xlsx",
+def export_analitica(desde: str = None, hasta: str = None, formato: str = "xlsx",
                      user: dict = Depends(exige("analitica"))):
-    """El informe de operación del periodo. La regla vive en informe.py.
+    """El informe de operación del periodo.
 
     Sirve cualquier rango: un día, un mes o lo que se pida. El informe se adapta solo
     —con qué se compara y cómo grafica la tendencia— pero el formato es el mismo, que es
     justamente lo que hace que se pueda leer uno al lado del otro.
     """
-    import informe
-    conn = get_connection()
-    try:
-        buf = (informe.libro(conn, desde, hasta) if formato == "xlsx"
-               else informe.una_pagina(conn, desde, hasta))
-    finally:
-        conn.close()
-    return export_response(buf, f"informe-{desde}_{hasta}", formato)
+    return _informe("analitica", "operations-report", desde=desde, hasta=hasta,
+                    formato=formato)
 
 
 @app.post("/api/reservas/{conf_no}/transporte")
@@ -4410,28 +4317,8 @@ def cambiar_estado_amenidad(amenidad_id: int, estado: str, area: str = None,
 @app.get("/api/export/amenidades")
 def export_amenidades(desde: str = None, hasta: str = None, formato: str = "xlsx",
                       user: dict = Depends(exige("amenidades"))):
-    conn = get_connection()
-    # La columna Área lleva TODOS los departamentos: el reporte se imprime y se reparte,
-    # y uno que solo nombre al principal deja fuera a quien también tiene que hacer algo.
-    query = f"""SELECT r.arr_date, r.room_no, r.nombre_principal, a.amenidad,
-                       a.tarea, a.estado,
-                       COALESCE((SELECT GROUP_CONCAT(x.area, ' · ') FROM amenidad_area x
-                                 WHERE x.amenidad_id = a.id),
-                                a.area_responsable) AS area_responsable
-                FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no"""
-    params = []
-    if desde and hasta:
-        query += f" WHERE {sql_fecha('r.arr_date')} BETWEEN ? AND ?"
-        params = [yymmdd(desde), yymmdd(hasta)]
-    query += f" ORDER BY {sql_fecha('r.arr_date')}, r.room_no"
-    rows = [dict(r) for r in conn.execute(query, params).fetchall()]
-    conn.close()
-    columns = [("arr_date", "Llegada"), ("room_no", "Hab."), ("nombre_principal", "Huésped"),
-               ("amenidad", "Amenidad"), ("tarea", "Tarea"), ("area_responsable", "Área"), ("estado", "Estado")]
-    titulo = "Amenidades y Tareas — Corcovado Wilderness Lodge"
-    subt = f"{desde or '(todas)'} a {hasta or ''}"
-    buf = exports.to_xlsx(columns, rows, titulo) if formato == "xlsx" else exports.to_pdf(columns, rows, titulo, subt)
-    return export_response(buf, "amenidades", formato)
+    return _informe("amenidades", "guest-requirements", desde=desde, hasta=hasta,
+                    formato=formato)
 
 
 import json as _json
