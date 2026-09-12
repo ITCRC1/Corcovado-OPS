@@ -373,6 +373,79 @@ def bloque_vacio():
     }
 
 
+# Cómo se nombra cada punto de embarque en las notas. UNA sola tabla: opera_mapeo la
+# importa de aquí, porque tener dos listas hacía que el mismo texto se leyera distinto
+# según por dónde entrara —el lector de notas solo conocía «Sierpe» y «Drake», y además
+# solo como PRIMERA palabra, así que «playa agujitas» quedaba pendiente en un camino y
+# resuelto en el otro—.
+#
+# Punta Marenco va a Drake por decisión de operación: el bote que recoge ahí es el de
+# Drake. Es un punto de recogida, no un punto de embarque aparte.
+PUNTOS_CONOCIDOS = {
+    "SIERPE": "Sierpe",
+    "DRAKE": "Drake",
+    "DRK": "Drake",
+    "AGUJITAS": "Drake",
+    "BAHIA": "Drake",
+    "PUNTA MARENCO": "Drake",
+    "MARENCO": "Drake",
+}
+
+
+def _sin_acentos(texto):
+    return (str(texto).upper().replace("Í", "I").replace("Á", "A").replace("É", "E")
+            .replace("Ó", "O").replace("Ú", "U"))
+
+
+def punto_de(texto):
+    """El punto de embarque que nombra ese texto, o None si no se puede asegurar.
+
+    Devuelve None cuando el texto nombra DOS puntos distintos —«no por Sierpe, por
+    Drake»—: ahí no hay una respuesta sino una frase que hay que leer, y mandar el bote
+    por suposición es el error caro que este módulo existe para no cometer.
+    """
+    if not texto:
+        return None
+    arriba = _sin_acentos(texto)
+    encontrados = {punto for palabra, punto in PUNTOS_CONOCIDOS.items()
+                   if re.search(rf"\b{re.escape(palabra)}\b", arriba)}
+    if len(encontrados) == 1:
+        return encontrados.pop()
+    return None
+
+
+# Dónde termina el valor de «Entrada:» o «Salida:». Normalmente termina con la línea,
+# pero la nota de Opera se puede escribir seguida —«INGRESO: Drake 2:45 PM SALIDA: Drake
+# 9:25 AM»— y entonces el valor de la entrada se comía el de la salida. Con eso la hora
+# de salida salía siendo la de llegada: el bote se apartaría para la hora equivocada.
+_FIN_DE_CAMPO = re.compile(
+    r"\s*(?:ENTRADA|INGRESO|SALIDA|ROOMING|OPERACI[OÓ]N|NOTAS|ADICIONALES)\s*:|-{3,}",
+    re.IGNORECASE)
+
+
+def _valor_del_campo(texto):
+    """El valor del campo, cortado donde empieza el siguiente rótulo o separador."""
+    m = _FIN_DE_CAMPO.search(texto)
+    return (texto[:m.start()] if m else texto).strip(" -:·,")
+
+
+def _anotar_hora_y_vuelo(current, valor, cual):
+    """La hora y el vuelo que traiga el valor de ese campo, sin pisar lo ya encontrado.
+
+    Se busca DENTRO del valor del campo y no en la línea entera, que es lo que hacía
+    antes: en una nota escrita seguida, la línea lleva las dos horas y las dos se leían
+    como la primera.
+    """
+    if not valor:
+        return
+    if not current.get(f"hora_vuelo_{cual}") and HORA_RE.search(valor):
+        current[f"hora_vuelo_{cual}"] = normalizar_hora(valor)
+    if not current.get(f"vuelo_{cual}"):
+        m_vuelo = VUELO_RE.search(valor)
+        if m_vuelo:
+            current[f"vuelo_{cual}"] = normalizar_vuelo(m_vuelo)
+
+
 def leer_texto_de_reserva(texto, current=None):
     """Lee el bloque de texto de UNA reserva y devuelve sus campos.
 
@@ -457,46 +530,44 @@ def procesar_linea(line, current, section):
         # una vez encontrado.
         m_ent = re.search(r"(?:ENTRADA|INGRESO)\s*:?\s*(?:V[ÍI]A\s+)?(.*)$", line, re.IGNORECASE)
         if m_ent and not re.match(r"^\s*SALIDA", line, re.IGNORECASE):
-            texto_ent = m_ent.group(1).strip()
-            primera_palabra = texto_ent.split()[0].capitalize() if texto_ent.split() else ""
-            if primera_palabra.lower() in ("sierpe", "drake"):
+            texto_ent = _valor_del_campo(m_ent.group(1))
+            punto = punto_de(texto_ent)
+            if punto:
                 if not current["punto_entrada"]:
-                    current["punto_entrada"] = primera_palabra
+                    current["punto_entrada"] = punto
                     # Si antes se había marcado como pendiente (por una línea vacía o con
                     # texto libre), ya no hace falta: se encontró el punto real.
                     current["punto_entrada_sin_confirmar"] = None
-                    m_hora = HORA_RE.search(line)
-                    if m_hora:
-                        current["hora_vuelo_entrada"] = normalizar_hora(line)
-                    m_vuelo = VUELO_RE.search(line)
-                    if m_vuelo:
-                        current["vuelo_entrada"] = normalizar_vuelo(m_vuelo)
+                    _anotar_hora_y_vuelo(current, texto_ent, "entrada")
             else:
-                # El PDF menciona un ingreso, pero sin un punto reconocido (Sierpe/Drake).
-                # Puede estar vacío ("Entrada:") o traer texto libre ("Recoger en Jaguar
-                # Lodge"). Se guarda para que el sistema lo marque como pendiente de
-                # confirmar, en vez de perderlo silenciosamente. Solo se marca si NO se
-                # encontró ya un punto válido en otra línea de esta misma reserva.
+                # La reserva menciona un ingreso, pero sin un punto reconocido (Sierpe o
+                # Drake). Puede estar vacío ("Entrada:"), decir PTE, o traer texto libre
+                # ("Recogerlos en Punta Marenco 03:00 pm"). Se guarda para que el sistema
+                # lo marque como pendiente de confirmar, en vez de perderlo en silencio.
+                # Solo se marca si NO se encontró ya un punto válido en otra línea.
                 if not current["punto_entrada"] and not current.get("punto_entrada_sin_confirmar"):
-                    current["punto_entrada_sin_confirmar"] = texto_ent or "(vacío en el PDF)"
+                    current["punto_entrada_sin_confirmar"] = texto_ent or "(vacío en la reserva)"
+                # La HORA sí sirve aunque el punto no se reconozca, y es justo lo que hace
+                # falta para ir a buscar al huésped. Antes se tiraba: de «Recogerlos en
+                # Punta Marenco 03:00 pm» el sistema se quedaba con el texto y perdía las
+                # 3:00 pm, así que recepción tenía que volver a abrir Opera para leerla.
+                if not current["punto_entrada"]:
+                    _anotar_hora_y_vuelo(current, texto_ent, "entrada")
 
         m_sal = re.search(r"SALIDA\s*:?\s*(?:V[ÍI]A\s+)?(.*)$", line, re.IGNORECASE)
         if m_sal:
-            texto_sal = m_sal.group(1).strip()
-            primera_palabra = texto_sal.split()[0].capitalize() if texto_sal.split() else ""
-            if primera_palabra.lower() in ("sierpe", "drake"):
+            texto_sal = _valor_del_campo(m_sal.group(1))
+            punto = punto_de(texto_sal)
+            if punto:
                 if not current["punto_salida"]:
-                    current["punto_salida"] = primera_palabra
+                    current["punto_salida"] = punto
                     current["punto_salida_sin_confirmar"] = None
-                    m_hora = HORA_RE.search(line)
-                    if m_hora:
-                        current["hora_vuelo_salida"] = normalizar_hora(line)
-                    m_vuelo = VUELO_RE.search(line)
-                    if m_vuelo:
-                        current["vuelo_salida"] = normalizar_vuelo(m_vuelo)
+                    _anotar_hora_y_vuelo(current, texto_sal, "salida")
             else:
                 if not current["punto_salida"] and not current.get("punto_salida_sin_confirmar"):
-                    current["punto_salida_sin_confirmar"] = texto_sal or "(vacío en el PDF)"
+                    current["punto_salida_sin_confirmar"] = texto_sal or "(vacío en la reserva)"
+                if not current["punto_salida"]:
+                    _anotar_hora_y_vuelo(current, texto_sal, "salida")
 
         m_guia = re.search(r"Gu[ií]a\s+([A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑa-záéíóúñ]+)?)", line)
         if m_guia:

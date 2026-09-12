@@ -24,6 +24,8 @@ huéspedes). Con ese archivo se ajustan las rutas de abajo.
 import datetime
 import re
 
+import pdf_parser
+
 # ---------------------------------------------------------------------------
 # Rutas de campos. "a.b[].c" baja por diccionarios y recorre listas.
 # Se prueban en orden: gana la primera que traiga algo.
@@ -266,9 +268,10 @@ ESTADOS = {
     "NO SHOW": "CANCELADA",
 }
 
-# Palabras que identifican el punto de embarque. El lodge solo opera por Sierpe y
-# Drake; cualquier otra cosa queda "sin confirmar" para que recepción la resuelva.
-PUNTOS = {"SIERPE": "SIERPE", "DRAKE": "DRAKE", "AGUJITAS": "DRAKE", "BAHIA": "DRAKE"}
+# Las palabras que identifican el punto viven en pdf_parser, en UNA sola tabla. Antes
+# había dos y no decían lo mismo: el lector de notas solo conocía «Sierpe» y «Drake»,
+# así que «playa agujitas» se resolvía por un camino y quedaba pendiente por el otro.
+PUNTOS = pdf_parser.PUNTOS_CONOCIDOS
 
 
 # ---------------------------------------------------------------------------
@@ -446,12 +449,9 @@ def _punto_de_embarque(texto):
     """
     if not texto:
         return None, None
-    sin_acentos = (str(texto).upper()
-                   .replace("Í", "I").replace("Á", "A").replace("É", "E")
-                   .replace("Ó", "O").replace("Ú", "U"))
-    for palabra, punto in PUNTOS.items():
-        if palabra in sin_acentos:
-            return punto, None
+    punto = pdf_parser.punto_de(texto)
+    if punto:
+        return punto, None
     return None, str(texto).strip()[:200]
 
 
