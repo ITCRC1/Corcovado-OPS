@@ -2137,6 +2137,10 @@ async function loadAgenda(fecha, desde, hasta) {
     fetchAuth(urlTras).then(r => r.json())
       .catch(e => ({ detail: "No hubo respuesta del servidor (" + e.message + ")." })),
   ]);
+  // Se guardan para el detalle de cada tipo de tour: la pantalla ya los tiene, así que
+  // desplegarlo no cuesta otra consulta y no puede contradecir a la tabla de abajo.
+  window._agendaRows = rows;
+
   // Conflictos de horario y quién está libre ese día
   let conflictos = [], dispo = {};
   if (fecha) {
@@ -2222,6 +2226,17 @@ async function loadAgenda(fecha, desde, hasta) {
       </p>` : `<p class="empty">No hay tours para esta fecha.<small>Si esperabas alguno, revisa que el PDF de reservas esté importado y que la fecha sea la correcta.</small></p>`}
     </div>
   `;
+
+  // El detalle abierto se vuelve a abrir. Guardar un guía redibuja la pantalla entera, y
+  // sin esto el panel se cerraba justo después de asignar — que es cuando se quiere
+  // mirar si el guía quedó bien puesto.
+  if (window._tourAbierto) {
+    const sigue = rows.some(r => (r.tours || [])
+      .some(t => (t.tour_codigo || "—") === window._tourAbierto));
+    const codigo = window._tourAbierto;
+    window._tourAbierto = null;              // para que detalleTipoDeTour lo abra, no lo cierre
+    if (sigue) detalleTipoDeTour(codigo);
+  }
 }
 
 // ---------- INGRESOS Y SALIDAS POR LOCACIÓN ----------
@@ -2421,11 +2436,13 @@ function resumenPorTour(rows) {
     <div style="margin-bottom:14px;">
       <p style="font-weight:600;font-size:13px;margin:0 0 8px;">
         Por tipo de tour · ${totalSalidas} salida${totalSalidas === 1 ? "" : "s"} · ${totalPax} pax
+        <span style="font-weight:400;color:var(--muted);font-size:12px;">(toca un tour para ver guías y fechas)</span>
         ${fueraTotal ? `<span style="color:var(--danger-text);font-weight:600;"> · ${fueraTotal} fuera de la estadía</span>` : ""}
       </p>
       <div style="display:flex;flex-wrap:wrap;gap:8px;">
         ${lista.map(x => `
-          <div style="border:1px solid var(--linea, #d8d8d0);border-radius:8px;padding:8px 11px;min-width:120px;
+          <div class="pulsable" onclick="detalleTipoDeTour('${x.codigo}')" id="tarjeta-tour-${x.codigo}"
+               style="border:1px solid var(--linea, #d8d8d0);border-radius:8px;padding:8px 11px;min-width:120px;cursor:pointer;
                       ${x.fuera ? 'border-color:var(--danger-text);' : ''}">
             <p style="margin:0;font-weight:600;font-size:12.5px;">${x.codigo}
               ${x.horario ? `<span style="font-weight:400;color:var(--muted);font-size:11px;">${x.horario}</span>` : ""}</p>
@@ -2436,6 +2453,101 @@ function resumenPorTour(rows) {
             ${x.fuera ? `<p style="margin:3px 0 0;font-size:10.5px;color:var(--danger-text);">${x.fuera} fuera de la estadía</p>` : ""}
           </div>`).join("")}
       </div>
+      <div id="detalle-tipo-tour"></div>
+    </div>`;
+}
+
+// '2026-09-12' -> 'Sáb 12/09'. El día de la semana importa aquí: quien mira qué días se
+// dio un tour está buscando patrones —«los nocturnos caen siempre en sábado»— y con la
+// fecha sola hay que ir contando.
+const DIAS_CORTOS = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+function diaConNombre(iso) {
+  const p = String(iso || "").split("-");
+  if (p.length !== 3) return iso || "—";
+  // Se construye con la hora del mediodía para que el huso horario no corra el día.
+  const d = new Date(+p[0], +p[1] - 1, +p[2], 12);
+  return `${DIAS_CORTOS[d.getDay()]} ${p[2]}/${p[1]}`;
+}
+
+// Quién guió cada salida de ESE tour y qué día.
+//
+// Sale de los tours que la pantalla ya tiene cargados —no de otra consulta— por lo mismo
+// que el resumen de arriba: así no puede decir una cosa la tarjeta y otra el detalle.
+//
+// Se agrupa por FECHA y no por reserva: la pregunta es «¿quién dio este tour y cuándo?»,
+// y un mismo día puede llevar varias habitaciones con el mismo guía. Agrupado por
+// reserva habría que ir sumando de cabeza.
+function detalleTipoDeTour(codigo) {
+  const caja = document.getElementById("detalle-tipo-tour");
+  if (!caja) return;
+  const antes = window._tourAbierto;
+  window._tourAbierto = (antes === codigo) ? null : codigo;
+  document.querySelectorAll('[id^="tarjeta-tour-"]').forEach(el => {
+    const suyo = el.id === `tarjeta-tour-${window._tourAbierto}`;
+    el.style.background = suyo ? "var(--sand, #F5F1E8)" : "";
+    el.style.borderColor = suyo ? "var(--forest, #2C4A3E)" : "";
+  });
+  if (!window._tourAbierto) { caja.innerHTML = ""; return; }
+  caja.innerHTML = vistaDeTipoDeTour(codigo);
+  adaptarTablasMovil();
+}
+
+function vistaDeTipoDeTour(codigo) {
+  const salidas = [];
+  (window._agendaRows || []).forEach(r => (r.tours || []).forEach(t => {
+    if ((t.tour_codigo || "—") !== codigo) return;
+    salidas.push({
+      fecha: t.fecha || r.fecha,
+      guia: t.guia_nombre, bote: t.bote_nombre,
+      grupo: t.grupo_operativo || "A",
+      hab: r.room_no, nombre: r.nombre_principal,
+      pax: (t.pax != null ? t.pax : r.pax) || 0,
+      fuera: t.fuera_de_estadia,
+    });
+  }));
+  if (!salidas.length) return "";
+
+  const porFecha = {};
+  salidas.forEach(s => (porFecha[s.fecha] = porFecha[s.fecha] || []).push(s));
+  const fechas = Object.keys(porFecha).sort();
+  const guiasTodos = [...new Set(salidas.map(s => s.guia).filter(Boolean))];
+  const pax = salidas.reduce((a, s) => a + s.pax, 0);
+
+  return `
+    <div class="detail-panel" style="margin-top:10px;">
+      <p style="font-weight:600;margin:0 0 2px;">${codigo}
+        <span style="font-weight:400;color:var(--muted);">— ${salidas.length} salida${salidas.length === 1 ? "" : "s"} ·
+        ${pax} pax · ${fechas.length} día${fechas.length === 1 ? "" : "s"}</span></p>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">
+        ${guiasTodos.length
+          ? `Guías que lo dieron: <strong style="color:var(--texto);">${guiasTodos.join(" · ")}</strong>`
+          : `<span style="color:var(--warn-text);">Todavía sin guía asignado.</span>`}
+      </p>
+      ${fechas.map(f => {
+        const dia = porFecha[f];
+        const guiasDia = [...new Set(dia.map(s => s.guia).filter(Boolean))];
+        const paxDia = dia.reduce((a, s) => a + s.pax, 0);
+        return `
+          <p style="margin:10px 0 4px;font-weight:600;font-size:13px;">
+            ${diaConNombre(f)} ${etiquetaFecha(f)}
+            <span style="font-weight:400;color:var(--muted);">— ${paxDia} pax,
+              ${dia.length} reserva${dia.length === 1 ? "" : "s"}</span>
+            ${guiasDia.length
+              ? `<span class="badge badge-tour" style="margin-left:6px;">${guiasDia.join(" · ")}</span>`
+              : `<span class="badge badge-warn" style="margin-left:6px;">sin guía</span>`}
+          </p>
+          <table>
+            <tr><th>Guía</th><th>Bote</th><th>Grupo</th><th>Hab.</th><th>Huésped</th><th>Pax</th></tr>
+            ${dia.map(s => `<tr>
+              <td>${s.guia || '<span style="color:var(--warn-text);">sin asignar</span>'}</td>
+              <td>${s.bote || '<span style="color:var(--warn-text);">sin asignar</span>'}</td>
+              <td>${s.grupo}</td>
+              <td><strong>${s.hab || '—'}</strong></td>
+              <td>${s.nombre || '—'}${s.fuera ? ' <span class="badge badge-warn">fuera de la estadía</span>' : ''}</td>
+              <td>${s.pax}</td>
+            </tr>`).join("")}
+          </table>`;
+      }).join("")}
     </div>`;
 }
 

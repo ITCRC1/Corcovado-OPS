@@ -116,6 +116,30 @@ def las_etiquetas_del_telefono_cuentan_el_rowspan(c):
                  "la agenda de tours sigue uniendo filas con rowspan")
 
 
+def la_tarjeta_de_cada_tour_abre_su_detalle(c):
+    """En la agenda, las tarjetas del resumen por tipo de tour se tocan y despliegan
+    QUIEN lo guio y QUE DIAS. Sale de los tours que la pantalla ya tiene cargados: si
+    fuera otra consulta, la tarjeta y el detalle podrian decir cosas distintas."""
+    html = _html()
+    c.cierto('onclick="detalleTipoDeTour(' in html, "la tarjeta se puede tocar")
+    c.cierto('id="detalle-tipo-tour"' in html, "y tiene donde desplegarse")
+    c.cierto("function detalleTipoDeTour" in html, "existe el manejador")
+    c.cierto("function vistaDeTipoDeTour" in html, "y quien dibuja el detalle")
+
+    fn = _funcion(html, "vistaDeTipoDeTour")
+    c.cierto(fn is not None, "se encuentra la funcion del detalle")
+    if fn:
+        c.cierto("_agendaRows" in fn,
+                 "usa los tours ya cargados y no pide otra consulta")
+        c.cierto("porFecha" in fn, "agrupa por FECHA, que es lo que se pidio")
+        c.cierto("guia" in fn, "y muestra el guia")
+    c.cierto("window._agendaRows = rows" in html,
+             "loadAgenda guarda las filas para el detalle")
+    # Al guardar un guia la pantalla se redibuja entera; sin esto el panel se cerraba
+    # justo despues de asignar, que es cuando se quiere mirar si quedo bien.
+    c.cierto("window._tourAbierto" in html, "el detalle abierto se recuerda")
+
+
 def los_botones_del_menu_van_numerados_en_orden(c):
     """Un salto o un repetido aquí manda a la pantalla de al lado sin avisar."""
     botones = _botones(_html())
@@ -213,6 +237,7 @@ PRUEBAS = [
     las_que_se_refrescan_solas_existen,
     housekeeping_quedo_enganchada_en_las_cinco_listas,
     las_etiquetas_del_telefono_cuentan_el_rowspan,
+    la_tarjeta_de_cada_tour_abre_su_detalle,
 ]
 
 
