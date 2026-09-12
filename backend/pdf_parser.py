@@ -211,8 +211,12 @@ TOUR_ALIASES.update(_alias_2027())
 
 # El prefijo de modalidad, para anotarlo en la salida. 'C-CIS' ya se reconoce como CIS
 # —el guion es límite de palabra— pero sin esto se perdería que era una cortesía.
+# Ojo con los nombres de los grupos: la cortesía del caso 'PRV|C-' estaba en un grupo SIN
+# nombre, así que un servicio privado de cortesía —la forma canónica del comunicado para
+# «privado + CPL»— se leía como privado y NADA MÁS, y no se marcaba como cortesía a la
+# hora de cobrar. El de 'C-' solo sí estaba bien, que es por lo que no saltaba a la vista.
 _MODALIDAD = re.compile(
-    r"(?:(?P<prv>PRV)\s*\|\s*(?:CPL|C)-?|(?P<prv2>PRV)-|(?P<cpl>CPL|C)-)\s*$",
+    r"(?:(?P<prv>PRV)\s*\|\s*(?P<cpl1>CPL|C)-?|(?P<prv2>PRV)-|(?P<cpl2>CPL|C)-)\s*$",
     re.IGNORECASE)
 
 
@@ -225,7 +229,30 @@ def modalidad_antes_de(texto, posicion):
     m = _MODALIDAD.search(texto[max(0, posicion - 12):posicion])
     if not m:
         return False, False
-    return bool(m.group("prv") or m.group("prv2")), bool(m.group("cpl"))
+    return (bool(m.group("prv") or m.group("prv2")),
+            bool(m.group("cpl1") or m.group("cpl2")))
+
+
+def manglar_es_solo_del_traslado(texto):
+    """True si la palabra «manglar» del texto la explica un MGX y no hay tour de manglar.
+
+    El comunicado lo subraya: MGX es la experiencia de manglar DURANTE el traslado en
+    bote, y no se debe confundir con MGS, que sí es el tour. El problema es que la
+    descripción que acompaña al código lleva la palabra —«BT+MGX: Boat transfer +
+    Experiencia de Manglar durante el traslado»— y el reconocimiento de tours busca
+    «MANGLAR» por texto. Resultado: una salida de manglar en la hoja del día, con su
+    guía y su bote apartados, para un tour que no existe.
+
+    Se descarta solo cuando NADA respalda un tour de verdad: ni MGS, ni el código
+    MANGLAR escrito en mayúsculas. Lo segundo se mira sensible a mayúsculas a propósito,
+    apoyándose en la regla del comunicado —«todos los códigos en mayúsculas, sin
+    excepciones»—: así «Manglar» en prosa no cuenta y «MANGLAR» como código sí.
+    """
+    if not re.search(r"\bMGX\b", texto, re.IGNORECASE):
+        return False
+    if re.search(r"\bMGS\b", texto, re.IGNORECASE):
+        return False
+    return not re.search(r"\bMANGLAR\b", texto)
 
 
 def extract_text(pdf_path):
@@ -555,6 +582,11 @@ def procesar_linea(line, current, section):
                             if code_real not in encontrados:
                                 encontrados.append(code_real)
                             resto_para_alias = resto_para_alias[:m_alias.start()] + resto_para_alias[m_alias.end():]
+                    # El manglar del traslado (MGX) no es el tour de manglar (MGS): sin
+                    # esto, la descripción que acompaña al código pone una salida de
+                    # manglar en la hoja del día que no existe. Ver la función.
+                    if "MANGLAR" in encontrados and manglar_es_solo_del_traslado(resto):
+                        encontrados.remove("MANGLAR")
                     if encontrados:
                         for idx, code in enumerate(encontrados):
                             conf = None
@@ -613,6 +645,9 @@ def cross_reference_tours(adicionales_raw):
     for alias, code_real in TOUR_ALIASES.items():
         if alias in upper and code_real not in found:
             found.append(code_real)
+    # El manglar del traslado (MGX) no es el tour de manglar (MGS). Ver la función.
+    if "MANGLAR" in found and manglar_es_solo_del_traslado(adicionales_raw):
+        found.remove("MANGLAR")
     return found
 
 

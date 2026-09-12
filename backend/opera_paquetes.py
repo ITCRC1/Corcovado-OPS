@@ -107,8 +107,18 @@ CATALOGO_2027 = [
     ("SFF", None, "Pesca deportiva · día completo", "Sportfishing · Full Day"),
     ("CLW", None, "Pared de escalada", "Climbing Wall"),
     ("HDA", None, "Media jornada de aventura", "Half-Day Adventure"),
-    ("NGW", None, "Caminata naturalista en los jardines", "Naturalist Garden Walk"),
+    ("NGW", None, "Caminata en los senderos del hotel", "Naturalist Garden Walk"),
 ]
+
+# Servicios que SOLO se venden en privado. El comunicado lo dice expresamente de la pesca
+# deportiva: «se comercializan únicamente en modalidad privada. Por lo tanto, no es
+# necesario que lleven el prefijo de PRV».
+#
+# Hay que tenerlo en cuenta al LEER: sin esto, una reserva que dice «SFF» a secas queda
+# registrada como servicio compartido, y en la hoja del día se ve una salida abierta
+# donde hay un charter de una sola familia. Si además trae el prefijo PRV, no cambia
+# nada: ya lo era.
+SIEMPRE_PRIVADOS = {"SFH", "SFF"}
 
 # Códigos del catálogo que NO son un tour de la agenda.
 #
@@ -237,13 +247,16 @@ def descomponer(codigo):
     limpio = (codigo or "").strip().upper()
     m = _PREFIJOS.match(limpio)
     if not m:
-        return raiz(limpio), False, False
+        base = raiz(limpio)
+        return base, base in SIEMPRE_PRIVADOS, False
     privado = bool(m.group("prv") or m.group("prv2"))
     cortesia = bool(m.group("cpl1") or m.group("cpl2"))
     resto = limpio[m.end():].strip("-| ")
     if not resto:                      # era solo el prefijo: no se inventa una base
         return raiz(limpio), False, False
-    return raiz(resto), privado, cortesia
+    base = raiz(resto)
+    # La pesca deportiva es privada aunque nadie escriba PRV. Ver SIEMPRE_PRIVADOS.
+    return base, privado or base in SIEMPRE_PRIVADOS, cortesia
 
 
 def clasificar(codigo, descripcion=""):

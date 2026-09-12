@@ -123,6 +123,65 @@ def el_manglar_del_traslado_no_es_el_tour_de_manglar(c):
             "MGX es parte del traslado, NO un tour")
 
 
+def la_descripcion_del_MGX_no_crea_un_tour_de_manglar(c):
+    """El caso real del comunicado. La descripcion que acompana al codigo lleva la
+    palabra —«BT+MGX: Boat transfer + Experiencia de Manglar durante el traslado»— y el
+    reconocimiento de tours busca «MANGLAR» por texto. Salia una salida de manglar en la
+    hoja del dia, con guia y bote apartados, para un tour que NO existe."""
+    import pdf_parser as pp
+    ejemplo = "BT+MGX: Boat transfer + Experiencia de Manglar durante el traslado"
+    c.igual(pp.cross_reference_tours(ejemplo), [],
+            "el manglar del traslado no crea un tour")
+    c.igual(pp.cross_reference_tours("BT+MGX: boat transfer + mangrove experience"), [],
+            "ni escrito en ingles")
+
+    # Y lo contrario, que es lo que hace que esto no sea un parche: un manglar de VERDAD
+    # tiene que seguir apareciendo, aunque la reserva traiga tambien un MGX.
+    c.cierto("MANGLAR" in pp.cross_reference_tours("03: MGS"),
+             "MGS sigue siendo el tour de manglar")
+    c.cierto("MANGLAR" in pp.cross_reference_tours("BT+MGX el sabado y 04: MGS"),
+             "y se reconoce aunque en la misma reserva haya un MGX")
+    c.cierto("MANGLAR" in pp.cross_reference_tours("BT+MGX, y aparte el tour MANGLAR"),
+             "el codigo MANGLAR en mayusculas manda sobre el MGX")
+
+
+def un_servicio_privado_de_cortesia_es_las_dos_cosas(c):
+    """'PRV|C-' es la forma canonica del comunicado para privado + CPL. La cortesia vivia
+    en un grupo SIN NOMBRE de la expresion, asi que se leia privado y nada mas: el
+    servicio no quedaba marcado como cortesia a la hora de cobrar. El caso de 'C-' solo
+    si estaba bien, que es por lo que no saltaba a la vista."""
+    import pdf_parser as pp
+    for texto in ("03: PRV|C-PNC", "03: PRV|CPL-PNC"):
+        c.igual(pp.modalidad_antes_de(texto, texto.index("PNC")), (True, True),
+                f"«{texto}» es privado Y cortesia")
+    for texto, espera in (("03: PNC", (False, False)),
+                          ("03: C-PNC", (False, True)),
+                          ("03: PRV-PNC", (True, False))):
+        c.igual(pp.modalidad_antes_de(texto, texto.index("PNC")), espera,
+                f"«{texto}» sigue igual")
+    # Y el otro camino, el de los paquetes de Opera, tiene que decir lo mismo.
+    c.igual(op.descomponer("PRV|C-PNC"), ("PNC", True, True),
+            "los dos caminos coinciden")
+
+
+def la_pesca_deportiva_es_privada_aunque_no_lo_diga(c):
+    """El comunicado: «SFH y SFF se comercializan unicamente en modalidad privada. Por lo
+    tanto, no es necesario que lleven el prefijo de PRV». Sin esto, un «SFF» a secas se
+    registra como compartido y en la hoja del dia se ve una salida abierta donde hay un
+    charter de una sola familia."""
+    for cod in ("SFH", "SFF"):
+        base, privado, cortesia = op.descomponer(cod)
+        c.igual(privado, True, f"{cod} es privado aunque no lleve prefijo")
+        c.igual(cortesia, False, f"y {cod} a secas no es cortesia")
+        c.igual(op.descomponer(f"C-{cod}"), (base, True, True),
+                f"C-{cod} es privado Y cortesia")
+        c.igual(op.descomponer(f"PRV-{cod}"), (base, True, False),
+                f"y el PRV de mas en PRV-{cod} no cambia nada, ya lo era")
+    # El resto NO se vuelve privado por esto.
+    c.igual(op.descomponer("PNC"), ("PNC", False, False),
+            "un PNC a secas sigue siendo compartido")
+
+
 def las_dos_estaciones_de_corcovado_son_distintas(c):
     """El documento avisa: «Usar SIR para evitar que ambas estaciones queden registradas
     como PNC». Son caminatas distintas, con horarios distintos."""
@@ -228,6 +287,9 @@ PRUEBAS = [
     los_codigos_de_la_reserva_real_se_reconocen,
     ninguno_de_los_23_codigos_queda_como_desconocido,
     el_manglar_del_traslado_no_es_el_tour_de_manglar,
+    la_descripcion_del_MGX_no_crea_un_tour_de_manglar,
+    un_servicio_privado_de_cortesia_es_las_dos_cosas,
+    la_pesca_deportiva_es_privada_aunque_no_lo_diga,
     las_dos_estaciones_de_corcovado_son_distintas,
     el_discovery_scuba_no_es_el_buceo_de_isla,
     los_transportes_no_son_tours,
