@@ -15,6 +15,7 @@ from loader import load_batch as _load_batch
 from validations import (validar_todos_los_tours, validar_tour_asignado,
                          detectar_conflictos_asignacion, guias_ocupados)
 import auth
+import tours_pax
 
 app = FastAPI(title="Sistema de Operación Hotelera - Sierpe/Drake")
 
@@ -724,7 +725,10 @@ def agenda(fecha: str = None, desde: str = None, hasta: str = None, user: dict =
     # estadía del huésped, y para señalar los que quedaron fuera de ella. Pasa con las
     # actividades que el reporte no fecha —NW, pajareo, GTT— donde el día se deduce y
     # puede caer en un día en que el huésped ni siquiera está en el lodge.
+    # adl y chl vienen para poder decir cuánta gente hay en la habitación: es el tope de
+    # lo que se puede escribir en el pax del tour, y el número al que vuelve si se borra.
     query = """SELECT ta.*, r.nombre_principal, r.room_no, r.arr_date, r.dep_date,
+                      r.adl, r.chl,
                       tc.horario_inicio, tc.horario_fin, tc.max_pax_guia
                FROM tour_asignado ta
                JOIN reserva r ON r.conf_no = ta.conf_no
@@ -751,6 +755,13 @@ def agenda(fecha: str = None, desde: str = None, hasta: str = None, user: dict =
                  "guia_nombre": r["guia_nombre"], "bote_nombre": r["bote_nombre"],
                  "horario_inicio": r["horario_inicio"], "horario_fin": r["horario_fin"],
                  "grupo_operativo": r.get("grupo_operativo", "A"),
+                 # El pax es de CADA tour, no de la reserva: de dos huéspedes, uno puede
+                 # ir al manglar y los dos al nocturno. Antes la agenda solo enseñaba el
+                 # de la reserva —el de la primera fila, repetido con rowspan— y no había
+                 # dónde ver la diferencia ni dónde corregirla.
+                 "pax": r["pax"],
+                 "pax_editado_a_mano": bool(r.get("pax_editado_a_mano")),
+                 "pax_habitacion": (r.get("adl") or 0) + (r.get("chl") or 0),
                  # Un tour en un día en que el huésped no está en el lodge no lo puede
                  # hacer nadie. Se marca para que salte a la vista en la agenda en vez de
                  # descubrirse el día del tour, cuando ya no hay nada que hacer.
@@ -3776,6 +3787,28 @@ def detalle_reserva(conf_no: str, user: dict = Depends(exige("reservas"))):
     return d
 
 
+@app.post("/api/tours/agenda/{tour_id}/pax")
+def cambiar_pax_tour(tour_id: int, pax: str = "",
+                     user: dict = Depends(exige("agenda", escribir=True))):
+    """Cuánta gente de la reserva va a ESTE tour. La regla vive en tours_pax.py."""
+    conn = get_connection()
+    try:
+        try:
+            res = tours_pax.cambiar_pax(conn, tour_id, pax)
+        except tours_pax.PaxInvalido as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if res is None:
+            raise HTTPException(status_code=404, detail="Ese tour ya no existe")
+        conn.commit()
+    finally:
+        conn.close()
+
+    res["alertas"] = validar_tour_asignado(tour_id)
+    res["status"] = "ok"
+    _publicar_en_segundo_plano()
+    return res
+
+
 @app.post("/api/tours/agenda/{tour_id}/grupo")
 def cambiar_grupo_operativo(tour_id: int, grupo: str, user: dict = Depends(exige("agenda", escribir=True))):
     """Mueve un tour a otro grupo operativo (A, B, C...). Sirve para dividir un tour
@@ -4525,16 +4558,7 @@ async def agregar_tour(payload: dict,
         # código: así un tour nuevo que requiera entrada la genera solo con marcarlo ahí.
         sinac = None
         if tc["requiere_entrada_sinac"]:
-            # El pax total se recalcula sumando a todos los que van a ese tour ese día sin
-            # número de entrada, en vez de arrastrar una cuenta: así queda bien aunque
-            # antes hubiera quedado mal.
-            total = conn.execute(
-                """SELECT COALESCE(SUM(ta.pax), 0) t FROM tour_asignado ta
-                   JOIN reserva r2 ON r2.conf_no = ta.conf_no
-                   WHERE ta.tour_codigo = ? AND ta.fecha = ?
-                     AND IFNULL(ta.conf_entrada_sinac,'') = ''
-                     AND r2.res_status != 'CANCELADA'""",
-                (codigo, fecha)).fetchone()["t"]
+            total = tours_pax.pax_sinac_pendiente(conn, codigo, fecha)
             previa = conn.execute(
                 """SELECT id, estado FROM entrada_sinac
                    WHERE tour_codigo = ? AND fecha = ? AND IFNULL(conf_entrada,'') = ''""",
@@ -4611,13 +4635,7 @@ def quitar_tour(tour_id: int, user: dict = Depends(exige("agenda", "reservas", e
             (codigo, fecha)).fetchone()
         aviso_sinac = None
         if entrada:
-            total = conn.execute(
-                """SELECT COALESCE(SUM(ta.pax), 0) t FROM tour_asignado ta
-                   JOIN reserva r2 ON r2.conf_no = ta.conf_no
-                   WHERE ta.tour_codigo = ? AND ta.fecha = ?
-                     AND IFNULL(ta.conf_entrada_sinac,'') = ''
-                     AND r2.res_status != 'CANCELADA'""",
-                (codigo, fecha)).fetchone()["t"]
+            total = tours_pax.pax_sinac_pendiente(conn, codigo, fecha)
             if total == 0 and entrada["estado"] != "COMPRADA":
                 # Ya no va nadie y no se compró: se borra en vez de dejarla en cero. Una
                 # entrada fantasma en la pantalla del SINAC es ruido, y el ruido ahí es

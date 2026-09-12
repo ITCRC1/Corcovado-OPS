@@ -302,12 +302,20 @@ def _guardar_tours(cur, r, borrar_si_vacio=True):
     asignaciones_previas = {}
     asignaciones_por_tour = {}
     for prev in cur.execute(
-        "SELECT fecha, tour_codigo, guia_nombre, bote_nombre, grupo_operativo "
+        "SELECT fecha, tour_codigo, guia_nombre, bote_nombre, grupo_operativo, "
+        "       pax, pax_editado_a_mano "
         "FROM tour_asignado WHERE conf_no = ? ORDER BY fecha",
         (r["conf_no"],),
     ).fetchall():
-        if prev["guia_nombre"] or prev["bote_nombre"] or prev["grupo_operativo"] != "A":
-            datos_prev = (prev["guia_nombre"], prev["bote_nombre"], prev["grupo_operativo"])
+        # El pax puesto a mano viaja con el guía y el bote, y por la misma razón: es
+        # trabajo de recepción que el reporte no sabe y que volvería a quedar en «la
+        # habitación entera» en cada importación. Si el tour se corrió de día, se mueve
+        # con él —quien no iba a ir tampoco va el día nuevo—.
+        pax_a_mano = prev["pax"] if prev["pax_editado_a_mano"] else None
+        if (prev["guia_nombre"] or prev["bote_nombre"]
+                or prev["grupo_operativo"] != "A" or pax_a_mano is not None):
+            datos_prev = (prev["guia_nombre"], prev["bote_nombre"],
+                          prev["grupo_operativo"], pax_a_mano)
             asignaciones_previas[(prev["fecha"], prev["tour_codigo"])] = datos_prev
             asignaciones_por_tour.setdefault(prev["tour_codigo"], []).append(datos_prev)
 
@@ -331,7 +339,14 @@ def _guardar_tours(cur, r, borrar_si_vacio=True):
             pendientes_tour = asignaciones_por_tour.get(a["tour"])
             if pendientes_tour:
                 asignacion = pendientes_tour.pop(0)
-        guia_prev, bote_prev, grupo_prev = asignacion or (None, None, "A")
+        guia_prev, bote_prev, grupo_prev, pax_prev = asignacion or (None, None, "A", None)
+        # El pax de recepción manda sobre el del reporte: lo escribió alguien que habló
+        # con el huésped. Si baja el número de gente de la habitación, se recorta, porque
+        # no pueden ir a un tour más personas de las que hay en la reserva.
+        pax_a_mano = 0
+        if pax_prev is not None:
+            pax_del_tour = min(pax_prev, r["adl"] + r["chl"]) or pax_prev
+            pax_a_mano = 1
         # Si recepción ya lo había agregado a mano y ahora el reporte lo trae, es el
         # MISMO tour: se le cambia el origen en vez de insertar otro. Sin esto la
         # reserva quedaría con el tour dos veces —dos veces en la agenda, doble pax en
@@ -343,18 +358,22 @@ def _guardar_tours(cur, r, borrar_si_vacio=True):
             (r["conf_no"], a["fecha"], a["tour"]),
         ).fetchone()
         if ya_manual:
+            # El pax puesto a mano NO se pisa: el reporte solo sabe cuánta gente hay en la
+            # habitación, y aquí ya alguien anotó cuántos van de verdad.
             cur.execute(
-                """UPDATE tour_asignado SET origen = 'PDF', pax = ?,
-                       conf_entrada_sinac = COALESCE(conf_entrada_sinac, ?)
+                """UPDATE tour_asignado
+                      SET origen = 'PDF',
+                          pax = CASE WHEN pax_editado_a_mano THEN pax ELSE ? END,
+                          conf_entrada_sinac = COALESCE(conf_entrada_sinac, ?)
                    WHERE id = ?""",
                 (pax_del_tour, a.get("conf_entrada"), ya_manual["id"]))
             continue
         cur.execute(
             """INSERT INTO tour_asignado
-               (conf_no, fecha, tour_codigo, pax, conf_entrada_sinac, guia_nombre,
-                bote_nombre, grupo_operativo, origen)
-               VALUES (?,?,?,?,?,?,?,?,'PDF')""",
-            (r["conf_no"], a["fecha"], a["tour"], pax_del_tour,
+               (conf_no, fecha, tour_codigo, pax, pax_editado_a_mano, conf_entrada_sinac,
+                guia_nombre, bote_nombre, grupo_operativo, origen)
+               VALUES (?,?,?,?,?,?,?,?,?,'PDF')""",
+            (r["conf_no"], a["fecha"], a["tour"], pax_del_tour, pax_a_mano,
              a.get("conf_entrada"), guia_prev, bote_prev, grupo_prev),
         )
 

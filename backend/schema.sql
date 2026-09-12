@@ -148,7 +148,13 @@ CREATE TABLE IF NOT EXISTS tour_asignado (
     tour_codigo TEXT REFERENCES tour_catalogo(codigo),
     bote_nombre TEXT REFERENCES bote(nombre),
     guia_nombre TEXT REFERENCES guia(nombre),
+    -- Cuánta gente de ESA reserva va a ESTE tour. Por defecto va la habitación entera,
+    -- pero no siempre: de dos huéspedes uno puede quedarse. Se edita desde la agenda.
     pax INTEGER NOT NULL DEFAULT 1,
+    -- Puesto a mano desde la agenda. Sin esta marca, la siguiente importación vuelve a
+    -- poner la habitación entera y se pierde la corrección, igual que pasaba con el guía
+    -- y el bote antes de conservarlos. Ver loader.py.
+    pax_editado_a_mano INTEGER NOT NULL DEFAULT 0,
     conf_entrada_sinac TEXT, -- número de confirmación (si aplica)
     es_cambio_ultimo_momento INTEGER NOT NULL DEFAULT 0,
     -- Cuando un tour excede la capacidad de un guía o bote, se divide en grupos

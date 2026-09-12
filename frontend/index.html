@@ -2212,7 +2212,7 @@ async function loadAgenda(fecha, desde, hasta) {
               </select>` : (t.grupo_operativo || "A")}</td>
             <td>${puedeEscribir("agenda") ? `<select id="g-${t.id}" onchange="marcarSinGuardar(${t.id})">${'<option value="">Sin asignar</option>' + opcionesGuia(t.tour_codigo, t.guia_nombre)}</select>` : (t.guia_nombre || "Sin asignar")}</td>
             <td>${puedeEscribir("agenda") ? `<select id="b-${t.id}" onchange="marcarSinGuardar(${t.id})">${'<option value="">Sin asignar</option>' + opcionesBote(t.tour_codigo, t.bote_nombre)}</select>` : (t.bote_nombre || "Sin asignar")}</td>
-            ${i === 0 ? `<td rowspan="${r.tours.length}">${r.pax}</td>` : ''}
+            <td>${celdaPaxTour(t)}</td>
             ${puedeEscribir("agenda") ? `<td><button class="btn" onclick="guardarAsignacion(${t.id})">Guardar</button></td>` : ''}
           </tr>`).join("")).join("")}
       </table>
@@ -2342,12 +2342,59 @@ async function asignarTraslado(clave, campo, valor) {
 
 // Cuántas salidas hay de cada tour, con su pax y lo que falta por asignar.
 //
+// Cuánta gente de la reserva va a ESTE tour, editable.
+//
+// Antes la celda mostraba el pax de la RESERVA repetido con rowspan sobre todos sus
+// tours, así que no había ni dónde verlo distinto ni dónde corregirlo: si de dos
+// huéspedes uno no iba al manglar, el bote y la entrada del parque contaban dos.
+//
+// Se guarda al salir del campo, sin botón: el botón «Guardar» de la fila es el del guía
+// y el bote, y mezclar dos cosas en un botón hace que se pierda una de las dos.
+function celdaPaxTour(t) {
+  const tope = t.pax_habitacion || 0;
+  if (!puedeEscribir("agenda")) {
+    return `${t.pax}${t.pax_editado_a_mano && tope ? `<span style="font-size:10.5px;color:var(--muted);"> de ${tope}</span>` : ""}`;
+  }
+  // El aviso «de N» sale solo cuando el número NO es la habitación entera: es la señal
+  // de que alguien lo tocó a propósito y no un descuadre que haya que ir a arreglar.
+  const distinto = tope && t.pax !== tope;
+  return `<input type="number" id="px-${t.id}" value="${t.pax}" min="1" ${tope ? `max="${tope}"` : ""}
+            onchange="cambiarPaxTour(${t.id}, this.value)"
+            title="Cuántos de esta reserva van a este tour.${tope ? ` En la habitación hay ${tope}.` : ""} Vacío = todos."
+            style="width:52px;font-size:12px;padding:3px 4px;${distinto ? 'border:1px solid var(--warn-text);font-weight:600;' : ''}">
+          ${distinto ? `<br><span style="font-size:10px;color:var(--warn-text);">de ${tope}</span>` : ""}`;
+}
+
+async function cambiarPaxTour(tourId, valor) {
+  const res = await fetchAuth(`${API}/api/tours/agenda/${tourId}/pax?pax=${encodeURIComponent(valor)}`,
+                              { method: "POST" });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    avisar(e.detail || "No se pudo cambiar el pax", true);
+    // Se recarga para que el campo vuelva al número que SÍ está guardado: dejarlo con
+    // el número rechazado a la vista hace creer que quedó puesto.
+    loadAgenda();
+    return;
+  }
+  const d = await res.json();
+  let msg = `Pax actualizado a ${d.pax}`;
+  if (d.sinac) msg += ` · entrada del SINAC recalculada a ${d.sinac.pax_total}`;
+  avisar(msg);
+  const caja = document.getElementById("ag-alertas");
+  if (caja && (d.alertas || []).length) {
+    caja.innerHTML = d.alertas.map(a => `<p style="margin:2px 0;">${a}</p>`).join("");
+  }
+  // Recarga: el resumen por tipo de tour y los avisos de capacidad se calculan con
+  // TODAS las filas, así que cambiar una a mano en sitio los dejaría mintiendo.
+  loadAgenda();
+}
+
 // Se cuenta aquí y no en el servidor a propósito: la pantalla ya tiene todos los tours
 // cargados, así que sumarlos no cuesta una consulta más ni cambia la API. Y así el
 // resumen siempre cuadra con la tabla de abajo, porque sale de los mismos datos.
 //
-// El pax se cuenta por RESERVA, no por tour: una reserva de 3 personas que va al mismo
-// tour cuenta 3, no 1. Es lo que hace falta para saber si cabe en el bote.
+// El pax se cuenta por TOUR: de una reserva de 3 pueden ir los 3 al nocturno y solo 1 al
+// manglar. Es lo que hace falta para saber si cabe en el bote.
 function resumenPorTour(rows) {
   const porTour = {};
   let fueraTotal = 0;
@@ -2358,7 +2405,7 @@ function resumenPorTour(rows) {
       horario: t.horario_inicio,
     };
     x.salidas += 1;
-    x.pax += r.pax || 0;
+    x.pax += (t.pax != null ? t.pax : r.pax) || 0;
     if (!t.guia_nombre) x.sinGuia += 1;
     if (!t.bote_nombre) x.sinBote += 1;
     if (t.fuera_de_estadia) { x.fuera += 1; fueraTotal += 1; }
@@ -3611,10 +3658,11 @@ async function marcarRestriccion(id, estado) {
 // cortesía. Se decide en el mismo momento que el régimen, con el plato en la mano, así
 // que se muestra al lado y no en otra pantalla.
 //
-// Va el TEXTO de la reserva y no un sí/no: «CPL en hospedaje» y «CPL boat transfer» no
-// son lo mismo, y quien pasa la cuenta necesita leer cuál de los dos es. El
-// reconocimiento es generoso a propósito, así que se enseña la fuente para que decida
-// la persona, en vez de que el sistema afirme algo que puede haber leído mal.
+// Van SOLO las dos etiquetas. El texto de Opera del que salieron se imprimía debajo, y
+// en la hoja del día es ruido: trae el paquete entero, el tour, la vía de entrada y el
+// descuento del spa, que no se miran aquí. El texto no se pierde —queda en el title,
+// asomando el mouse encima de la etiqueta— para cuando haya que leer QUÉ es la cortesía
+// («CPL en hospedaje» y «CPL boat transfer» no son lo mismo).
 function notasReserva(x) {
   const marcas = [];
   if (x.bebidas) {
@@ -3625,30 +3673,7 @@ function notasReserva(x) {
                   title="${escaparHTML(x.cortesia)}">cortesía (CPL)</span>`);
   }
   if (!marcas.length) return "";
-
-  // Las dos suelen salir de la MISMA frase de la reserva —«PNC CPL Paquete… incluyendo
-  // jugo del día»— y entonces el texto se imprimía dos veces seguidas, casi idéntico.
-  // Se muestra una sola vez: repetido se lee peor y hace dudar de si son dos cosas.
-  //
-  // Se compara SIN los «…» del recorte. Los dos fragmentos salen de la misma frase pero
-  // se cortan en puntos distintos, así que uno acaba en «…» y el otro no; comparándolos
-  // con la marca puesta ninguno contiene al otro y volvían a salir los dos.
-  const limpio = (t) => t.replace(/…/g, "").trim();
-  const fuentes = [];
-  for (const t of [x.bebidas, x.cortesia]) {
-    if (!t) continue;
-    const a = limpio(t);
-    if (!a) continue;
-    // Si el nuevo es más largo, reemplaza al que ya estaba: se queda el que más dice.
-    const i = fuentes.findIndex(y => limpio(y).includes(a) || a.includes(limpio(y)));
-    if (i >= 0) {
-      if (a.length > limpio(fuentes[i]).length) fuentes[i] = t;
-      continue;
-    }
-    fuentes.push(t);
-  }
-  return `<br>${marcas.join(" ")}`
-       + `<br><span style="font-size:10px;color:var(--muted);">${escaparHTML(fuentes.join(" · "))}</span>`;
+  return `<br>${marcas.join(" ")}`;
 }
 
 function detalleRegimen() {

@@ -36,8 +36,12 @@
 
 <div id="veredicto">Leyendo…</div>
 
-<!-- La MISMA estructura que arma loadAgenda(): huésped y pax con rowspan, dos tours.
-     data-real dice qué etiqueta le corresponde de verdad a cada celda. -->
+<!-- La MISMA estructura que arma loadAgenda(): el huésped con rowspan, dos tours.
+     data-real dice qué etiqueta le corresponde de verdad a cada celda.
+
+     El pax ya NO lleva rowspan: es de cada tour, y aquí se ve por qué —de los 3 de la
+     habitación, al segundo tour va 1—. La celda del huésped sigue con rowspan, que es
+     la que provocaba el corrimiento. -->
 <table id="agenda">
   <tr><th>Huésped / Hab.</th><th>Tour</th><th>Fecha del tour</th><th>Grupo</th>
       <th>Guía</th><th>Bote</th><th>Pax</th><th></th></tr>
@@ -48,7 +52,7 @@
     <td data-real="Grupo">A</td>
     <td data-real="Guía">Luis</td>
     <td data-real="Bote">Osa I</td>
-    <td rowspan="2">3</td>
+    <td data-real="Pax">3</td>
     <td data-real="">Guardar</td>
   </tr>
   <tr>
@@ -57,6 +61,7 @@
     <td data-real="Grupo">B</td>
     <td data-real="Guía">Marta</td>
     <td data-real="Bote">Osa II</td>
+    <td data-real="Pax">1</td>
     <td data-real="">Guardar</td>
   </tr>
 </table>
