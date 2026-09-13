@@ -54,10 +54,15 @@ AMENIDADES_PATRONES = [
     ("Tarjeta de bienvenida", r"tarjeta\s+de\s+bienvenida|regalo\s+de\s+bienvenida|welcome\s+(?:card|gift)"),
     # Restricciones alimentarias y de salud: información crítica para cocina, que el
     # PDF suele escribir en inglés ("Dietary Restrictions: No seafood") o en español.
+    # «Dietary:» a secas, sin la palabra «restriction», es como lo escribe media agencia:
+    # «Dietary: Kate - No chickpeas / garbanzos + Jonathan - No Spinach». Exigir
+    # «dietary restriction» dejaba esa reserva SIN restricción, y cocina no se enteraba.
     ("Restricción alimentaria / alergia", (
-        r"dietary\s+restriction|restricci[óo]n(?:es)?\s+aliment|alerg|allerg|intoleran|"
+        r"dietary\s+restriction|dietar\w*\s*:|\bdieta\s*:|restricci[óo]n(?:es)?\s+aliment|"
+        r"alerg|allerg|intoleran|"
         r"celiac|cel[íi]ac|gluten|sin\s+lactosa|lactose\s+free|"
-        r"vegetarian|vegan|vegetarian[oa]|no\s+pork|no\s+seafood|no\s+meat|"
+        r"vegetarian|vegan|vegetarian[oa]|pescatarian|no\s+pork|no\s+seafood|no\s+meat|"
+        r"no\s+shellfish|no\s+fish|no\s+dairy|"
         r"no\s+come\s+|no\s+consume\s+|diab[ée]tic"
     )),
     ("Requerimiento de movilidad / accesibilidad", r"silla\s+de\s+rueda|wheelchair|movilidad\s+reducida|accesibilidad"),
@@ -211,6 +216,112 @@ def _sin_negar(patron, texto):
     return None
 
 
+# «NO tiene alergias» no es una alergia.
+#
+# Es la trampa de este detector. En la restricción alimentaria el «no» suele ser parte de
+# la señal —«no seafood», «no pork»— y por eso las amenidades no llevan guardia de
+# negación. Pero cuando el «no» cae sobre la palabra ALERGIA en vez de sobre una comida,
+# dice lo contrario: «Los clientes no tienen alergia o restricciones alimenticias» es una
+# reserva SIN restricciones, y aparecía en la pestaña de Alergias de la cocina.
+#
+# Por eso la guardia mira qué se está negando: solo tapa la frase cuando lo negado es el
+# SUSTANTIVO —alergia, intolerancia, restricción, dietary restriction—, nunca una comida.
+# Así «no shellfish - mild allergy» se sigue detectando y «sin alergias» no.
+_NEGADOR = r"(?:\bno\b|\bsin\b|\bning[uú]n[ao]?\b|\bwithout\b|\bnone\b|\bnot\b)"
+_RELLENO = (r"(?:\s+(?:se|le|les|hay|tiene|tienen|presenta|presentan|reporta|reportan|"
+            r"indica|indican|posee|poseen|refiere|refieren|manifiesta|manifiestan|"
+            r"known|reported|food|conocidas?|ning[uú]n[ao]?|tipo|clase|de))*")
+_SUSTANTIVO_RESTRICCION = (r"(?:alerg\w*|allerg\w*|intoleran\w*|"
+                           r"restricci\w*(?:\s+(?:aliment\w*|dietar\w*))?|"
+                           r"dietary\s+restrictions?)")
+# «no tienen alergia O RESTRICCIONES ALIMENTICIAS»: la negación se reparte entre los dos.
+_ENCADENADO = (r"(?:\s*(?:,|/|\bo\b|\bu\b|\by\b|\be\b|\bni\b|\bor\b|\band\b)\s*"
+               r"(?:ning[uú]n[ao]?\s+)?" + _SUSTANTIVO_RESTRICCION + r")*")
+_SIN_RESTRICCIONES = re.compile(
+    _NEGADOR + _RELLENO + r"\s+" + _SUSTANTIVO_RESTRICCION + _ENCADENADO,
+    re.IGNORECASE)
+
+
+def sin_restricciones(texto):
+    """True si el texto SOLO dice que no hay alergias ni restricciones.
+
+    Se usa también desde restaurantes.py: recepción puede escribir «sin alergias» a mano
+    y esa nota tampoco tiene que salir en la pestaña de la cocina.
+    """
+    if not texto or not texto.strip():
+        return False
+    limpio = _sin_lo_negado(texto)
+    return bool(_SIN_RESTRICCIONES.search(texto)) and not re.search(
+        PATRON_RESTRICCION, limpio, re.IGNORECASE)
+
+
+def _sin_lo_negado(texto):
+    """El texto con las frases de «no hay alergias» tapadas.
+
+    Se tapan con espacios y no se borran para que las posiciones sigan valiendo sobre el
+    texto ORIGINAL: el fragmento que se le enseña a cocina se recorta del original, no de
+    esta copia.
+    """
+    return _SIN_RESTRICCIONES.sub(lambda m: " " * len(m.group(0)), texto)
+
+
+# Dónde termina lo que tiene que ver con la alergia y empieza otra cosa.
+#
+# El fragmento salía con ±60 caracteres a cada lado y arrastraba lo que hubiera al lado:
+# tours, tarifas, la agencia, el número de pasaporte. Real, de Opera: «…in the boat for
+# the Isla del cano snorkel! Linda She is diabetic. AGENCIA WAY TO GO TOURS,PENDIENTE DE
+# RECIBIR INFORMACION…». A cocina le llega una fila que hay que leer entera para
+# encontrar las dos palabras que importan.
+#
+# Estos son los cortes que de verdad separan un asunto de otro en las notas del lodge.
+_LIMITE = re.compile(
+    r"[\r\n]+"                                   # un renglón nuevo es otro asunto
+    r"|[-=_]{3,}"                                # las rayas que separan secciones
+    r"|~|//|\|"                                  # los marcadores de ~GUEST ... GUEST~
+    r"|(?<=[.!?;])\s"                            # fin de oración
+    r"|\b(?:NOTAS?|ROOMING|OPERACI[ÓO]N|ADICIONALES|INGRESO|SALIDA|ENTRADA)\s*:",
+    re.IGNORECASE)
+
+
+def _limites_del_asunto(texto, ini, fin):
+    """(desde, hasta) del trozo de texto que habla de lo mismo que lo reconocido."""
+    desde, hasta = 0, len(texto)
+    for m in _LIMITE.finditer(texto):
+        if m.end() <= ini:
+            desde = m.end()
+        elif m.start() >= fin:
+            hasta = m.start()
+            break
+    return desde, hasta
+
+
+def _codigos_de_tour():
+    """Los códigos del catálogo, para poder quitarlos del borde del detalle."""
+    from pdf_parser import TOUR_ALIASES, TOUR_CODES
+    return {c.upper() for c in list(TOUR_CODES) + list(TOUR_ALIASES)
+            if c and " " not in c}
+
+
+def _sin_tours_en_el_borde(trozo):
+    """Quita los códigos de tour pegados al principio o al final del detalle.
+
+    En las notas del lodge el itinerario y el rooming van en el mismo renglón —«PNC JODI
+    MINDELL A04340625 Allergy to raw onions»—, así que el corte por asunto no los separa.
+    Un código suelto en el borde no dice nada de la alergia y es justo lo que no debe
+    salir en la pestaña de la cocina.
+
+    Solo se toca el BORDE: uno en medio —«Dietary Restrictions: No Pork BUCEO»— podría
+    estar diciendo para qué tour aplica, y quitarlo de en medio partiría la frase.
+    """
+    codigos = _codigos_de_tour()
+    partes = trozo.split()
+    while partes and partes[0].strip(":,.-").upper() in codigos:
+        partes.pop(0)
+    while partes and partes[-1].strip(":,.-").upper() in codigos:
+        partes.pop()
+    return " ".join(partes)
+
+
 def _fragmento(texto, m, contexto=None, maximo=None):
     """El trozo de texto alrededor de lo que se reconoció, recortado por palabras.
 
@@ -218,22 +329,34 @@ def _fragmento(texto, m, contexto=None, maximo=None):
     marca, «RESERVA CPL SOLICITADA POR… + FULLBOARD ( bebidas no» se lee como una frase
     terminada y dice lo contrario de lo que dice la reserva completa —«bebidas no
     incluidas»—. Quien pasa la cuenta tiene que poder ver que hay más antes de decidir.
+
+    La ventana NUNCA cruza un límite de asunto: si a 20 caracteres hay un salto de línea
+    o empieza «NOTAS:», ahí se corta aunque sobre espacio. Es lo que evita que en la
+    pestaña de alergias salgan tours, tarifas y el nombre de la agencia.
     """
     contexto = DETALLE_CONTEXTO if contexto is None else contexto
     maximo = DETALLE_MAXIMO if maximo is None else maximo
-    desde, hasta = max(0, m.start() - contexto), min(len(texto), m.end() + contexto)
+    tope_ini, tope_fin = _limites_del_asunto(texto, m.start(), m.end())
+    desde = max(tope_ini, m.start() - contexto)
+    hasta = min(tope_fin, m.end() + contexto)
     trozo = " ".join(texto[desde:hasta].split())
-    if desde > 0 and " " in trozo:
+    # Solo se recorta la palabra partida cuando el corte lo hizo la VENTANA. Si lo hizo
+    # un límite de asunto, la palabra está entera y quitarla se comería una de verdad.
+    if desde > tope_ini and " " in trozo:
         trozo = trozo.split(" ", 1)[1]
-    if hasta < len(texto) and " " in trozo:
+    if hasta < tope_fin and " " in trozo:
         trozo = trozo.rsplit(" ", 1)[0]
     trozo = trozo.strip(" ·-,;:")
     if not trozo:
         return trozo
     # Las marcas cuentan dentro del máximo: el largo es lo que tiene que caber en la
     # celda de la hoja, y da igual si lo que la llena es texto o puntos suspensivos.
-    inicio = "…" if desde > 0 else ""
-    falta_al_final = hasta < len(texto) or len(inicio) + len(trozo) + 1 > maximo
+    #
+    # El «…» dice «esta frase sigue», no «la nota tiene más cosas». Por eso solo se pone
+    # cuando cortó la VENTANA: si cortó un límite de asunto, la frase está completa y la
+    # marca haría dudar de un detalle que no le falta nada.
+    inicio = "…" if desde > tope_ini else ""
+    falta_al_final = hasta < tope_fin or len(inicio) + len(trozo) + 1 > maximo
     fin = "…" if falta_al_final else ""
     cabe = maximo - len(inicio) - len(fin)
     return inicio + trozo[:cabe].strip(" ·-,;:") + fin
@@ -260,9 +383,20 @@ def detectar_cortesia(reserva):
     return _fragmento(texto, m) if m else None
 
 
+RESTRICCION = "Restricción alimentaria / alergia"
+# El patrón de la restricción, por nombre, para poder reusarlo desde fuera.
+PATRON_RESTRICCION = next(p for n, p in AMENIDADES_PATRONES if n == RESTRICCION)
+
+
 def _coincidencia(nombre, patron, texto):
-    """La primera coincidencia de una amenidad. Las amenidades no llevan guardia de
-    negación: ahí el «no» suele ser parte de la señal."""
+    """La primera coincidencia de una amenidad.
+
+    Las amenidades no llevan guardia de negación: ahí el «no» suele ser parte de la señal
+    —«no seafood», «no pork»—. La ÚNICA excepción es la restricción alimentaria, y solo
+    cuando lo negado es la palabra alergia y no una comida: ver _sin_lo_negado.
+    """
+    if nombre == RESTRICCION:
+        texto = _sin_lo_negado(texto)
     return re.search(patron, texto, re.IGNORECASE)
 
 
@@ -309,6 +443,8 @@ def detallar_amenidades(reserva):
         if not m or nombre_catalogo in salida:
             continue
         trozo = _fragmento(texto, m)
+        if nombre_catalogo == RESTRICCION:
+            trozo = _sin_tours_en_el_borde(trozo)
         if trozo:
             salida[nombre_catalogo] = trozo
     return salida

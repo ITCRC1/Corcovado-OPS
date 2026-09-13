@@ -203,6 +203,82 @@ def el_detalle_no_es_la_reserva_entera(c):
              "y conserva lo que se reconocio, no un trozo cualquiera")
 
 
+def decir_que_NO_hay_alergias_no_es_una_alergia(c):
+    """El caso que reporto el hotel. Real, de Opera: «Los clientes no tienen alergia o
+    restricciones alimenticias» salia en la pestana de Alergias de la cocina.
+
+    La trampa: en la restriccion alimentaria el «no» suele ser parte de la senal —«no
+    seafood», «no pork»— asi que no se puede descartar cualquier frase con «no». Lo que
+    decide es QUE se esta negando: la palabra alergia, o una comida."""
+    import restaurantes as rest
+    NO_HAY = [
+        "Los clientes no tienen alergia o restricciones alimenticias",
+        "No known allergies",
+        "sin alergias",
+        "Sin restricciones alimenticias",
+        "no food allergies reported",
+        "no dietary restrictions",
+        "Ninguna alergia",
+    ]
+    for texto in NO_HAY:
+        c.igual(importer.RESTRICCION in importer.detectar_amenidades(reserva_con(texto)),
+                False, f"«{texto}» NO es una restriccion")
+        c.igual(rest.es_restriccion_alimentaria("Preferencia", None, texto), False,
+                f"«{texto}» tampoco entra a la pestana escrito a mano")
+
+    # Y lo contrario, que es lo que hace que esto no sea un parche: el «no» sobre una
+    # COMIDA sigue siendo una restriccion, y es lo mas grave que se puede perder.
+    SI_HAY = [
+        "*MRS. LORRAINE LAYER 542588211 no shellfish - mild allergy + strong aversion.",
+        "Dietary Restrictions: No Pork",
+        "no seafood",
+        "GUEST We are both vegetarian (no fish, no seafood, no meat)",
+        # Una nota puede decir las dos cosas: no hay alergias, pero si una dieta.
+        "No tiene alergias pero es vegetariano",
+    ]
+    for texto in SI_HAY:
+        c.igual(importer.RESTRICCION in importer.detectar_amenidades(reserva_con(texto)),
+                True, f"«{texto[:46]}» SI es una restriccion")
+
+
+def dietary_a_secas_tambien_cuenta(c):
+    """Real, de Opera: «Dietary: Kate - No chickpeas / garbanzos + Jonathan - No
+    Spinach». El patron exigia «dietary restriction» y esa reserva quedaba SIN
+    restriccion: a cocina no le llegaba nada."""
+    texto = "Dietary: Kate - No chickpeas / garbanzos + Jonathan - No Spinach"
+    c.cierto(importer.RESTRICCION in importer.detectar_amenidades(reserva_con(texto)),
+             "«Dietary:» a secas cuenta como restriccion")
+    d = importer.detallar_amenidades(reserva_con(texto))
+    c.cierto("chickpeas" in d.get(importer.RESTRICCION, ""),
+             "y el detalle dice de que es")
+
+
+def el_detalle_de_la_alergia_solo_habla_de_la_alergia(c):
+    """Salia con 60 caracteres a cada lado y arrastraba lo que hubiera al lado: tours,
+    tarifas, la agencia, el pasaporte. Reales, de Opera."""
+    casos = [
+        # (nota real, lo que TIENE que decir, lo que NO debe arrastrar)
+        ("PAJAREO ~GUEST Vegetarian Food Request GUEST~ Paquete 2N 3D - Breakfast Only",
+         "Vegetarian", ["PAJAREO", "Paquete", "Breakfast"]),
+        ("in the boat for the Isla del cano snorkel! Linda She is diabetic. "
+         "AGENCIA WAY TO GO TOURS, PENDIENTE DE RECIBIR INFORMACION",
+         "diabetic", ["snorkel", "AGENCIA", "PENDIENTE"]),
+        ("Blakely is gluten free.\n-------------\nOPERACION: 03: IN 04: ISLA 198685",
+         "gluten", ["OPERACION", "ISLA", "198685"]),
+        ("PNC JODI MINDELL A04340625 Allergy to raw onions and raw garlic",
+         "onions", ["PNC"]),
+        ("Out\n-----\nNotas: Alergica a los champiñones y a los pimientos\n"
+         "Clientes ocupan 2 camas",
+         "champiñones", ["Notas", "camas"]),
+    ]
+    for nota, debe, no_debe in casos:
+        d = importer.detallar_amenidades(reserva_con(nota)).get(importer.RESTRICCION, "")
+        c.cierto(debe.lower() in d.lower(), f"el detalle conserva «{debe}»")
+        for basura in no_debe:
+            c.igual(basura.lower() in d.lower(), False,
+                    f"y no arrastra «{basura}» — {d[:60]!r}")
+
+
 def el_corte_del_detalle_se_ve(c):
     """Un corte sin marcar miente. El caso real: la reserva dice «FULLBOARD ( bebidas no
     incluidas)» y el trozo terminaba en «( bebidas no», que se lee como frase completa y
@@ -328,6 +404,9 @@ PRUEBAS = [
     una_reserva_puede_traer_las_dos_cosas,
     se_guarda_el_trozo_por_el_que_se_reconocio,
     el_detalle_no_es_la_reserva_entera,
+    decir_que_NO_hay_alergias_no_es_una_alergia,
+    dietary_a_secas_tambien_cuenta,
+    el_detalle_de_la_alergia_solo_habla_de_la_alergia,
     el_corte_del_detalle_se_ve,
     sin_texto_no_hay_detalle_inventado,
     el_regimen_sigue_saliendo_de_los_mismos_textos,

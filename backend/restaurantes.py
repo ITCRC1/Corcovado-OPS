@@ -261,6 +261,14 @@ PALABRAS_RESTRICCION = (
     "vegan", "vegetarian", "vegetarian",
     "lactosa", "lactose", "marisco", "shellfish", "nuez", "nuts", "maní", "peanut",
     "kosher", "halal", "sin azúcar", "sugar free", "diabet",
+    # Faltaban, y son de las que más se escriben: «no seafood» y «Dietary Restrictions:
+    # No Pork» aparecen tal cual en las notas de Opera. Se salvaban solo porque el
+    # NOMBRE de la amenidad ya dice «alergia»; una escrita a mano con otro nombre se
+    # habría perdido, que es justo lo que esta lista existe para evitar.
+    #
+    # No se pone «fish» a secas: cazaría «Sport Fishing», que es un tour.
+    "seafood", "pork", "cerdo", "camarón", "camaron", "shrimp", "dairy",
+    "lácteo", "lacteo", "pescatarian",
 )
 
 
@@ -273,11 +281,19 @@ def es_restriccion_alimentaria(amenidad, tarea=None, detalle=None):
 
     La cena privada queda fuera aunque sea de cocina: tiene su propio sitio en la
     pantalla y mezclarlas escondería lo que aquí importa.
+
+    Y «NO tiene alergias» tampoco entra. El importador ya no crea esa amenidad, pero
+    recepción puede escribirla a mano —«sin alergias», «no dietary restrictions»— y
+    entonces llegaría aquí por la palabra «alergia» y ocuparía una fila de la pestaña
+    diciendo lo contrario de lo que parece.
     """
     if es_cena_privada(amenidad, tarea):
         return False
-    texto = " ".join(str(x or "") for x in (amenidad, tarea, detalle)).lower()
-    return any(p in texto for p in PALABRAS_RESTRICCION)
+    texto = " ".join(str(x or "") for x in (amenidad, tarea, detalle))
+    import importer
+    if importer.sin_restricciones(texto):
+        return False
+    return any(p in texto.lower() for p in PALABRAS_RESTRICCION)
 
 
 def restricciones_del_dia(conn, fecha, distribucion=None, cache=None):
