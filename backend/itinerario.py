@@ -211,7 +211,8 @@ def construir_filas(datos):
 
     for t in datos.get("tours", []):
         externo = (t.get("guia_nombre") or "").upper() == "EXTERNO"
-        info = cat.texto_tour(t["tour_codigo"], guia_es_externo=externo)
+        info = cat.texto_tour(t["tour_codigo"], guia_es_externo=externo,
+                              horario_del_catalogo=t.get("horario_inicio"))
         filas.append((_fecha_larga(t["fecha"]), info))
 
     for s in datos.get("spa", []):
@@ -410,9 +411,16 @@ def datos_de_reserva(conn, conf_no):
     r = dict(r)
     huespedes = [dict(h)["nombre_completo"] for h in conn.execute(
         "SELECT nombre_completo FROM huesped WHERE conf_no = ?", (conf_no,))]
+    # El horario del catálogo viene para poder rellenar la hora de las fichas que la
+    # tienen en blanco: un tour agregado desde la pantalla de Catálogo trae su hora ahí,
+    # y sin esto el itinerario del huésped seguía diciendo «___» aunque estuviera puesta.
+    # LEFT JOIN y no JOIN: un tour sin fila en el catálogo tiene que seguir apareciendo
+    # en el itinerario del huésped, no desaparecer de él.
     tours = [dict(t) for t in conn.execute(
-        """SELECT ta.fecha, ta.tour_codigo, ta.guia_nombre
-           FROM tour_asignado ta WHERE ta.conf_no = ? ORDER BY ta.fecha""", (conf_no,))]
+        """SELECT ta.fecha, ta.tour_codigo, ta.guia_nombre, tc.horario_inicio
+           FROM tour_asignado ta
+           LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
+           WHERE ta.conf_no = ? ORDER BY ta.fecha""", (conf_no,))]
 
     # Las citas de spa CONFIRMADAS. Solo esas: una solicitud que el spa todavía no
     # confirmó no se le puede prometer al huésped en su itinerario — si después no

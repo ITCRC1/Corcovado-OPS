@@ -410,10 +410,20 @@ def _codigo_del_catalogo(codigo, del_catalogo):
     significaría una cosa al importar y otra al leer la nota.
     """
     limpio = (codigo or "").strip().upper()
+    import opera_paquetes as op
+
+    # La EQUIVALENCIA va primero, incluso si el alias existe como tour en el catálogo.
+    # Pasa de verdad: recepción puede haber creado «CIS» a mano desde la pantalla de
+    # Catálogo antes de que el sistema lo reconociera. Si aquí se aceptara tal cual, la
+    # agenda seguiría llenando dos tours —CIS y SNORKEL— con la misma gente repartida
+    # entre los dos, que es justo lo que se quiere unificar.
+    clasificado = op.clasificar(limpio)
+    if (clasificado["tipo"] == "tour" and clasificado["valor"]
+            and clasificado["valor"] != limpio
+            and clasificado["valor"] in del_catalogo):
+        return clasificado["valor"]
     if limpio in del_catalogo:
         return limpio
-    import opera_paquetes as op
-    clasificado = op.clasificar(limpio)
     if clasificado["tipo"] == "tour" and clasificado["valor"] in del_catalogo:
         return clasificado["valor"]
     import pdf_parser

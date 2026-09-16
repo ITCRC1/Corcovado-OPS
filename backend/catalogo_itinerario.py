@@ -227,9 +227,20 @@ TOURS_ITINERARIO = {
 }
 
 
-def texto_tour(codigo, guia_es_externo=False):
+def texto_tour(codigo, guia_es_externo=False, horario_del_catalogo=None):
     """Devuelve el bloque de texto del tour para el itinerario del huésped.
-    Si el tour tiene variantes según el guía (caso Sirena), usa la que corresponda."""
+
+    Si el tour tiene variantes según el guía (caso Sirena), usa la que corresponda.
+
+    `horario_del_catalogo` es la hora de inicio que recepción puso en la pantalla de
+    Catálogo. Se usa para RELLENAR el hueco de las fichas que están marcadas con hora
+    manual —las que traen «at ___»—, y nunca para pisar una hora ya escrita aquí.
+
+    Hace falta porque las dos cosas vivían separadas y nadie lo sabía: agregar un tour
+    desde el Catálogo le ponía su horario a la agenda, pero el itinerario del huésped
+    seguía diciendo «___» porque su texto está escrito en este archivo. Quien lo agregara
+    daría el trabajo por terminado y el huésped recibiría un documento sin hora.
+    """
     base = codigo.replace(" PRIVADO", "").strip().upper()
     info = TOURS_ITINERARIO.get(base)
     if not info:
@@ -237,20 +248,47 @@ def texto_tour(codigo, guia_es_externo=False):
         return {
             "nombre": codigo.title(),
             "duracion": "",
-            "horario": "___",
+            "horario": _con_hora("___", horario_del_catalogo),
             "detalles": "",
-            "requiere_revision": True,
+            "requiere_revision": not horario_del_catalogo,
         }
     horario = info["horario"]
     if "variantes" in info:
         horario = info["variantes"]["EXTERNO" if guia_es_externo else "HOTEL"]
+    manual = bool(info.get("hora_manual"))
+    if manual and horario_del_catalogo:
+        horario = _con_hora(horario, horario_del_catalogo)
+        manual = False
     return {
         "nombre": info["nombre"],
         "duracion": info.get("duracion", ""),
         "horario": horario,
         "detalles": info.get("detalles", ""),
-        "requiere_revision": bool(info.get("hora_manual")),
+        "requiere_revision": manual,
     }
+
+
+def _con_hora(texto, hora):
+    """Pone la hora del catálogo donde la ficha dejó el hueco «___».
+
+    Se escribe como el resto del itinerario —«7:30 a.m.» y no «07:30»— porque es un
+    documento para el huésped y ahí el formato de 24 horas se lee como un horario de tren.
+    """
+    if not hora:
+        return texto
+    return texto.replace("___", hora_legible(hora))
+
+
+def hora_legible(hhmm):
+    """'07:30' -> '7:30 a.m.'. Devuelve lo que le entre si no tiene esa forma."""
+    try:
+        h, m = str(hhmm).strip().split(":")
+        h, m = int(h), int(m)
+    except (ValueError, AttributeError):
+        return str(hhmm or "")
+    sufijo = "a.m." if h < 12 else "p.m."
+    doce = h % 12 or 12
+    return f"{doce}:{m:02d} {sufijo}"
 
 
 def texto_llegada(punto, vuelo=None, hora=None):

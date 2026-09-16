@@ -345,6 +345,7 @@ def _migrar(conn):
     _sembrar_areas_de_amenidades(conn)
     _limpiar_grupos_sueltos(conn)
     _quitar_bebidas_de_amenidades(conn)
+    _unificar_tours_de_la_nomenclatura(conn)
     _purgar_sesiones(conn)
     # Al final, con las tablas ya creadas y los duplicados ya limpios.
     _crear_indices(conn)
@@ -398,6 +399,68 @@ def _quitar_bebidas_de_amenidades(conn):
     if n:
         conn.commit()
         print(f"Se quitaron {n} amenidades de «Bebidas incluidas»: ahora van con el régimen.")
+
+
+def _unificar_tours_de_la_nomenclatura(conn):
+    """Lleva los tours ya guardados con un código retirado al tour que de verdad son.
+
+    POR QUÉ HACE FALTA. Arreglar la tabla de equivalencias no arregla lo YA guardado. KSJ
+    estuvo un tiempo como tour propio, así que en la base hay salidas con ese código, una
+    fila suya en el catálogo y itinerarios escritos con ese nombre. La agenda las muestra
+    como un tour aparte del San Josecito de siempre —el mismo huésped en dos filas— y
+    nada de eso se arregla solo: la importación solo vuelve a tocar las reservas que
+    cambian, y el catálogo nunca se borra.
+
+    Se hace por RENOMBRADO, no por borrado: ninguna salida se pierde, cambia el código al
+    que apuntan. Lo único que se elimina es la fila duplicada cuando la misma reserva ya
+    tenía el tour bueno el mismo día, que es la única forma de acabar con dos.
+
+    La lista sale de la MISMA tabla de equivalencias que usa la importación, así que un
+    código que se retire mañana se unifica solo al arrancar.
+    """
+    columnas = {r[1] for r in conn.execute("PRAGMA table_info(tour_catalogo)")}
+    if "codigo" not in columnas:
+        return
+    import opera_paquetes as op
+
+    del_catalogo = {r["codigo"] for r in conn.execute("SELECT codigo FROM tour_catalogo")}
+    movidas, quitadas, retirados = 0, 0, []
+
+    for cod, equivalente, _es, _en in op.CATALOGO_2027:
+        if not equivalente or equivalente == cod:
+            continue
+        # Solo los que llegaron a existir como tour propio. Los demás siempre fueron
+        # alias y nunca tuvieron fila que arreglar.
+        if cod not in del_catalogo or equivalente not in del_catalogo:
+            continue
+
+        # Primero las que chocarían: la reserva ya tiene el tour bueno ese día, así que
+        # la del código viejo es la MISMA salida contada dos veces.
+        quitadas += conn.execute(
+            """DELETE FROM tour_asignado WHERE tour_codigo = ? AND EXISTS (
+                   SELECT 1 FROM tour_asignado b
+                   WHERE b.conf_no = tour_asignado.conf_no
+                     AND b.fecha = tour_asignado.fecha
+                     AND b.tour_codigo = ?)""", (cod, equivalente)).rowcount
+        movidas += conn.execute(
+            "UPDATE tour_asignado SET tour_codigo = ? WHERE tour_codigo = ?",
+            (equivalente, cod)).rowcount
+        conn.execute("UPDATE entrada_sinac SET tour_codigo = ? WHERE tour_codigo = ?",
+                     (equivalente, cod))
+        conn.execute("DELETE FROM tour_catalogo WHERE codigo = ?", (cod,))
+        del_catalogo.discard(cod)
+        retirados.append(f"{cod}->{equivalente}")
+
+    if not retirados:
+        return
+    # El itinerario del huésped se guarda escrito. El que nadie editó a mano se borra
+    # para que se vuelva a generar con el nombre bueno; el editado NO se toca, que ahí
+    # hay texto de una persona.
+    rehacer = conn.execute(
+        "DELETE FROM itinerario WHERE IFNULL(editado, 0) = 0").rowcount
+    conn.commit()
+    print(f"Tours unificados ({', '.join(retirados)}): {movidas} salidas movidas, "
+          f"{quitadas} duplicadas quitadas, {rehacer} itinerarios a rehacer.")
 
 
 def _limpiar_grupos_sueltos(conn):

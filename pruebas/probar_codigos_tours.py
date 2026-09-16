@@ -16,6 +16,8 @@ la hoja del dia — sin dar ningun error.
 Y falla en silencio en las dos direcciones: un prefijo mal leido puede convertir un tour
 en otro, y entonces la hoja del dia manda el bote y el guia equivocados.
 """
+import contextlib
+import io
 import os
 import sys
 
@@ -196,6 +198,112 @@ def todo_tour_reconocido_tiene_ficha_de_itinerario(c):
                  f"«{codigo}» muestra un nombre de verdad, no el codigo")
 
 
+def los_tours_ya_guardados_se_unifican_al_arrancar(c):
+    """Lo que reporto el hotel: en la agenda salia SNORKEL por un lado y CIS por otro,
+    con la misma gente repartida entre los dos.
+
+    Arreglar la tabla de equivalencias no arregla lo YA guardado: recepcion habia creado
+    los alias a mano como tours aparte, y la importacion solo vuelve a tocar las reservas
+    que cambian. Se unifican al arrancar, por RENOMBRADO: ninguna salida se pierde."""
+    import init_db
+    conn = comun.base_limpia()
+
+    # Como esta en produccion: los alias existen como tours propios...
+    for cod in ("CIS", "EBT", "KSJ"):
+        conn.execute(
+            """INSERT OR IGNORE INTO tour_catalogo
+                 (codigo, nombre, max_pax_guia, requiere_entrada_sinac, requiere_bote,
+                  es_privado, activo) VALUES (?,?,8,0,0,0,1)""", (cod, cod))
+    conn.execute("INSERT INTO reserva (conf_no, adl, chl, res_status, arr_date, dep_date) "
+                 "VALUES ('R1',2,0,'EN CASA','01-05-26','06-05-26')")
+    # ...con salidas repartidas entre el alias y el tour de siempre.
+    for cod, fecha in (("SNORKEL", "2026-05-01"), ("CIS", "2026-05-02"),
+                       ("EBT", "2026-05-03"), ("KSJ", "2026-05-04"),
+                       # y una que CHOCA: el mismo dia que su SNORKEL.
+                       ("CIS", "2026-05-01")):
+        conn.execute("INSERT INTO tour_asignado (conf_no, fecha, tour_codigo, pax) "
+                     "VALUES ('R1',?,?,2)", (fecha, cod))
+    conn.commit()
+    conn.close()
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        init_db.init_db()                      # el arranque, que es donde se unifica
+
+    conn = comun.conexion()
+    por_tour = {r["t"]: r["n"] for r in conn.execute(
+        "SELECT tour_codigo t, COUNT(*) n FROM tour_asignado GROUP BY t")}
+    c.igual(por_tour.get("CIS"), None, "CIS ya no existe como tour aparte")
+    c.igual(por_tour.get("EBT"), None, "ni EBT")
+    c.igual(por_tour.get("KSJ"), None, "ni KSJ")
+    c.igual(por_tour.get("SNORKEL"), 2,
+            "el SNORKEL suma el suyo y el del alias, sin la duplicada del mismo dia")
+    c.igual(por_tour.get("PAJAREO"), 1, "EBT quedo en PAJAREO")
+    c.igual(por_tour.get("SAN JOSECITO"), 1, "KSJ quedo en SAN JOSECITO")
+
+    del_catalogo = {r["codigo"] for r in conn.execute(
+        "SELECT codigo FROM tour_catalogo")}
+    for cod in ("CIS", "EBT", "KSJ"):
+        c.igual(cod in del_catalogo, False,
+                f"«{cod}» se retiro del catalogo, para que no se vuelva a usar")
+
+    # Idempotente: arrancar otra vez no encuentra nada que hacer ni rompe nada.
+    conn.close()
+    with contextlib.redirect_stdout(io.StringIO()):
+        init_db.init_db()
+    conn = comun.conexion()
+    c.igual(conn.execute("SELECT COUNT(*) n FROM tour_asignado").fetchone()["n"], 4,
+            "arrancar dos veces no cambia nada")
+    conn.close()
+
+
+def un_alias_creado_a_mano_no_vuelve_a_entrar(c):
+    """Aunque el alias exista como tour en el catalogo, la equivalencia manda: si no,
+    la importacion seguiria llenando los dos tours con la misma gente."""
+    import loader
+    catalogo = {"SNORKEL", "PAJAREO", "SAN JOSECITO", "CIS", "EBT", "KSJ"}
+    c.igual(loader._codigo_del_catalogo("CIS", catalogo), "SNORKEL",
+            "CIS entra como SNORKEL aunque CIS exista como tour")
+    c.igual(loader._codigo_del_catalogo("C-CIS", catalogo), "SNORKEL",
+            "y con el prefijo de cortesia tambien")
+    c.igual(loader._codigo_del_catalogo("SNORKEL", catalogo), "SNORKEL",
+            "el codigo propio se respeta")
+    c.igual(loader._codigo_del_catalogo("INVENTADO", catalogo), None,
+            "y lo que no se reconoce devuelve None, para avisar en vez de escribir")
+
+
+def la_hora_del_catalogo_llega_al_itinerario_del_huesped(c):
+    """Agregar un tour desde la pantalla de Catalogo le pone su horario a la agenda, pero
+    el texto del itinerario vive en otro archivo: el huesped seguia recibiendo un
+    documento que decia «at ___» aunque la hora estuviera puesta. Quien lo agregara daria
+    el trabajo por terminado sin saberlo."""
+    import catalogo_itinerario as cat
+
+    sin_hora = cat.texto_tour("DSD")
+    c.cierto("___" in sin_hora["horario"], "sin hora en el catalogo queda el hueco")
+    c.igual(sin_hora["requiere_revision"], True, "y marcado para revisar")
+
+    con_hora = cat.texto_tour("DSD", horario_del_catalogo="07:15")
+    c.cierto("7:15 a.m." in con_hora["horario"],
+             "con la hora puesta, el itinerario la trae")
+    c.igual("___" in con_hora["horario"], False, "y ya no queda el hueco")
+    c.igual(con_hora["requiere_revision"], False, "ni la marca de revisar")
+
+    # Lo que NO debe pasar: pisar una hora que la ficha ya trae escrita. La del catalogo
+    # es la de operacion; la del itinerario dice a que hora estar en la casa de guias, y
+    # no son la misma.
+    pnc = cat.texto_tour("PNC", horario_del_catalogo="09:00")
+    c.cierto("7:00 a.m." in pnc["horario"],
+             "una ficha con hora propia NO se deja pisar por el catalogo")
+    c.igual("9:00" in pnc["horario"], False, "de ninguna forma")
+
+    # Y la hora se escribe como el resto del documento, no como un horario de tren.
+    c.igual(cat.hora_legible("07:30"), "7:30 a.m.", "la manana")
+    c.igual(cat.hora_legible("14:00"), "2:00 p.m.", "la tarde")
+    c.igual(cat.hora_legible("12:15"), "12:15 p.m.", "el mediodia")
+    c.igual(cat.hora_legible("00:30"), "12:30 a.m.", "la medianoche")
+    c.igual(cat.hora_legible(None), "", "y lo que no es una hora no revienta")
+
+
 def la_modalidad_no_se_pierde_al_reconocer_por_alias(c):
     """El «C-» se leia buscando el codigo CANONICO en la linea: «SNORKEL» en «14: C-CIS».
     No estaba, asi que TODOS los codigos de la nomenclatura 2027 perdian su privado y su
@@ -338,7 +446,10 @@ PRUEBAS = [
     la_descripcion_del_MGX_no_crea_un_tour_de_manglar,
     un_servicio_privado_de_cortesia_es_las_dos_cosas,
     un_codigo_nuevo_no_crea_un_tour_que_ya_existe,
+    los_tours_ya_guardados_se_unifican_al_arrancar,
+    un_alias_creado_a_mano_no_vuelve_a_entrar,
     todo_tour_reconocido_tiene_ficha_de_itinerario,
+    la_hora_del_catalogo_llega_al_itinerario_del_huesped,
     la_modalidad_no_se_pierde_al_reconocer_por_alias,
     la_pesca_deportiva_es_privada_aunque_no_lo_diga,
     las_dos_estaciones_de_corcovado_son_distintas,
