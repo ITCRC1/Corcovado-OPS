@@ -345,7 +345,7 @@ def _migrar(conn):
     _sembrar_areas_de_amenidades(conn)
     _limpiar_grupos_sueltos(conn)
     _quitar_bebidas_de_amenidades(conn)
-    _unificar_tours_de_la_nomenclatura(conn)
+    _sin_tumbar_el_arranque(conn, _unificar_tours_de_la_nomenclatura)
     _purgar_sesiones(conn)
     # Al final, con las tablas ya creadas y los duplicados ya limpios.
     _crear_indices(conn)
@@ -401,6 +401,27 @@ def _quitar_bebidas_de_amenidades(conn):
         print(f"Se quitaron {n} amenidades de «Bebidas incluidas»: ahora van con el régimen.")
 
 
+def _sin_tumbar_el_arranque(conn, limpieza):
+    """Corre una limpieza de datos sin que pueda impedir que el sistema arranque.
+
+    ESTO YA PASÓ, y por eso está aquí. La unificación de tours chocó contra el UNIQUE de
+    las entradas del parque, la excepción subió por init_db() —que corre al arrancar— y
+    el hotel se quedó SIN SISTEMA: 502 en todas las pantallas, con la operación del día
+    en marcha.
+
+    Ninguna limpieza vale eso. Son mejoras de datos: si una falla, lo correcto es que la
+    base quede como estaba, que quede dicho en el registro, y que el sistema levante
+    igual. La siguiente versión la vuelve a intentar.
+    """
+    try:
+        limpieza(conn)
+    except Exception as e:
+        conn.rollback()
+        print(f"AVISO: la limpieza «{limpieza.__name__}» no se pudo aplicar y se dejó "
+              f"para después ({type(e).__name__}: {e}). El sistema arranca igual y los "
+              f"datos quedan como estaban.")
+
+
 def _unificar_tours_de_la_nomenclatura(conn):
     """Lleva los tours ya guardados con un código retirado al tour que de verdad son.
 
@@ -445,6 +466,25 @@ def _unificar_tours_de_la_nomenclatura(conn):
         movidas += conn.execute(
             "UPDATE tour_asignado SET tour_codigo = ? WHERE tour_codigo = ?",
             (equivalente, cod)).rowcount
+
+        # Las entradas del parque llevan UNIQUE(tour_codigo, fecha, conf_entrada), así
+        # que renombrar a secas choca contra una que ya exista para el mismo día: la
+        # misma entrada anotada dos veces, una con cada código. Se resuelve ANTES de
+        # renombrar, y se conserva la COMPRADA: esa está pagada y su número de
+        # confirmación es lo único que no se puede volver a conseguir.
+        for vieja in conn.execute(
+                """SELECT a.id, a.estado, a.conf_entrada, a.pax_total_grupo, a.fecha,
+                          b.id AS id_buena, b.estado AS estado_buena
+                   FROM entrada_sinac a JOIN entrada_sinac b
+                     ON b.tour_codigo = ? AND b.fecha = a.fecha
+                    AND IFNULL(b.conf_entrada,'') = IFNULL(a.conf_entrada,'')
+                   WHERE a.tour_codigo = ?""", (equivalente, cod)).fetchall():
+            if vieja["estado"] == "COMPRADA" and vieja["estado_buena"] != "COMPRADA":
+                conn.execute(
+                    """UPDATE entrada_sinac SET estado = 'COMPRADA', conf_entrada = ?,
+                           pax_total_grupo = ? WHERE id = ?""",
+                    (vieja["conf_entrada"], vieja["pax_total_grupo"], vieja["id_buena"]))
+            conn.execute("DELETE FROM entrada_sinac WHERE id = ?", (vieja["id"],))
         conn.execute("UPDATE entrada_sinac SET tour_codigo = ? WHERE tour_codigo = ?",
                      (equivalente, cod))
         conn.execute("DELETE FROM tour_catalogo WHERE codigo = ?", (cod,))

@@ -19,6 +19,7 @@ en otro, y entonces la hoja del dia manda el bote y el guia equivocados.
 import contextlib
 import io
 import os
+import sqlite3
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -256,6 +257,83 @@ def los_tours_ya_guardados_se_unifican_al_arrancar(c):
     conn.close()
 
 
+def unificar_no_puede_tumbar_el_arranque(c):
+    """ESTO PASO. La unificacion choco contra el UNIQUE de las entradas del parque, la
+    excepcion subio por init_db —que corre al arrancar— y el hotel se quedo SIN SISTEMA:
+    502 en todas las pantallas, con la operacion del dia en marcha.
+
+    Dos cosas se fijan aqui: que ese choque concreto ya no pase, y que NINGUNA limpieza
+    pueda impedir el arranque aunque falle por otra razon."""
+    import init_db
+    conn = comun.base_limpia()
+    conn.execute("""INSERT OR IGNORE INTO tour_catalogo
+                      (codigo, nombre, max_pax_guia, requiere_entrada_sinac,
+                       requiere_bote, es_privado, activo)
+                    VALUES ('CIS','Cano Island',8,1,1,0,1)""")
+    # La MISMA entrada del parque anotada dos veces, una con cada codigo.
+    for cod in ("SNORKEL", "CIS"):
+        conn.execute("""INSERT INTO entrada_sinac
+                          (tour_codigo, fecha, conf_entrada, pax_total_grupo, estado)
+                        VALUES (?, '2026-05-01', NULL, 4, 'SIN_COMPRAR')""", (cod,))
+    conn.commit()
+    conn.close()
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        init_db.init_db()                      # antes reventaba aqui
+
+    conn = comun.conexion()
+    entradas = [dict(r) for r in conn.execute(
+        "SELECT tour_codigo, fecha FROM entrada_sinac")]
+    c.igual(len(entradas), 1, "las dos entradas del mismo dia quedan en una")
+    c.igual(entradas[0]["tour_codigo"], "SNORKEL", "con el codigo bueno")
+    conn.close()
+
+    # La red de seguridad: una limpieza que falle NO puede impedir el arranque.
+    def limpieza_que_revienta(_conn):
+        raise sqlite3.IntegrityError("fallo inventado para la prueba")
+
+    salida = io.StringIO()
+    otra = comun.conexion()
+    with contextlib.redirect_stdout(salida):
+        init_db._sin_tumbar_el_arranque(otra, limpieza_que_revienta)
+    otra.close()
+    c.cierto("AVISO" in salida.getvalue(),
+             "una limpieza que falla lo dice en el registro")
+    c.cierto("no se pudo aplicar" in salida.getvalue(),
+             "y explica que se dejo para despues")
+
+
+def una_entrada_ya_comprada_no_se_pierde_al_unificar(c):
+    """La entrada COMPRADA esta pagada y su numero de confirmacion es lo unico que no se
+    puede volver a conseguir. Si el choque se resolviera quedandose con la otra, el hotel
+    perderia una entrada que ya pago."""
+    import init_db
+    conn = comun.base_limpia()
+    conn.execute("""INSERT OR IGNORE INTO tour_catalogo
+                      (codigo, nombre, max_pax_guia, requiere_entrada_sinac,
+                       requiere_bote, es_privado, activo)
+                    VALUES ('CIS','Cano Island',8,1,1,0,1)""")
+    conn.execute("""INSERT INTO entrada_sinac
+                      (tour_codigo, fecha, conf_entrada, pax_total_grupo, estado)
+                    VALUES ('SNORKEL','2026-05-02',NULL,4,'SIN_COMPRAR')""")
+    conn.execute("""INSERT INTO entrada_sinac
+                      (tour_codigo, fecha, conf_entrada, pax_total_grupo, estado)
+                    VALUES ('CIS','2026-05-02',NULL,6,'COMPRADA')""")
+    conn.commit()
+    conn.close()
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        init_db.init_db()
+
+    conn = comun.conexion()
+    filas = [dict(r) for r in conn.execute("SELECT * FROM entrada_sinac")]
+    c.igual(len(filas), 1, "queda una sola entrada")
+    c.igual(filas[0]["tour_codigo"], "SNORKEL", "con el codigo bueno")
+    c.igual(filas[0]["estado"], "COMPRADA", "y CONSERVA que estaba comprada")
+    c.igual(filas[0]["pax_total_grupo"], 6, "con el pax de la que se habia pagado")
+    conn.close()
+
+
 def un_alias_creado_a_mano_no_vuelve_a_entrar(c):
     """Aunque el alias exista como tour en el catalogo, la equivalencia manda: si no,
     la importacion seguiria llenando los dos tours con la misma gente."""
@@ -447,6 +525,8 @@ PRUEBAS = [
     un_servicio_privado_de_cortesia_es_las_dos_cosas,
     un_codigo_nuevo_no_crea_un_tour_que_ya_existe,
     los_tours_ya_guardados_se_unifican_al_arrancar,
+    unificar_no_puede_tumbar_el_arranque,
+    una_entrada_ya_comprada_no_se_pierde_al_unificar,
     un_alias_creado_a_mano_no_vuelve_a_entrar,
     todo_tour_reconocido_tiene_ficha_de_itinerario,
     la_hora_del_catalogo_llega_al_itinerario_del_huesped,
