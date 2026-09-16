@@ -325,7 +325,30 @@ def _guardar_tours(cur, r, borrar_si_vacio=True):
     cur.execute("DELETE FROM tour_asignado WHERE conf_no = ? "
                 "AND IFNULL(origen, 'PDF') <> 'MANUAL'", (r["conf_no"],))
 
+    # Los códigos que el catálogo conoce. tour_asignado.tour_codigo tiene clave foránea
+    # contra tour_catalogo, así que un código que no exista NO da un tour perdido: revienta
+    # el INSERT con IntegrityError y tumba la carga ENTERA de la sincronización —todas las
+    # reservas del ciclo, no solo esta—. Un código nuevo en la nomenclatura, o una errata
+    # de Reservaciones, bastaba para dejar al hotel sin actualizar y sin saber por qué.
+    del_catalogo = {x["codigo"] for x in cur.execute("SELECT codigo FROM tour_catalogo")}
+
     for a in r.get("agenda") or []:
+        # Se traduce AQUÍ, en la última puerta antes de escribir. Los códigos ya vienen
+        # traducidos por el lector de notas, pero no todos los caminos pasan por él —los
+        # paquetes de Opera, un tour agregado a mano, una importación futura—, y basta con
+        # que uno entregue «CIS» en crudo para que la agenda muestre un tour NUEVO al lado
+        # del SNORKEL de siempre, con el mismo huésped contado dos veces.
+        a["tour"] = _codigo_del_catalogo(a["tour"], del_catalogo) or a["tour"]
+        if a["tour"] not in del_catalogo:
+            # Se avisa y se sigue. Perder un tour con aviso es malo; perder la
+            # sincronización del hotel sin decir por qué es mucho peor.
+            cur.execute(
+                "INSERT INTO alerta (tipo, referencia_id, mensaje) VALUES (?,NULL,?)",
+                ("TOUR_SIN_CATALOGO",
+                 f"La reserva {r['conf_no']} pide «{a['tour']}» el {a['fecha']} y ese "
+                 f"código no está en el catálogo de tours. Agrégalo desde Catálogo o "
+                 f"corrige la nota en Opera."))
+            continue
         # Cuánta gente va a este tour. Si la fuente lo dice, se respeta; si no, se
         # asume que va toda la habitación, que es lo que hacía el PDF.
         pax_del_tour = a.get("pax")
@@ -376,6 +399,26 @@ def _guardar_tours(cur, r, borrar_si_vacio=True):
             (r["conf_no"], a["fecha"], a["tour"], pax_del_tour, pax_a_mano,
              a.get("conf_entrada"), guia_prev, bote_prev, grupo_prev),
         )
+
+
+def _codigo_del_catalogo(codigo, del_catalogo):
+    """El código del lodge para lo que venga, o None si no se reconoce.
+
+    Acepta el código propio («SNORKEL»), el de la nomenclatura 2027 («CIS»), el mismo con
+    prefijo de modalidad («C-CIS», «PRV|C-PNC») y los alias de siempre. Una sola tabla de
+    equivalencias, la de opera_paquetes: si aquí se tradujera distinto, el mismo código
+    significaría una cosa al importar y otra al leer la nota.
+    """
+    limpio = (codigo or "").strip().upper()
+    if limpio in del_catalogo:
+        return limpio
+    import opera_paquetes as op
+    clasificado = op.clasificar(limpio)
+    if clasificado["tipo"] == "tour" and clasificado["valor"] in del_catalogo:
+        return clasificado["valor"]
+    import pdf_parser
+    alias = pdf_parser.TOUR_ALIASES.get(limpio)
+    return alias if alias in del_catalogo else None
 
 
 def _aviso_de_cancelacion(nombre, hab, llegada, conf_no):

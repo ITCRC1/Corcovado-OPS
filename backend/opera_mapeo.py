@@ -552,8 +552,20 @@ def _operacion(reserva, arr_date_iso):
                 dia = None
         if dia is None:
             continue
-        operacion.append({"dia": str(dia), "tour": str(nombre).strip().upper(),
-                          "conf_entrada": None})
+        # El nombre del paquete se TRADUCE al código del lodge. Antes entraba en crudo,
+        # así que un paquete llamado «CIS» —la nomenclatura nueva del snorkel de Isla del
+        # Caño— iba a la agenda como «CIS» y no como SNORKEL: un tour nuevo y separado del
+        # que ya existe, con el mismo huésped contado dos veces si la nota también lo
+        # traía. Y si el código no existía en el catálogo, ni siquiera llegaba: reventaba
+        # la carga entera por la clave foránea.
+        import opera_paquetes as _op
+        clasificado = _op.clasificar(str(nombre))
+        if clasificado["tipo"] != "tour" or not clasificado["valor"]:
+            continue
+        operacion.append({"dia": str(dia), "tour": clasificado["valor"],
+                          "conf_entrada": None,
+                          "privado": clasificado.get("privado", False),
+                          "cortesia": clasificado.get("cortesia", False)})
     return operacion
 
 

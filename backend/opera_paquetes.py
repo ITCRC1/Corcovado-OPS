@@ -99,8 +99,13 @@ CATALOGO_2027 = [
     ("GTT", "GTT",       "Experiencia Garden to Table", "Garden to Table Experience"),
     ("SFH", "PESCA",     "Pesca deportiva · medio día", "Sportfishing · Half Day"),
 
+    # KSJ es el San Josecito que el lodge YA hace: mismo destino y mismo tour, con el
+    # nombre nuevo. Entró un día como tour aparte y eso lo partía en dos —una salida
+    # «KSJ» sin ficha de itinerario junto a la de siempre—, que es justo lo que la tabla
+    # de equivalencias existe para evitar.
+    ("KSJ", "SAN JOSECITO", "Kayak a San Josecito", "Kayak to San Josecito"),
+
     # Sin equivalente en el catálogo actual: entran como tours nuevos.
-    ("KSJ", None, "Kayak a San Josecito", "Kayak to San Josecito"),
     # El documento lo dice expresamente: «Actividad distinta de CID; no requiere usar el
     # mismo código». Por eso NO se mapea a BUCEO.
     ("DSD", None, "Discovery Scuba Diving", "Discovery Scuba Diving"),

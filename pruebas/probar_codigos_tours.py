@@ -164,6 +164,54 @@ def un_servicio_privado_de_cortesia_es_las_dos_cosas(c):
             "los dos caminos coinciden")
 
 
+def un_codigo_nuevo_no_crea_un_tour_que_ya_existe(c):
+    """Lo que reporto el hotel. KSJ es el San Josecito que el lodge YA hace, con el
+    nombre nuevo, y entraba como tour APARTE: una salida «KSJ» sin ficha de itinerario
+    al lado de la de siempre. La tabla de equivalencias existe para evitar justo eso."""
+    import init_db
+    c.igual(op.clasificar("KSJ")["valor"], "SAN JOSECITO",
+            "KSJ es el San Josecito de siempre")
+    codigos = {t[0] for t in init_db.TOURS}
+    c.cierto("SAN JOSECITO" in codigos,
+             "y SAN JOSECITO existe en el catalogo, que es lo que exige la clave foranea")
+    c.igual("KSJ" in codigos, False, "KSJ ya no es un tour aparte")
+    # Y los que SI son nuevos siguen siendolo: el documento los da como actividades
+    # distintas y no hay ninguna equivalente.
+    for cod in ("DSD", "SFF", "CLW", "HDA", "NGW"):
+        c.cierto(cod in codigos, f"{cod} sigue siendo un tour propio")
+
+
+def todo_tour_reconocido_tiene_ficha_de_itinerario(c):
+    """El otro sintoma: el itinerario del huesped mostraba «Dsd» —el codigo con la
+    primera letra en mayuscula— porque no habia ficha. Es un documento que se le manda
+    al huesped con el nombre interno del sistema."""
+    import catalogo_itinerario as cat
+    import init_db
+    for codigo, nombre, *_ in init_db.TOURS:
+        base = codigo.replace(" PRIVADO", "").strip().upper()
+        info = cat.texto_tour(codigo)
+        c.cierto(base in cat.TOURS_ITINERARIO,
+                 f"«{codigo}» tiene ficha de itinerario")
+        c.cierto(info["nombre"] and info["nombre"] != codigo.title(),
+                 f"«{codigo}» muestra un nombre de verdad, no el codigo")
+
+
+def la_modalidad_no_se_pierde_al_reconocer_por_alias(c):
+    """El «C-» se leia buscando el codigo CANONICO en la linea: «SNORKEL» en «14: C-CIS».
+    No estaba, asi que TODOS los codigos de la nomenclatura 2027 perdian su privado y su
+    cortesia — el servicio entraba como compartido y de pago."""
+    import pdf_parser as pp
+    NOTA = "OPERACION:\n13: INGRESO\n14: C-CIS 201770\n15: PRV-EBT\n16: PRV|C-SIR\n"
+    ops = {o["tour"]: o for o in pp.leer_texto_de_reserva(NOTA)["operacion"]
+           if o.get("tour")}
+    c.igual((ops["SNORKEL"]["privado"], ops["SNORKEL"]["cortesia"]), (False, True),
+            "C-CIS es cortesia aunque el tour se llame SNORKEL")
+    c.igual((ops["PAJAREO"]["privado"], ops["PAJAREO"]["cortesia"]), (True, False),
+            "PRV-EBT es privado aunque el tour se llame PAJAREO")
+    c.igual((ops["SIRENA"]["privado"], ops["SIRENA"]["cortesia"]), (True, True),
+            "PRV|C-SIR es las dos cosas aunque el tour se llame SIRENA")
+
+
 def la_pesca_deportiva_es_privada_aunque_no_lo_diga(c):
     """El comunicado: «SFH y SFF se comercializan unicamente en modalidad privada. Por lo
     tanto, no es necesario que lleven el prefijo de PRV». Sin esto, un «SFF» a secas se
@@ -228,7 +276,7 @@ def los_tours_nuevos_entran_al_catalogo(c):
     catalogo = {t[0] for t in init_db.TOURS}
     for cod, nombre in init_db.TOURS_2027_NUEVOS:
         c.cierto(cod in catalogo, f"{cod} ({nombre}) esta en el catalogo")
-    fila = {t[0]: t for t in init_db.TOURS}["KSJ"]
+    fila = {t[0]: t for t in init_db.TOURS}["DSD"]
     c.igual(fila[2], None, "y sin horario de inicio inventado")
     c.igual(fila[8], 0, "ni bote supuesto")
     c.igual(fila[7], 0, "ni entrada del SINAC supuesta")
@@ -289,6 +337,9 @@ PRUEBAS = [
     el_manglar_del_traslado_no_es_el_tour_de_manglar,
     la_descripcion_del_MGX_no_crea_un_tour_de_manglar,
     un_servicio_privado_de_cortesia_es_las_dos_cosas,
+    un_codigo_nuevo_no_crea_un_tour_que_ya_existe,
+    todo_tour_reconocido_tiene_ficha_de_itinerario,
+    la_modalidad_no_se_pierde_al_reconocer_por_alias,
     la_pesca_deportiva_es_privada_aunque_no_lo_diga,
     las_dos_estaciones_de_corcovado_son_distintas,
     el_discovery_scuba_no_es_el_buceo_de_isla,

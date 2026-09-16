@@ -176,6 +176,54 @@ TOURS_ITINERARIO = {
         "detalles": "Please avoid wearing earrings, watches, necklaces, bracelets, or rings.",
         "hora_manual": True,
     },
+
+    # Los tours de la nomenclatura 2027 que NO tienen equivalente en la lista de arriba.
+    #
+    # Llevan el NOMBRE de verdad y la hora en blanco, a propósito. Antes el itinerario del
+    # huésped mostraba «Dsd» y «Clw» —el código con la primera letra en mayúscula— porque
+    # no había ficha ninguna: un documento que se le manda al huésped diciendo el código
+    # interno del sistema.
+    #
+    # La HORA y el QUÉ LLEVAR no se inventan: cuánto dura un Discovery Scuba, a qué hora
+    # sale la pared de escalada o qué hay que ponerse para la media jornada de aventura no
+    # está escrito en ninguna parte del sistema, y ponerlo a ojo sería prometerle al
+    # huésped algo que nadie comprobó. Quedan con «___» y marcados para revisión, que es
+    # exactamente lo que hace el sistema con la clase de cocina y el spa.
+    "DSD": {
+        "nombre": "Discovery Scuba Diving",
+        "duracion": "",
+        "horario": "Be at the dive center at ___",
+        "detalles": f"{VESTIR_AGUA}\n{LLEVAR_AGUA}",
+        "hora_manual": True,
+    },
+    "SFF": {
+        "nombre": "Sportfishing\nFull Day",
+        "duracion": "",
+        "horario": "Be at the guide house at ___",
+        "detalles": f"{VESTIR_AGUA}\n{LLEVAR_AGUA}",
+        "hora_manual": True,
+    },
+    "CLW": {
+        "nombre": "Climbing Wall",
+        "duracion": "",
+        "horario": "Be at the guide house at ___",
+        "detalles": f"{VESTIR_COMODO}\n{LLEVAR_COMODO}",
+        "hora_manual": True,
+    },
+    "HDA": {
+        "nombre": "Half-Day Adventure",
+        "duracion": "",
+        "horario": "Be at the guide house at ___",
+        "detalles": f"{VESTIR_COMODO}\n{LLEVAR_COMODO}",
+        "hora_manual": True,
+    },
+    "NGW": {
+        "nombre": "Naturalist Walk\nHotel Trails",
+        "duracion": "",
+        "horario": "Be at the guide house at ___",
+        "detalles": f"{VESTIR_SELVA}\n{LLEVAR_SELVA}",
+        "hora_manual": True,
+    },
 }
 
 

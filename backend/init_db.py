@@ -65,6 +65,15 @@ TOURS = [
     ("CLARO", "Claro del Bosque", None, None, None, None, 10, 0, 0, 0, None),
     ("SPA", "Spa / Masajes", None, None, None, None, 20, 0, 0, 0, None),
     ("TREENET", "Treenet", "16:00", "18:00", None, None, 4, 0, 0, 0, None),
+    # San Josecito ya existía en el itinerario del huésped —con su hora y su duración—
+    # pero NO en este catálogo. Eso lo dejaba fuera de la agenda y del reparto de guías,
+    # y además hacía imposible que la nomenclatura nueva (KSJ) apuntara a él: la clave
+    # foránea de tour_asignado exige que el código exista aquí.
+    #
+    # El horario es el que ya dice su propia ficha de itinerario, no uno inventado. El
+    # bote y la entrada del SINAC quedan sin marcar: eso no está escrito en ninguna
+    # parte y se completa desde la pantalla de Catálogo.
+    ("SAN JOSECITO", "San Josecito", "07:30", "11:30", None, None, 8, 0, 0, 0, None),
 ]
 
 # Los tours del catálogo de abreviaturas 2027 que NO tienen equivalente en la lista de
@@ -80,7 +89,8 @@ TOURS = [
 #
 # Se editan desde la pantalla de Catálogo, sin tocar código.
 TOURS_2027_NUEVOS = [
-    ("KSJ", "Kayak a San Josecito"),
+    # KSJ NO está aquí: es el SAN JOSECITO que ya existe, con el nombre nuevo. Ver la
+    # tabla de equivalencias en opera_paquetes.CATALOGO_2027.
     ("DSD", "Discovery Scuba Diving"),
     ("SFF", "Pesca deportiva · día completo"),
     ("CLW", "Pared de escalada"),

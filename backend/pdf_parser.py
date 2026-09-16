@@ -643,7 +643,20 @@ def procesar_linea(line, current, section):
                 if m_dia:
                     dia, resto = m_dia.group(1), m_dia.group(2)
                     numeros = re.findall(r"\b(\d{5,7})\b", resto)
-                    encontrados = [code.upper() for code in TOUR_CODES if re.search(rf"\b{code}\b", resto, re.IGNORECASE)]
+                    # DÓNDE apareció cada tour en la línea, no solo cuál apareció.
+                    #
+                    # Hace falta para leer el prefijo de modalidad. Antes se buscaba el
+                    # código CANÓNICO en la línea —«SNORKEL» en «14: C-CIS»— y no estaba,
+                    # porque lo que está escrito es el alias. Así que el «C-» no se leía y
+                    # TODOS los códigos de la nomenclatura 2027 perdían su privado y su
+                    # cortesía: el servicio entraba como compartido y de pago.
+                    posicion_de = {}
+                    encontrados = []
+                    for code in TOUR_CODES:
+                        m_code = re.search(rf"\b{code}\b", resto, re.IGNORECASE)
+                        if m_code:
+                            encontrados.append(code.upper())
+                            posicion_de.setdefault(code.upper(), m_code.start())
                     # Revisar tambien alias conocidos (ej. "Horseback Riding" -> CABALGATA),
                     # evitando duplicar si el codigo real ya fue encontrado arriba.
                     resto_para_alias = resto
@@ -652,6 +665,13 @@ def procesar_linea(line, current, section):
                         if m_alias:
                             if code_real not in encontrados:
                                 encontrados.append(code_real)
+                            # La posición se toma del texto ORIGINAL: resto_para_alias va
+                            # perdiendo trozos y sus posiciones ya no sirven para mirar
+                            # qué hay pegado delante del código.
+                            m_orig = re.search(rf"\b{re.escape(alias)}\b", resto,
+                                               re.IGNORECASE)
+                            if m_orig:
+                                posicion_de.setdefault(code_real, m_orig.start())
                             resto_para_alias = resto_para_alias[:m_alias.start()] + resto_para_alias[m_alias.end():]
                     # El manglar del traslado (MGX) no es el tour de manglar (MGS): sin
                     # esto, la descripción que acompaña al código pone una salida de
@@ -670,11 +690,9 @@ def procesar_linea(line, current, section):
                             # siendo la caminata a San Pedrillo— pero sí cómo se opera
                             # y cómo se cobra, así que se anota.
                             privado = cortesia = False
-                            m_cod = re.search(rf"\b{re.escape(code)}\b", resto,
-                                              re.IGNORECASE)
-                            if m_cod:
-                                privado, cortesia = modalidad_antes_de(resto,
-                                                                       m_cod.start())
+                            pos = posicion_de.get(code)
+                            if pos is not None:
+                                privado, cortesia = modalidad_antes_de(resto, pos)
                             current["operacion"].append(
                                 {"dia": dia, "tour": code, "conf_entrada": conf,
                                  "privado": privado, "cortesia": cortesia})
