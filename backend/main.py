@@ -240,9 +240,16 @@ def dashboard(fecha: str, user: dict = Depends(exige("dashboard"))):
         # Se cuenta por fechas de estadía, no por estado: el PMS marca CKIN solo
         # cuando el huésped ya ingresó, así que exigirlo dejaba en cero cualquier
         # día futuro y volvía inútil la planificación.
+        #
+        # QUIEN SE VA HOY NO ESTÁ EN CASA. La comparación es `>` y no `>=`: el huésped
+        # que sale durmió anoche, pero se va en el bote de la mañana y su habitación
+        # queda libre. Con `>=` aparecía a la vez en «salen hoy» y en «en casa» —contado
+        # dos veces— y el dashboard decía que había más gente en el lodge de la que
+        # había. Es la MISMA regla que ya usan el Resumen de operación, la ocupación y
+        # el reparto del comedor; esta consulta era la única que se salía.
         f"""SELECT * FROM reserva WHERE res_status != 'CANCELADA'
              AND {sql_fecha('arr_date')} <= ?
-             AND (dep_date IS NULL OR {sql_fecha('dep_date')} >= ?)""",
+             AND (dep_date IS NULL OR {sql_fecha('dep_date')} > ?)""",
         (yy, yy),
     ).fetchall()
 

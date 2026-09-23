@@ -116,6 +116,43 @@ def las_etiquetas_del_telefono_cuentan_el_rowspan(c):
                  "la agenda de tours sigue uniendo filas con rowspan")
 
 
+def quien_se_va_hoy_no_esta_en_casa(c):
+    """Lo que reporto el hotel: el dashboard contaba como «en casa» a los que se van.
+
+    El huesped que sale durmio anoche, pero se va en el bote de la manana y su
+    habitacion queda libre. Contandolo, aparecia a la vez en «salen hoy» y en «en casa»
+    —dos veces— y el dashboard decia que habia mas gente en el lodge de la que habia.
+
+    La regla ya existia y estaba escrita en tres sitios (el Resumen de operacion, la
+    ocupacion y el reparto del comedor): se cuenta la noche que el huesped DUERME ahi,
+    o sea hasta el dia ANTES de su salida. El dashboard era el unico que usaba `>=`.
+    """
+    with open(os.path.join(RAIZ, "backend", "main.py"), encoding="utf-8") as f:
+        servidor = f.read()
+
+    # La consulta del dashboard: se busca por su comentario, que es lo unico estable.
+    i = servidor.find("QUIEN SE VA HOY NO ESTÁ EN CASA")
+    c.cierto(i > 0, "la consulta del dashboard dice por que excluye a los que salen")
+    if i > 0:
+        bloque = servidor[i:i + 700]
+        c.cierto(re.search(r"sql_fecha\('dep_date'\)\}\s*>\s*\?", bloque),
+                 "y compara con «>», no con «>=»")
+        c.igual(">= ?" in bloque.split("fetchall")[0], False,
+                "no queda ningun «>=» en esa consulta")
+
+    # Y las otras dos de main.py siguen igual, que es con lo que tiene que coincidir.
+    # 'desayunos' es la excepcion a proposito: el que se va SI desayuna.
+    i = servidor.find("desayunos = lista(")
+    c.cierto(i > 0, "se encuentra la consulta de los desayunos")
+    if i > 0:
+        c.cierto(">= ?" in servidor[i:i + 500],
+                 "los desayunos SI incluyen a quien se va: desayuna antes del bote")
+
+    with open(os.path.join(RAIZ, "backend", "informe.py"), encoding="utf-8") as f:
+        c.cierto("dia < sale" in f.read(),
+                 "el informe cuenta la noche que se duerme, no el dia de salida")
+
+
 def en_el_telefono_nada_se_sale_de_la_pantalla(c):
     """Lo que reporto el hotel: al navegar, la pantalla se hacia grande o chica y al
     deslizar a la derecha quedaba una franja en blanco.
@@ -304,6 +341,7 @@ PRUEBAS = [
     las_etiquetas_del_telefono_cuentan_el_rowspan,
     la_tarjeta_de_cada_tour_abre_su_detalle,
     en_el_telefono_nada_se_sale_de_la_pantalla,
+    quien_se_va_hoy_no_esta_en_casa,
 ]
 
 
