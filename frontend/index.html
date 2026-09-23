@@ -300,18 +300,40 @@
     table td[data-etiqueta=""]::before { display: none; }
     table td .btn { margin: 3px 6px 3px 0; }
 
-    /* ---- Recuadros de cifras: de a dos ---- */
-    .stats { grid-template-columns: repeat(2, 1fr) !important; gap: 8px; }
+    /* ---- Recuadros de cifras: de a dos ----
+     * El !important es para ganarle al `style=` que cada pantalla trae con su propio
+     * número de columnas (4, 5, 6...). En el teléfono no caben ni tres.
+     * .summary-grid es la del Resumen de operación y se le había olvidado: con sus
+     * cuatro columnas fijas, cada cifra quedaba en 53 px y la hoja se pasaba 13 px. */
+    .stats, .summary-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 8px; }
     .stat { padding: 11px; }
 
-    /* ---- Filtros: una sola fila que se desliza ---- */
+    /* ---- Filtros: una sola fila que se desliza ----
+     *
+     * El `min-width: 0` es lo que hace que esto funcione, y sin él la pantalla se rompe:
+     * la barra es hija de un flex (.header) y por omisión un hijo de flex NO se encoge
+     * por debajo de su contenido (`min-width: auto`). Con los filtros en una fila que no
+     * envuelve, su contenido mide unos 1030 px, así que la barra se plantaba en 1030 en
+     * una pantalla de 390 y estiraba la página entera: se podía deslizar a la derecha y
+     * quedaba medio metro en blanco, y al cambiar de pantalla la anchura cambiaba con
+     * ella. El `overflow-x: auto` de abajo no llegaba a actuar nunca, porque la caja no
+     * estaba limitada por nada.
+     *
+     * Medido: Reservas 1022 px, Amenidades 1168, Spa 1020 — con el body en 390.
+     */
     .filterbar {
+      min-width: 0;
       flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px;
       -webkit-overflow-scrolling: touch; scrollbar-width: none;
     }
     .filterbar::-webkit-scrollbar { display: none; }
     .filterbar > * { flex: 0 0 auto; }
     .header { flex-direction: column; align-items: stretch; gap: 10px; }
+    /* Por la misma razón, y para todo lo demás: en un flex en columna un hijo ancho
+       estira a la madre. Ninguna caja del contenido tiene por qué pasarse del ancho de
+       la pantalla; lo que no quepa se desliza dentro de su propia caja. */
+    .header > *, .card > * { min-width: 0; max-width: 100%; }
+    input, select, textarea, img, canvas, pre { max-width: 100%; }
 
     /* ---- Tocable con el pulgar, y sin que el iPhone haga zoom al escribir ---- */
     .btn { padding: 10px 14px; }

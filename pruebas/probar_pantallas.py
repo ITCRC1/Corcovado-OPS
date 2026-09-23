@@ -116,6 +116,71 @@ def las_etiquetas_del_telefono_cuentan_el_rowspan(c):
                  "la agenda de tours sigue uniendo filas con rowspan")
 
 
+def en_el_telefono_nada_se_sale_de_la_pantalla(c):
+    """Lo que reporto el hotel: al navegar, la pantalla se hacia grande o chica y al
+    deslizar a la derecha quedaba una franja en blanco.
+
+    La causa era una sola y esta medida: la barra de filtros es hija de un flex y por
+    omision un hijo de flex NO se encoge por debajo de su contenido (min-width: auto).
+    Con los filtros en una fila que no envuelve, su contenido mide ~1030 px, asi que la
+    barra se plantaba en 1030 sobre una pantalla de 390 y estiraba la hoja entera. Su
+    `overflow-x: auto` no llegaba a actuar nunca porque la caja no estaba limitada.
+
+    Medido antes del arreglo: Reservas 1022 px, Amenidades 1168, Spa 1020, con el body
+    en 390. Despues: las 15 pantallas caben a 320, 360 y 390.
+    """
+    html = _html()
+    movil = _bloque_movil(html)
+    c.cierto(movil is not None, "existe el bloque de estilos del telefono")
+    if not movil:
+        return
+
+    # El min-width: 0 es lo que hace que la barra se pueda encoger. Sin el, el
+    # overflow-x de la linea siguiente es decorativo.
+    m = re.search(r"\.filterbar\s*\{([^}]*)\}", movil, re.S)
+    c.cierto(m is not None, "la barra de filtros tiene su regla en el telefono")
+    if m:
+        regla = m.group(1)
+        c.cierto(re.search(r"min-width:\s*0", regla),
+                 "la barra de filtros puede encogerse (min-width: 0)")
+        c.cierto("overflow-x: auto" in regla,
+                 "y lo que no quepa se desliza dentro de ella, no en la pagina")
+
+    # Las rejillas de cifras traen su numero de columnas en el `style=` de cada pantalla
+    # —4, 5, 6...— y en el telefono no caben ni tres. La del Resumen de operacion usa
+    # otra clase y se habia quedado fuera: sus cifras salian de 53 px y la hoja se
+    # pasaba 13.
+    m = re.search(r"\.stats[^{]*\{[^}]*grid-template-columns:[^;]*!important", movil)
+    c.cierto(m is not None,
+             "las rejillas de cifras se fuerzan a dos columnas en el telefono")
+    if m:
+        c.cierto("summary-grid" in m.group(0),
+                 "incluida la del Resumen de operacion (.summary-grid)")
+
+    # Y la red general: ninguna caja del contenido se pasa del ancho de la pantalla.
+    c.cierto(re.search(r"\.header\s*>\s*\*,\s*\.card\s*>\s*\*\s*\{[^}]*min-width:\s*0",
+                       movil),
+             "los hijos de las tarjetas tampoco estiran a su madre")
+    c.cierto(re.search(r"input,\s*select,\s*textarea,\s*img[^{]*\{[^}]*max-width:\s*100%",
+                       movil),
+             "y ningun campo ni imagen se pasa del ancho")
+
+
+def _bloque_movil(html):
+    """El contenido del @media del telefono, para mirar solo lo que aplica ahi.
+
+    Hay DOS «@media (max-width: 760px)»: uno de una linea suelta y el bloque grande. Se
+    busca el que abre con salto de linea, que es el bloque; quedarse con el primero que
+    aparezca hace que las comprobaciones miren un trozo que no tiene nada de esto.
+    """
+    m = re.search(r"@media \(max-width: 760px\)\s*\{\s*\n", html)
+    if not m:
+        return None
+    i = m.start()
+    j = html.find("@media", m.end())
+    return html[i:j if j > 0 else i + 12000]
+
+
 def la_tarjeta_de_cada_tour_abre_su_detalle(c):
     """En la agenda, las tarjetas del resumen por tipo de tour se tocan y despliegan
     QUIEN lo guio y QUE DIAS. Sale de los tours que la pantalla ya tiene cargados: si
@@ -238,6 +303,7 @@ PRUEBAS = [
     housekeeping_quedo_enganchada_en_las_cinco_listas,
     las_etiquetas_del_telefono_cuentan_el_rowspan,
     la_tarjeta_de_cada_tour_abre_su_detalle,
+    en_el_telefono_nada_se_sale_de_la_pantalla,
 ]
 
 
