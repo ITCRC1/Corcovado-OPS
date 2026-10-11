@@ -416,6 +416,34 @@ def la_pesca_deportiva_es_privada_aunque_no_lo_diga(c):
             "un PNC a secas sigue siendo compartido")
 
 
+def los_codigos_que_aparecieron_en_octubre_caen_en_su_tour(c):
+    """NQ y SPS salieron del aviso de «paquete sin reconocer» al sincronizar 264 reservas
+    el 11 de octubre. Los dos son tours que el lodge YA hace, con un codigo nuevo de
+    Opera, y sin esto sus salidas no entraban a la hoja del dia: la reserva 601141382
+    traia su Night Walk y se cargo con CERO tours.
+
+    Opera manda el nombre completo con el codigo y en los dos es literal:
+    'Night Walk' y 'Sirena Park Station (Private Tour)'."""
+    c.igual(op.clasificar("NQ")["tipo"], "tour", "NQ es un tour")
+    c.igual(op.clasificar("NQ")["valor"], "NW", "y es la caminata nocturna que ya existe")
+    c.igual(op.clasificar("NQ")["valor"], op.clasificar("CNW")["valor"],
+            "NQ y CNW son el mismo tour, no dos")
+
+    c.igual(op.clasificar("SPS")["tipo"], "tour", "SPS es un tour")
+    c.igual(op.clasificar("SPS")["valor"], "SIRENA", "y es la caminata a Sirena")
+    # Lo privado va APARTE, no crea otro tour: si lo creara, la hoja del dia mostraria
+    # dos salidas donde hay una.
+    c.igual(op.clasificar("SPS")["privado"], True,
+            "SPS es privado aunque no lleve el prefijo PRV")
+    c.cierto("SIRENA PRIVADO" not in op.TOURS_POR_RAIZ.values(),
+             "y no se invento un tour 'SIRENA PRIVADO' en el catalogo")
+
+    # Ninguno de los dos puede quedar como desconocido nunca mas.
+    for cod in ("NQ", "SPS"):
+        c.cierto(op.clasificar(cod)["tipo"] != "desconocido",
+                 f"{cod} ya no es un paquete sin reconocer")
+
+
 def las_dos_estaciones_de_corcovado_son_distintas(c):
     """El documento avisa: «Usar SIR para evitar que ambas estaciones queden registradas
     como PNC». Son caminatas distintas, con horarios distintos."""
@@ -532,6 +560,7 @@ PRUEBAS = [
     la_hora_del_catalogo_llega_al_itinerario_del_huesped,
     la_modalidad_no_se_pierde_al_reconocer_por_alias,
     la_pesca_deportiva_es_privada_aunque_no_lo_diga,
+    los_codigos_que_aparecieron_en_octubre_caen_en_su_tour,
     las_dos_estaciones_de_corcovado_son_distintas,
     el_discovery_scuba_no_es_el_buceo_de_isla,
     los_transportes_no_son_tours,

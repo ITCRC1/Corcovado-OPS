@@ -62,6 +62,11 @@ TOURS_POR_RAIZ = {
     # que existe ese aviso.
     "CNW": "NW",            # Complementary Night Walk
     "WWE": "BALLENAS",      # Whale Watching Experience
+    # Y estos dos aparecieron el 11 de octubre, por la misma vía: el aviso los sacó a
+    # la luz al sincronizar 264 reservas. Opera manda el nombre completo con el código,
+    # y en los dos el nombre no deja lugar a dudas.
+    "NQ":  "NW",            # 'Night Walk' — el mismo tour que NW y CNW
+    "SPS": "SIRENA",        # 'Sirena Park Station (Private Tour)' — ver SIEMPRE_PRIVADOS
 }
 
 # ---------------------------------------------------------------------------
@@ -123,7 +128,14 @@ CATALOGO_2027 = [
 # registrada como servicio compartido, y en la hoja del día se ve una salida abierta
 # donde hay un charter de una sola familia. Si además trae el prefijo PRV, no cambia
 # nada: ya lo era.
-SIEMPRE_PRIVADOS = {"SFH", "SFF"}
+# SPS se suma por su propio nombre: Opera lo manda como «Sirena Park Station (Private
+# Tour)». Sin esto, la caminata a Sirena de una familia saldría en la hoja del día como
+# una salida abierta y recepción podría sentar a otros huéspedes en ese bote.
+#
+# Marcarlo privado NO lo convierte en otro tour: la modalidad se guarda aparte, por lo
+# que dice el comentario de descomponer() —si fuera otro tour, la hoja del día mostraría
+# dos salidas donde hay una—. Por eso no hace falta un «SIRENA PRIVADO» en el catálogo.
+SIEMPRE_PRIVADOS = {"SFH", "SFF", "SPS"}
 
 # Códigos del catálogo que NO son un tour de la agenda.
 #
