@@ -468,6 +468,60 @@ def entre_varias_PM_gana_la_que_trae_el_itinerario(c):
     c.igual(r3.get("700700"), largo, "entre dos itinerarios gana el mas completo")
 
 
+def cuando_recepcion_escribe_el_dia_del_tour_llega_a_las_habitaciones(c):
+    """De la nota del grupo hasta la agenda, por el camino real de carga.
+
+    DECISION DEL LODGE (1 de noviembre): cuando la nota de la PM menciona un tour SIN
+    ponerlo en el itinerario dia por dia —«AGENCIA SOLICITA 19/12 PNC + CIS 20/12»— el
+    sistema NO lo adivina. Poner el bote el dia equivocado es el error caro que este
+    modulo existe para no cometer, y en esa linea el orden entre tour y fecha se invierte
+    de uno a otro. Se espera a que recepcion lo escriba.
+
+    Esta prueba fija la otra mitad del trato: que el dia que recepcion lo escriba, llegue
+    solo. Sin esto, el lodge estaria esperando a que funcione algo que nadie comprobo."""
+    import opera_mapeo as om
+
+    conn = base_limpia()
+    llega = ddmmyy(HOY)
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    d1 = (HOY + datetime.timedelta(days=1)).strftime("%d")
+    d2 = (HOY + datetime.timedelta(days=2)).strftime("%d")
+
+    # Como esta HOY la nota del grupo del 18 de diciembre: itinerario sin tours.
+    SIN_DIAS = ("PAQ 3N/4D+PENSION COMPLETA\nPRV-PNC + CIS\n"
+                "OPERACION:\n\nCHECK IN\n\nCHECK OUT\n\n"
+                "AGENCIA SOLICITA PNC + CIS\n")
+    # Y como quedaria cuando recepcion le ponga el dia a cada tour.
+    CON_DIAS = (f"PAQ 3N/4D+PENSION COMPLETA\nPRV-PNC + CIS\n"
+                f"OPERACION:\n{d1}: PNC\n{d2}: CIS\n")
+
+    def habitacion():
+        return dict(reserva(695001, "12", llega, sale, adl=2), block_code="700800")
+
+    # --- Hoy: la nota no dice el dia, asi que no hay tours ---
+    hab = habitacion()
+    om.aplicar_nota_del_bloque(hab, SIN_DIAS)
+    cargar([hab], vistas=[hab])
+    n = conn.execute("SELECT COUNT(*) n FROM tour_asignado WHERE conf_no='695001'"
+                     ).fetchone()["n"]
+    c.igual(n, 0, "sin el dia escrito, el tour NO entra a la agenda")
+
+    # --- Recepcion escribe el dia ---
+    hab2 = habitacion()
+    om.aplicar_nota_del_bloque(hab2, CON_DIAS)
+    cargar([hab2], vistas=[hab2])
+    puestos = conn.execute(
+        "SELECT tour_codigo, fecha FROM tour_asignado WHERE conf_no='695001' "
+        "ORDER BY fecha").fetchall()
+    c.igual(sorted({x["tour_codigo"] for x in puestos}), ["PNC", "SNORKEL"],
+            "con el dia escrito, los dos tours llegan a la agenda")
+    c.igual(len(puestos), 2, "uno por dia, sin duplicar")
+    # Y cada uno en SU dia, que es lo que decide a que hora sale el bote.
+    dias = sorted(x["fecha"][-2:] for x in puestos)
+    c.igual(dias, sorted([d1, d2]), "y cada tour en el dia que dice la nota")
+    conn.close()
+
+
 PRUEBAS = [
     un_lote_parcial_no_cancela_lo_que_la_fuente_sigue_viendo,
     una_descarga_incompleta_no_cancela_nada,
@@ -483,6 +537,7 @@ PRUEBAS = [
     el_grupo_toma_el_itinerario_de_la_nota_de_su_PM,
     la_PM_de_un_grupo_cancelado_no_reparte_nada,
     entre_varias_PM_gana_la_que_trae_el_itinerario,
+    cuando_recepcion_escribe_el_dia_del_tour_llega_a_las_habitaciones,
 ]
 
 if __name__ == "__main__":
