@@ -195,14 +195,30 @@ SIN_OPERACION_POR_RAIZ = {
     "CEX": "gastronomia",
 }
 
-# Códigos que sí son un servicio pero cuya equivalencia NO está definida. Se listan
-# para que el aviso diga algo útil en vez de "código raro".
-POR_DEFINIR = {
-    "RFDP": "RainForest Delight PKG — paquete que agrupa varios servicios",
-    "TOURFREE": "Tour Complementario — no dice cuál",
+# Lo que va a las NOTAS de la reserva.
+#
+# Son cosas incluidas en la estadía que recepción tiene que saber, pero que no son ni un
+# tour de la agenda ni una amenidad del catálogo: no llevan guía ni bote, y no generan una
+# tarea para un departamento. Lo dijo la operación del lodge: «no son amenidades, son
+# notas de la reserva».
+#
+# Tratarlas como amenidad habría sido peor que dejarlas sin reconocer: cada una habría
+# abierto una tarea que nadie tiene que hacer, y la pantalla de amenidades —que existe
+# para que no se olvide un vino o una cuna— se habría llenado de ruido.
+#
+# El texto es NUESTRO y no el de Opera: los códigos son estables y las descripciones
+# cambian. Así la nota se lee igual siempre.
+NOTAS_POR_RAIZ = {
+    "COOLER":    "Hielera para San Pedrillo (agua, frutas y bebidas)",
+    "DRINKS":    "Refrescos naturales, café y té incluidos",
+    "GUIDE":     "Guía del hotel incluido para las caminatas al Parque",
+    "LAUNDRY":   "Lavandería incluida (1 vez por estadía)",
+    "SUNDOWNER": "Sundowner en Inspiration Point",
+    "TOURFREE":  "Tour de cortesía",
+    "RFDP":      "Paquete RainForest Delight",
 }
 
-TIPOS = ("tour", "comida", "amenidad", "traslado", "tarifa", "cortesia",
+TIPOS = ("tour", "comida", "amenidad", "nota", "traslado", "tarifa", "cortesia",
          "gastronomia", "desconocido")
 
 # Se suma el catálogo 2027 a las tablas de siempre, ahora que todas existen.
@@ -332,9 +348,12 @@ def clasificar(codigo, descripcion=""):
         return {**base, "tipo": "comida", "valor": COMIDAS_POR_RAIZ[r]}
     if r in SIN_OPERACION_POR_RAIZ:
         return {**base, "tipo": SIN_OPERACION_POR_RAIZ[r], "valor": None}
+    # Lo que va a las notas de la reserva. Va DESPUÉS de tours, comidas y amenidades, no
+    # antes: si mañana una de estas resulta ser un tour de verdad, la tabla de tours manda.
+    if r in NOTAS_POR_RAIZ:
+        return {**base, "tipo": "nota", "valor": NOTAS_POR_RAIZ[r]}
 
-    return {**base, "tipo": "desconocido", "valor": None,
-            "nota": POR_DEFINIR.get(limpio) or POR_DEFINIR.get(r) or ""}
+    return {**base, "tipo": "desconocido", "valor": None, "nota": ""}
 
 
 def nombre_de(codigo, idioma="es"):
@@ -392,11 +411,14 @@ def leer_paquetes(reserva):
       comidas     -> {'desayuno', 'cena', …}
       amenidades  -> [{'amenidad', 'fecha', 'codigo'}]
       traslados   -> [fechas] (el día del bote; el punto no viene)
+      notas       -> [texto] lo que va a las notas de la reserva, sin repetir
       desconocidos-> [{'codigo', 'descripcion', 'nota'}]
     """
     paquetes = (reserva or {}).get("reservationPackages") or []
     tours, amenidades, traslados, desconocidos = [], [], [], []
     comidas = set()
+    notas = []
+    vistas_notas = set()
     vistos_desconocidos = set()
 
     for p in paquetes:
@@ -431,6 +453,13 @@ def leer_paquetes(reserva):
                                "codigo": que_es["codigo"]})
         elif que_es["tipo"] == "traslado":
             traslados.extend(f for f, _ in fechas)
+        elif que_es["tipo"] == "nota":
+            # Una sola vez cada una, aunque el paquete venga repetido por noche: a
+            # recepción le sirve saber que hay lavandería incluida, no leerlo cuatro
+            # veces seguidas.
+            if que_es["valor"] not in vistas_notas:
+                vistas_notas.add(que_es["valor"])
+                notas.append(que_es["valor"])
         elif que_es["tipo"] == "desconocido":
             if que_es["codigo"] not in vistos_desconocidos:
                 vistos_desconocidos.add(que_es["codigo"])
@@ -439,4 +468,5 @@ def leer_paquetes(reserva):
                                      "nota": que_es.get("nota") or ""})
 
     return {"tours": tours, "comidas": comidas, "amenidades": amenidades,
-            "traslados": sorted(set(traslados)), "desconocidos": desconocidos}
+            "traslados": sorted(set(traslados)), "notas": notas,
+            "desconocidos": desconocidos}

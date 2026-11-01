@@ -459,6 +459,67 @@ def la_tarifa_de_nino_no_esconde_el_servicio(c):
     c.igual(op.raiz("SFAG"), "SFAG", "SFAG no termina en AGY: no se le quita nada")
 
 
+def lo_que_no_es_tour_ni_amenidad_va_a_las_notas(c):
+    """Lo dijo la operacion del lodge: la hielera de San Pedrillo, la lavanderia, el
+    sundowner y el guia incluido NO son amenidades, son notas de la reserva.
+
+    La diferencia no es cosmetica. Una amenidad abre una tarea para un departamento, y
+    la pantalla de amenidades existe para que no se olvide un vino o una cuna. Metidas
+    ahi, estas seis habrian abierto tareas que nadie tiene que hacer y habrian llenado
+    esa pantalla de ruido. En las notas, recepcion las ve y no le piden nada."""
+    esperado = {
+        "COOLERAGY":    "Hielera",
+        "DRINKSAGY":    "Refrescos",
+        "GUIDEAGY":     "Guia",
+        "LAUNDRYAGY":   "Lavanderia",
+        "SUNDOWNERAGY": "Sundowner",
+        "TOURFREE":     "cortesia",
+        "RFDP":         "RainForest",
+    }
+    for cod in esperado:
+        cl = op.clasificar(cod)
+        c.igual(cl["tipo"], "nota", f"{cod} va a las notas")
+        c.cierto(bool(cl["valor"]), f"y {cod} trae un texto que leer")
+        c.cierto(cl["tipo"] != "amenidad",
+                 f"{cod} NO es una amenidad: no abre tarea de nadie")
+        c.cierto(cl["tipo"] != "desconocido", f"{cod} ya no es un aviso sin resolver")
+
+    # El texto es NUESTRO, no el de Opera: los codigos son estables y las
+    # descripciones cambian.
+    c.cierto("Hielera" in op.clasificar("COOLERAGY")["valor"],
+             "la hielera se lee como hielera")
+    c.cierto("San Pedrillo" in op.clasificar("COOLERAGY")["valor"],
+             "y dice para que caminata es")
+
+    # La tarifa de agencia no cambia que es: con o sin AGY, la misma nota.
+    c.igual(op.clasificar("COOLERAGY")["valor"], op.clasificar("COOLER")["valor"],
+            "COOLER y COOLERAGY son la misma nota")
+
+    # Y lo que SI es tour sigue siendo tour: la tabla de notas va despues.
+    c.igual(op.clasificar("CIS")["tipo"], "tour", "un tour sigue siendo tour")
+    c.igual(op.clasificar("BRF")["tipo"], "comida", "y una comida, comida")
+
+
+def leer_paquetes_devuelve_las_notas_sin_repetir(c):
+    """El paquete viene repetido por noche. A recepcion le sirve saber que hay lavanderia
+    incluida, no leerlo cuatro veces seguidas."""
+    detalle = {"reservationPackages": [
+        {"packageCode": "LAUNDRYAGY",
+         "packageHeaderType": {"primaryDetails": {"description": "Lavanderia"}},
+         "scheduleList": [{"consumptionDate": "2026-11-02"},
+                          {"consumptionDate": "2026-11-03"},
+                          {"consumptionDate": "2026-11-04"}]},
+        {"packageCode": "COOLERAGY",
+         "packageHeaderType": {"primaryDetails": {"description": "Hielera"}},
+         "scheduleList": [{"consumptionDate": "2026-11-03"}]},
+    ]}
+    leido = op.leer_paquetes(detalle)
+    c.igual(len(leido["notas"]), 2, "dos notas, no cuatro")
+    c.igual(len(leido["desconocidos"]), 0, "y ninguna queda como desconocida")
+    c.igual(len(leido["amenidades"]), 0, "ni como amenidad")
+    c.igual(len(leido["tours"]), 0, "ni como tour")
+
+
 def los_codigos_que_aparecieron_en_octubre_caen_en_su_tour(c):
     """NQ y SPS salieron del aviso de «paquete sin reconocer» al sincronizar 264 reservas
     el 11 de octubre. Los dos son tours que el lodge YA hace, con un codigo nuevo de
@@ -589,6 +650,8 @@ PRUEBAS = [
     el_prefijo_no_convierte_un_tour_en_otro,
     el_sufijo_de_descuento_se_sigue_quitando,
     la_tarifa_de_nino_no_esconde_el_servicio,
+    lo_que_no_es_tour_ni_amenidad_va_a_las_notas,
+    leer_paquetes_devuelve_las_notas_sin_repetir,
     un_codigo_que_solo_es_prefijo_no_inventa_un_tour,
     los_codigos_de_la_reserva_real_se_reconocen,
     ninguno_de_los_23_codigos_queda_como_desconocido,

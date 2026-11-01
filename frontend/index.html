@@ -2124,7 +2124,10 @@ async function verDetalleReserva(confNo) {
 
       ${r.notas_libres ? `
       <div class="modal-seccion">
-        <h4>Notas completas del PDF</h4>
+        <!-- Decía "del PDF" de cuando esa era la única fuente. Hoy la mayoría de las
+             reservas vienen de Opera y aquí también cae lo que traen sus paquetes
+             —la hielera de San Pedrillo, la lavandería—, así que el título mentía. -->
+        <h4>Notas de la reserva</h4>
         <p class="modal-dato" style="color:var(--muted);white-space:pre-wrap;">${r.notas_libres}</p>
       </div>` : ""}
     </div>

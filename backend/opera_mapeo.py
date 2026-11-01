@@ -854,6 +854,20 @@ def incorporar_detalle(reserva, detalle):
         # que no se deduce: inventarlo pondría a un huésped en el bote equivocado.
         reserva["dias_de_traslado"] = leido["traslados"]
 
+    # Lo que va a las NOTAS de la reserva: la hielera de San Pedrillo, la lavandería, el
+    # sundowner. No son tours ni amenidades —lo dijo la operación— pero recepción tiene
+    # que verlo, y hasta ahora solo salía como un aviso de «paquete sin reconocer».
+    #
+    # Se AÑADE, nunca se reemplaza: lo que escribió el huésped en su nota es suyo y vale
+    # más que esto. Y va con su propia línea de encabezado para que se vea de dónde sale.
+    if leido.get("notas"):
+        linea = "Incluido en la reserva: " + " · ".join(leido["notas"])
+        anterior = (reserva.get("notas") or "").strip()
+        # Idempotente: el ciclo vuelve a pasar por la misma reserva muchas veces y la
+        # línea no puede ir acumulándose.
+        if linea not in anterior:
+            reserva["notas"] = f"{anterior}\n{linea}".strip() if anterior else linea
+
     # De aquí salen las amenidades, las alergias y el régimen: es lo que el importador
     # lee. Va el texto ENTERO de la nota, no solo la sección de notas, porque el
     # huésped puede tener la alergia escrita arriba, junto al paquete, o al lado de su
