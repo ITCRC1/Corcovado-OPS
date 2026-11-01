@@ -67,6 +67,12 @@ AMENIDADES_PATRONES = [
     )),
     ("Requerimiento de movilidad / accesibilidad", r"silla\s+de\s+rueda|wheelchair|movilidad\s+reducida|accesibilidad"),
     ("Cuna / bebé", r"\bcuna\b|\bcrib\b|beb[ée]\s+de\s+|pack\s?n\s?play"),
+    # Lo que el huésped pide para su habitación. Va al final de la lista a propósito:
+    # 'extra bed' es un sofá cama y ya lo caza la primera entrada, así que aquí se pide
+    # la almohada o la toalla por su nombre y no un 'extra' suelto.
+    ("Almohadas o toallas extra",
+     r"(?:extra|additional|m[áa]s)\s+(?:\w+\s+){0,2}(?:pillow|almohada|toalla|towel)s?|"
+     r"(?:almohada|toalla)s?\s+(?:extra|adicional)"),
 ]
 
 # LAS BEBIDAS Y LA CORTESÍA NO SON AMENIDADES: son parte de lo que trae pagado la
@@ -139,6 +145,23 @@ REGIMENES = [
     ("PENSION_COMPLETA", r"full\s*board|pensi[oó]n\s+completa|pension\s+completa|"
                          r"\bFB\b|alimentaci[oó]n\s+y\s+tours|"
                          r"hospedaje,?\s+transporte,?\s+alimentaci[oó]n"),
+
+    # LA FORMA DEL LODGE: el régimen va pegado al paquete con un '+'.
+    #
+    #     Paquete 7N/8D+Breakfast            -> solo desayuno
+    #     4N/5D VIP Experience+Pension completa
+    #     PAQUTE 4N/5D+FULLBOARD
+    #
+    # Esta entrada va la ÚLTIMA a propósito, y por eso SOLO_DESAYUNO aparece dos veces en
+    # la lista. '+Breakfast' a secas es mucho menos específico que 'only breakfast': si
+    # fuera arriba, una reserva que dijera 'Pensión completa + Breakfast' se registraría
+    # como solo desayuno y a ese huésped se le negarían el almuerzo y la cena en el
+    # comedor. Abajo solo decide cuando nada más lo hizo.
+    #
+    # Lo reportó el lodge con la reserva 598887051 (hab 21, 3 de noviembre): decía
+    # '+Breakfast' y el sistema la dejaba sin régimen, así que no aparecía en la hoja del
+    # restaurante ni para incluirla ni para excluirla.
+    ("SOLO_DESAYUNO", r"\+\s*breakfast\b|\+\s*desayuno\b"),
 ]
 
 # Qué come cada régimen en los restaurantes del lodge.
@@ -322,6 +345,41 @@ def _sin_tours_en_el_borde(trozo):
     return " ".join(partes)
 
 
+# Separadores con espacios a los lados. SOLO estos: la coma NO entra, y es a propósito.
+# «Lactose, hazelnut and peanut allergy» es una alergia sola escrita con comas, y
+# cortarla ahí le dejaría a cocina media lista — justo el error que esto viene a evitar.
+_SEPARADOR_DE_LISTA = re.compile(r"\s+[+\-·]\s+")
+
+
+def _solo_el_renglon_que_importa(trozo, m):
+    """Si el detalle cayó dentro de una lista, se queda SOLO con el elemento que importa.
+
+    Las notas del lodge enumeran lo que trae el paquete en un renglón seguido:
+
+        Del chef experience + C-EBT sujeto a dispo + GTT + Regalo de bienvenida
+
+    El corte por asunto no lo parte, porque es un renglón solo. Así que la pestaña de
+    amenidades mostraba la lista ENTERA como detalle del regalo de bienvenida: cuatro
+    tours y una experiencia, donde lo único que hacía falta leer eran tres palabras.
+    Lo reportó el lodge: «siguen apareciendo notas de tours que no deberían ir ahí».
+
+    Se parte por ' + ' / ' - ' y se devuelve el pedazo donde está lo reconocido. Si no
+    hay separadores, el trozo queda como estaba.
+    """
+    if not trozo:
+        return trozo
+    partes = _SEPARADOR_DE_LISTA.split(trozo)
+    if len(partes) < 2:
+        return trozo
+    reconocido = " ".join((m.group(0) or "").split()).lower()
+    if not reconocido:
+        return trozo
+    for parte in partes:
+        if reconocido in parte.lower():
+            return parte.strip(" -+·,")
+    return trozo
+
+
 def _fragmento(texto, m, contexto=None, maximo=None):
     """El trozo de texto alrededor de lo que se reconoció, recortado por palabras.
 
@@ -443,8 +501,19 @@ def detallar_amenidades(reserva):
         if not m or nombre_catalogo in salida:
             continue
         trozo = _fragmento(texto, m)
-        if nombre_catalogo == RESTRICCION:
-            trozo = _sin_tours_en_el_borde(trozo)
+        # Quitar los tours del borde vale para TODAS. Se aplicaba solo a la alergia
+        # porque ahí se vio el problema primero; el lodge reportó después que la pestaña
+        # de amenidades tenía el mismo ruido.
+        #
+        # Quedarse con un solo renglón de la lista vale para todas MENOS la alergia, y la
+        # excepción no es un parche: la alergia ES una lista por naturaleza —«Dietary:
+        # Kate - No chickpeas + Jonathan - No Spinach» son dos personas y tres comidas—,
+        # así que partirla deja a cocina con la mitad. Las demás amenidades son un hecho
+        # suelto y lo que las rodea en el renglón es el paquete, que no dice nada de
+        # ellas.
+        if nombre_catalogo != RESTRICCION:
+            trozo = _solo_el_renglon_que_importa(trozo, m)
+        trozo = _sin_tours_en_el_borde(trozo)
         if trozo:
             salida[nombre_catalogo] = trozo
     return salida

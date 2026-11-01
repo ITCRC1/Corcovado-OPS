@@ -279,6 +279,43 @@ def el_detalle_de_la_alergia_solo_habla_de_la_alergia(c):
                     f"y no arrastra «{basura}» — {d[:60]!r}")
 
 
+def el_detalle_de_CUALQUIER_amenidad_deja_fuera_los_tours(c):
+    """Lo mismo que ya se exigia para la alergia, ahora para todas. Lo reporto el lodge:
+    «en la parte de amenidades siguen apareciendo notas de tours que no deberian ir ahi».
+
+    El caso real, de la hab 07 del 4 de noviembre: la nota enumera lo que trae el paquete
+    en un renglon seguido —«Del chef experience + C-EBT sujeto a dispo + GTT + Regalo de
+    bienvenida»— y el corte por asunto no lo parte, porque es un renglon solo. Asi que el
+    detalle del regalo de bienvenida eran cuatro tours."""
+    casos = [
+        ("Del chef experience + C-EBT sujeto a dispo + GTT + Regalo de bienvenida",
+         "Tarjeta de bienvenida", "bienvenida",
+         ["chef experience", "C-EBT", "GTT", "sujeto a dispo"]),
+        ("Tour de aves sujeto a dispo - Experiencia del Jardin a la mesa - "
+         "Regalo de bienvenida",
+         "Tarjeta de bienvenida", "bienvenida",
+         ["aves", "Jardin a la mesa"]),
+        ("PNC + CIS + CBE + Botella de vino",
+         "Botella de vino cortesía", "vino", ["PNC", "CIS", "CBE"]),
+    ]
+    for nota, amenidad, debe, no_debe in casos:
+        d = importer.detallar_amenidades(reserva_con(nota)).get(amenidad, "")
+        c.cierto(debe.lower() in d.lower(),
+                 f"el detalle de «{amenidad}» conserva «{debe}» — {d[:50]!r}")
+        for basura in no_debe:
+            c.igual(basura.lower() in d.lower(), False,
+                    f"y no arrastra «{basura}» — {d[:60]!r}")
+
+    # LO QUE NO PUEDE PASAR: que una coma parta una alergia. «Lactose, hazelnut and
+    # peanut allergy» es UNA alergia escrita con comas, y cortarla ahi le dejaria a
+    # cocina media lista.
+    d = importer.detallar_amenidades(
+        reserva_con("Lactose, hazelnut and peanut allergy")).get(importer.RESTRICCION, "")
+    for parte in ("Lactose", "hazelnut", "peanut"):
+        c.cierto(parte.lower() in d.lower(),
+                 f"la alergia escrita con comas conserva «{parte}» — {d[:60]!r}")
+
+
 def el_corte_del_detalle_se_ve(c):
     """Un corte sin marcar miente. El caso real: la reserva dice «FULLBOARD ( bebidas no
     incluidas)» y el trozo terminaba en «( bebidas no», que se lee como frase completa y
@@ -320,6 +357,47 @@ def el_regimen_sigue_saliendo_de_los_mismos_textos(c):
             "DESAYUNO_CENA", "«Breakfast & Dinner» es desayuno y cena")
     c.igual(importer.detectar_regimen(reserva_con("Paquete sin comidas")), None,
             "y si no lo dice, no se inventa")
+
+
+def el_regimen_pegado_al_paquete_con_un_mas(c):
+    """La forma del lodge: el regimen va pegado al paquete con un '+'.
+
+    Lo reporto el hotel con la hab 21 del 3 de noviembre (reserva 598887051): la nota
+    decia «Paquete 7N/8D+Breakfast» y el sistema la dejaba SIN regimen, asi que en la
+    hoja del restaurante no salia ni para incluirla ni para excluirla. Ese huesped solo
+    tiene desayuno pagado y se le iba a servir el almuerzo y la cena."""
+    c.igual(importer.detectar_regimen(reserva_con("Paquete 7N/8D+Breakfast")),
+            "SOLO_DESAYUNO", "«+Breakfast» es solo desayuno")
+    c.igual(importer.detectar_regimen(reserva_con("Paquete 5N/6D+Desayuno")),
+            "SOLO_DESAYUNO", "y en español tambien")
+
+    # LO QUE NO PUEDE PASAR: que '+Breakfast' le gane a algo mas especifico. Si ganara,
+    # a un huesped de pension completa se le negarian el almuerzo y la cena.
+    c.igual(importer.detectar_regimen(reserva_con("4N/5D+Breakfast & Dinner")),
+            "DESAYUNO_CENA", "«Breakfast & Dinner» sigue ganando")
+    c.igual(importer.detectar_regimen(
+        reserva_con("Paquete 4N/5D Pension completa + Breakfast incluido")),
+        "PENSION_COMPLETA", "y la pension completa tambien")
+    c.igual(importer.detectar_regimen(reserva_con("PAQUTE 4N/5D+FULLBOARD")),
+            "PENSION_COMPLETA", "«+FULLBOARD» no se confunde con desayuno")
+
+
+def un_request_del_huesped_es_una_amenidad(c):
+    """Lo pidio el lodge: «todo request del cliente que aparezca en la reserva manejarlo
+    como amenidad segun corresponda». Aparecia escrito al final de la nota y no lo
+    recogia nadie: «C-EBT : 06/11 EXTRA PILLOWS CONTACTADO POR K.S»."""
+    PEDIDO = "Almohadas o toallas extra"
+    for texto in ("C-EBT : 06/11 EXTRA PILLOWS CONTACTADO POR K.S",
+                  "Extra pillows and towels, please",
+                  "Favor dejar almohadas extra en la habitacion",
+                  "Please provide additional pillows"):
+        encontradas = importer.detectar_amenidades(reserva_con(texto))
+        c.cierto(PEDIDO in encontradas, f"se detecta en: {texto[:46]}")
+
+    # Y no se confunde con el sofa cama, que ya existia y usa 'extra bed'.
+    cama = importer.detectar_amenidades(reserva_con("Please add an extra bed"))
+    c.cierto("Sofá cama extra" in cama, "«extra bed» sigue siendo el sofa cama")
+    c.cierto(PEDIDO not in cama, "y no se marca tambien como almohadas")
 
 
 def el_catalogo_y_los_patrones_no_se_desincronizan(c):
@@ -407,9 +485,12 @@ PRUEBAS = [
     decir_que_NO_hay_alergias_no_es_una_alergia,
     dietary_a_secas_tambien_cuenta,
     el_detalle_de_la_alergia_solo_habla_de_la_alergia,
+    el_detalle_de_CUALQUIER_amenidad_deja_fuera_los_tours,
     el_corte_del_detalle_se_ve,
     sin_texto_no_hay_detalle_inventado,
     el_regimen_sigue_saliendo_de_los_mismos_textos,
+    el_regimen_pegado_al_paquete_con_un_mas,
+    un_request_del_huesped_es_una_amenidad,
     el_catalogo_y_los_patrones_no_se_desincronizan,
     las_bebidas_y_la_cortesia_LLEGAN_A_LA_BASE,
     toda_columna_nueva_esta_en_las_dos_rutas,

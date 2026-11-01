@@ -64,6 +64,34 @@ def cada_hora_es_la_de_su_propio_campo(c):
     c.igual(en_lineas["hora_vuelo_salida"], "9:25 a.m.", "igual en varias lineas")
 
 
+def la_hora_pegada_al_numero_de_vuelo_se_lee(c):
+    """Lo reporto el lodge con la hab 07 del 4 de noviembre: la nota dice
+    «Entrada: Via Drake RZ1116 9:15» —la hora va pegada al numero de vuelo y SIN la marca
+    a.m./p.m.— y la hora no entraba. El vuelo si, la hora no.
+
+    La causa era un guardia de mas: se preguntaba por HORA_RE, que exige la marca, antes
+    de llamar al convertidor, que si entiende las dos formas. Asi que la hora se tiraba
+    en la puerta y en la hoja de traslados ese huesped salia sin hora: nadie sabia a que
+    hora mandar el bote."""
+    d = _leer("Entrada: Via Drake RZ1116 9:15\n"
+              "Salida: Via Drake RZ1116 9:25\n")
+    c.igual(d["vuelo_entrada"], "RZ1116", "el vuelo de entrada se lee")
+    c.igual(d["vuelo_salida"], "RZ1116", "y el de salida")
+    c.igual(d["hora_vuelo_entrada"], "9:15 a.m.", "y AHORA tambien la hora de entrada")
+    c.igual(d["hora_vuelo_salida"], "9:25 a.m.", "y la de salida, que es otra")
+    c.igual(d["punto_entrada"], "Drake", "sin perder el punto")
+
+    # Las horas de la tarde sin marca siguen leyendose como tarde.
+    t = _leer("Entrada: Via Drake RZ1140 2:45\nSalida: Via Sierpe RZ1150 15:30\n")
+    c.igual(t["hora_vuelo_entrada"], "2:45 p.m.", "2:45 sin marca es de la tarde")
+    c.igual(t["hora_vuelo_salida"], "3:30 p.m.", "y 15:30 se convierte a 12 horas")
+
+    # Y una linea sin hora no se inventa una.
+    s = _leer("Entrada: Via Sierpe\nSalida: Via Sierpe\n")
+    c.igual(s["hora_vuelo_entrada"], None, "sin hora escrita no se inventa")
+    c.igual(s["hora_vuelo_salida"], None, "ni la de salida")
+
+
 # ---------------------------------------------------------------------------
 # Lo que queda pendiente. No se adivina.
 # ---------------------------------------------------------------------------
@@ -156,6 +184,7 @@ PRUEBAS = [
     los_dos_puntos_se_leen_de_la_nota,
     la_entrada_y_la_salida_pueden_ser_distintas,
     cada_hora_es_la_de_su_propio_campo,
+    la_hora_pegada_al_numero_de_vuelo_se_lee,
     punta_marenco_es_una_recogida_de_drake,
     el_punto_no_tiene_que_ser_la_primera_palabra,
     dos_puntos_distintos_no_se_deciden_solos,

@@ -126,6 +126,13 @@ AMENIDADES = [
     ("Restricción alimentaria / alergia", "AVISAR A COCINA antes del check-in — revisar el detalle en la reserva", "Cocina"),
     ("Requerimiento de movilidad / accesibilidad", "Coordinar habitación accesible y apoyo en traslados", "Recepción/Operaciones"),
     ("Cuna / bebé", "Notificar a housekeeping para colocar cuna en la habitación", "Housekeeping"),
+    # Lo que el huésped PIDE en su reserva y hay que dejarle puesto antes de que llegue.
+    # Lo pidió el lodge: «todo request del cliente que aparezca en la reserva manejarlo
+    # como amenidad según corresponda». Venía escrito al final de la nota —«EXTRA
+    # PILLOWS», «Extra pillows and towels, please»— y no lo recogía nadie.
+    ("Almohadas o toallas extra",
+     "Notificar a housekeeping para dejarlas en la habitación antes del check-in",
+     "Housekeeping"),
 ]
 # Nota: las BEBIDAS INCLUIDAS estuvieron aquí un día y se quitaron. No son una amenidad:
 # una amenidad es algo que hay que PREPARAR —la cuna, la decoración, la canasta— y esto

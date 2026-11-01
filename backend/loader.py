@@ -267,6 +267,46 @@ def _guardar_amenidades(cur, r, llegada_iso, origen="PDF"):
                    VALUES (?,?,?)""", (nueva_id, nombre_area, estado_area))
 
 
+def _sacar_de_la_operacion(cur, conf_no):
+    """Una reserva cancelada deja de ocupar la operación. Devuelve cuánto se quitó.
+
+    Lo pidió el lodge: «todas las reservas que estén canceladas, es mejor que no
+    aparezcan en la operación». Y tenía más razón de la que parece. Medido sobre la
+    ventana de hoy: la alerta «PNC el 27 de noviembre tiene 14 pax, hacen falta 2 guías»
+    salía de SIETE reservas canceladas y NINGUNA viva. Recepción iba a repartir dos guías
+    para un tour al que no va nadie.
+
+    Tres tablas, y solo esas tres:
+
+      · los tours, que son los que arman la hoja del día, el bote y el guía;
+      · las tareas de amenidad, que le piden trabajo a un departamento;
+      · el itinerario, que es la página que ve el huésped.
+
+    NO se tocan las entradas del SINAC. Van por tour+fecha y no por reserva, así que
+    pueden estar YA COMPRADAS y cubriendo además a huéspedes vivos de ese mismo día
+    —medido: hoy hay 2 así—. Borrarlas tiraría una entrada pagada.
+
+    Tampoco se destruye trabajo hecho: una amenidad que recepción ya editó o ya dio por
+    hecha se queda. Si alguien preparó el vino, el registro de que lo preparó no
+    desaparece porque la reserva se caiga.
+
+    Es reversible: si la reserva vuelve a estar viva, el siguiente ciclo la vuelve a
+    cargar y regenera todo desde la nota. Ya existe `_retirar_aviso_de_cancelacion` para
+    el aviso, por la misma razón.
+    """
+    quitado = 0
+    quitado += cur.execute(
+        "DELETE FROM tour_asignado WHERE conf_no = ?", (conf_no,)).rowcount
+    quitado += cur.execute(
+        """DELETE FROM amenidad_tarea
+           WHERE conf_no = ? AND estado = 'PENDIENTE'
+             AND (editado_a_mano IS NULL OR editado_a_mano = 0)""",
+        (conf_no,)).rowcount
+    quitado += cur.execute(
+        "DELETE FROM itinerario WHERE conf_no = ?", (conf_no,)).rowcount
+    return quitado
+
+
 def _guardar_rooming(cur, r):
     """Los acompañantes de la reserva. Se regeneran enteros en cada importación."""
     cur.execute("DELETE FROM huesped WHERE conf_no = ?", (r["conf_no"],))
@@ -573,6 +613,15 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
             # Y ahora, solo las tablas aparte que esta fuente manda. Una fuente parcial
             # administra sus propias filas y no borra lo que no ve: ver los comentarios
             # de _guardar_amenidades y _guardar_tours, que es donde está el porqué.
+            #
+            # LA CANCELADA SALE DE LA OPERACIÓN TAMBIÉN POR AQUÍ. Este es el camino que
+            # usa Opera, o sea por donde pasan casi todas. El guardia tiene que estar en
+            # los DOS caminos de escritura: puesto solo en el otro, no se disparaba nunca
+            # en producción. Y aquí no se mira 'manda': que una reserva esté cancelada no
+            # es un área que una fuente administre, es un hecho sobre la reserva entera.
+            if str(r.get("res_status") or "").upper() == "CANCELADA":
+                _sacar_de_la_operacion(cur, r["conf_no"])
+                continue
             if "rooming" in manda and r.get("rooming"):
                 _guardar_rooming(cur, r)
             if "amenidades" in manda:
@@ -633,9 +682,12 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
         # funciones se encargan de borrar lo anterior sin perder el trabajo hecho a
         # mano; son las MISMAS que usa cualquier otra fuente, para que una corrección
         # aquí llegue también a las reservas de Opera.
-        _guardar_amenidades(cur, r, _iso_de_ddmmyy(r.get("arr_date")))
-        _guardar_rooming(cur, r)
-        _guardar_tours(cur, r)
+        if str(r.get("res_status") or "").upper() == "CANCELADA":
+            _sacar_de_la_operacion(cur, r["conf_no"])
+        else:
+            _guardar_amenidades(cur, r, _iso_de_ddmmyy(r.get("arr_date")))
+            _guardar_rooming(cur, r)
+            _guardar_tours(cur, r)
 
     # --- Reservas que la fuente ya no reporta: se marcan como CANCELADA ---
     #
@@ -698,6 +750,10 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
 
         for a in ausentes:
             cur.execute("UPDATE reserva SET res_status = 'CANCELADA' WHERE conf_no = ?", (a["conf_no"],))
+            # Y sale de la operación, igual que las que llegan ya canceladas en el lote.
+            # Este camino es el otro: la reserva no viene en la fuente y se deduce que se
+            # cayó. Sin esto, las canceladas por ausencia seguían con sus tours puestos.
+            _sacar_de_la_operacion(cur, a["conf_no"])
             mensaje = _aviso_de_cancelacion(a["nombre_principal"], a["room_no"],
                                             a["arr_date"], a["conf_no"])
             ya = cur.execute(
@@ -767,7 +823,14 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
     try:
         import json as _json
         import itinerario as _itin
+        # Las canceladas se saltan. Sin esto el itinerario se volvía a escribir aquí
+        # justo después de que `_sacar_de_la_operacion` lo borrara, y la reserva caída
+        # seguía teniendo su página de bienvenida como si el huésped viniera.
+        cancelados = {x["conf_no"] for x in cur.execute(
+            "SELECT conf_no FROM reserva WHERE res_status = 'CANCELADA'")}
         for conf_no in confs_del_lote:
+            if conf_no in cancelados:
+                continue
             datos = _itin.datos_de_reserva(conn, conf_no)
             if not datos:
                 continue

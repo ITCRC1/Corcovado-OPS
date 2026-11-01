@@ -435,11 +435,19 @@ def _anotar_hora_y_vuelo(current, valor, cual):
     Se busca DENTRO del valor del campo y no en la línea entera, que es lo que hacía
     antes: en una nota escrita seguida, la línea lleva las dos horas y las dos se leían
     como la primera.
+
+    LA HORA SE DECIDE CON `normalizar_hora`, NO CON `HORA_RE`. Parece un detalle y era el
+    fallo: `HORA_RE` exige la marca a.m./p.m., y la nota del lodge escribe la hora pegada
+    al número de vuelo y sin marca —«Entrada: Via Drake RZ1116 9:15»—. Así que la hora se
+    descartaba en la puerta, antes de llegar al convertidor, que sí la entiende. El vuelo
+    entraba y la hora no, y en la hoja de traslados ese huésped aparecía sin hora.
     """
     if not valor:
         return
-    if not current.get(f"hora_vuelo_{cual}") and HORA_RE.search(valor):
-        current[f"hora_vuelo_{cual}"] = normalizar_hora(valor)
+    if not current.get(f"hora_vuelo_{cual}"):
+        hora = normalizar_hora(valor)
+        if hora:
+            current[f"hora_vuelo_{cual}"] = hora
     if not current.get(f"vuelo_{cual}"):
         m_vuelo = VUELO_RE.search(valor)
         if m_vuelo:

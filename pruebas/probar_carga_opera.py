@@ -261,6 +261,79 @@ def la_hoja_del_restaurante_solo_cuenta_las_reservas_vivas(c):
     conn.close()
 
 
+def una_cancelada_sale_de_la_operacion(c):
+    """Lo pidio el lodge: «todas las reservas que esten canceladas, es mejor que no
+    aparezcan en la operacion».
+
+    Y tenia mas razon de la que parece. Medido sobre la ventana real: la alerta «PNC el
+    27 de noviembre tiene 14 pax, hacen falta 2 guias» salia de SIETE reservas canceladas
+    y NINGUNA viva. Recepcion iba a repartir dos guias para un tour al que no va nadie.
+
+    Se comprueban los DOS caminos de cancelacion, porque son distintos: la que llega ya
+    cancelada en el lote, y la que se cancela porque la fuente dejo de reportarla."""
+    conn = base_limpia()
+    llega = ddmmyy(HOY)
+    sale = ddmmyy(HOY + datetime.timedelta(days=4))
+
+    dia = (HOY + datetime.timedelta(days=1)).strftime("%d")
+    con_tour = {"operacion": [{"dia": dia, "tour": "PNC"}],
+                "notas": "Favor colocar cuna en la habitacion"}
+    a = dict(reserva(690001, "01", llega, sale, adl=2), **con_tour)
+    b = dict(reserva(690002, "02", llega, sale, adl=2), **con_tour)
+    cargar([a, b], vistas=[a, b])
+
+    def cuenta(tabla, conf):
+        return conn.execute(f"SELECT COUNT(*) n FROM {tabla} WHERE conf_no = ?",
+                            (conf,)).fetchone()["n"]
+
+    c.cierto(cuenta("tour_asignado", "690001") > 0, "la viva tiene su tour")
+    c.cierto(cuenta("tour_asignado", "690002") > 0, "y la otra tambien, por ahora")
+    c.cierto(cuenta("amenidad_tarea", "690002") > 0, "y su amenidad")
+
+    # --- Camino 1: Opera la reporta CANCELADA ---
+    b_cancelada = dict(b, res_status="CANCELADA")
+    cargar([b_cancelada], vistas=[a, b_cancelada])
+
+    c.igual(cuenta("tour_asignado", "690002"), 0,
+            "la cancelada deja de ocupar la agenda de tours")
+    c.igual(cuenta("amenidad_tarea", "690002"), 0,
+            "y deja de pedirle trabajo a un departamento")
+    c.igual(cuenta("itinerario", "690002"), 0, "y su itinerario no se le muestra a nadie")
+    c.cierto(cuenta("tour_asignado", "690001") > 0,
+            "pero la que sigue viva conserva el SUYO")
+
+    # --- Camino 2: la fuente deja de reportarla ---
+    cargar([a], vistas=[a])
+    c.igual(estados(conn).get("690002"), "CANCELADA", "sigue cancelada")
+    c.igual(cuenta("tour_asignado", "690002"), 0, "y sigue fuera de la agenda")
+    conn.close()
+
+
+def una_cancelada_no_se_lleva_el_trabajo_ya_hecho(c):
+    """Si recepcion ya preparo el vino o ya dio la amenidad por hecha, ese registro NO
+    desaparece porque la reserva se caiga: es la prueba de que se hizo."""
+    conn = base_limpia()
+    llega = ddmmyy(HOY)
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    r = dict(reserva(690010, "05", llega, sale, adl=2),
+             notas="Botella de vino de cortesia para la pareja")
+    cargar([r], vistas=[r])
+
+    hechas = conn.execute(
+        "SELECT COUNT(*) n FROM amenidad_tarea WHERE conf_no='690010'").fetchone()["n"]
+    c.cierto(hechas > 0, "la amenidad entro")
+    conn.execute("UPDATE amenidad_tarea SET estado='HECHA' WHERE conf_no='690010'")
+    conn.commit()
+
+    r_cancelada = dict(r, res_status="CANCELADA")
+    cargar([r_cancelada], vistas=[r_cancelada])
+
+    quedan = conn.execute(
+        "SELECT COUNT(*) n FROM amenidad_tarea WHERE conf_no='690010'").fetchone()["n"]
+    c.igual(quedan, hechas, "lo que ya se hizo se queda como registro")
+    conn.close()
+
+
 PRUEBAS = [
     un_lote_parcial_no_cancela_lo_que_la_fuente_sigue_viendo,
     una_descarga_incompleta_no_cancela_nada,
@@ -271,6 +344,8 @@ PRUEBAS = [
     se_recarga_la_cancelada_que_opera_reporta_viva_aunque_no_haya_cambiado,
     el_nucleo_de_opera_no_borra_el_trabajo_de_recepcion,
     la_hoja_del_restaurante_solo_cuenta_las_reservas_vivas,
+    una_cancelada_sale_de_la_operacion,
+    una_cancelada_no_se_lleva_el_trabajo_ya_hecho,
 ]
 
 if __name__ == "__main__":
