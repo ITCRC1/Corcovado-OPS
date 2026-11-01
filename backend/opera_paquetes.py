@@ -214,15 +214,43 @@ TOURS_POR_RAIZ.update({c: (eq or c) for c, eq, _, _ in CATALOGO_2027})
 SIN_OPERACION_POR_RAIZ.update({c: "traslado" for c in TRASLADOS_2027})
 
 
-def raiz(codigo):
-    """'CIS30' -> 'CIS'. Le quita el sufijo de descuento del final.
+# Sufijos de TARIFA: dicen a qué precio se vende, no qué se vende.
+#
+#   KID   tarifa de niño       'BRF3027KID' = Breakfast Included NIÑO 30%
+#   AGY   tarifa de agencia    'CIS3027KID' = Cano Island Snorkeling tour 30% agencia
+#
+# Aparecieron al reabrir la temporada, el 1 de noviembre. OJO: salen del plan tarifario de
+# la reserva, no de que haya un niño alojado — se midieron las 10 reservas que los traen y
+# las 10 dicen childCount 0 en Opera. Así que no sirven para contar gente; solo dicen qué
+# está incluido.
+#
+# Y eso es justamente lo que se perdía mientras no se entendían. En esas 10 reservas las
+# TRES comidas venían con el sufijo, así que ninguna se reconocía y el régimen quedaba en
+# blanco: la pantalla no sabía que era pensión completa. Lo mismo con 'CIS3027KID' y
+# 'TSP30KID' —el snorkel de Isla del Caño y la caminata a San Pedrillo—, que no llegaban a
+# la lista de tours vendidos.
+#
+# Van en su propia tabla y se quitan ANTES que el descuento, porque en el código van
+# después: 'BRF3027KID' es BRF + 3027 + KID.
+_MODIFICADORES = re.compile(r"(?:KID|AGY)$")
+_DESCUENTO = re.compile(r"(?:WEB|\d{2,4})$")
 
-    Los sufijos vistos en la propiedad: 20, 25, 30, 35, 2527, 3027 y WEB. Se quita
-    UNO solo desde el final, y nunca si eso dejaría la raíz vacía.
+
+def raiz(codigo):
+    """'CIS30' -> 'CIS', 'BRF3027KID' -> 'BRF'. Le quita lo que no cambia el servicio.
+
+    Dos capas, cada una de UNA pasada, y ninguna deja la raíz vacía:
+
+      1. El modificador de tarifa del final: KID (niño) o AGY (agencia).
+      2. El descuento: 20, 25, 30, 35, 2527, 3027 y WEB.
+
+    Ni el precio ni para quién es cambian QUÉ es: el desayuno de un niño sigue siendo
+    desayuno y su snorkel sigue ocupando un asiento en el bote.
     """
     limpio = (codigo or "").strip().upper()
-    sin_sufijo = re.sub(r"(?:WEB|\d{2,4})$", "", limpio)
-    return sin_sufijo or limpio
+    sin_modificador = _MODIFICADORES.sub("", limpio) or limpio
+    sin_descuento = _DESCUENTO.sub("", sin_modificador) or sin_modificador
+    return sin_descuento or limpio
 
 
 # ---------------------------------------------------------------------------

@@ -416,6 +416,49 @@ def la_pesca_deportiva_es_privada_aunque_no_lo_diga(c):
             "un PNC a secas sigue siendo compartido")
 
 
+def la_tarifa_de_nino_no_esconde_el_servicio(c):
+    """Al reabrir la temporada, el 1 de noviembre, Opera empezo a mandar codigos con un
+    sufijo de TARIFA pegado al final: KID (niño) y AGY (agencia).
+    'BRF3027KID' = Breakfast Included NIÑO 30%.
+
+    raiz() solo sabia quitar el descuento, asi que ninguno de los cinco se reconocia. El
+    costo, medido sobre las 10 reservas que los traen: las TRES comidas venian con el
+    sufijo, ninguna se reconocia y el regimen quedaba EN BLANCO —la pantalla no sabia que
+    era pension completa—; y el snorkel de Isla del Caño y la caminata a San Pedrillo no
+    llegaban a la lista de tours vendidos.
+
+    El sufijo sale del plan tarifario, no de que haya un niño alojado: las 10 dicen
+    childCount 0 en Opera. No sirve para contar gente; solo dice que esta incluido."""
+    esperado = {
+        "BRF3027KID": ("comida", "desayuno"),
+        "LUN3027KID": ("comida", "almuerzo"),
+        "DIN3027KID": ("comida", "cena"),
+        "CIS3027KID": ("tour", "SNORKEL"),
+        "TSP30KID":   ("tour", "PNC"),
+    }
+    for cod, (tipo, valor) in esperado.items():
+        cl = op.clasificar(cod)
+        c.igual(cl["tipo"], tipo, f"{cod} es {tipo}")
+        c.igual(cl["valor"], valor, f"y es {valor}, no un servicio aparte")
+
+    # El de niño y el de adulto son EL MISMO servicio, no dos.
+    c.igual(op.clasificar("BRF3027KID")["valor"], op.clasificar("BRF")["valor"],
+            "el desayuno de un niño es el mismo desayuno")
+    c.igual(op.clasificar("CIS3027KID")["valor"], op.clasificar("CIS")["valor"],
+            "y su snorkel es el mismo snorkel")
+
+    # AGY es la tarifa de agencia, y tampoco cambia que es.
+    c.igual(op.raiz("CISAGY"), "CIS", "AGY tambien se quita")
+    c.igual(op.raiz("CIS3027AGY"), "CIS", "y junto con el descuento")
+
+    # Lo que NO debe pasar: quitar de mas y dejar la raiz vacia.
+    for cod in ("KID", "AGY", "WEB", "30"):
+        c.igual(op.raiz(cod), cod, f"'{cod}' a secas se queda como esta")
+
+    # Y un codigo que termina parecido pero NO es un modificador no se toca.
+    c.igual(op.raiz("SFAG"), "SFAG", "SFAG no termina en AGY: no se le quita nada")
+
+
 def los_codigos_que_aparecieron_en_octubre_caen_en_su_tour(c):
     """NQ y SPS salieron del aviso de «paquete sin reconocer» al sincronizar 264 reservas
     el 11 de octubre. Los dos son tours que el lodge YA hace, con un codigo nuevo de
@@ -545,6 +588,7 @@ PRUEBAS = [
     se_aceptan_las_dos_formas_del_cuarto_caso,
     el_prefijo_no_convierte_un_tour_en_otro,
     el_sufijo_de_descuento_se_sigue_quitando,
+    la_tarifa_de_nino_no_esconde_el_servicio,
     un_codigo_que_solo_es_prefijo_no_inventa_un_tour,
     los_codigos_de_la_reserva_real_se_reconocen,
     ninguno_de_los_23_codigos_queda_como_desconocido,
