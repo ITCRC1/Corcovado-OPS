@@ -434,6 +434,13 @@ def _sincronizar(cargar=True):
     # régimen y las amenidades. Una petición por reserva, y solo por las que cambiaron.
     detalles = _traer_detalles(a_cargar)
 
+    # Y lo que el grupo tiene escrito en la nota de su habitación PM. Va DESPUÉS de los
+    # detalles a propósito: primero cada habitación lee la suya, y solo las que quedaron
+    # sin itinerario reciben el del grupo. Ver opera_mapeo.notas_de_los_bloques.
+    con_nota_de_grupo = _con_cuidado(
+        "notas de grupo", lambda: _repartir_notas_de_los_bloques(crudas, a_cargar),
+        0, problemas)
+
     # Aplicar las reglas del lodge y guardar. Va todo en el mismo resguardo porque es
     # lo único que no se puede dejar pasar en silencio: si falla, hay que decir POR QUÉ.
     #
@@ -498,6 +505,9 @@ def _sincronizar(cargar=True):
             "detalles_con_error": detalles["errores"],
             "tours_de_opera": detalles["tours"],
             "paquetes_sin_reconocer": sorted(detalles["desconocidos"]),
+            # Cuántas habitaciones tomaron el itinerario de la nota de su grupo. Se
+            # informa para que se vea que esa información existe y de dónde sale.
+            "con_nota_de_grupo": con_nota_de_grupo,
             "alertas_generadas": len(alertas), "completo": completo}
 
 
@@ -601,6 +611,36 @@ def _con_cuidado(nombre, funcion, por_defecto, problemas):
         problemas.append(f"{nombre}: {type(e).__name__}: "
                          f"{str(e).splitlines()[0][:150]}")
         return por_defecto
+
+
+def _repartir_notas_de_los_bloques(crudas, a_cargar):
+    """Le pasa a cada habitación de un grupo lo que dice la nota de su PM.
+
+    Opera guarda la información de un grupo en la nota de su habitación ficticia —la PM,
+    'posting master'—, no en la de cada cuarto. El sistema filtra las PM a propósito
+    (nadie duerme ahí), así que esa información se perdía entera.
+
+    Medido con el grupo INTREPID del 11 de noviembre: nueve habitaciones del bloque
+    835457, las nueve SIN nota, y la PM del cuarto 9000 con el itinerario completo. Sin
+    esto, recepción veía nueve cuartos sin tours, sin régimen y sin punto de embarque.
+
+    Devuelve a cuántas habitaciones se les aplicó.
+    """
+    import opera_cloud as oc
+    import opera_mapeo as om
+
+    por_bloque = om.notas_de_los_bloques(crudas, oc.traer_detalle)
+    if not por_bloque:
+        return 0
+    aplicadas = 0
+    for r in a_cargar:
+        texto = por_bloque.get(str(r.get("block_code") or ""))
+        if texto and om.aplicar_nota_del_bloque(r, texto):
+            aplicadas += 1
+    if aplicadas:
+        _anotar(detalle=f"{aplicadas} habitación(es) tomaron el itinerario de la nota "
+                        f"de su grupo ({len(por_bloque)} bloque(s) con nota)")
+    return aplicadas
 
 
 def _unificar_numero_viejo(reservas):

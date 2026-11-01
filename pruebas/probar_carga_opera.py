@@ -334,6 +334,94 @@ def una_cancelada_no_se_lleva_el_trabajo_ya_hecho(c):
     conn.close()
 
 
+def el_grupo_toma_el_itinerario_de_la_nota_de_su_PM(c):
+    """Opera guarda la info de un grupo en la nota de su habitacion ficticia —la PM,
+    'posting master'—, no en la de cada cuarto. El sistema filtra las PM a proposito
+    (nadie duerme ahi), asi que esa informacion se perdia entera.
+
+    Medido con el grupo INTREPID del 11 de noviembre: nueve habitaciones del bloque
+    835457, las nueve con la nota VACIA, y la PM del cuarto 9000 con el itinerario
+    completo. Recepcion veia nueve cuartos sin tours, sin regimen y sin punto."""
+    import opera_mapeo as om
+
+    NOTA_PM = ("PAQUETE 4D/3N+FULL BOARD\n"
+               "PNC+CIS+NW\n"
+               "-------------------------------\n"
+               "INGRESO: Via Sierpe\n"
+               "SALIDA: Via Sierpe\n"
+               "------------------------------\n"
+               "OPERACION:\n\n"
+               "11: INGRESO\n12: CIS\n13: PNC\n14: SALIDA\n\n"
+               "------------------------------\n"
+               "NOTAS:\n\n11 PAX TOTALES PARA LOS TOURS")
+
+    # Una habitacion del grupo, sin nota propia.
+    hab = {"conf_no": "599046363", "room_no": "09", "block_code": "835457",
+           "arr_date": "11-11-26", "dep_date": "14-11-26"}
+    c.igual(hab.get("itinerario_leido"), None, "empieza sin itinerario")
+
+    aplicada = om.aplicar_nota_del_bloque(hab, NOTA_PM)
+    c.igual(aplicada, True, "se le aplica la nota de su grupo")
+    c.igual(hab.get("nota_del_bloque"), True, "y queda marcado de donde vino")
+    c.cierto(hab.get("itinerario_leido"), "ahora SI tiene itinerario")
+    # 'CIS' es el codigo 2027 del snorkel de Isla del Caño, y el lector lo traduce al
+    # tour que el lodge ya opera. Que llegue como SNORKEL y no como CIS es lo correcto:
+    # si entrara como CIS saldria una salida nueva al lado de la de siempre.
+    tours = sorted({o["tour"] for o in (hab.get("operacion") or [])})
+    c.igual(tours, ["PNC", "SNORKEL"], "con los tours del grupo, ya traducidos")
+    c.cierto("Via Sierpe" in NOTA_PM and hab.get("punto_entrada") == "Sierpe",
+             "y su punto de embarque")
+
+    # EL REGIMEN TAMBIEN. 'texto_completo' es de donde el importador lo saca, y se arma
+    # en incorporar_detalle, que ya corrio: sin rehacerlo, la habitacion recibia los
+    # tours del grupo pero no su «+FULL BOARD», y en la hoja del restaurante salia
+    # «sin dato». Paso de verdad con la hab 13 del grupo INTREPID.
+    import importer
+    c.igual(importer.detectar_regimen(hab), "PENSION_COMPLETA",
+            "y el regimen del paquete del grupo")
+
+    # LA NOTA PROPIA MANDA: una habitacion que ya tiene su itinerario no se toca.
+    propia = {"conf_no": "599046999", "block_code": "835457",
+              "arr_date": "11-11-26", "itinerario_leido": True,
+              "operacion": [{"dia": "12", "tour": "SNORKEL"}]}
+    c.igual(om.aplicar_nota_del_bloque(propia, NOTA_PM), False,
+            "la que ya tiene itinerario propio no se pisa")
+    c.igual([o["tour"] for o in propia["operacion"]], ["SNORKEL"],
+            "y conserva SUS tours, no los del grupo")
+
+
+def la_PM_de_un_grupo_cancelado_no_reparte_nada(c):
+    """Un grupo que no viene no le pone tours a nadie."""
+    import opera_mapeo as om
+
+    def pm(estado):
+        return {"roomStay": {"pseudoRoom": True,
+                             "reservationBlock": {"blockIdList": [{"id": "999111"}]}},
+                "reservationIdList": [{"id": "77", "type": "Reservation"}],
+                "reservationStatus": estado}
+
+    def detalle_falso(_ident):
+        # La forma REAL que manda Opera: comments[].comment.text.value. Escribirla a
+        # medias hacia que texto_de_las_notas devolviera vacio y la prueba fallara por
+        # el fixture, no por el codigo.
+        return {"comments": [{"comment": {
+            "text": {"value": "OPERACION:\n11: INGRESO\n12: PNC\n"}}}]}
+
+    viva = om.notas_de_los_bloques([pm("Reserved")], detalle_falso)
+    c.igual(sorted(viva), ["999111"], "la PM viva si aporta su nota")
+
+    muerta = om.notas_de_los_bloques([pm("Cancelled")], detalle_falso)
+    c.igual(muerta, {}, "la PM cancelada no aporta nada")
+
+    # Y una habitacion normal nunca se toma por master.
+    normal = {"roomStay": {"pseudoRoom": False,
+                           "reservationBlock": {"blockIdList": [{"id": "999111"}]}},
+              "reservationIdList": [{"id": "78", "type": "Reservation"}],
+              "reservationStatus": "Reserved"}
+    c.igual(om.notas_de_los_bloques([normal], detalle_falso), {},
+            "una habitacion de verdad no es el master del grupo")
+
+
 PRUEBAS = [
     un_lote_parcial_no_cancela_lo_que_la_fuente_sigue_viendo,
     una_descarga_incompleta_no_cancela_nada,
@@ -346,6 +434,8 @@ PRUEBAS = [
     la_hoja_del_restaurante_solo_cuenta_las_reservas_vivas,
     una_cancelada_sale_de_la_operacion,
     una_cancelada_no_se_lleva_el_trabajo_ya_hecho,
+    el_grupo_toma_el_itinerario_de_la_nota_de_su_PM,
+    la_PM_de_un_grupo_cancelado_no_reparte_nada,
 ]
 
 if __name__ == "__main__":

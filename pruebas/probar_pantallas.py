@@ -181,6 +181,25 @@ def el_filtro_de_fecha_manda_en_toda_la_pantalla(c):
              "y le pasa el filtro que tiene puesto, no la lista entera")
 
 
+def las_canceladas_no_salen_en_reservas(c):
+    """Lo pidio el lodge dos veces: «en el modulo de reservas siguen apareciendo las
+    canceladas y ya se solicito que no aparezcan del todo».
+
+    Una reserva caida no es trabajo de nadie, y mezclada con las vivas obliga a leer el
+    estado de cada fila para saber cuales cuentan. No se borran de la base —la fila se
+    queda con su estado— pero esta pantalla no las lista."""
+    with open(os.path.join(RAIZ, "backend", "main.py"), encoding="utf-8") as f:
+        servidor = f.read()
+    i = servidor.find("LAS CANCELADAS NO SALEN EN RESERVAS")
+    c.cierto(i > 0, "la consulta de reservas dice por que las excluye")
+    bloque = servidor[i:i + 1200]
+    c.cierto("res_status != 'CANCELADA'" in bloque, "y las filtra de verdad")
+    # El filtro de fecha tiene que seguir funcionando: va con AND, no con un WHERE nuevo.
+    c.cierto(" AND (" in bloque, "el filtro de fecha se suma con AND, no lo reemplaza")
+    c.igual(bloque.count("WHERE r.res_status"), 1,
+            "hay un solo WHERE en esa consulta")
+
+
 def las_canceladas_no_salen_en_transporte(c):
     """Lo reporto el lodge: «el dia 8 la habitacion 13 aparece como cancelada y en Opera
     hay una reserva nueva en esa misma fecha y habitacion».
@@ -388,6 +407,7 @@ PRUEBAS = [
     quien_se_va_hoy_no_esta_en_casa,
     el_filtro_de_fecha_manda_en_toda_la_pantalla,
     las_canceladas_no_salen_en_transporte,
+    las_canceladas_no_salen_en_reservas,
 ]
 
 

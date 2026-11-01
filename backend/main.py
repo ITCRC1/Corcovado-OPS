@@ -629,15 +629,23 @@ def ocupacion(desde: str, hasta: str, user: dict = Depends(exige("analitica"))):
 @app.get("/api/reservas")
 def reservas(desde: str = None, hasta: str = None, user: dict = Depends(exige("reservas"))):
     conn = get_connection()
+    # LAS CANCELADAS NO SALEN EN RESERVAS. Lo pidió el lodge dos veces: «que no aparezcan
+    # del todo». Una reserva caída no es trabajo de nadie, y mezclada con las vivas lo
+    # único que hace es que haya que leer el estado de cada fila para saber cuáles
+    # cuentan — justo lo que paso con la hab 13 del 8 de noviembre, que salía dos veces.
+    #
+    # No se BORRAN de la base: la fila se queda, con su estado, y el registro de que
+    # existió también. Lo que cambia es que esta pantalla no las lista.
     query = """SELECT r.*, g.confianza, g.confirmado_por_recepcion
-               FROM reserva r LEFT JOIN grupo g ON g.id = r.grupo_id"""
+               FROM reserva r LEFT JOIN grupo g ON g.id = r.grupo_id
+               WHERE r.res_status != 'CANCELADA'"""
     params = ()
     if desde and hasta:
         # Se incluyen todas las reservas que "tocan" el rango: las que llegan dentro,
         # las que salen dentro, y las que estuvieron en casa todo el periodo (llegaron
         # antes y salen después). Antes solo se mostraban las que llegaban en el rango,
         # dejando fuera a huéspedes que ya estaban hospedados.
-        query += f""" WHERE (
+        query += f""" AND (
             ({sql_fecha('r.arr_date')} BETWEEN ? AND ?)
             OR ({sql_fecha('r.dep_date')} BETWEEN ? AND ?)
             OR ({sql_fecha('r.arr_date')} <= ? AND {sql_fecha('r.dep_date')} >= ?)

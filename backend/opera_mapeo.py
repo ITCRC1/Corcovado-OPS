@@ -737,6 +737,134 @@ def texto_de_las_notas(detalle):
     return "\n".join(partes)
 
 
+def incorporar_texto_de_nota(reserva, texto):
+    """Le mete a una reserva lo que dice un texto de nota, con el lector del PDF.
+
+    Está aparte de `incorporar_detalle` para poder llamarlo con un texto que NO es el de
+    esa reserva: el de la habitación PM del grupo. Ver `notas_de_los_bloques`.
+
+    Es aditivo: solo se copia lo que la nota SÍ trae, porque un campo vacío en la nota no
+    debe borrar lo que ya había.
+    """
+    import pdf_parser
+
+    leido_nota = pdf_parser.leer_texto_de_reserva(texto)
+    for clave in ("punto_entrada", "punto_salida", "punto_entrada_sin_confirmar",
+                  "punto_salida_sin_confirmar", "hora_vuelo_entrada",
+                  "hora_vuelo_salida", "vuelo_entrada", "vuelo_salida",
+                  "guia_sugerido", "vinculo_texto", "block_code"):
+        if leido_nota.get(clave):
+            reserva[clave] = leido_nota[clave]
+    if leido_nota.get("rooming"):
+        reserva["rooming"] = leido_nota["rooming"]
+    if leido_nota.get("notas", "").strip():
+        reserva["notas"] = leido_nota["notas"].strip()
+    if leido_nota.get("adicionales_raw"):
+        reserva["adicionales_raw"] = leido_nota["adicionales_raw"]
+    if leido_nota.get("notas_operacion"):
+        reserva["notas_operacion"] = leido_nota["notas_operacion"]
+    if leido_nota.get("actividades_no_reconocidas"):
+        reserva["actividades_no_reconocidas"] = leido_nota["actividades_no_reconocidas"]
+    # El itinerario de la nota ('10: PNC 123456') es LA fuente de los tours: el día
+    # correcto y el número de entrada del SINAC, que el paquete no tiene.
+    # ¿La nota TIENE una sección de operación? Es distinto de que esté vacía.
+    #
+    #   Con itinerario escrito y sin tours  -> el huésped no tiene tours: se puede
+    #                                          borrar lo que hubiera.
+    #   Sin sección de operación            -> todavía no se la escribieron: no se
+    #                                          sabe nada y no se toca lo que haya.
+    #
+    # Importa porque los tours se reparten DESPUÉS de que entra la reserva: medido,
+    # 11 de 15 reservas de la ventana no tenían itinerario todavía.
+    reserva["itinerario_leido"] = bool(leido_nota.get("operacion"))
+    tours_de_nota = [o for o in (leido_nota.get("operacion") or []) if o.get("tour")]
+    if tours_de_nota:
+        reserva["operacion"] = tours_de_nota
+        # 'adicionales_raw' es lo que las pantallas muestran como "adicionales" y
+        # de donde el importador cruza los tours. Tiene que decir lo MISMO que el
+        # itinerario: si dijera lo que traen los paquetes, mostraría SNORKEL para
+        # una reserva cuyo itinerario dice PNC e ISLA.
+        if not leido_nota.get("adicionales_raw"):
+            reserva["adicionales_raw"] = ", ".join(
+                sorted({o["tour"] for o in tours_de_nota}))
+    # Todo el texto, que es de donde el importador detecta amenidades y alergias.
+    reserva["texto_nota"] = texto
+    return leido_nota
+
+
+def bloque_de(cruda):
+    """El código de bloque de una reserva cruda de Opera, también si es una PM."""
+    return campo(cruda, "block_code")
+
+
+def notas_de_los_bloques(crudas, traer_detalle):
+    """{código de bloque: texto de la nota} sacado de las habitaciones PM.
+
+    POR QUÉ EXISTE. Opera usa habitaciones ficticias —las PM, 'posting master'— para los
+    grupos. `es_cuarto_ficticio` las deja fuera y eso sigue siendo correcto: no hay nadie
+    a quien llevarle una amenidad ni quien salga a un tour. Pero el lodge escribe LA
+    INFORMACIÓN DEL GRUPO en la nota de esa PM, no en la de cada habitación.
+
+    Medido con el grupo INTREPID del 11 de noviembre: nueve habitaciones del bloque
+    835457, las nueve con la nota VACÍA, y la PM del cuarto 9000 con el itinerario
+    entero —«11: INGRESO / 12: CIS / 13: PNC / 14: SALIDA», «NW 11/11» y «11 PAX TOTALES
+    PARA LOS TOURS»—. Sin esto, recepción veía nueve cuartos sin tours, sin régimen y sin
+    punto de embarque, y tenía que abrir Opera para cada uno.
+
+    Se piden los detalles SOLO de las PM que tienen bloque: son pocas. Las demás son los
+    'Lost Interface Posting' de cada día, que no llevan nada.
+    """
+    notas = {}
+    for cruda in crudas:
+        if not es_cuarto_ficticio(cruda):
+            continue
+        bloque = bloque_de(cruda)
+        if not bloque or bloque in notas:
+            continue
+        # Una PM cancelada es un grupo que no viene: su nota no se reparte.
+        if estado_lodge(campo(cruda, "estado")) == "CANCELADA":
+            continue
+        # El id de OPERA, no el de confirmación. 'opera_id' no está en la tabla de
+        # campos —se calcula— así que pedirlo con campo() devolvía None siempre, y el
+        # respaldo al número de confirmación hacía que traer_detalle fallara en silencio:
+        # la función devolvía {} y parecía que ningún grupo tenía nota.
+        ident = id_de_reserva(cruda)
+        if not ident:
+            continue
+        try:
+            texto = texto_de_las_notas(traer_detalle(ident)) or ""
+        except Exception:
+            continue
+        if texto.strip():
+            notas[str(bloque)] = texto
+    return notas
+
+
+def aplicar_nota_del_bloque(reserva, texto):
+    """Le pasa a una habitación la nota del master de su grupo. Devuelve si la aplicó.
+
+    LA NOTA PROPIA MANDA. Si la habitación ya tiene su itinerario escrito, no se toca: lo
+    del grupo es el plan común y lo de la habitación es lo que se decidió para ESE
+    huésped. Pisarlo sería cambiarle los tours a alguien por lo que dice la nota de otro.
+
+    Se marca de dónde vino para que en pantalla se pueda decir, en vez de que recepción
+    se pregunte de dónde salió un itinerario que no está en la reserva.
+    """
+    if reserva.get("itinerario_leido"):
+        return False
+    incorporar_texto_de_nota(reserva, texto)
+    reserva["nota_del_bloque"] = True
+    # Y se rehace 'texto_completo', que es de donde el importador saca el régimen y las
+    # amenidades. Se arma en `incorporar_detalle`, que ya corrió: sin rehacerlo aquí, la
+    # habitación recibía los tours del grupo pero no su «+FULL BOARD», y en la hoja del
+    # restaurante salía «sin dato» —medido: la hab 13 del grupo INTREPID.
+    reserva["texto_completo"] = " ".join(
+        x for x in (reserva.get("adicionales_raw") or "",
+                    reserva.get("texto_nota") or reserva.get("notas") or "")
+        if x).strip()
+    return True
+
+
 def incorporar_detalle(reserva, detalle):
     """Le agrega a una reserva ya mapeada lo que solo trae la consulta individual.
 
@@ -774,54 +902,11 @@ def incorporar_detalle(reserva, detalle):
     como estaba en vez de vaciarse.
     """
     import opera_paquetes as op
-    import pdf_parser
 
     # --- 1. Las notas, por el mismo lector que el PDF ---
     texto = texto_de_las_notas(detalle)
     if texto:
-        leido_nota = pdf_parser.leer_texto_de_reserva(texto)
-        # Solo se copia lo que la nota SÍ trae: un campo vacío en la nota no debe
-        # borrar lo que ya había.
-        for clave in ("punto_entrada", "punto_salida", "punto_entrada_sin_confirmar",
-                      "punto_salida_sin_confirmar", "hora_vuelo_entrada",
-                      "hora_vuelo_salida", "vuelo_entrada", "vuelo_salida",
-                      "guia_sugerido", "vinculo_texto", "block_code"):
-            if leido_nota.get(clave):
-                reserva[clave] = leido_nota[clave]
-        if leido_nota.get("rooming"):
-            reserva["rooming"] = leido_nota["rooming"]
-        if leido_nota.get("notas", "").strip():
-            reserva["notas"] = leido_nota["notas"].strip()
-        if leido_nota.get("adicionales_raw"):
-            reserva["adicionales_raw"] = leido_nota["adicionales_raw"]
-        if leido_nota.get("notas_operacion"):
-            reserva["notas_operacion"] = leido_nota["notas_operacion"]
-        if leido_nota.get("actividades_no_reconocidas"):
-            reserva["actividades_no_reconocidas"] = leido_nota["actividades_no_reconocidas"]
-        # El itinerario de la nota ('10: PNC 123456') es LA fuente de los tours: el día
-        # correcto y el número de entrada del SINAC, que el paquete no tiene.
-        # ¿La nota TIENE una sección de operación? Es distinto de que esté vacía.
-        #
-        #   Con itinerario escrito y sin tours  -> el huésped no tiene tours: se puede
-        #                                          borrar lo que hubiera.
-        #   Sin sección de operación            -> todavía no se la escribieron: no se
-        #                                          sabe nada y no se toca lo que haya.
-        #
-        # Importa porque los tours se reparten DESPUÉS de que entra la reserva: medido,
-        # 11 de 15 reservas de la ventana no tenían itinerario todavía.
-        reserva["itinerario_leido"] = bool(leido_nota.get("operacion"))
-        tours_de_nota = [o for o in (leido_nota.get("operacion") or []) if o.get("tour")]
-        if tours_de_nota:
-            reserva["operacion"] = tours_de_nota
-            # 'adicionales_raw' es lo que las pantallas muestran como "adicionales" y
-            # de donde el importador cruza los tours. Tiene que decir lo MISMO que el
-            # itinerario: si dijera lo que traen los paquetes, mostraría SNORKEL para
-            # una reserva cuyo itinerario dice PNC e ISLA.
-            if not leido_nota.get("adicionales_raw"):
-                reserva["adicionales_raw"] = ", ".join(
-                    sorted({o["tour"] for o in tours_de_nota}))
-        # Todo el texto, que es de donde el importador detecta amenidades y alergias.
-        reserva["texto_nota"] = texto
+        incorporar_texto_de_nota(reserva, texto)
 
     # --- 2. Los paquetes ---
     leido = op.leer_paquetes(detalle or {})
