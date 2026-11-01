@@ -819,7 +819,7 @@ def notas_de_los_bloques(crudas, traer_detalle):
         if not es_cuarto_ficticio(cruda):
             continue
         bloque = bloque_de(cruda)
-        if not bloque or bloque in notas:
+        if not bloque:
             continue
         # Una PM cancelada es un grupo que no viene: su nota no se reparte.
         if estado_lodge(campo(cruda, "estado")) == "CANCELADA":
@@ -835,9 +835,42 @@ def notas_de_los_bloques(crudas, traer_detalle):
             texto = texto_de_las_notas(traer_detalle(ident)) or ""
         except Exception:
             continue
-        if texto.strip():
+        if not texto.strip():
+            continue
+        # UN BLOQUE PUEDE TENER VARIAS PM, Y LA PRIMERA NO ES LA BUENA.
+        #
+        # Medido: el bloque 679505 tiene CUATRO —la del grupo y tres de guías—, y el
+        # 679373 y el 774779 tienen dos, donde la primera que aparece es la del guía
+        # («HABITACIÓN GUIA · Randall Campos») y la del itinerario es la otra. Quedándose
+        # con la primera, doce habitaciones del 28 de noviembre y seis del 18 de
+        # diciembre seguían sin tours: el grupo tenía su itinerario y el sistema estaba
+        # leyendo la cédula del guía.
+        #
+        # Gana la que TRAE itinerario; entre dos que lo traen, la más larga, que es la
+        # más completa. Así el orden en que Opera devuelva las reservas deja de decidir.
+        if _mejor_nota(texto, notas.get(str(bloque))):
             notas[str(bloque)] = texto
     return notas
+
+
+def _tiene_itinerario(texto):
+    """Si esta nota trae la sección de operación, que es donde van los tours."""
+    return "OPERACION" in _sin_acentos_simple(texto)
+
+
+def _sin_acentos_simple(texto):
+    return (str(texto or "").upper().replace("Ó", "O").replace("Á", "A")
+            .replace("É", "E").replace("Í", "I").replace("Ú", "U"))
+
+
+def _mejor_nota(nueva, actual):
+    """Si `nueva` describe al grupo mejor que `actual`."""
+    if not actual:
+        return True
+    con_nueva, con_actual = _tiene_itinerario(nueva), _tiene_itinerario(actual)
+    if con_nueva != con_actual:
+        return con_nueva
+    return len(nueva) > len(actual)
 
 
 def aplicar_nota_del_bloque(reserva, texto):

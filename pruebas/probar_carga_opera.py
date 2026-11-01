@@ -422,6 +422,52 @@ def la_PM_de_un_grupo_cancelado_no_reparte_nada(c):
             "una habitacion de verdad no es el master del grupo")
 
 
+def entre_varias_PM_gana_la_que_trae_el_itinerario(c):
+    """Un bloque puede tener VARIAS habitaciones PM y la primera no es la buena.
+
+    Medido: el bloque 679505 tiene cuatro —la del grupo y tres de guias—, y el 679373 y
+    el 774779 tienen dos, donde la primera que aparece es la del guia («HABITACION GUIA ·
+    Randall Campos PTE CEDULA») y la del itinerario es la otra. Quedandose con la
+    primera, doce habitaciones del 28 de noviembre y seis del 18 de diciembre seguian sin
+    tours: el grupo tenia su itinerario y el sistema estaba leyendo la cedula del guia."""
+    import opera_mapeo as om
+
+    def pm(ident, texto):
+        return ({"roomStay": {"pseudoRoom": True,
+                              "reservationBlock": {"blockIdList": [{"id": "700700"}]}},
+                 "reservationIdList": [{"id": ident, "type": "Reservation"}],
+                 "reservationStatus": "Reserved"}, texto)
+
+    GUIA = "HABITACION GUIA\n\nRandall Campos PTE CEDULA"
+    ITIN = ("PAQUETE 3N/4D+ FULL BOARD\nCIS - PNC\n"
+            "OPERACION:\n28: INGRESO\n29: CIS\n30: PNC\n01: SALIDA\n")
+
+    def correr(pares):
+        textos = {ident: t for (cr, t) in pares
+                  for ident in [cr["reservationIdList"][0]["id"]]}
+        crudas = [cr for cr, _ in pares]
+        return om.notas_de_los_bloques(
+            crudas, lambda i: {"comments": [{"comment": {
+                "text": {"value": textos[str(i)]}}}]})
+
+    # La del guia PRIMERO, que es el orden que rompia.
+    r = correr([pm("1", GUIA), pm("2", ITIN)])
+    c.cierto("OPERACION" in r.get("700700", ""),
+             "gana la que trae el itinerario, aunque llegue segunda")
+    c.cierto("Randall" not in r.get("700700", ""),
+             "y no la cedula del guia")
+
+    # Y al reves da lo mismo: el orden de Opera deja de decidir.
+    r2 = correr([pm("2", ITIN), pm("1", GUIA)])
+    c.igual(r2.get("700700"), r.get("700700"),
+            "el orden en que Opera devuelva las PM ya no cambia el resultado")
+
+    # Entre DOS con itinerario, la mas completa.
+    largo = ITIN + "NOTAS:\n11 PAX TOTALES PARA LOS TOURS\n"
+    r3 = correr([pm("1", ITIN), pm("2", largo)])
+    c.igual(r3.get("700700"), largo, "entre dos itinerarios gana el mas completo")
+
+
 PRUEBAS = [
     un_lote_parcial_no_cancela_lo_que_la_fuente_sigue_viendo,
     una_descarga_incompleta_no_cancela_nada,
@@ -436,6 +482,7 @@ PRUEBAS = [
     una_cancelada_no_se_lleva_el_trabajo_ya_hecho,
     el_grupo_toma_el_itinerario_de_la_nota_de_su_PM,
     la_PM_de_un_grupo_cancelado_no_reparte_nada,
+    entre_varias_PM_gana_la_que_trae_el_itinerario,
 ]
 
 if __name__ == "__main__":
