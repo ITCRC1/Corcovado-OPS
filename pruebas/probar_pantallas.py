@@ -153,6 +153,50 @@ def quien_se_va_hoy_no_esta_en_casa(c):
                  "el informe cuenta la noche que se duerme, no el dia de salida")
 
 
+def el_filtro_de_fecha_manda_en_toda_la_pantalla(c):
+    """Lo reporto el lodge: «cuando se elige una fecha, que aparezca solo la info de esa
+    fecha, que no cargue las anteriores».
+
+    El caso concreto: en Transporte la tabla de arriba iba filtrada por dia, pero la
+    lista de «pendientes de confirmar» de abajo se pedia SIN fecha y devolvia las 56 de
+    toda la base. Una lista de pendientes que mezcla hoy con diciembre no se puede
+    cerrar, y lo que no se puede cerrar se deja de mirar."""
+    with open(os.path.join(RAIZ, "backend", "main.py"), encoding="utf-8") as f:
+        servidor = f.read()
+    i = servidor.find('def transporte_pendientes(')
+    c.cierto(i > 0, "existe el endpoint de pendientes")
+    firma = servidor[i:i + 200]
+    for parametro in ("fecha", "desde", "hasta"):
+        c.cierto(parametro in firma, f"los pendientes reciben «{parametro}»")
+
+    cuerpo = servidor[i:i + 2000]
+    c.cierto("res_status != 'CANCELADA'" in cuerpo,
+             "y tampoco muestran las canceladas")
+
+    with open(os.path.join(RAIZ, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+    j = pantalla.find("/api/transporte/pendientes")
+    c.cierto(j > 0, "la pantalla pide los pendientes")
+    c.cierto("fecha=" in pantalla[j - 200:j + 200] or "desde=" in pantalla[j:j + 200],
+             "y le pasa el filtro que tiene puesto, no la lista entera")
+
+
+def las_canceladas_no_salen_en_transporte(c):
+    """Lo reporto el lodge: «el dia 8 la habitacion 13 aparece como cancelada y en Opera
+    hay una reserva nueva en esa misma fecha y habitacion».
+
+    Las dos existian de verdad. La pantalla de Transporte no filtraba canceladas, asi
+    que la hab 13 salia DOS veces el dia 8 —la reserva viva y una de mayo, cancelada—.
+    Quien arma el bote no tiene forma de saber cual de las dos filas es la buena."""
+    with open(os.path.join(RAIZ, "backend", "main.py"), encoding="utf-8") as f:
+        servidor = f.read()
+    i = servidor.find("LAS CANCELADAS NO VIAJAN")
+    c.cierto(i > 0, "la consulta de transporte dice por que excluye a las canceladas")
+    bloque = servidor[i:i + 1400]
+    c.igual(bloque.count("res_status != 'CANCELADA'"), 2,
+            "y lo filtran las DOS consultas, la de entradas y la de salidas")
+
+
 def en_el_telefono_nada_se_sale_de_la_pantalla(c):
     """Lo que reporto el hotel: al navegar, la pantalla se hacia grande o chica y al
     deslizar a la derecha quedaba una franja en blanco.
@@ -342,6 +386,8 @@ PRUEBAS = [
     la_tarjeta_de_cada_tour_abre_su_detalle,
     en_el_telefono_nada_se_sale_de_la_pantalla,
     quien_se_va_hoy_no_esta_en_casa,
+    el_filtro_de_fecha_manda_en_toda_la_pantalla,
+    las_canceladas_no_salen_en_transporte,
 ]
 
 

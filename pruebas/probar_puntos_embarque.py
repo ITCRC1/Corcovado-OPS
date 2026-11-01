@@ -96,6 +96,33 @@ def la_hora_pegada_al_numero_de_vuelo_se_lee(c):
 # Lo que queda pendiente. No se adivina.
 # ---------------------------------------------------------------------------
 
+def copa_de_arbol_es_una_recogida_de_drake(c):
+    """Misma decision que Punta Marenco: es otro lodge de la costa, en la ruta del bote
+    de Drake. Lo reporto el lodge con la hab 04 del 7 de noviembre, cuya nota dice
+    «Entrada: RECOGER EN COPA DEL ARBOL RESORT A LAS 14:30H» y quedaba sin punto.
+
+    La nota real tiene las dos cosas a la vez, y es lo que hace valioso el caso: la
+    ENTRADA es por Copa del Arbol y la SALIDA dice «VIA SIERPE». Si el lector se
+    confundiera, mandaria el bote de Sierpe a recoger a alguien que esta en la costa de
+    Drake."""
+    real = ("CPL PAQUETE 2N/3D+FULL BOARD\n"
+            "C-PNC\n"
+            "Entrada: RECOGER EN COPA DEL ARBOL RESORT A LAS 14:30H\n"
+            "Salida: VIA SIERPE dejarla en el muelle de Aguila de Osa en Sierpe a las "
+            "09:30h ya que el auto rentado lo dejaria en el parqueo de ellos\n"
+            "----------------------------\n"
+            "Rooming:\n\nVenetia Fremlin-Key 159148049\n")
+    d = _leer(real)
+    c.igual(d["punto_entrada"], "Drake", "la entrada por Copa del Arbol es Drake")
+    c.igual(d["punto_salida"], "Sierpe", "y la salida sigue siendo Sierpe")
+    c.igual(d["punto_entrada_sin_confirmar"], None,
+            "ya no queda pendiente de que alguien lo decida")
+
+    # Las dos formas de escribirlo, y sin acentos.
+    for frase in ("Copa de Arbol", "COPA DEL ARBOL RESORT", "Copa de Árbol"):
+        c.igual(pp.punto_de(frase), "Drake", f"«{frase}» es Drake")
+
+
 def punta_marenco_es_una_recogida_de_drake(c):
     """Decision de operacion: el bote que recoge en Punta Marenco es el de Drake. Es un
     punto de RECOGIDA, no un punto de embarque aparte. Antes quedaba pendiente y
@@ -186,6 +213,7 @@ PRUEBAS = [
     cada_hora_es_la_de_su_propio_campo,
     la_hora_pegada_al_numero_de_vuelo_se_lee,
     punta_marenco_es_una_recogida_de_drake,
+    copa_de_arbol_es_una_recogida_de_drake,
     el_punto_no_tiene_que_ser_la_primera_palabra,
     dos_puntos_distintos_no_se_deciden_solos,
     la_hora_sirve_aunque_el_punto_no_se_reconozca,

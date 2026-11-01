@@ -2666,7 +2666,11 @@ async function loadTransporte(fecha, desde, hasta) {
   let url = fecha ? `${API}/api/transporte?fecha=${fecha}` : `${API}/api/transporte?desde=${F.desde}&hasta=${F.hasta}`;
   const res = await fetchAuth(url);
   const d = await res.json();
-  const pendientes = await (await fetchAuth(`${API}/api/transporte/pendientes`)).json();
+  // Los pendientes van con EL MISMO filtro que la tabla de arriba. Sin esto la pantalla
+  // mostraba un día arriba y las 56 pendientes de toda la base abajo.
+  const pendientes = await (await fetchAuth(
+    fecha ? `${API}/api/transporte/pendientes?fecha=${fecha}`
+          : `${API}/api/transporte/pendientes?desde=${F.desde}&hasta=${F.hasta}`)).json();
   const app = document.getElementById("app");
   // La hora la resuelve el servidor con las reglas del lodge: por Sierpe el horario
   // fijo del bote, por Drake el vuelo o el bote calculado desde él. Se marca de dónde
@@ -2712,7 +2716,7 @@ async function loadTransporte(fecha, desde, hasta) {
       ${d.salidas.length ? `<table><tr><th>Fecha</th><th>Hab.</th><th>Huésped</th><th>Punto</th><th>Hora</th><th>Guía / bote</th><th>Pax</th></tr>${d.salidas.map(filaS).join("")}</table>` : `<p class="empty">Nadie sale este día.</p>`}
       ${pendientes.length && puedeEscribir("transporte") ? `
         <p style="font-weight:600;font-size:14px;margin-top:20px;color:var(--warn-text);">⚠ Pendientes de confirmar (${pendientes.length})</p>
-        <p style="font-size:12px;color:var(--muted);margin:0 0 8px;">El PDF menciona un ingreso o salida, pero no indica claramente si es por Sierpe o Drake.</p>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 8px;">De ${fecha ? "este día" : "este rango"}. La reserva menciona un ingreso o salida, pero no dice si es por Sierpe o Drake.</p>
         ${pendientes.map(p => `
           ${p.punto_entrada_sin_confirmar ? `
             <div style="background:var(--warn-bg);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px;">

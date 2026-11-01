@@ -381,6 +381,12 @@ def bloque_vacio():
 #
 # Punta Marenco va a Drake por decisión de operación: el bote que recoge ahí es el de
 # Drake. Es un punto de recogida, no un punto de embarque aparte.
+#
+# Copa de Árbol entra por lo mismo, y lo pidió el lodge el 1 de noviembre: la reserva de
+# la hab 04 del día 7 dice «Entrada: RECOGER EN COPA DEL ARBOL RESORT A LAS 14:30H» y el
+# sistema la dejaba pendiente de punto. Es otro lodge de la misma costa, en la ruta del
+# bote de Drake, igual que Punta Marenco. Se escriben las dos formas porque la nota usa
+# las dos: «Copa de Árbol» y «Copa del Árbol».
 PUNTOS_CONOCIDOS = {
     "SIERPE": "Sierpe",
     "DRAKE": "Drake",
@@ -389,6 +395,8 @@ PUNTOS_CONOCIDOS = {
     "BAHIA": "Drake",
     "PUNTA MARENCO": "Drake",
     "MARENCO": "Drake",
+    "COPA DE ARBOL": "Drake",
+    "COPA DEL ARBOL": "Drake",
 }
 
 

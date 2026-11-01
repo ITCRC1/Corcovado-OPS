@@ -812,13 +812,18 @@ def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: di
     # fechas, el motor las devolvería ordenadas por fecha de salida: el mismo contenido,
     # pero la lista de Transporte aparecería en otra secuencia. Se deja escrito el orden
     # de antes para no cambiar lo que ve recepción.
+    # LAS CANCELADAS NO VIAJAN. Esta pantalla no las filtraba y el lodge lo vio: el 8 de
+    # noviembre la habitación 13 salía DOS veces —la reserva viva de Marcano y una de
+    # mayo, cancelada, que decía «PRUEBA CORCOVADO»—, y el cuarto 10, 11 y 12 salían con
+    # un grupo cancelado entero. Quien arma el bote no tiene forma de saber cuál de las
+    # dos filas es la buena.
     entradas = conn.execute(
         # conf_no viene para poder marcar en pantalla si esa habitación viaja con otras.
-        f"SELECT conf_no, room_no, nombre_principal, punto_entrada, arr_time, hora_vuelo_entrada, adl, chl, arr_date FROM reserva WHERE {cond_e} ORDER BY rowid",
+        f"SELECT conf_no, room_no, nombre_principal, punto_entrada, arr_time, hora_vuelo_entrada, adl, chl, arr_date FROM reserva WHERE {cond_e} AND res_status != 'CANCELADA' ORDER BY rowid",
         params_e,
     ).fetchall()
     salidas = conn.execute(
-        f"SELECT conf_no, room_no, nombre_principal, punto_salida, hora_vuelo_salida, adl, chl, dep_date FROM reserva WHERE {cond_s} ORDER BY rowid",
+        f"SELECT conf_no, room_no, nombre_principal, punto_salida, hora_vuelo_salida, adl, chl, dep_date FROM reserva WHERE {cond_s} AND res_status != 'CANCELADA' ORDER BY rowid",
         params_s,
     ).fetchall()
     conn.close()
@@ -3629,14 +3634,39 @@ def confirmar_transporte(conf_no: str, tipo: str, punto: str, user: dict = Depen
 
 
 @app.get("/api/transporte/pendientes")
-def transporte_pendientes(user: dict = Depends(exige("transporte"))):
+def transporte_pendientes(fecha: str = None, desde: str = None, hasta: str = None,
+                          user: dict = Depends(exige("transporte"))):
+    """Los ingresos y salidas de los que no se sabe el punto, DEL PERIODO QUE SE MIRA.
+
+    Antes no recibía fecha y devolvía las 56 de toda la base, debajo de una pantalla que
+    sí estaba filtrada por día. El lodge lo reportó: eliges un día y abajo siguen las
+    anteriores. Una lista de pendientes que mezcla el día de hoy con diciembre no se
+    puede cerrar, y lo que no se puede cerrar se deja de mirar.
+
+    Una fila pendiente puede serlo por la ENTRADA o por la SALIDA, y cada una tiene su
+    propia fecha. Así que entra en el periodo si cualquiera de las dos cae dentro —y se
+    mira la fecha que corresponde a lo que está pendiente, no las dos a ciegas.
+    """
     conn = get_connection()
+    cond, params = "", []
+    if fecha:
+        cond = (" AND ((punto_entrada_sin_confirmar IS NOT NULL AND arr_date = ?)"
+                "   OR (punto_salida_sin_confirmar IS NOT NULL AND dep_date = ?))")
+        params = [ddmmyy(fecha), ddmmyy(fecha)]
+    elif desde and hasta:
+        cond = (f" AND ((punto_entrada_sin_confirmar IS NOT NULL"
+                f"        AND {sql_fecha('arr_date')} BETWEEN ? AND ?)"
+                f"   OR (punto_salida_sin_confirmar IS NOT NULL"
+                f"        AND {sql_fecha('dep_date')} BETWEEN ? AND ?))")
+        params = [yymmdd(desde), yymmdd(hasta), yymmdd(desde), yymmdd(hasta)]
     rows = conn.execute(
-        """SELECT conf_no, room_no, nombre_principal, arr_date, dep_date,
-                  punto_entrada_sin_confirmar, punto_salida_sin_confirmar
-           FROM reserva
-           WHERE punto_entrada_sin_confirmar IS NOT NULL OR punto_salida_sin_confirmar IS NOT NULL
-           ORDER BY arr_date"""
+        f"""SELECT conf_no, room_no, nombre_principal, arr_date, dep_date,
+                   punto_entrada_sin_confirmar, punto_salida_sin_confirmar
+            FROM reserva
+            WHERE (punto_entrada_sin_confirmar IS NOT NULL
+                   OR punto_salida_sin_confirmar IS NOT NULL)
+              AND res_status != 'CANCELADA'{cond}
+            ORDER BY arr_date""", params
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
