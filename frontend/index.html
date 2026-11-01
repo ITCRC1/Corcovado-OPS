@@ -1551,7 +1551,10 @@ async function loadReservas(fecha, desde, hasta) {
   app.innerHTML = `
     <div class="card">
       <div class="header">
-        <p class="title">Reservas ${fecha ? etiquetaFecha(fecha) : ""}</p>
+        <!-- La lista son los INGRESOS del periodo, no quién está alojado. Se dice en el
+             título porque desde el 1 de noviembre un día puede salir vacío aunque el
+             lodge esté lleno, y sin decirlo eso se lee como una pantalla rota. -->
+        <p class="title">Reservas · ingresos ${fecha ? etiquetaFecha(fecha) : ""}</p>
         <div class="filterbar">
           <button class="btn" onclick="loadReservas(shiftDate('${fecha || F.fecha}',-1))">‹ Día ant.</button>
           <input type="date" value="${fecha || ""}" onchange="loadReservas(this.value)">
@@ -1590,7 +1593,8 @@ async function loadReservas(fecha, desde, hasta) {
               : `<span style="font-size:11.5px;color:var(--muted);">Lo confirma recepción.</span>`}
             </div>`).join("")}
         </div>` : ""}
-      <table>
+      ${rows.length === 0 ? `<p class="empty">Nadie ingresa ${fecha ? "este día" : "en estas fechas"}.<small>Esta lista son los ingresos. Quién está alojado se ve en el Dashboard y en el Resumen de operación.</small></p>` : ""}
+      <table${rows.length === 0 ? ' style="display:none;"' : ""}>
         <tr><th>N° Reserva</th><th>Hab.</th><th>Huésped</th><th>Fechas</th><th>Pax</th><th>Estatus</th><th>Grupo</th><th>Itinerario</th></tr>
         ${rows.map(r => { const e = estadoReserva(r); return `
           <tr class="${e.clase}">

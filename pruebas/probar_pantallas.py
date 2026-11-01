@@ -192,12 +192,51 @@ def las_canceladas_no_salen_en_reservas(c):
         servidor = f.read()
     i = servidor.find("LAS CANCELADAS NO SALEN EN RESERVAS")
     c.cierto(i > 0, "la consulta de reservas dice por que las excluye")
-    bloque = servidor[i:i + 1200]
+    # La ventana se mide hasta el ORDER BY, no por un numero de caracteres: los
+    # comentarios de esa funcion crecieron y empujaron el filtro fuera de los 1200 que
+    # habia puesto, asi que la comprobacion fallaba por el tamaño de la ventana y no por
+    # el codigo.
+    fin = servidor.find("ORDER BY r.arr_date", i)
+    bloque = servidor[i:fin if fin > i else i + 2500]
     c.cierto("res_status != 'CANCELADA'" in bloque, "y las filtra de verdad")
-    # El filtro de fecha tiene que seguir funcionando: va con AND, no con un WHERE nuevo.
-    c.cierto(" AND (" in bloque, "el filtro de fecha se suma con AND, no lo reemplaza")
+    # El filtro de fecha tiene que seguir funcionando: se SUMA con AND al WHERE de las
+    # canceladas, no lo reemplaza. Si abriera su propio WHERE, una de las dos reglas se
+    # perderia en silencio.
+    c.cierto('query += f" AND ' in bloque,
+             "el filtro de fecha se suma con AND, no lo reemplaza")
     c.igual(bloque.count("WHERE r.res_status"), 1,
             "hay un solo WHERE en esa consulta")
+
+
+def reservas_muestra_los_ingresos_de_la_fecha_elegida(c):
+    """Lo reporto el lodge dos veces: «cuando se elige una fecha en reservas se cargan
+    tambien las fechas anteriores».
+
+    Y era cierto: el 12 de noviembre devolvia TRECE filas, doce de ellas llegadas el 8 y
+    el 11 —seguian en casa— y NINGUNA del 12. Se incluian las que 'tocaban' el rango para
+    no dejar fuera a quien ya estaba hospedado, pero desde fuera se lee como que la
+    pantalla arrastra lo viejo.
+
+    Decision del lodge: la lista son los INGRESOS del periodo. Quien esta alojado se ve
+    en el Dashboard y en el Resumen de operacion, que es donde esa pregunta se hace."""
+    with open(os.path.join(RAIZ, "backend", "main.py"), encoding="utf-8") as f:
+        servidor = f.read()
+    i = servidor.find("SOLO LAS QUE LLEGAN EN EL PERIODO")
+    c.cierto(i > 0, "la consulta de reservas dice que son los ingresos")
+    bloque = servidor[i:i + 1200]
+    c.cierto("arr_date')} BETWEEN ? AND ?" in bloque,
+             "filtra por la fecha de LLEGADA")
+    c.igual("dep_date" in bloque, False,
+            "y ya no mete a los que salen dentro del rango")
+
+    with open(os.path.join(RAIZ, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+    # Un dia puede quedar vacio aunque el lodge este lleno: hay que decirlo, o se lee
+    # como una pantalla rota.
+    c.cierto("Reservas · ingresos" in pantalla,
+             "el titulo dice que la lista son los ingresos")
+    c.cierto("Nadie ingresa" in pantalla,
+             "y el dia vacio se explica en vez de salir en blanco")
 
 
 def las_canceladas_no_salen_en_transporte(c):
@@ -408,6 +447,7 @@ PRUEBAS = [
     el_filtro_de_fecha_manda_en_toda_la_pantalla,
     las_canceladas_no_salen_en_transporte,
     las_canceladas_no_salen_en_reservas,
+    reservas_muestra_los_ingresos_de_la_fecha_elegida,
 ]
 
 

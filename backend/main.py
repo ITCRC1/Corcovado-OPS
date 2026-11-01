@@ -641,17 +641,19 @@ def reservas(desde: str = None, hasta: str = None, user: dict = Depends(exige("r
                WHERE r.res_status != 'CANCELADA'"""
     params = ()
     if desde and hasta:
-        # Se incluyen todas las reservas que "tocan" el rango: las que llegan dentro,
-        # las que salen dentro, y las que estuvieron en casa todo el periodo (llegaron
-        # antes y salen después). Antes solo se mostraban las que llegaban en el rango,
-        # dejando fuera a huéspedes que ya estaban hospedados.
-        query += f""" AND (
-            ({sql_fecha('r.arr_date')} BETWEEN ? AND ?)
-            OR ({sql_fecha('r.dep_date')} BETWEEN ? AND ?)
-            OR ({sql_fecha('r.arr_date')} <= ? AND {sql_fecha('r.dep_date')} >= ?)
-        )"""
-        d, h = yymmdd(desde), yymmdd(hasta)
-        params = (d, h, d, h, d, h)
+        # SOLO LAS QUE LLEGAN EN EL PERIODO. Lo decidió el lodge el 1 de noviembre.
+        #
+        # Antes se incluían todas las que "tocaban" el rango —las que llegaban dentro,
+        # las que salían dentro y las que estaban en casa todo el periodo—, para no dejar
+        # fuera a quien ya estaba hospedado. Pero al elegir UN día la lista salía llena de
+        # filas con fecha anterior: el 12 de noviembre devolvía trece, doce de ellas
+        # llegadas el 8 y el 11, y ninguna del 12. Desde fuera se lee como que la pantalla
+        # arrastra lo viejo, y lo reportaron dos veces.
+        #
+        # Quién está alojado ese día se sigue viendo en el Dashboard y en el Resumen de
+        # operación, que es donde esa pregunta se hace.
+        query += f" AND {sql_fecha('r.arr_date')} BETWEEN ? AND ?"
+        params = (yymmdd(desde), yymmdd(hasta))
     query += " ORDER BY r.arr_date, r.room_no"
     rows = conn.execute(query, params).fetchall()
 
