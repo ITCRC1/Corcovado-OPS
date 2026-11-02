@@ -2156,12 +2156,17 @@ async function loadAgenda(fecha, desde, hasta) {
   if (fecha === null) F.modo = "rango";              // se pidió ver un rango
   if (fecha === undefined) fecha = F.modo === "dia" ? F.fecha : null;
   let url = fecha ? `${API}/api/tours/agenda?fecha=${fecha}` : `${API}/api/tours/agenda?desde=${F.desde}&hasta=${F.hasta}`;
-  // Las corridas de bote YA NO SE PIDEN AQUÍ. Vivían en esta pantalla y el lodge las
-  // mandó a Transporte, que es donde se coordina el movimiento del día. Esta queda solo
-  // con los tours, que es lo que dice su nombre.
-  const [rows, cat] = await Promise.all([
+  // Las corridas de bote se COORDINAN en Transporte: el bote, el capitán y el ayudante
+  // se eligen allá. Aquí se piden solo para poder ponerles el GUÍA, que es lo que esta
+  // pantalla decide. Es el reparto que pidió el lodge: cada dato se escribe en un lugar
+  // y se lee en los dos.
+  const urlTrasAg = fecha ? `${API}/api/traslados?fecha=${fecha}`
+                          : `${API}/api/traslados?desde=${F.desde}&hasta=${F.hasta}`;
+  const [rows, cat, tras] = await Promise.all([
     fetchAuth(url).then(r => r.json()),
     getCatalogo(),
+    fetchAuth(urlTrasAg).then(r => r.json())
+      .catch(e => ({ detail: "No hubo respuesta del servidor (" + e.message + ")." })),
   ]);
   // Se guardan para el detalle de cada tipo de tour: la pantalla ya los tiene, así que
   // desplegarlo no cuesta otra consulta y no puede contradecir a la tabla de abajo.
@@ -2187,14 +2192,12 @@ async function loadAgenda(fecha, desde, hasta) {
       return `<option value="${g.nombre}"${g.nombre === actual ? " selected" : ""}>${g.nombre}${marca}</option>`;
     }).join("");
   };
-  const opcionesBote = (cod, actual) => {
-    const d = dispo[cod] || {};
-    const ocup = new Set(d.botes_ocupados || []);
-    return cat.botes.filter(b => b.gestionado_por_hotel).map(b => {
-      const marca = ocup.has(b.nombre) && b.nombre !== actual ? " (ocupado)" : "";
-      return `<option value="${b.nombre}"${b.nombre === actual ? " selected" : ""}>${b.nombre}${marca}</option>`;
-    }).join("");
-  };
+  // El bote, el capitán y el ayudante ya NO se eligen aquí: se ponen en Transporte y
+  // esta pantalla los enseña. Por eso es texto y no un desplegable — un control que se
+  // puede tocar pero no guarda nada es peor que no tenerlo.
+  const soloLectura = (valor, falta) => valor
+    ? escaparHTML(valor)
+    : `<span style="color:${falta ? 'var(--warn-text)' : 'var(--muted)'};font-size:11.5px;">${falta ? 'sin asignar' : '—'}</span>`;
   const app = document.getElementById("app");
   app.innerHTML = `
     <div class="card">
@@ -2223,7 +2226,7 @@ async function loadAgenda(fecha, desde, hasta) {
       ${resumenPorTour(rows)}
       ${rows.length ? `
       <table>
-        <tr><th>Huésped / Hab.</th><th>Tour</th><th>Fecha del tour</th><th>Grupo</th><th>Guía</th><th>Bote</th><th>Pax</th>${puedeEscribir("agenda") ? "<th></th>" : ""}</tr>
+        <tr><th>Huésped / Hab.</th><th>Tour</th><th>Fecha del tour</th><th>Grupo</th><th>Guía</th><th>Bote</th><th>Capitán</th><th>Ayudante</th><th>Pax</th>${puedeEscribir("agenda") ? "<th></th>" : ""}</tr>
         ${rows.map(r => r.tours.map((t, i) => `
           <tr>
             ${i === 0 ? `<td rowspan="${r.tours.length}">${r.nombre_principal} · ${r.room_no}</td>` : ''}
@@ -2240,7 +2243,9 @@ async function loadAgenda(fecha, desde, hasta) {
                 ${["A","B","C","D"].map(g => `<option value="${g}" ${(t.grupo_operativo||"A")===g?"selected":""}>${g}</option>`).join("")}
               </select>` : (t.grupo_operativo || "A")}</td>
             <td>${puedeEscribir("agenda") ? `<select id="g-${t.id}" onchange="marcarSinGuardar(${t.id})">${'<option value="">Sin asignar</option>' + opcionesGuia(t.tour_codigo, t.guia_nombre)}</select>` : (t.guia_nombre || "Sin asignar")}</td>
-            <td>${puedeEscribir("agenda") ? `<select id="b-${t.id}" onchange="marcarSinGuardar(${t.id})">${'<option value="">Sin asignar</option>' + opcionesBote(t.tour_codigo, t.bote_nombre)}</select>` : (t.bote_nombre || "Sin asignar")}</td>
+            <td>${soloLectura(t.bote_nombre, t.requiere_bote)}</td>
+            <td>${soloLectura(t.capitan_nombre, t.requiere_bote)}</td>
+            <td>${soloLectura(t.ayudante_nombre, false)}</td>
             <td>${celdaPaxTour(t)}</td>
             ${puedeEscribir("agenda") ? `<td><button class="btn" onclick="guardarAsignacion(${t.id})">Guardar</button></td>` : ''}
           </tr>`).join("")).join("")}
@@ -2248,7 +2253,9 @@ async function loadAgenda(fecha, desde, hasta) {
       <p style="font-size:11px;color:var(--muted);margin-top:8px;">
         <strong>Grupo:</strong> si un tour excede la capacidad de un guía, cambia algunas reservas al grupo B, C o D — cada grupo lleva su propio guía.
         Pueden compartir el mismo bote (si cabe) o usar botes distintos: el sistema valida el guía por grupo, y el bote sumando todos los grupos que lo comparten.
+        <br><strong>El bote, el capitán y el ayudante se eligen en Transporte</strong> y aparecen aquí solos en cuanto se asignan.
       </p>` : `<p class="empty">No hay tours para esta fecha.<small>Si esperabas alguno, revisa que el PDF de reservas esté importado y que la fecha sea la correcta.</small></p>`}
+      ${seccionGuiasDeCorridas(tras)}
     </div>
   `;
 
@@ -2262,6 +2269,79 @@ async function loadAgenda(fecha, desde, hasta) {
     window._tourAbierto = null;              // para que detalleTipoDeTour lo abra, no lo cierre
     if (sigue) detalleTipoDeTour(codigo);
   }
+}
+
+// ---------- EL GUÍA DE CADA CORRIDA (lado Agenda) ----------
+//
+// La misma lista de corridas que se ve en Transporte, pero aquí solo se puede tocar el
+// GUÍA. Lo pidió el lodge así: una corrida de muelle no tiene tour detrás del cual sacar
+// el guía, y la Agenda es la pantalla donde se reparte la gente. El bote y la tripulación
+// se ven, pero se eligen en Transporte.
+function seccionGuiasDeCorridas(d) {
+  if (!d || !d.corridas) {
+    return `<div style="margin-top:18px;">
+      <p style="font-weight:600;font-size:13px;margin:0 0 6px;">Guía de los ingresos y salidas</p>
+      <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:10px 12px;font-size:12.5px;">
+        No se pudieron cargar las corridas.
+        ${d && d.detail ? `<br><span style="font-size:11.5px;">${escaparHTML(d.detail)}</span>`
+                        : `<br><span style="font-size:11.5px;">Revisá la conexión y volvé a entrar a la pantalla.</span>`}
+      </div></div>`;
+  }
+  if (!(d.corridas || []).length) {
+    return `<div style="margin-top:18px;">
+      <p style="font-weight:600;font-size:13px;margin:0 0 6px;">Guía de los ingresos y salidas</p>
+      <p class="empty" style="padding:14px 12px;">Nadie entra ni sale en estas fechas.<small>Las corridas salen de las reservas: aparecen solas en cuanto haya un ingreso o una salida con su punto.</small></p>
+    </div>`;
+  }
+  const puedo = puedeEscribir("agenda");
+  const R = d.resumen || {};
+  const opcG = (actual) => `<option value="">Sin asignar</option>` + (d.guias || [])
+    .map(g => `<option value="${escaparHTML(g.nombre)}"${g.nombre === actual ? " selected" : ""}>${escaparHTML(g.nombre)}</option>`).join("");
+  const tripulacion = (c) => {
+    const partes = [c.bote_nombre, c.capitan_nombre, c.ayudante_nombre].filter(Boolean);
+    return partes.length
+      ? `<span style="font-size:11.5px;color:var(--muted);">${escaparHTML(partes.join(" · "))}</span>`
+      : `<span style="font-size:11.5px;color:var(--warn-text);">sin bote — se pone en Transporte</span>`;
+  };
+  const fila = (c) => {
+    const k = [c.fecha, c.tipo, c.punto, c.hora].map(x => encodeURIComponent(x)).join("|");
+    const quienes = c.huespedes.map(h =>
+      `${escaparHTML(h.room_no || "?")} ${escaparHTML((h.nombre || "").split(",")[0])}`).join(" · ");
+    return `<tr>
+      <td>${escaparHTML(c.fecha)}</td>
+      <td><span class="badge ${c.tipo === "entrada" ? "badge-ok" : "badge-warn"}">${c.tipo === "entrada" ? "Entra" : "Sale"}</span></td>
+      <td><strong>${escaparHTML(c.punto)}</strong></td>
+      <td>${c.hora
+            ? escaparHTML(c.hora)
+            : `<span style="color:var(--warn-text);font-size:11.5px;">${escaparHTML(c.hora_origen || "sin hora")}</span>`}</td>
+      <td>${c.huespedes.length} hab.
+        <br><span style="font-size:10.5px;color:var(--muted);">${quienes}</span></td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums;"><strong>${c.pax}</strong></td>
+      <td>${puedo
+            ? `<select onchange="asignarTraslado('${k}','guia',this.value,'agenda')">${opcG(c.guia_nombre)}</select>`
+            : escaparHTML(c.guia_nombre || "Sin asignar")}</td>
+      <td>${tripulacion(c)}</td>
+    </tr>`;
+  };
+  return `
+    <div style="margin-top:20px;">
+      <p style="font-weight:600;font-size:13px;margin:0 0 2px;">
+        Guía de los ingresos y salidas · ${R.corridas} corrida${R.corridas === 1 ? "" : "s"} · ${R.pax} pax
+        ${R.sin_guia ? `<span style="color:var(--warn-text);"> · ${R.sin_guia} sin guía</span>` : ""}
+      </p>
+      <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">
+        Quién acompaña a los que llegan al muelle de Sierpe o a la pista de Drake. Esta
+        corrida no tiene tour detrás, así que su guía se pone aquí.
+        <strong>El bote y la tripulación se eligen en Transporte.</strong>
+      </p>
+      <table style="font-size:12.5px;">
+        <tr><th style="width:88px;">Fecha</th><th style="width:64px;">Dir.</th>
+            <th style="width:74px;">Punto</th><th style="width:64px;">Hora</th>
+            <th>Habitaciones</th><th style="width:50px;text-align:right;">Pax</th>
+            <th style="width:150px;">Guía</th><th style="width:200px;">Bote / tripulación</th></tr>
+        ${d.corridas.map(fila).join("")}
+      </table>
+    </div>`;
 }
 
 // ---------- INGRESOS Y SALIDAS POR LOCACIÓN ----------
@@ -2295,9 +2375,13 @@ function seccionTraslados(d) {
     </div>`;
   }
 
-  const puedo = puedeEscribir("agenda");
-  const opcG = (actual) => `<option value="">Sin asignar</option>` + (d.guias || [])
-    .map(g => `<option value="${escaparHTML(g.nombre)}"${g.nombre === actual ? " selected" : ""}>${escaparHTML(g.nombre)}</option>`).join("");
+  const puedo = puedeEscribir("transporte");
+  // El GUÍA no se elige aquí: se pone en la Agenda de tours y esta pantalla lo enseña.
+  // Lo pidió el lodge así —«que se jale automático a transporte, pero que en transporte
+  // no sea editable»— y evita que las dos pantallas puedan decir cosas distintas.
+  const celdaGuia = (actual) => actual
+    ? escaparHTML(actual)
+    : `<span style="color:var(--warn-text);font-size:11.5px;">sin guía — se pone en la Agenda</span>`;
   // Capitán y ayudante salen de la MISMA lista: en el lodge la misma persona hace de
   // una cosa o de la otra según con quién le toque el bote. Se le quita al selector la
   // persona que ya está puesta en el otro puesto de ESA corrida, para que no se pueda
@@ -2326,9 +2410,7 @@ function seccionTraslados(d) {
       <td>${c.huespedes.length} hab.
         <br><span style="font-size:10.5px;color:var(--muted);">${quienes}</span></td>
       <td style="text-align:right;font-variant-numeric:tabular-nums;"><strong>${c.pax}</strong></td>
-      <td>${puedo
-            ? `<select onchange="asignarTraslado('${k}','guia',this.value)">${opcG(c.guia_nombre)}</select>`
-            : escaparHTML(c.guia_nombre || "Sin asignar")}</td>
+      <td>${celdaGuia(c.guia_nombre)}</td>
       <td>${puedo
             ? `<select onchange="asignarTraslado('${k}','bote',this.value)">${opcB(c.bote_nombre)}</select>`
             : escaparHTML(c.bote_nombre || "Sin asignar")}
@@ -2373,7 +2455,7 @@ function seccionTraslados(d) {
     </div>`;
 }
 
-async function asignarTraslado(clave, campo, valor) {
+async function asignarTraslado(clave, campo, valor, volver) {
   const [fecha, tipo, punto, hora] = clave.split("|").map(decodeURIComponent);
   const cuerpo = { fecha, tipo, punto, hora };
   cuerpo[campo] = valor;                    // vacío = quitar la asignación
@@ -2395,9 +2477,110 @@ async function asignarTraslado(clave, campo, valor) {
       ? `<div style="background:var(--warn-bg);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--warn-text);">${d.alertas.map(a => `⚠ ${escaparHTML(a)}`).join("<br>")}</div>`
       : "";
   }
-  // Se recarga TRANSPORTE, que es donde vive ahora esta sección. Mientras estuvo en
-  // Agenda esto decía loadAgenda(), y dejarlo así mandaba al usuario a otra pantalla
-  // cada vez que asignaba a alguien.
+  // Se recarga LA PANTALLA DESDE LA QUE SE LLAMÓ. Las corridas se tocan desde las dos
+  // —el guía desde la Agenda, el bote y la tripulación desde Transporte—, así que
+  // recargar siempre la misma mandaría al usuario a otra pantalla cada vez que asigna.
+  if (volver === "agenda") loadAgenda(); else loadTransporte();
+}
+
+// ---------- LOS TOURS QUE VAN EN BOTE (lado Transporte) ----------
+//
+// Un tour acuático es un viaje de bote igual que una corrida de muelle, y el lodge pidió
+// verlos juntos: «se asignan en la parte de transportes, lo que son tours acuáticos que
+// necesitan bote». Aquí se elige el bote, el capitán y el ayudante; el guía viene de la
+// Agenda y solo se enseña.
+//
+// La unidad es (fecha, tour, grupo), no la reserva: el grupo es lo que el lodge usa para
+// partir un tour que no cabe en un bote, y todo el grupo sube al mismo.
+function seccionToursEnBote(d) {
+  if (!d || !d.tours) return "";
+  if (!d.tours.length) {
+    return `<div style="margin-bottom:18px;">
+      <p style="font-weight:600;font-size:13px;margin:0 0 6px;">Tours que van en bote</p>
+      <p class="empty" style="padding:14px 12px;">Ningún tour con bote en estas fechas.<small>Salen de la agenda: aparecen solos en cuanto haya un tour acuático con fecha.</small></p>
+    </div>`;
+  }
+  const puedo = puedeEscribir("transporte");
+  const opcC = (actual, ocupado) => `<option value="">Sin asignar</option>` + (d.capitanes || [])
+    .filter(c => c.nombre !== ocupado || c.nombre === actual)
+    .map(c => `<option value="${escaparHTML(c.nombre)}"${c.nombre === actual ? " selected" : ""}>${escaparHTML(c.nombre)}</option>`).join("");
+  const opcB = (actual) => `<option value="">Sin asignar</option>` + (d.botes || [])
+    .filter(b => b.gestionado_por_hotel || b.nombre === actual)
+    .map(b => `<option value="${escaparHTML(b.nombre)}"${b.nombre === actual ? " selected" : ""}>${escaparHTML(b.nombre)}${b.capacidad_max ? ` (${b.capacidad_max})` : ""}</option>`).join("");
+  const celdaGuia = (actual) => actual
+    ? escaparHTML(actual)
+    : `<span style="color:var(--warn-text);font-size:11.5px;">sin guía — se pone en la Agenda</span>`;
+
+  const fila = (t) => {
+    const k = [t.fecha, t.tour_codigo, t.grupo].map(x => encodeURIComponent(x)).join("|");
+    const quienes = t.habitaciones.map(h =>
+      `${escaparHTML(h.room_no || "?")} ${escaparHTML((h.nombre || "").split(",")[0])}`).join(" · ");
+    return `<tr>
+      <td>${escaparHTML(t.fecha)}</td>
+      <td><strong>${escaparHTML(t.tour_codigo)}</strong>${t.grupo && t.grupo !== "A" ? ` <span class="badge">${escaparHTML(t.grupo)}</span>` : ""}
+        <br><span style="font-size:10.5px;color:var(--muted);">${escaparHTML(t.tour_nombre || "")}</span></td>
+      <td>${t.hora ? escaparHTML(t.hora) : `<span style="color:var(--muted);font-size:11.5px;">sin horario</span>`}</td>
+      <td>${t.habitaciones.length} hab.
+        <br><span style="font-size:10.5px;color:var(--muted);">${quienes}</span></td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums;"><strong>${t.pax}</strong></td>
+      <td>${celdaGuia(t.guia_nombre)}</td>
+      <td>${puedo
+            ? `<select onchange="asignarTourBote('${k}','bote',this.value)">${opcB(t.bote_nombre)}</select>`
+            : escaparHTML(t.bote_nombre || "Sin asignar")}</td>
+      <td>${puedo
+            ? `<select onchange="asignarTourBote('${k}','capitan',this.value)">${opcC(t.capitan_nombre, t.ayudante_nombre)}</select>`
+            : escaparHTML(t.capitan_nombre || "Sin asignar")}</td>
+      <td>${puedo
+            ? `<select onchange="asignarTourBote('${k}','ayudante',this.value)">${opcC(t.ayudante_nombre, t.capitan_nombre)}</select>`
+            : escaparHTML(t.ayudante_nombre || "—")}</td>
+    </tr>`;
+  };
+
+  const sinBote = d.tours.filter(t => !t.bote_nombre).length;
+  const sinCapitan = d.tours.filter(t => !t.capitan_nombre).length;
+  return `
+    <div style="margin-bottom:18px;">
+      <p style="font-weight:600;font-size:13px;margin:0 0 2px;">
+        Tours que van en bote · ${d.tours.length} salida${d.tours.length === 1 ? "" : "s"} · ${d.tours.reduce((s, t) => s + t.pax, 0)} pax
+        ${sinBote ? `<span style="color:var(--warn-text);"> · ${sinBote} sin bote</span>` : ""}
+        ${sinCapitan ? `<span style="color:var(--warn-text);"> · ${sinCapitan} sin capitán</span>` : ""}
+      </p>
+      <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">
+        El bote se le pone al grupo entero: todos los del mismo grupo suben al mismo.
+        <strong>El guía se elige en la Agenda de tours.</strong>
+      </p>
+      <table style="font-size:12.5px;">
+        <tr><th style="width:88px;">Fecha</th><th style="width:120px;">Tour</th>
+            <th style="width:64px;">Hora</th><th>Habitaciones</th>
+            <th style="width:50px;text-align:right;">Pax</th>
+            <th style="width:130px;">Guía</th><th style="width:130px;">Bote</th>
+            <th style="width:130px;">Capitán</th><th style="width:130px;">Ayudante</th></tr>
+        ${d.tours.map(fila).join("")}
+      </table>
+    </div>`;
+}
+
+async function asignarTourBote(clave, campo, valor) {
+  const [fecha, tour_codigo, grupo] = clave.split("|").map(decodeURIComponent);
+  const cuerpo = { fecha, tour_codigo, grupo };
+  cuerpo[campo] = valor;                    // vacío = quitar la asignación
+  const res = await fetchAuth(`${API}/api/traslados/tour`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(cuerpo),
+  });
+  if (!res.ok) {
+    avisar((await res.json().catch(() => ({}))).detail || "No se pudo asignar", true);
+    return;
+  }
+  const d = await res.json();
+  const COMO_SE_LLAMA = { bote: "Bote", capitan: "Capitán", ayudante: "Ayudante" };
+  avisar(valor ? `${COMO_SE_LLAMA[campo] || campo} asignado` : "Asignación quitada");
+  const panel = document.getElementById("ag-alertas");
+  if (panel) {
+    panel.innerHTML = (d.alertas || []).length
+      ? `<div style="background:var(--warn-bg);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--warn-text);">${d.alertas.map(a => `⚠ ${escaparHTML(a)}`).join("<br>")}</div>`
+      : "";
+  }
   loadTransporte();
 }
 
@@ -2652,12 +2835,12 @@ function marcarSinGuardar(tourId) {
 
 async function guardarAsignacion(tourId) {
   const guia = document.getElementById(`g-${tourId}`).value;
-  const bote = document.getElementById(`b-${tourId}`).value;
-  // Se mandan siempre los dos, incluso vacíos: vacío significa "Sin asignar" y el
-  // servidor lo borra. Si no se mandaran, dejaría el guía anterior puesto.
+  // Solo el GUÍA. El bote se elige en Transporte, y mandarlo desde aquí lo pisaría: el
+  // servidor distingue «no me mandaron el dato» de «lo dejaron en Sin asignar», así que
+  // mandar un campo vacío que ni siquiera está en la pantalla borraría el bote que
+  // Transporte acaba de poner. Se manda vacío a propósito cuando el guía se quita.
   const params = new URLSearchParams();
   params.append("guia", guia);
-  params.append("bote", bote);
   const res = await fetchAuth(`${API}/api/tours/agenda/${tourId}/asignar?${params.toString()}`, { method: "POST" });
   const data = await res.json();
   // La fila deja de estar marcada como pendiente de guardar
@@ -2741,6 +2924,7 @@ async function loadTransporte(fecha, desde, hasta) {
         </div>
       </div>
       ${seccionTraslados(tras)}
+      ${seccionToursEnBote(tras)}
       <p style="font-weight:600;font-size:14px;">Entradas</p>
       ${d.entradas.length ? `<table><tr><th>Fecha</th><th>Hab.</th><th>Huésped</th><th>Punto</th><th>Hora</th><th>Guía / bote</th><th>Pax</th></tr>${d.entradas.map(filaE).join("")}</table>` : `<p class="empty">Nadie ingresa este día.<small>Cambia la fecha con las flechas para revisar otro día.</small></p>`}
       <p style="font-weight:600;font-size:14px;margin-top:16px;">Salidas</p>

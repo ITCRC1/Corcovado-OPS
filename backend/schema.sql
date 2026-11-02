@@ -161,7 +161,14 @@ CREATE TABLE IF NOT EXISTS tour_asignado (
     conf_no TEXT REFERENCES reserva(conf_no),
     fecha TEXT NOT NULL,
     tour_codigo TEXT REFERENCES tour_catalogo(codigo),
+    -- El BOTE, el CAPITÁN y el AYUDANTE se eligen en TRANSPORTE, no en la Agenda: el
+    -- lodge quiso una sola pantalla donde se vea todo lo que se mueve en bote ese día.
+    -- La Agenda los enseña, pero de solo lectura. Con el GUÍA es al revés: se elige en
+    -- la Agenda y Transporte lo enseña. Cada dato se escribe en un solo lugar, así que
+    -- no hay dos pantallas que puedan contradecirse.
     bote_nombre TEXT REFERENCES bote(nombre),
+    capitan_nombre TEXT REFERENCES capitan(nombre),
+    ayudante_nombre TEXT REFERENCES capitan(nombre),
     guia_nombre TEXT REFERENCES guia(nombre),
     -- Cuánta gente de ESA reserva va a ESTE tour. Por defecto va la habitación entera,
     -- pero no siempre: de dos huéspedes uno puede quedarse. Se edita desde la agenda.

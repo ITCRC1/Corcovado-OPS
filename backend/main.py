@@ -755,7 +755,8 @@ def agenda(fecha: str = None, desde: str = None, hasta: str = None, user: dict =
     # lo que se puede escribir en el pax del tour, y el número al que vuelve si se borra.
     query = """SELECT ta.*, r.nombre_principal, r.room_no, r.arr_date, r.dep_date,
                       r.adl, r.chl,
-                      tc.horario_inicio, tc.horario_fin, tc.max_pax_guia
+                      tc.horario_inicio, tc.horario_fin, tc.max_pax_guia,
+                      tc.requiere_bote
                FROM tour_asignado ta
                JOIN reserva r ON r.conf_no = ta.conf_no
                JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo"""
@@ -779,6 +780,12 @@ def agenda(fecha: str = None, desde: str = None, hasta: str = None, user: dict =
         llegada, salida = _noches_de_estadia(r)
         entry = {"id": r["id"], "tour_codigo": r["tour_codigo"], "fecha": r["fecha"],
                  "guia_nombre": r["guia_nombre"], "bote_nombre": r["bote_nombre"],
+                 # La tripulación se elige en Transporte; la agenda solo la enseña.
+                 # 'requiere_bote' va para saber si un bote vacío es algo que falta o un
+                 # tour que sencillamente no lleva bote (una caminata, una cabalgata).
+                 "capitan_nombre": r.get("capitan_nombre"),
+                 "ayudante_nombre": r.get("ayudante_nombre"),
+                 "requiere_bote": bool(r.get("requiere_bote")),
                  "horario_inicio": r["horario_inicio"], "horario_fin": r["horario_fin"],
                  "grupo_operativo": r.get("grupo_operativo", "A"),
                  # El pax es de CADA tour, no de la reserva: de dos huéspedes, uno puede
@@ -3852,6 +3859,10 @@ def traslados_listar(fecha: str = None, desde: str = None, hasta: str = None,
     conn = get_connection()
     try:
         lista = _tras.corridas(conn, desde, hasta)
+        # Las salidas de tour que llevan bote. Van en la misma respuesta porque son la
+        # otra mitad de lo que se mueve en bote ese día, y porque los tres catálogos de
+        # abajo —guías, botes, capitanes— les sirven igual.
+        tours = _tras.salidas_de_tour(conn, desde, hasta)
         guias = [dict(r) for r in conn.execute(
             "SELECT nombre, es_externo FROM guia WHERE activo = 1 ORDER BY nombre")]
         botes = [dict(r) for r in conn.execute(
@@ -3867,6 +3878,7 @@ def traslados_listar(fecha: str = None, desde: str = None, hasta: str = None,
     return {
         "desde": desde, "hasta": hasta,
         "corridas": lista,
+        "tours": tours,
         "resumen": _tras.resumen(lista),
         "conflictos": _tras.conflictos(lista),
         "guias": guias,
@@ -3877,12 +3889,17 @@ def traslados_listar(fecha: str = None, desde: str = None, hasta: str = None,
 
 @app.post("/api/traslados/asignar")
 async def traslados_asignar(payload: dict,
-                            user: dict = Depends(exige("agenda", escribir=True))):
+                            user: dict = Depends(exige("agenda", "transporte",
+                                                       escribir=True))):
     """Pone el guía, el bote, el capitán y el ayudante de una corrida.
 
     La corrida se identifica por fecha + tipo + punto + hora, no por un id: no existe
     como fila hasta que alguien le asigna algo, porque sale de las reservas. Así no hay
     que crearla antes de poder usarla, ni limpiarla si el vuelo se mueve.
+
+    Vale el permiso de Agenda O el de Transporte: desde que el lodge partió la pantalla,
+    el guía se elige en la Agenda y el bote, el capitán y el ayudante en Transporte, así
+    que exigir solo 'agenda' le habría cerrado la puerta a quien coordina el movimiento.
     """
     import traslados as _tras
     conn = get_connection()
@@ -3910,6 +3927,45 @@ async def traslados_asignar(payload: dict,
         if c["aviso_capacidad"]:
             avisos.append(c["aviso_capacidad"])
     return {"status": "ok", "alertas": avisos}
+
+
+@app.post("/api/traslados/tour")
+async def traslados_asignar_tour(payload: dict,
+                                 user: dict = Depends(exige("transporte",
+                                                            escribir=True))):
+    """Pone el bote, el capitán y el ayudante de una salida de tour.
+
+    La salida se identifica por fecha + tour + grupo, y se escribe al grupo ENTERO: el
+    grupo es lo que sube al mismo bote. El guía no se toca aquí —se elige en la Agenda—,
+    así que ningún dato tiene dos pantallas donde escribirse.
+    """
+    import traslados as _tras
+    fecha = (payload.get("fecha") or "").strip()
+    codigo = (payload.get("tour_codigo") or "").strip()
+    grupo = (payload.get("grupo") or "A").strip() or "A"
+    conn = get_connection()
+    try:
+        cuantas, problema = _tras.asignar_tour(
+            conn, fecha, codigo, grupo,
+            bote=payload.get("bote"),
+            capitan=payload.get("capitan"),
+            ayudante=payload.get("ayudante"))
+        if problema:
+            raise HTTPException(status_code=400, detail=problema)
+        # El id de una fila cualquiera del grupo, para pasar por la validación de
+        # capacidad que ya existe: cuenta el pax de todo el tour, no el de esa fila.
+        una = conn.execute(
+            """SELECT id FROM tour_asignado
+               WHERE fecha = ? AND tour_codigo = ? AND COALESCE(grupo_operativo,'A') = ?
+               LIMIT 1""", (fecha, codigo, grupo)).fetchone()
+    finally:
+        conn.close()
+
+    alertas = validar_tour_asignado(una["id"]) if una else []
+    for cf in detectar_conflictos_asignacion(fecha):
+        if cf["mensaje"] not in alertas:
+            alertas.append(cf["mensaje"])
+    return {"status": "ok", "reservas": cuantas, "alertas": alertas}
 
 
 @app.get("/api/tours/grupos-disponibles")

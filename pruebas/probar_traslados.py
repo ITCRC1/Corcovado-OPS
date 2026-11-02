@@ -528,6 +528,146 @@ def los_capitanes_del_lodge_estan_en_el_catalogo(c):
     conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Los tours que van en bote
+# ---------------------------------------------------------------------------
+#
+# El lodge los mando a Transporte: «se asignan en la parte de transportes, lo que son
+# tours acuaticos que necesitan bote». Son un viaje de bote igual que una corrida de
+# muelle, y verlos en dos pantallas distintas era justo lo que hacia que un bote
+# apareciera comprometido dos veces el mismo dia.
+
+def _con_tour(conf_no, tour, dia=2, adl=2, **extra):
+    """Una reserva que llega el 01-01-26 y lleva UN tour el dia 'dia' de la estadia."""
+    return reserva(conf_no, "07", "01-01-26", "06-01-26", adl=adl,
+                   operacion=[{"dia": dia, "tour": tour}], **extra)
+
+
+def solo_los_tours_que_llevan_bote_salen_en_transporte(c):
+    """Una caminata no ocupa bote. Si saliera en la lista habria que ponerle uno —o
+    dejarla en rojo para siempre— y el aviso de «sin bote» dejaria de significar nada."""
+    limpiar()
+    cargar([_con_tour("800001", "MANGLAR"),          # requiere_bote = 1
+            _con_tour("800002", "CLARO")])           # requiere_bote = 0
+    conn = conexion()
+    fechas = [f["fecha"] for f in conn.execute(
+        "SELECT DISTINCT fecha FROM tour_asignado ORDER BY fecha")]
+    lista = tr.salidas_de_tour(conn, min(fechas), max(fechas))
+    codigos = sorted(t["tour_codigo"] for t in lista)
+    c.igual(codigos, ["MANGLAR"], "solo el tour que lleva bote")
+    c.igual(lista[0]["pax"], 2, "con su pax")
+    c.igual(lista[0]["falta"], ["guía", "bote", "capitán"],
+            "y arranca sin nadie puesto")
+    conn.close()
+
+
+def el_tour_se_agrupa_por_fecha_tour_y_grupo(c):
+    """Dos habitaciones en el mismo tour son UNA salida, no dos: suben al mismo bote.
+
+    Si se contaran por separado, la pantalla pediria dos botes para cuatro personas y el
+    aviso de capacidad miraria media salida cada vez."""
+    limpiar()
+    cargar([_con_tour("800010", "MANGLAR"), _con_tour("800011", "MANGLAR")])
+    conn = conexion()
+    fecha = conn.execute("SELECT fecha FROM tour_asignado LIMIT 1").fetchone()["fecha"]
+    lista = tr.salidas_de_tour(conn, fecha, fecha)
+    c.igual(len(lista), 1, "las dos habitaciones son una sola salida")
+    c.igual(lista[0]["pax"], 4, "con el pax sumado")
+    c.igual(len(lista[0]["habitaciones"]), 2, "y las dos habitaciones adentro")
+
+    # Partir el tour en dos grupos SI son dos salidas: es justo para lo que sirve el
+    # grupo, y cada uno lleva su propio bote.
+    conn.execute("UPDATE tour_asignado SET grupo_operativo = 'B' WHERE conf_no = ?",
+                 ("800011",))
+    conn.commit()
+    lista = tr.salidas_de_tour(conn, fecha, fecha)
+    c.igual(len(lista), 2, "partido en dos grupos son dos salidas")
+    c.igual(sorted(t["grupo"] for t in lista), ["A", "B"], "una por grupo")
+    conn.close()
+
+
+def el_bote_se_le_pone_al_grupo_entero(c):
+    """Todo el grupo sube al mismo bote. Dejar una reserva del grupo con otro bote seria
+    gente del mismo tour esperando en dos muelles."""
+    limpiar()
+    cargar([_con_tour("800020", "MANGLAR"), _con_tour("800021", "MANGLAR")])
+    conn = conexion()
+    fecha = conn.execute("SELECT fecha FROM tour_asignado LIMIT 1").fetchone()["fecha"]
+    bote = conn.execute(
+        "SELECT nombre FROM bote WHERE gestionado_por_hotel = 1 LIMIT 1").fetchone()["nombre"]
+
+    cuantas, problema = tr.asignar_tour(conn, fecha, "MANGLAR", "A",
+                                        bote=bote, capitan="WILL", ayudante="DYLAN")
+    c.igual(problema, None, "se guarda sin problema")
+    c.igual(cuantas, 2, "y toca las dos reservas del grupo")
+
+    puestos = [dict(f) for f in conn.execute(
+        "SELECT bote_nombre, capitan_nombre, ayudante_nombre FROM tour_asignado")]
+    c.igual([p["bote_nombre"] for p in puestos], [bote, bote], "las dos con el bote")
+    c.igual([p["capitan_nombre"] for p in puestos], ["WILL", "WILL"], "y el capitan")
+
+    lista = tr.salidas_de_tour(conn, fecha, fecha)
+    c.igual(lista[0]["falta"], ["guía"], "ya solo falta el guia, que se pone en la Agenda")
+    conn.close()
+
+
+def el_guia_del_tour_no_se_toca_desde_transporte(c):
+    """El guia se elige en la Agenda. Si esta ruta lo pisara, asignar un bote borraria
+    el guia que recepcion acababa de poner, y nadie se enteraria hasta el dia del tour."""
+    limpiar()
+    cargar([_con_tour("800030", "MANGLAR")])
+    conn = conexion()
+    fecha = conn.execute("SELECT fecha FROM tour_asignado LIMIT 1").fetchone()["fecha"]
+    guia = conn.execute("SELECT nombre FROM guia LIMIT 1").fetchone()["nombre"]
+    conn.execute("UPDATE tour_asignado SET guia_nombre = ?", (guia,))
+    conn.commit()
+
+    tr.asignar_tour(conn, fecha, "MANGLAR", "A", bote="TIBURON")
+    c.igual(conn.execute("SELECT guia_nombre FROM tour_asignado").fetchone()[0], guia,
+            "el guia sigue donde estaba")
+    c.igual(tr.salidas_de_tour(conn, fecha, fecha)[0]["guia_nombre"], guia,
+            "y Transporte lo enseña")
+    conn.close()
+
+
+def nadie_va_de_capitan_y_de_ayudante_en_la_misma_salida_de_tour(c):
+    """La misma regla que en una corrida de muelle, y por la misma razon: los dos
+    selectores se cambian por separado, asi que poner de ayudante a quien ya era capitan
+    llega aqui con el capitan AUSENTE."""
+    limpiar()
+    cargar([_con_tour("800040", "MANGLAR")])
+    conn = conexion()
+    fecha = conn.execute("SELECT fecha FROM tour_asignado LIMIT 1").fetchone()["fecha"]
+
+    _, problema = tr.asignar_tour(conn, fecha, "MANGLAR", "A",
+                                  capitan="NERYS", ayudante="NERYS")
+    c.cierto(problema is not None, "no se deja poner a la misma persona dos veces")
+
+    tr.asignar_tour(conn, fecha, "MANGLAR", "A", capitan="NERYS")
+    _, problema = tr.asignar_tour(conn, fecha, "MANGLAR", "A", ayudante="NERYS")
+    c.cierto(problema is not None,
+             "tampoco cambiando solo el ayudante sobre un capitan ya puesto")
+    c.igual(conn.execute("SELECT ayudante_nombre FROM tour_asignado").fetchone()[0], None,
+            "y el ayudante quedo sin poner")
+    conn.close()
+
+
+def un_tour_de_una_reserva_cancelada_no_pide_bote(c):
+    """Lo mismo que ya valia para las corridas de muelle: una cancelada no viaja, y
+    pedirle bote es mandar a alguien al muelle a esperar a quien no viene."""
+    limpiar()
+    cargar([_con_tour("800050", "MANGLAR")])
+    conn = conexion()
+    fecha = conn.execute("SELECT fecha FROM tour_asignado LIMIT 1").fetchone()["fecha"]
+    c.igual(len(tr.salidas_de_tour(conn, fecha, fecha)), 1, "viva, pide bote")
+
+    conn.execute("UPDATE reserva SET res_status = 'CANCELADA' WHERE conf_no = ?",
+                 ("800050",))
+    conn.commit()
+    c.igual(len(tr.salidas_de_tour(conn, fecha, fecha)), 0, "cancelada, no")
+    conn.close()
+
+
 PRUEBAS = [
     los_que_van_a_la_misma_hora_van_juntos,
     horas_distintas_son_corridas_distintas,
@@ -541,6 +681,12 @@ PRUEBAS = [
     nadie_va_de_capitan_y_de_ayudante_a_la_vez,
     sin_capitan_se_cuenta_pero_sin_ayudante_no,
     los_capitanes_del_lodge_estan_en_el_catalogo,
+    solo_los_tours_que_llevan_bote_salen_en_transporte,
+    el_tour_se_agrupa_por_fecha_tour_y_grupo,
+    el_bote_se_le_pone_al_grupo_entero,
+    el_guia_del_tour_no_se_toca_desde_transporte,
+    nadie_va_de_capitan_y_de_ayudante_en_la_misma_salida_de_tour,
+    un_tour_de_una_reserva_cancelada_no_pide_bote,
     dejar_sin_asignar_es_distinto_de_no_mandar_el_dato,
     no_se_asigna_a_un_punto_inventado,
     cambiar_la_hora_del_vuelo_deja_la_corrida_sin_asignar,

@@ -378,3 +378,144 @@ def resumen(lista):
         "sin_capitan": len(sin_capitan),
         "sin_hora": len([c for c in lista if c["hora"] == SIN_HORA]),
     }
+
+
+# ---------------------------------------------------------------------------
+# Las salidas de TOUR que van en bote
+# ---------------------------------------------------------------------------
+#
+# Un tour acuático es un viaje de bote igual que una corrida de muelle, y el lodge pidió
+# verlos todos en la misma pantalla: «se asignan en la parte de transportes, lo que son
+# tours acuáticos que necesitan bote».
+#
+# No son una corrida de la tabla 'traslado': viven en tour_asignado, que es donde ya
+# estaban el guía y el bote, y donde la agenda valida la capacidad por grupo. Lo que
+# cambia es QUIÉN escribe cada columna: el bote, el capitán y el ayudante se eligen en
+# Transporte; el guía, en la Agenda. Cada pantalla enseña la mitad de la otra en solo
+# lectura, así que no hay dos sitios donde se pueda escribir lo mismo.
+#
+# La unidad es (fecha, tour, grupo), no la reserva: el grupo es justamente lo que el
+# lodge usa para partir un tour que no cabe en un guía o en un bote, y todas las
+# reservas del mismo grupo suben al mismo bote.
+
+def salidas_de_tour(conn, desde, hasta):
+    """Los tours que llevan bote entre dos fechas (ISO), agrupados por fecha/tour/grupo."""
+    filas = conn.execute(
+        """SELECT ta.fecha, ta.tour_codigo, ta.grupo_operativo, ta.pax,
+                  ta.guia_nombre, ta.bote_nombre, ta.capitan_nombre, ta.ayudante_nombre,
+                  r.room_no, r.nombre_principal,
+                  tc.nombre AS tour_nombre, tc.horario_inicio
+           FROM tour_asignado ta
+           JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
+           JOIN reserva r ON r.conf_no = ta.conf_no
+           WHERE tc.requiere_bote = 1 AND ta.fecha BETWEEN ? AND ?
+             AND r.res_status != 'CANCELADA'
+           ORDER BY ta.fecha, tc.horario_inicio, ta.tour_codigo, ta.grupo_operativo,
+                    r.room_no""",
+        (desde, hasta)).fetchall()
+
+    grupos = {}
+    orden = []
+    for f in filas:
+        d = dict(f)
+        clave = (d["fecha"], d["tour_codigo"], d["grupo_operativo"] or "A")
+        if clave not in grupos:
+            grupos[clave] = {
+                "fecha": d["fecha"], "tour_codigo": d["tour_codigo"],
+                "tour_nombre": d["tour_nombre"], "grupo": d["grupo_operativo"] or "A",
+                "hora": d["horario_inicio"] or "",
+                "habitaciones": [], "pax": 0,
+                # Se recogen los DISTINTOS valores del grupo en vez de quedarse con el
+                # primero. El bote, el capitán y el ayudante se escriben a todo el grupo
+                # de una vez, así que normalmente hay uno solo; pero el guía viene de la
+                # Agenda fila por fila y puede quedar distinto. Enseñar solo el primero
+                # escondería justamente el caso que hay que arreglar.
+                "_guias": [], "_botes": [], "_capitanes": [], "_ayudantes": [],
+            }
+            orden.append(clave)
+        g = grupos[clave]
+        g["habitaciones"].append({"room_no": d["room_no"],
+                                  "nombre": d["nombre_principal"],
+                                  "pax": d["pax"] or 0})
+        g["pax"] += d["pax"] or 0
+        for campo, bolsa in (("guia_nombre", "_guias"), ("bote_nombre", "_botes"),
+                             ("capitan_nombre", "_capitanes"),
+                             ("ayudante_nombre", "_ayudantes")):
+            v = d.get(campo)
+            if v and v not in g[bolsa]:
+                g[bolsa].append(v)
+
+    salida = []
+    for clave in orden:
+        g = grupos[clave]
+        for campo, bolsa in (("guia_nombre", "_guias"), ("bote_nombre", "_botes"),
+                             ("capitan_nombre", "_capitanes"),
+                             ("ayudante_nombre", "_ayudantes")):
+            g[campo] = " · ".join(g.pop(bolsa)) or None
+        g["falta"] = [x for x, v in (("guía", g["guia_nombre"]),
+                                     ("bote", g["bote_nombre"]),
+                                     ("capitán", g["capitan_nombre"]))
+                      if not v]
+        salida.append(g)
+    return salida
+
+
+def asignar_tour(conn, fecha, tour_codigo, grupo, bote=None, capitan=None,
+                 ayudante=None):
+    """Pone bote, capitán y ayudante a TODAS las reservas de (fecha, tour, grupo).
+
+    Devuelve (cuántas filas se tocaron, problema). Se escribe al grupo entero porque el
+    grupo es el que sube al bote: dejar una reserva del grupo con otro bote sería gente
+    del mismo tour esperando en dos muelles.
+
+    El guía NO se toca aquí. Se elige en la Agenda y esta pantalla solo lo enseña.
+    """
+    fecha = (fecha or "").strip()
+    tour_codigo = (tour_codigo or "").strip()
+    grupo = (grupo or "A").strip() or "A"
+    if not fecha or not tour_codigo:
+        return 0, "Falta la fecha o el tour."
+
+    filas = conn.execute(
+        """SELECT id, capitan_nombre, ayudante_nombre FROM tour_asignado
+           WHERE fecha = ? AND tour_codigo = ? AND COALESCE(grupo_operativo,'A') = ?""",
+        (fecha, tour_codigo, grupo)).fetchall()
+    if not filas:
+        return 0, "Ese tour no está en la agenda de esa fecha."
+
+    nuevo_bote = None if bote is None else (bote.strip() or None)
+    nuevo_capitan = None if capitan is None else (capitan.strip() or None)
+    nuevo_ayudante = None if ayudante is None else (ayudante.strip() or None)
+
+    # La misma regla que en una corrida de muelle, y por la misma razón: se mira lo que
+    # VA A QUEDAR guardado, no lo que llega, porque los dos selectores se cambian por
+    # separado. Ver el comentario largo en asignar().
+    #
+    # Se revisan TODAS las filas del grupo, no solo la primera: si el grupo quedó con
+    # tripulación despareja —una fila vieja de antes de dividirlo, por ejemplo—, mirar
+    # una sola dejaría pasar el choque en las demás.
+    for f in filas:
+        a = dict(f)
+        final_capitan = nuevo_capitan if capitan is not None else a["capitan_nombre"]
+        final_ayudante = (nuevo_ayudante if ayudante is not None
+                          else a["ayudante_nombre"])
+        if final_capitan and final_capitan == final_ayudante:
+            return 0, (f"{final_capitan} no puede ir de capitán y de ayudante "
+                       f"en la misma salida.")
+
+    campos, valores = [], []
+    if bote is not None:
+        campos.append("bote_nombre = ?"); valores.append(nuevo_bote)
+    if capitan is not None:
+        campos.append("capitan_nombre = ?"); valores.append(nuevo_capitan)
+    if ayudante is not None:
+        campos.append("ayudante_nombre = ?"); valores.append(nuevo_ayudante)
+    if not campos:
+        return 0, None
+
+    conn.execute(
+        f"""UPDATE tour_asignado SET {', '.join(campos)}
+            WHERE fecha = ? AND tour_codigo = ? AND COALESCE(grupo_operativo,'A') = ?""",
+        (*valores, fecha, tour_codigo, grupo))
+    conn.commit()
+    return len(filas), None

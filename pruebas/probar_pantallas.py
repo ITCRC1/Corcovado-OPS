@@ -43,6 +43,29 @@ def _sin_comentarios(texto):
     return "\n".join(r for r in texto.split("\n") if not r.lstrip().startswith("//"))
 
 
+def _cuerpo_de_funcion(html, nombre):
+    """El cuerpo de UNA funcion del index.html, hasta donde empieza la siguiente.
+
+    El corte mira «\\nfunction » ademas de «\\nasync function »: seccionTraslados esta
+    definida justo despues de loadAgenda y NO es async, asi que cortando solo por async
+    el recorte se la tragaba entera y la comprobacion encontraba su definicion creyendo
+    que era una llamada. Fallaba la prueba, no el codigo.
+
+    Es la forma FIABLE de acotar: buscar un trozo de HTML suelto no sirve porque el
+    mismo encabezado —«Huésped / Hab.», «No hay tours para esta fecha»— aparece tambien
+    en la tarjeta del Dashboard, y el recorte se quedaba en esa.
+    """
+    i = html.find(f"async function {nombre}(")
+    if i < 0:
+        i = html.find(f"function {nombre}(")
+    if i < 0:
+        return ""
+    siguientes = [x for x in (html.find("\nfunction ", i + 20),
+                              html.find("\nasync function ", i + 20)) if x > i]
+    trozo = html[i:min(siguientes)] if siguientes else html[i:i + 9000]
+    return _sin_comentarios(trozo)
+
+
 def _lista(html, nombre):
     """El contenido de un `const NOMBRE = [...]` como lista de textos entre comillas."""
     m = re.search(nombre + r"\s*=\s*\[(.*?)\]", html, re.S)
@@ -252,51 +275,92 @@ def reservas_muestra_los_ingresos_de_la_fecha_elegida(c):
              "y el dia vacio se explica en vez de salir en blanco")
 
 
-def los_botes_viven_en_transporte_y_no_en_la_agenda(c):
-    """Lo pidio el lodge: «eliminemos del modulo de agenda tours la seccion de botes, y
-    agregamos en el modulo de transporte la seccion de botes».
+def el_bote_se_elige_en_transporte_y_el_guia_en_la_agenda(c):
+    """El reparto que pidio el lodge, y la razon por la que importa.
 
-    Tiene sentido: una corrida de bote no es un tour. Se coordina el dia del movimiento,
-    con el vuelo y el muelle delante, y esa pantalla es Transporte.
+    «Que cuando en la agenda de tours se coloca el guia se jale automatico a la parte de
+    transporte, pero que en transporte no sea editable», y al reves con el bote: «se
+    asignan en la parte de transportes... y se refleja de manera automatica en la hoja de
+    agenda de tours».
 
-    LO QUE NO PUEDE PASAR es que la seccion no quede en NINGUNA de las dos. Por eso se
-    comprueban las dos cosas: que no este en Agenda Y que si este en Transporte."""
+    O sea: CADA DATO SE ESCRIBE EN UNA SOLA PANTALLA y se lee en las dos. Si las dos
+    pudieran escribirlo, dos personas mirando pantallas distintas podrian poner cosas
+    distintas y la ultima en guardar se llevaria la otra por delante.
+
+    Por eso se comprueban las dos mitades. Que el bote no sea editable en la Agenda no
+    sirve de nada si tampoco lo es en Transporte: el dato no tendria donde ponerse."""
     html = _html()
 
     def cuerpo(nombre):
-        """El cuerpo de UNA funcion, hasta donde empieza la siguiente.
-
-        El corte mira «\\nfunction » ademas de «\\nasync function »: seccionTraslados
-        esta definida justo despues de loadAgenda y NO es async, asi que cortando solo
-        por async el recorte se la tragaba entera y la comprobacion encontraba su
-        definicion creyendo que era una llamada. Fallaba la prueba, no el codigo.
-
-        Y se devuelve sin comentarios, para no confundir lo que el codigo HACE con lo
-        que un comentario CUENTA."""
-        i = html.find(f"async function {nombre}(")
-        c.cierto(i > 0, f"existe {nombre}")
-        siguientes = [x for x in (html.find("\nfunction ", i + 20),
-                                  html.find("\nasync function ", i + 20)) if x > i]
-        trozo = html[i:min(siguientes)] if siguientes else html[i:i + 9000]
-        return _sin_comentarios(trozo)
+        trozo = _cuerpo_de_funcion(html, nombre)
+        c.cierto(bool(trozo), f"existe {nombre}")
+        return trozo
 
     agenda = cuerpo("loadAgenda")
     transporte = cuerpo("loadTransporte")
 
+    # --- La seccion de BOTES de la Agenda: no esta ---
     c.igual("seccionTraslados" in agenda, False,
             "la agenda ya no dibuja las corridas de bote")
-    c.igual("/api/traslados" in agenda, False,
-            "y ni siquiera las pide: seria trabajo del servidor para nada")
     c.cierto("seccionTraslados" in transporte,
              "y Transporte SI las dibuja")
-    c.cierto("/api/traslados" in transporte, "pidiendolas al servidor")
+    c.cierto("seccionToursEnBote" in transporte,
+             "Transporte tambien dibuja los tours que van en bote")
+    c.igual("seccionToursEnBote" in agenda, False,
+            "y la agenda no: el bote del tour se pone en Transporte")
 
-    # Al asignar hay que volver a Transporte, no a Agenda: mientras la seccion vivio
-    # alla esto decia loadAgenda(), y dejarlo asi mandaria al usuario a otra pantalla
-    # cada vez que asigna a alguien.
+    # La Agenda SI pide /api/traslados, pero para ponerles el GUIA, no el bote. Una
+    # corrida de muelle no tiene tour detras del cual sacarlo, asi que si no se eligiera
+    # aqui no se podria elegir en ningun lado.
+    c.cierto("seccionGuiasDeCorridas" in agenda,
+             "la agenda pone el guia de las corridas")
+    c.cierto("/api/traslados" in agenda, "para lo cual si las pide")
+
+    # --- Volver a la pantalla desde la que se llamo ---
+    # Las corridas se tocan desde las dos pantallas, asi que recargar siempre la misma
+    # mandaria al usuario a la otra cada vez que asigna a alguien.
     bloque = cuerpo("asignarTraslado")
-    c.cierto("loadTransporte()" in bloque, "y tras asignar se recarga Transporte")
-    c.igual("loadAgenda()" in bloque, False, "no la Agenda")
+    c.cierto("loadTransporte()" in bloque and "loadAgenda()" in bloque,
+             "tras asignar se recarga la pantalla de la que se vino")
+    c.cierto('volver === "agenda"' in bloque, "y se sabe cual es porque se manda")
+
+
+def el_guia_no_se_edita_en_transporte_ni_el_bote_en_la_agenda(c):
+    """La otra mitad: que la pantalla que solo LEE el dato no ofrezca cambiarlo.
+
+    Un desplegable que se puede tocar pero no guarda nada es peor que no tenerlo: quien
+    lo usa se queda creyendo que asigno a alguien."""
+    html = _html()
+
+    # En TRANSPORTE el guia es texto, no un <select>.
+    corridas = _cuerpo_de_funcion(html, "seccionTraslados")
+    c.cierto("celdaGuia(c.guia_nombre)" in corridas,
+             "la corrida enseña el guia sin dejar cambiarlo")
+    c.igual("'guia',this.value" in corridas, False,
+            "y no hay forma de mandarlo desde aqui")
+
+    tours = _cuerpo_de_funcion(html, "seccionToursEnBote")
+    c.cierto("celdaGuia(t.guia_nombre)" in tours,
+             "y el tour en bote tampoco deja cambiar el guia")
+    for campo in ("bote", "capitan", "ayudante"):
+        c.cierto(f"asignarTourBote('${{k}}','{campo}'" in tours,
+                 f"pero si el {campo}")
+
+    # En la AGENDA el bote y la tripulacion son texto.
+    agenda = _cuerpo_de_funcion(html, "loadAgenda")
+    c.cierto("soloLectura(t.bote_nombre" in agenda,
+             "la agenda enseña el bote sin dejar cambiarlo")
+    for titulo in ("Capitán", "Ayudante"):
+        c.cierto(f"<th>{titulo}</th>" in agenda,
+                 f"y tambien el {titulo.lower()}")
+    c.igual('id="b-' in agenda, False,
+            "ya no queda el desplegable de bote de la agenda")
+
+    # Y lo que la agenda guarda del tour es SOLO el guia: mandar un bote vacio desde una
+    # pantalla que ya no lo enseña borraria el que Transporte acaba de poner.
+    guardar = _cuerpo_de_funcion(html, "guardarAsignacion")
+    c.cierto('params.append("guia"' in guardar, "la agenda guarda el guia")
+    c.igual('params.append("bote"' in guardar, False, "y no toca el bote")
 
 
 def el_capitan_y_el_ayudante_se_eligen_en_transporte(c):
@@ -527,7 +591,8 @@ PRUEBAS = [
     el_filtro_de_fecha_manda_en_toda_la_pantalla,
     las_canceladas_no_salen_en_transporte,
     las_canceladas_no_salen_en_reservas,
-    los_botes_viven_en_transporte_y_no_en_la_agenda,
+    el_bote_se_elige_en_transporte_y_el_guia_en_la_agenda,
+    el_guia_no_se_edita_en_transporte_ni_el_bote_en_la_agenda,
     el_capitan_y_el_ayudante_se_eligen_en_transporte,
     reservas_muestra_los_ingresos_de_la_fecha_elegida,
 ]

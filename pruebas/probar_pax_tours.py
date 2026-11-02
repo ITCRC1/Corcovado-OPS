@@ -295,7 +295,11 @@ def el_dato_llega_hasta_la_pantalla(c):
 
     i = servidor.find('entry = {"id": r["id"]')
     c.cierto(i > 0, "se encuentra el armado de cada tour de la agenda")
-    bloque = servidor[i:i + 1200]
+    # El recorte termina donde termina el diccionario, no a los N caracteres. Con una
+    # ventana fija la prueba se rompe sola en cuanto alguien agrega un campo arriba: paso
+    # al sumarle la tripulacion del bote, y lo que fallo fue la medida, no el codigo.
+    fin = servidor.find("if key not in agrupado:", i)
+    bloque = servidor[i:fin if fin > i else i + 2000]
     c.cierto('"pax": r["pax"]' in bloque,
              "la agenda manda el pax DE CADA TOUR, no solo el de la reserva")
     c.cierto('"pax_habitacion"' in bloque,

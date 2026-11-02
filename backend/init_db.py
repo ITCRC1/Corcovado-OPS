@@ -205,6 +205,10 @@ COLUMNAS_NUEVAS = [
     # dos no aparecerían solas.
     ("traslado", "capitan_nombre", "TEXT"),
     ("traslado", "ayudante_nombre", "TEXT"),
+    # Lo mismo para la tripulación del bote de un TOUR acuático: se elige en Transporte,
+    # igual que la de una corrida de muelle, así que el tour también tiene que guardarla.
+    ("tour_asignado", "capitan_nombre", "TEXT"),
+    ("tour_asignado", "ayudante_nombre", "TEXT"),
     # Los precios de la lavandería. Van aquí y no solo en schema.sql porque las tablas de
     # housekeeping ya existen en la base instalada: el CREATE TABLE IF NOT EXISTS no corre
     # y las columnas nuevas no aparecerían solas.
