@@ -668,6 +668,200 @@ def un_tour_de_una_reserva_cancelada_no_pide_bote(c):
     conn.close()
 
 
+# ---------------------------------------------------------------------------
+# La modalidad privada
+# ---------------------------------------------------------------------------
+#
+# Lo pidio el lodge: «los tours que vienen declarados como privados... requieren guia
+# separado o bote separado si corresponde, y que no se sume de manera automatica con los
+# tours normales sino en una casilla resumen aparte».
+#
+# Es la razon de ser del producto: el huesped paga por NO compartir. Si el sistema los
+# junta, se manda un bote donde hacen falta dos y alguien se queda en el muelle.
+
+def _priv(conf_no, tour, dia=2, adl=2, privado=True):
+    """Una reserva con UN tour en la modalidad que se pida."""
+    return reserva(conf_no, "07", "01-01-26", "06-01-26", adl=adl,
+                   operacion=[{"dia": dia, "tour": tour, "privado": privado}])
+
+
+def la_modalidad_privada_llega_a_la_base(c):
+    """Opera la manda pegada al codigo («PRV-PNC») y hasta ahora se perdia por el camino:
+    opera_mapeo la leia, el importador no la copiaba y el cargador no la guardaba. El tour
+    privado entraba a la agenda igual que uno compartido y nadie se enteraba."""
+    limpiar()
+    cargar([_priv("810001", "MANGLAR", privado=True),
+            _priv("810002", "MANGLAR", privado=False)])
+    conn = conexion()
+    puestos = {f["conf_no"]: f["es_privado"] for f in conn.execute(
+        "SELECT conf_no, es_privado FROM tour_asignado")}
+    c.igual(puestos.get("810001"), 1, "el privado queda marcado")
+    c.igual(puestos.get("810002"), 0, "y el compartido no")
+    conn.close()
+
+
+def el_privado_y_el_compartido_son_dos_salidas(c):
+    """LO MAS IMPORTANTE. Mismo tour, mismo dia, misma hora: si se juntaran, Transporte
+    enseñaria una sola corrida, se le asignaria un bote y el otro grupo no tendria
+    ninguno."""
+    limpiar()
+    cargar([_priv("810010", "MANGLAR", privado=True),
+            _priv("810011", "MANGLAR", privado=False)])
+    conn = conexion()
+    fecha = conn.execute("SELECT fecha FROM tour_asignado LIMIT 1").fetchone()["fecha"]
+    lista = tr.salidas_de_tour(conn, fecha, fecha)
+    c.igual(len(lista), 2, "son dos salidas, no una")
+    c.igual(sorted(t["privado"] for t in lista), [False, True], "una de cada modalidad")
+    c.igual([t["pax"] for t in lista], [2, 2], "y el pax NO se suma entre ellas")
+    conn.close()
+
+
+def el_bote_del_privado_no_se_le_pone_al_compartido(c):
+    """Si la modalidad no entrara en la llave del guardado, poner el bote de uno se lo
+    pondria al otro — justo lo que el huesped pago por evitar."""
+    limpiar()
+    cargar([_priv("810020", "MANGLAR", privado=True),
+            _priv("810021", "MANGLAR", privado=False)])
+    conn = conexion()
+    fecha = conn.execute("SELECT fecha FROM tour_asignado LIMIT 1").fetchone()["fecha"]
+
+    cuantas, problema = tr.asignar_tour(conn, fecha, "MANGLAR", "A",
+                                        bote="TIBURON", privado=True)
+    c.igual(problema, None, "se guarda sin problema")
+    c.igual(cuantas, 1, "y toca SOLO la reserva privada")
+
+    puestos = {f["conf_no"]: f["bote_nombre"] for f in conn.execute(
+        "SELECT conf_no, bote_nombre FROM tour_asignado")}
+    c.igual(puestos.get("810020"), "TIBURON", "el privado lleva el bote")
+    c.igual(puestos.get("810021"), None, "y el compartido sigue sin bote")
+    conn.close()
+
+
+def la_capacidad_no_suma_el_privado_con_el_compartido(c):
+    """El aviso de «no cabe» tiene que contar la salida de verdad. Sumando las dos
+    modalidades inventaria un sobrecupo que no existe —o, peor, taparia uno que si—."""
+    import validations
+    limpiar()
+    # MANGLAR admite 7 por guia. Cuatro privados y cuatro compartidos son 8 sumados,
+    # pero cuatro y cuatro por separado: ninguna salida pasa del tope.
+    cargar([_priv("810030", "MANGLAR", privado=True, adl=4),
+            _priv("810031", "MANGLAR", privado=False, adl=4)])
+    conn = conexion()
+    uno = conn.execute(
+        "SELECT id FROM tour_asignado WHERE conf_no = '810030'").fetchone()["id"]
+    conn.close()
+    avisos = validations.validar_tour_asignado(uno)
+    c.igual([a for a in avisos if "guía" in a or "guia" in a], [],
+            "no se avisa de un sobrecupo que no existe")
+
+    # Y que el aviso SIGUE saliendo cuando el sobrecupo es de verdad. Una prueba que solo
+    # comprueba el silencio no distingue «bien contado» de «dejo de contar».
+    #
+    # Tiene que ser UNA sola reserva privada que no cabe en un guia, no dos sumadas: dos
+    # privadas del mismo dia son dos salidas con dos guias, y sumarlas seria el error que
+    # la mitad de arriba acaba de descartar.
+    limpiar()
+    cargar([_priv("810032", "MANGLAR", privado=True, adl=8)])
+    conn = conexion()
+    uno = conn.execute(
+        "SELECT id FROM tour_asignado WHERE conf_no = '810032'").fetchone()["id"]
+    conn.close()
+    avisos = validations.validar_tour_asignado(uno)
+    c.cierto(any("máximo por guía" in a for a in avisos),
+             "ocho en una sola salida privada si pasan del tope de un guia")
+    c.cierto(any("privado" in a for a in avisos),
+             "y el aviso dice que es la salida privada")
+
+
+def dos_privados_del_mismo_dia_no_van_en_el_mismo_bote(c):
+    """Privado quiere decir SIN NADIE MAS. Dos reservas distintas que compran el mismo
+    tour privado el mismo dia son dos salidas, no una.
+
+    No es un caso inventado: el 19 de noviembre de 2026, en los datos reales del lodge,
+    el PNC privado son la habitacion 12 y la 11 —dos familias que no se conocen—. Con la
+    modalidad sola en la llave se juntaban en una salida de 6 pax y se les asignaba UN
+    bote, que es exactamente lo que pagaron por evitar."""
+    limpiar()
+    cargar([_priv("810050", "MANGLAR", privado=True),
+            _priv("810051", "MANGLAR", privado=True)])
+    conn = conexion()
+    fecha = conn.execute("SELECT fecha FROM tour_asignado LIMIT 1").fetchone()["fecha"]
+    lista = tr.salidas_de_tour(conn, fecha, fecha)
+    c.igual(len(lista), 2, "son dos salidas privadas, no una")
+    c.igual([t["pax"] for t in lista], [2, 2], "y el pax no se suma entre ellas")
+    c.igual(sorted(t["conf_no"] for t in lista), ["810050", "810051"],
+            "cada una dice de que reserva es")
+
+    # Y el bote de una no se le pone a la otra.
+    cuantas, problema = tr.asignar_tour(conn, fecha, "MANGLAR", "A", bote="TIBURON",
+                                        privado=True, conf_no="810050")
+    c.igual(problema, None, "se guarda sin problema")
+    c.igual(cuantas, 1, "y toca una sola reserva")
+    puestos = {f["conf_no"]: f["bote_nombre"] for f in conn.execute(
+        "SELECT conf_no, bote_nombre FROM tour_asignado")}
+    c.igual(puestos.get("810050"), "TIBURON", "la que se eligio lleva el bote")
+    c.igual(puestos.get("810051"), None, "la otra privada sigue sin bote")
+    conn.close()
+
+
+def dos_compartidos_del_mismo_dia_SI_van_juntos(c):
+    """La otra mitad, que es la que evita pasarse de listo: lo compartido se sigue
+    juntando. Si la reserva entrara en la llave tambien para los compartidos, cada
+    habitacion pediria su propio bote y el lodge mandaria cinco botes medio vacios."""
+    limpiar()
+    cargar([_priv("810060", "MANGLAR", privado=False),
+            _priv("810061", "MANGLAR", privado=False)])
+    conn = conexion()
+    fecha = conn.execute("SELECT fecha FROM tour_asignado LIMIT 1").fetchone()["fecha"]
+    lista = tr.salidas_de_tour(conn, fecha, fecha)
+    c.igual(len(lista), 1, "las dos habitaciones comparten una sola salida")
+    c.igual(lista[0]["pax"], 4, "con el pax sumado")
+    c.igual(lista[0]["conf_no"], None, "y sin reserva propia: es de todas")
+    conn.close()
+
+
+def la_pesca_es_privada_aunque_llegue_por_la_nota(c):
+    """El comunicado del lodge: la pesca deportiva «se comercializa unicamente en
+    modalidad privada».
+
+    opera_paquetes ya lo sabia, pero solo servia al leer un PAQUETE. Un tour que entra
+    por la NOTA del itinerario —«dia 3: PESCA»— no trae modalidad, y asi entraron las dos
+    salidas de pesca que tiene el lodge cargadas: como compartidas. En la hoja del dia se
+    veia una salida abierta donde hay un charter de una sola familia."""
+    limpiar()
+    cargar([reserva("810070", "07", "01-01-26", "06-01-26",
+                    operacion=[{"dia": 2, "tour": "PESCA"}])])
+    conn = conexion()
+    fila = conn.execute("SELECT tour_codigo, es_privado FROM tour_asignado").fetchone()
+    c.igual(fila["tour_codigo"], "PESCA", "entra como pesca")
+    c.igual(fila["es_privado"], 1, "y privada, aunque la nota no lo dijera")
+    conn.close()
+
+    # Y la contraparte: un tour que SI se vende compartido no se marca solo. Marcar de
+    # mas parte en dos salidas lo que es una, y pide un guia por habitacion.
+    limpiar()
+    cargar([reserva("810071", "07", "01-01-26", "06-01-26",
+                    operacion=[{"dia": 2, "tour": "SIRENA"}])])
+    conn = conexion()
+    c.igual(conn.execute("SELECT es_privado FROM tour_asignado").fetchone()[0], 0,
+            "pero una SIRENA por la nota no se marca sola: tambien se vende compartida")
+    conn.close()
+
+
+def el_codigo_privado_del_catalogo_tambien_cuenta(c):
+    """La otra via: un PDF escribe «PNC PRIVADO», que el catalogo ya marca como privado.
+    Si solo se mirara la marca de Opera, esa fila se contaria con las compartidas."""
+    limpiar()
+    cargar([reserva("810040", "07", "01-01-26", "06-01-26",
+                    operacion=[{"dia": 2, "tour": "PNC PRIVADO"}])])
+    conn = conexion()
+    fila = conn.execute(
+        "SELECT tour_codigo, es_privado FROM tour_asignado").fetchone()
+    c.igual(fila["tour_codigo"], "PNC PRIVADO", "entra con su codigo")
+    c.igual(fila["es_privado"], 1, "y marcado como privado sin que Opera lo dijera")
+    conn.close()
+
+
 PRUEBAS = [
     los_que_van_a_la_misma_hora_van_juntos,
     horas_distintas_son_corridas_distintas,
@@ -687,6 +881,14 @@ PRUEBAS = [
     el_guia_del_tour_no_se_toca_desde_transporte,
     nadie_va_de_capitan_y_de_ayudante_en_la_misma_salida_de_tour,
     un_tour_de_una_reserva_cancelada_no_pide_bote,
+    la_modalidad_privada_llega_a_la_base,
+    el_privado_y_el_compartido_son_dos_salidas,
+    el_bote_del_privado_no_se_le_pone_al_compartido,
+    la_capacidad_no_suma_el_privado_con_el_compartido,
+    dos_privados_del_mismo_dia_no_van_en_el_mismo_bote,
+    dos_compartidos_del_mismo_dia_SI_van_juntos,
+    la_pesca_es_privada_aunque_llegue_por_la_nota,
+    el_codigo_privado_del_catalogo_tambien_cuenta,
     dejar_sin_asignar_es_distinto_de_no_mandar_el_dato,
     no_se_asigna_a_un_punto_inventado,
     cambiar_la_hora_del_vuelo_deja_la_corrida_sin_asignar,

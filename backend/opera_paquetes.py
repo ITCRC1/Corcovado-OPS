@@ -137,6 +137,21 @@ CATALOGO_2027 = [
 # dos salidas donde hay una—. Por eso no hace falta un «SIRENA PRIVADO» en el catálogo.
 SIEMPRE_PRIVADOS = {"SFH", "SFF", "SPS"}
 
+# Lo mismo visto desde el CATÁLOGO DEL LODGE, que es lo que acaba guardado.
+#
+# Hace falta porque un tour entra por dos caminos: el paquete de Opera, que trae la
+# modalidad pegada al código, y la nota del itinerario, que solo dice el nombre («día 3:
+# PESCA»). Por el segundo camino la modalidad se pierde, y medido en las reservas reales
+# del lodge pasa de verdad: las dos salidas de pesca de noviembre y enero entraron por
+# la nota y quedaron registradas como compartidas.
+#
+# SIRENA NO ESTÁ AQUÍ, a propósito. SPS es la versión privada, pero la estación Sirena
+# también se vende compartida —en las reservas del lodge se ven las dos— así que marcar
+# todas las SIRENA como privadas partiría en varias salidas lo que es una sola, y
+# pediría un guía por habitación. Cuando una SIRENA llega por la nota, la modalidad
+# tiene que escribirla recepción en la reserva.
+TOURS_SIEMPRE_PRIVADOS = {"PESCA", "SFF"}
+
 # Códigos del catálogo que NO son un tour de la agenda.
 #
 # MGX es el caso que el documento subraya: «Incluido en traslado; no tarifado como tour

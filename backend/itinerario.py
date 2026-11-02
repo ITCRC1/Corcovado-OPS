@@ -212,7 +212,8 @@ def construir_filas(datos):
     for t in datos.get("tours", []):
         externo = (t.get("guia_nombre") or "").upper() == "EXTERNO"
         info = cat.texto_tour(t["tour_codigo"], guia_es_externo=externo,
-                              horario_del_catalogo=t.get("horario_inicio"))
+                              horario_del_catalogo=t.get("horario_inicio"),
+                              privado=t.get("es_privado"))
         filas.append((_fecha_larga(t["fecha"]), info))
 
     for s in datos.get("spa", []):
@@ -417,7 +418,8 @@ def datos_de_reserva(conn, conf_no):
     # LEFT JOIN y no JOIN: un tour sin fila en el catálogo tiene que seguir apareciendo
     # en el itinerario del huésped, no desaparecer de él.
     tours = [dict(t) for t in conn.execute(
-        """SELECT ta.fecha, ta.tour_codigo, ta.guia_nombre, tc.horario_inicio
+        """SELECT ta.fecha, ta.tour_codigo, ta.guia_nombre, ta.es_privado,
+                  tc.horario_inicio
            FROM tour_asignado ta
            LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
            WHERE ta.conf_no = ? ORDER BY ta.fecha""", (conf_no,))]

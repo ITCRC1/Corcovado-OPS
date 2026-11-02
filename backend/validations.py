@@ -30,22 +30,35 @@ def validar_tour_asignado(tour_asignado_id):
         "SELECT * FROM tour_catalogo WHERE codigo = ?", (ta["tour_codigo"],)
     ).fetchone()
 
+    # LA MODALIDAD SEPARA LAS CUENTAS. Un tour privado es otra salida: lleva su propio
+    # guía y su propio bote, que es para lo que se vende. Sumarlo con el compartido del
+    # mismo día inventaría un sobrecupo que no existe —o taparía uno que sí—, y las dos
+    # formas de equivocarse acaban igual: alguien en el muelle sin quien lo lleve.
+    privado = 1 if ta["es_privado"] else 0
+
     # Capacidad de GUÍA: se valida por grupo operativo, porque cada grupo tiene su
-    # propio guía (aunque compartan bote).
+    # propio guía (aunque compartan bote). Si la salida es privada se acota además a SU
+    # reserva: privado quiere decir que va sola, así que dos privados del mismo día son
+    # dos guías y sumarlos inventaría un sobrecupo.
+    cond_priv = " AND conf_no = ?" if privado else ""
+    args_priv = (ta["conf_no"],) if privado else ()
     pax_grupo = conn.execute(
-        """SELECT COALESCE(SUM(pax),0) total FROM tour_asignado
-           WHERE tour_codigo=? AND fecha=? AND grupo_operativo=?""",
-        (ta["tour_codigo"], ta["fecha"], ta["grupo_operativo"]),
+        f"""SELECT COALESCE(SUM(pax),0) total FROM tour_asignado
+            WHERE tour_codigo=? AND fecha=? AND grupo_operativo=?
+              AND COALESCE(es_privado,0)=?{cond_priv}""",
+        (ta["tour_codigo"], ta["fecha"], ta["grupo_operativo"], privado, *args_priv),
     ).fetchone()["total"]
 
     # Capacidad de BOTE: se valida sumando TODOS los grupos que van en ese mismo bote,
     # ya que dos grupos con guías distintos pueden viajar juntos en un solo bote.
     pax_bote = conn.execute(
         """SELECT COALESCE(SUM(pax),0) total FROM tour_asignado
-           WHERE tour_codigo=? AND fecha=? AND bote_nombre IS ?""",
-        (ta["tour_codigo"], ta["fecha"], ta["bote_nombre"]),
+           WHERE tour_codigo=? AND fecha=? AND bote_nombre IS ?
+             AND COALESCE(es_privado,0)=?""",
+        (ta["tour_codigo"], ta["fecha"], ta["bote_nombre"], privado),
     ).fetchone()["total"]
 
+    privado_txt = " privado" if privado else ""
     grupo_txt = f" (grupo {ta['grupo_operativo']})" if ta["grupo_operativo"] != "A" else ""
 
     if ta["bote_nombre"]:
@@ -56,13 +69,14 @@ def validar_tour_asignado(tour_asignado_id):
             sugerido = sugerir_bote_alterno(conn, ta["tour_codigo"], ta["fecha"], pax_bote, ta["bote_nombre"])
             grupos_en_bote = conn.execute(
                 """SELECT COUNT(DISTINCT grupo_operativo) c FROM tour_asignado
-                   WHERE tour_codigo=? AND fecha=? AND bote_nombre IS ?""",
-                (ta["tour_codigo"], ta["fecha"], ta["bote_nombre"]),
+                   WHERE tour_codigo=? AND fecha=? AND bote_nombre IS ?
+                     AND COALESCE(es_privado,0)=?""",
+                (ta["tour_codigo"], ta["fecha"], ta["bote_nombre"], privado),
             ).fetchone()["c"]
             compartido = f" (compartido por {grupos_en_bote} grupos)" if grupos_en_bote > 1 else ""
             msg = (
                 f"Bote {ta['bote_nombre']} (máx. {bote['capacidad_max']} pax) recibe {pax_bote} pax "
-                f"en {ta['tour_codigo']} el {ta['fecha']}{compartido}."
+                f"en {ta['tour_codigo']}{privado_txt} el {ta['fecha']}{compartido}."
             )
             if sugerido:
                 msg += f" Se sugiere el bote {sugerido}, o usar un segundo bote para otro grupo."
@@ -81,7 +95,7 @@ def validar_tour_asignado(tour_asignado_id):
     if tour and pax_grupo > tour["max_pax_guia"]:
         guias_necesarios = -(-pax_grupo // tour["max_pax_guia"])  # redondeo hacia arriba
         msg = (
-            f"{ta['tour_codigo']} el {ta['fecha']}{grupo_txt} tiene {pax_grupo} pax, "
+            f"{ta['tour_codigo']}{privado_txt} el {ta['fecha']}{grupo_txt} tiene {pax_grupo} pax, "
             f"pero el máximo por guía es {tour['max_pax_guia']}. "
             f"Se necesitan {guias_necesarios} guías — divide el tour en {guias_necesarios} grupos."
         )
@@ -231,7 +245,8 @@ def detectar_conflictos_asignacion(fecha=None):
     params = (fecha,) if fecha else ()
     filas = [dict(r) for r in conn.execute(
         f"""SELECT ta.id, ta.fecha, ta.tour_codigo, ta.guia_nombre, ta.bote_nombre,
-                   ta.grupo_operativo, ta.pax, tc.horario_inicio, tc.horario_fin,
+                   ta.grupo_operativo, ta.pax, ta.es_privado, ta.conf_no,
+                   tc.horario_inicio, tc.horario_fin,
                    r.room_no, r.nombre_principal
             FROM tour_asignado ta
             JOIN reserva r ON r.conf_no = ta.conf_no
@@ -240,11 +255,20 @@ def detectar_conflictos_asignacion(fecha=None):
             ORDER BY ta.fecha, tc.horario_inicio""", params).fetchall()]
     conn.close()
 
-    # Cada salida es una combinación de fecha + tour + grupo operativo: varias reservas
-    # en la misma salida no son conflicto, van juntas con el mismo guía.
+    # Cada salida es una combinación de fecha + tour + modalidad + grupo operativo: varias
+    # reservas en la misma salida no son conflicto, van juntas con el mismo guía.
+    #
+    # La MODALIDAD cuenta en la llave. Sin ella, el PNC privado y el PNC compartido del
+    # mismo día caían en la misma casilla y el segundo pisaba al primero: dos salidas
+    # distintas con el MISMO guía a la misma hora —que es el error que esta función
+    # existe para encontrar— se leían como una sola y no se avisaba de nada.
     salidas = {}
     for f in filas:
-        clave = (f["fecha"], f["tour_codigo"], f["grupo_operativo"])
+        priv = 1 if f["es_privado"] else 0
+        # Una salida privada es POR RESERVA: va sola, por definición. Dos privadas del
+        # mismo día con el mismo guía son un choque de verdad y hay que avisarlo.
+        clave = (f["fecha"], f["tour_codigo"], priv, f["grupo_operativo"],
+                 f["conf_no"] if priv else "")
         if clave not in salidas:
             salidas[clave] = {**f, "reservas": [], "pax_total": 0}
         salidas[clave]["reservas"].append(f"{f['room_no']} {f['nombre_principal']}")
@@ -265,17 +289,25 @@ def detectar_conflictos_asignacion(fecha=None):
                 # "EXTERNO" y los botes no gestionados pueden repetirse legítimamente
                 if not valor or valor != b.get(campo) or valor.upper() in ("EXTERNO", "PRIVADO"):
                     continue
+                # El aviso tiene que decir CUÁL de las dos es la privada: sin eso, un
+                # choque entre el PNC privado y el PNC compartido se lee como «PNC y PNC»
+                # y parece un error del sistema en vez de dos salidas de verdad.
+                def como_se_llama(x):
+                    priv = " privado" if x["es_privado"] else ""
+                    gr = "" if x["grupo_operativo"] == "A" else f" grupo {x['grupo_operativo']}"
+                    return f"{x['tour_codigo']}{priv}{gr}"
+
                 conflictos.append({
                     "fecha": a["fecha"],
                     "tipo": etiqueta,
                     "nombre": valor,
-                    "salida_a": f"{a['tour_codigo']}{'' if a['grupo_operativo']=='A' else ' grupo '+a['grupo_operativo']}",
+                    "salida_a": como_se_llama(a),
                     "horario_a": f"{a['horario_inicio'] or '?'}–{a['horario_fin'] or '?'}",
-                    "salida_b": f"{b['tour_codigo']}{'' if b['grupo_operativo']=='A' else ' grupo '+b['grupo_operativo']}",
+                    "salida_b": como_se_llama(b),
                     "horario_b": f"{b['horario_inicio'] or '?'}–{b['horario_fin'] or '?'}",
                     "mensaje": (f"El {etiqueta} {valor} está asignado a dos salidas que coinciden "
-                                f"el {a['fecha']}: {a['tour_codigo']} ({a['horario_inicio'] or '?'}) "
-                                f"y {b['tour_codigo']} ({b['horario_inicio'] or '?'})."),
+                                f"el {a['fecha']}: {como_se_llama(a)} ({a['horario_inicio'] or '?'}) "
+                                f"y {como_se_llama(b)} ({b['horario_inicio'] or '?'})."),
                 })
     return conflictos
 

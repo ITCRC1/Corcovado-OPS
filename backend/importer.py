@@ -658,6 +658,12 @@ def build_review_batch_desde_reservas(reservas):
                 # el snorkel. Usar el pax de la habitación pediría un asiento de bote
                 # y una entrada del parque de más, todos los días.
                 "pax": op.get("pax_opera"),
+                # La MODALIDAD. Opera la manda pegada al código —«PRV-PNC»— y hasta aquí
+                # llegaba y se perdía: opera_mapeo la leía, la ponía en la operación, y
+                # este diccionario no la copiaba, así que un tour privado entraba a la
+                # agenda igual que uno compartido. Lleva su propio guía y su propio bote,
+                # y nadie lo sabía hasta el día del tour.
+                "privado": bool(op.get("privado")),
             })
             # Se registra la necesidad de entrada SINAC para TODOS los tours que la
             # requieren, tengan o no número de confirmación. Antes solo se registraban

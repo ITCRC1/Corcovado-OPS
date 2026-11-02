@@ -170,6 +170,16 @@ CREATE TABLE IF NOT EXISTS tour_asignado (
     capitan_nombre TEXT REFERENCES capitan(nombre),
     ayudante_nombre TEXT REFERENCES capitan(nombre),
     guia_nombre TEXT REFERENCES guia(nombre),
+    -- Si ESTA salida va en modalidad privada. No es lo mismo que tour_catalogo.es_privado:
+    -- Opera manda la modalidad pegada al código («PRV-PNC») y el tour sigue siendo el
+    -- mismo PNC, así que la privacidad es de la RESERVA, no del catálogo. Las dos vías
+    -- acaban aquí: al cargar, un código privado del catálogo también marca esta columna,
+    -- para que ninguna pantalla tenga que mirar en dos sitios y puedan contradecirse.
+    --
+    -- Importa porque un tour privado lleva SU PROPIO guía y SU PROPIO bote: sumarlo con
+    -- el tour normal del mismo día daría una sola salida donde hay dos, y alguien se
+    -- quedaría sin guía el día del tour.
+    es_privado INTEGER NOT NULL DEFAULT 0,
     -- Cuánta gente de ESA reserva va a ESTE tour. Por defecto va la habitación entera,
     -- pero no siempre: de dos huéspedes uno puede quedarse. Se edita desde la agenda.
     pax INTEGER NOT NULL DEFAULT 1,

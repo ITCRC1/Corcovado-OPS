@@ -227,10 +227,16 @@ TOURS_ITINERARIO = {
 }
 
 
-def texto_tour(codigo, guia_es_externo=False, horario_del_catalogo=None):
+def texto_tour(codigo, guia_es_externo=False, horario_del_catalogo=None, privado=False):
     """Devuelve el bloque de texto del tour para el itinerario del huésped.
 
     Si el tour tiene variantes según el guía (caso Sirena), usa la que corresponda.
+
+    `privado` antepone «Private» al nombre. El huésped que pagó un tour privado tiene
+    que verlo escrito en su itinerario: es lo que distingue su documento del de la
+    habitación de al lado, y si dice lo mismo que el compartido parece que no se le
+    reservó lo que pidió. El texto del tour es el mismo —es el mismo recorrido—, lo que
+    cambia es que va solo con su guía.
 
     `horario_del_catalogo` es la hora de inicio que recepción puso en la pantalla de
     Catálogo. Se usa para RELLENAR el hueco de las fichas que están marcadas con hora
@@ -242,11 +248,18 @@ def texto_tour(codigo, guia_es_externo=False, horario_del_catalogo=None):
     daría el trabajo por terminado y el huésped recibiría un documento sin hora.
     """
     base = codigo.replace(" PRIVADO", "").strip().upper()
+    # El código privado del catálogo YA dice que lo es: si no se mirara, un «PNC PRIVADO»
+    # importado de un PDF perdería la marca al quitarle el sufijo para buscar su ficha.
+    es_privado = bool(privado) or " PRIVADO" in codigo.upper()
+
+    def marcado(nombre):
+        return f"Private {nombre}" if es_privado else nombre
+
     info = TOURS_ITINERARIO.get(base)
     if not info:
         # Tour sin texto definido: se muestra el código para que recepción lo complete
         return {
-            "nombre": codigo.title(),
+            "nombre": marcado(codigo.title()),
             "duracion": "",
             "horario": _con_hora("___", horario_del_catalogo),
             "detalles": "",
@@ -260,7 +273,7 @@ def texto_tour(codigo, guia_es_externo=False, horario_del_catalogo=None):
         horario = _con_hora(horario, horario_del_catalogo)
         manual = False
     return {
-        "nombre": info["nombre"],
+        "nombre": marcado(info["nombre"]),
         "duracion": info.get("duracion", ""),
         "horario": horario,
         "detalles": info.get("detalles", ""),

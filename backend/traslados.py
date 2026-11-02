@@ -401,7 +401,8 @@ def resumen(lista):
 def salidas_de_tour(conn, desde, hasta):
     """Los tours que llevan bote entre dos fechas (ISO), agrupados por fecha/tour/grupo."""
     filas = conn.execute(
-        """SELECT ta.fecha, ta.tour_codigo, ta.grupo_operativo, ta.pax,
+        """SELECT ta.fecha, ta.tour_codigo, ta.grupo_operativo, ta.pax, ta.es_privado,
+                  ta.conf_no,
                   ta.guia_nombre, ta.bote_nombre, ta.capitan_nombre, ta.ayudante_nombre,
                   r.room_no, r.nombre_principal,
                   tc.nombre AS tour_nombre, tc.horario_inicio
@@ -410,19 +411,37 @@ def salidas_de_tour(conn, desde, hasta):
            JOIN reserva r ON r.conf_no = ta.conf_no
            WHERE tc.requiere_bote = 1 AND ta.fecha BETWEEN ? AND ?
              AND r.res_status != 'CANCELADA'
-           ORDER BY ta.fecha, tc.horario_inicio, ta.tour_codigo, ta.grupo_operativo,
-                    r.room_no""",
+           ORDER BY ta.fecha, tc.horario_inicio, ta.tour_codigo, ta.es_privado,
+                    ta.grupo_operativo, r.room_no""",
         (desde, hasta)).fetchall()
 
     grupos = {}
     orden = []
     for f in filas:
         d = dict(f)
-        clave = (d["fecha"], d["tour_codigo"], d["grupo_operativo"] or "A")
+        # LA MODALIDAD ENTRA EN LA CLAVE, igual que el grupo. Un PNC privado y un PNC
+        # compartido el mismo día son DOS salidas: el privado lleva su propio bote y su
+        # propio guía, que es justamente para lo que se vende. Juntarlos daría una sola
+        # corrida, un solo bote asignado, y el día del tour habría gente esperando.
+        #
+        # Y UNA SALIDA PRIVADA ES POR RESERVA. Privado quiere decir «sin nadie más»: dos
+        # reservas distintas que compran el mismo tour privado el mismo día son dos
+        # salidas, no una. Medido en los datos reales del lodge: el 19 de noviembre el
+        # PNC privado son la habitación 12 y la 11, dos familias que no se conocen —
+        # juntarlas en un bote es exactamente lo que pagaron por evitar.
+        #
+        # Si dos habitaciones privadas sí viajan juntas —una familia en dos cuartos—, se
+        # les pone EL MISMO BOTE desde Transporte. Siguen siendo dos renglones, que es lo
+        # honesto, y la validación de capacidad las suma porque suma por bote.
+        privado = 1 if d["es_privado"] else 0
+        clave = (d["fecha"], d["tour_codigo"], privado, d["grupo_operativo"] or "A",
+                 d["conf_no"] if privado else "")
         if clave not in grupos:
             grupos[clave] = {
                 "fecha": d["fecha"], "tour_codigo": d["tour_codigo"],
                 "tour_nombre": d["tour_nombre"], "grupo": d["grupo_operativo"] or "A",
+                "privado": bool(privado),
+                "conf_no": d["conf_no"] if privado else None,
                 "hora": d["horario_inicio"] or "",
                 "habitaciones": [], "pax": 0,
                 # Se recogen los DISTINTOS valores del grupo en vez de quedarse con el
@@ -461,25 +480,37 @@ def salidas_de_tour(conn, desde, hasta):
 
 
 def asignar_tour(conn, fecha, tour_codigo, grupo, bote=None, capitan=None,
-                 ayudante=None):
-    """Pone bote, capitán y ayudante a TODAS las reservas de (fecha, tour, grupo).
+                 ayudante=None, privado=False, conf_no=None):
+    """Pone bote, capitán y ayudante a TODAS las reservas de (fecha, tour, privado, grupo).
 
     Devuelve (cuántas filas se tocaron, problema). Se escribe al grupo entero porque el
     grupo es el que sube al bote: dejar una reserva del grupo con otro bote sería gente
     del mismo tour esperando en dos muelles.
+
+    La MODALIDAD es parte de la llave, no un filtro de adorno: si no estuviera, poner el
+    bote del PNC compartido se lo pondría también al PNC privado del mismo día, que es
+    exactamente lo que el huésped pagó por no compartir. Y si es privada se acota además
+    a SU reserva, por lo mismo: dos privados del mismo día son dos salidas.
 
     El guía NO se toca aquí. Se elige en la Agenda y esta pantalla solo lo enseña.
     """
     fecha = (fecha or "").strip()
     tour_codigo = (tour_codigo or "").strip()
     grupo = (grupo or "A").strip() or "A"
+    priv = 1 if privado else 0
     if not fecha or not tour_codigo:
         return 0, "Falta la fecha o el tour."
 
+    donde = ("fecha = ? AND tour_codigo = ? AND COALESCE(grupo_operativo,'A') = ? "
+             "AND COALESCE(es_privado,0) = ?")
+    args = [fecha, tour_codigo, grupo, priv]
+    if priv and conf_no:
+        donde += " AND conf_no = ?"
+        args.append(conf_no)
+
     filas = conn.execute(
-        """SELECT id, capitan_nombre, ayudante_nombre FROM tour_asignado
-           WHERE fecha = ? AND tour_codigo = ? AND COALESCE(grupo_operativo,'A') = ?""",
-        (fecha, tour_codigo, grupo)).fetchall()
+        f"SELECT id, capitan_nombre, ayudante_nombre FROM tour_asignado WHERE {donde}",
+        args).fetchall()
     if not filas:
         return 0, "Ese tour no está en la agenda de esa fecha."
 
@@ -514,8 +545,7 @@ def asignar_tour(conn, fecha, tour_codigo, grupo, bote=None, capitan=None,
         return 0, None
 
     conn.execute(
-        f"""UPDATE tour_asignado SET {', '.join(campos)}
-            WHERE fecha = ? AND tour_codigo = ? AND COALESCE(grupo_operativo,'A') = ?""",
-        (*valores, fecha, tour_codigo, grupo))
+        f"UPDATE tour_asignado SET {', '.join(campos)} WHERE {donde}",
+        (*valores, *args))
     conn.commit()
     return len(filas), None

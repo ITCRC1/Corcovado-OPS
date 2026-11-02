@@ -2096,7 +2096,7 @@ async function verDetalleReserva(confNo) {
         <table style="font-size:12px;">
           <tr><th>Fecha</th><th>Tour</th><th>Horario</th><th>Guía</th><th>Bote</th><th>Entrada SINAC</th></tr>
           ${r.tours.map(t => `<tr>
-            <td>${t.fecha}</td><td>${t.tour_codigo}</td>
+            <td>${t.fecha}</td><td>${t.tour_codigo}${t.es_privado ? ` ${insigniaPrivado()}` : ""}</td>
             <td>${t.horario_inicio || "—"}${t.horario_fin ? ` – ${t.horario_fin}` : ""}</td>
             <td>${t.guia_nombre || "Sin asignar"}</td><td>${t.bote_nombre || (t.requiere_bote ? '<span style="color:var(--warn-text);">Sin asignar</span>' : '<span style="color:var(--muted);">no lleva bote</span>')}</td>
             <td>${t.conf_entrada_sinac || "—"}</td>
@@ -2230,7 +2230,7 @@ async function loadAgenda(fecha, desde, hasta) {
         ${rows.map(r => r.tours.map((t, i) => `
           <tr>
             ${i === 0 ? `<td rowspan="${r.tours.length}">${r.nombre_principal} · ${r.room_no}</td>` : ''}
-            <td>${t.tour_codigo}</td>
+            <td>${t.tour_codigo}${t.es_privado ? `<br>${insigniaPrivado()}` : ""}</td>
             <td>${puedeEscribir("agenda")
               ? `<input type="date" value="${t.fecha || r.fecha}"
                    min="${r.estadia_desde || ""}" max="${r.estadia_hasta || ""}"
@@ -2264,10 +2264,10 @@ async function loadAgenda(fecha, desde, hasta) {
   // mirar si el guía quedó bien puesto.
   if (window._tourAbierto) {
     const sigue = rows.some(r => (r.tours || [])
-      .some(t => (t.tour_codigo || "—") === window._tourAbierto));
-    const codigo = window._tourAbierto;
+      .some(t => claveTipoTour(t) === window._tourAbierto));
+    const clave = window._tourAbierto;
     window._tourAbierto = null;              // para que detalleTipoDeTour lo abra, no lo cierre
-    if (sigue) detalleTipoDeTour(codigo);
+    if (sigue) detalleTipoDeTour(clave);
   }
 }
 
@@ -2512,12 +2512,16 @@ function seccionToursEnBote(d) {
     : `<span style="color:var(--warn-text);font-size:11.5px;">sin guía — se pone en la Agenda</span>`;
 
   const fila = (t) => {
-    const k = [t.fecha, t.tour_codigo, t.grupo].map(x => encodeURIComponent(x)).join("|");
+    // La MODALIDAD viaja en la clave: el bote del PNC privado no es el del compartido.
+    // Y si es privada, también SU reserva: dos privadas del mismo día son dos salidas.
+    const k = [t.fecha, t.tour_codigo, t.grupo, t.privado ? "1" : "0", t.conf_no || ""]
+      .map(x => encodeURIComponent(x)).join("|");
     const quienes = t.habitaciones.map(h =>
       `${escaparHTML(h.room_no || "?")} ${escaparHTML((h.nombre || "").split(",")[0])}`).join(" · ");
     return `<tr>
       <td>${escaparHTML(t.fecha)}</td>
       <td><strong>${escaparHTML(t.tour_codigo)}</strong>${t.grupo && t.grupo !== "A" ? ` <span class="badge">${escaparHTML(t.grupo)}</span>` : ""}
+        ${t.privado ? ` ${insigniaPrivado()}` : ""}
         <br><span style="font-size:10.5px;color:var(--muted);">${escaparHTML(t.tour_nombre || "")}</span></td>
       <td>${t.hora ? escaparHTML(t.hora) : `<span style="color:var(--muted);font-size:11.5px;">sin horario</span>`}</td>
       <td>${t.habitaciones.length} hab.
@@ -2561,8 +2565,8 @@ function seccionToursEnBote(d) {
 }
 
 async function asignarTourBote(clave, campo, valor) {
-  const [fecha, tour_codigo, grupo] = clave.split("|").map(decodeURIComponent);
-  const cuerpo = { fecha, tour_codigo, grupo };
+  const [fecha, tour_codigo, grupo, priv, conf_no] = clave.split("|").map(decodeURIComponent);
+  const cuerpo = { fecha, tour_codigo, grupo, privado: priv === "1", conf_no };
   cuerpo[campo] = valor;                    // vacío = quitar la asignación
   const res = await fetchAuth(`${API}/api/traslados/tour`, {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -2582,6 +2586,26 @@ async function asignarTourBote(clave, campo, valor) {
       : "";
   }
   loadTransporte();
+}
+
+// ---------- LA MODALIDAD PRIVADA ----------
+//
+// Un tour privado NO se suma con el compartido del mismo día: lleva su propio guía y su
+// propio bote, que es exactamente lo que el huésped pagó. Juntarlos daría una salida
+// donde hay dos, y el día del tour faltaría un guía.
+//
+// Las dos funciones viven aquí, juntas y usadas por todas las pantallas, para que la
+// marca se vea igual en Agenda, Transporte y el detalle de la reserva: si cada una la
+// dibujara a su manera, la misma salida parecería tres cosas distintas.
+
+function insigniaPrivado() {
+  return `<span class="badge" style="background:var(--forest, #2C4A3E);color:#fff;font-size:10px;">PRIVADO</span>`;
+}
+
+// La identidad de una «casilla» de tour: el código Y la modalidad. Es la clave con la
+// que se agrupa el resumen y la que se compara al abrir el detalle.
+function claveTipoTour(t) {
+  return `${t.tour_codigo || "—"}${t.es_privado ? "|PRIV" : ""}`;
 }
 
 // Cuántas salidas hay de cada tour, con su pax y lo que falta por asignar.
@@ -2643,9 +2667,14 @@ function resumenPorTour(rows) {
   const porTour = {};
   let fueraTotal = 0;
   rows.forEach(r => r.tours.forEach(t => {
-    const k = t.tour_codigo || "—";
+    // UN TOUR PRIVADO ES OTRA CASILLA. Lo pidió el lodge: «que no se sume de manera
+    // automática con los tours normales sino en una casilla resumen aparte». Y es lo
+    // correcto operativamente: lleva su propio guía y su propio bote, así que sumarlo
+    // con el compartido daría un pax que ningún bote va a llevar junto.
+    const k = claveTipoTour(t);
     const x = porTour[k] = porTour[k] || {
-      codigo: k, salidas: 0, pax: 0, sinGuia: 0, sinBote: 0, fuera: 0,
+      clave: k, codigo: t.tour_codigo || "—", privado: !!t.es_privado,
+      salidas: 0, pax: 0, sinGuia: 0, sinBote: 0, fuera: 0,
       horario: t.horario_inicio,
     };
     x.salidas += 1;
@@ -2655,7 +2684,9 @@ function resumenPorTour(rows) {
     if (t.fuera_de_estadia) { x.fuera += 1; fueraTotal += 1; }
   }));
   const lista = Object.values(porTour).sort((a, b) =>
-    (a.horario || "99:99").localeCompare(b.horario || "99:99") || a.codigo.localeCompare(b.codigo));
+    (a.horario || "99:99").localeCompare(b.horario || "99:99")
+    || a.codigo.localeCompare(b.codigo)
+    || (a.privado ? 1 : 0) - (b.privado ? 1 : 0));
   if (!lista.length) return "";
 
   const totalPax = lista.reduce((s, x) => s + x.pax, 0);
@@ -2670,11 +2701,12 @@ function resumenPorTour(rows) {
       </p>
       <div style="display:flex;flex-wrap:wrap;gap:8px;">
         ${lista.map(x => `
-          <div class="pulsable" onclick="detalleTipoDeTour('${x.codigo}')" id="tarjeta-tour-${x.codigo}"
+          <div class="pulsable" onclick="detalleTipoDeTour('${x.clave}')" id="tarjeta-tour-${x.clave}"
                style="border:1px solid var(--linea, #d8d8d0);border-radius:8px;padding:8px 11px;min-width:120px;cursor:pointer;
-                      ${x.fuera ? 'border-color:var(--danger-text);' : ''}">
+                      ${x.fuera ? 'border-color:var(--danger-text);' : x.privado ? 'border-color:var(--forest, #2C4A3E);border-width:2px;' : ''}">
             <p style="margin:0;font-weight:600;font-size:12.5px;">${x.codigo}
               ${x.horario ? `<span style="font-weight:400;color:var(--muted);font-size:11px;">${x.horario}</span>` : ""}</p>
+            ${x.privado ? `<p style="margin:2px 0 0;">${insigniaPrivado()}</p>` : ""}
             <p style="margin:2px 0 0;font-size:17px;font-weight:600;">${x.pax} <span style="font-size:11px;font-weight:400;color:var(--muted);">pax</span></p>
             <p style="margin:1px 0 0;font-size:11px;color:var(--muted);">${x.salidas} reserva${x.salidas === 1 ? "" : "s"}</p>
             ${x.sinGuia || x.sinBote ? `<p style="margin:3px 0 0;font-size:10.5px;color:var(--warn-text);">
@@ -2721,10 +2753,14 @@ function detalleTipoDeTour(codigo) {
   adaptarTablasMovil();
 }
 
-function vistaDeTipoDeTour(codigo) {
+function vistaDeTipoDeTour(clave) {
+  // La clave trae la modalidad pegada: el detalle del PNC privado no puede enseñar las
+  // salidas del PNC compartido, que es gente distinta en otro bote.
+  const privado = clave.endsWith("|PRIV");
+  const codigo = privado ? clave.slice(0, -5) : clave;
   const salidas = [];
   (window._agendaRows || []).forEach(r => (r.tours || []).forEach(t => {
-    if ((t.tour_codigo || "—") !== codigo) return;
+    if (claveTipoTour(t) !== clave) return;
     salidas.push({
       fecha: t.fecha || r.fecha,
       guia: t.guia_nombre, bote: t.bote_nombre,
@@ -2744,7 +2780,7 @@ function vistaDeTipoDeTour(codigo) {
 
   return `
     <div class="detail-panel" style="margin-top:10px;">
-      <p style="font-weight:600;margin:0 0 2px;">${codigo}
+      <p style="font-weight:600;margin:0 0 2px;">${codigo} ${privado ? insigniaPrivado() : ""}
         <span style="font-weight:400;color:var(--muted);">— ${salidas.length} salida${salidas.length === 1 ? "" : "s"} ·
         ${pax} pax · ${fechas.length} día${fechas.length === 1 ? "" : "s"}</span></p>
       <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">

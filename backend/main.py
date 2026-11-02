@@ -786,6 +786,10 @@ def agenda(fecha: str = None, desde: str = None, hasta: str = None, user: dict =
                  "capitan_nombre": r.get("capitan_nombre"),
                  "ayudante_nombre": r.get("ayudante_nombre"),
                  "requiere_bote": bool(r.get("requiere_bote")),
+                 # La modalidad. Un tour privado lleva su propio guía y su propio bote,
+                 # así que la agenda tiene que distinguirlo del compartido del mismo día
+                 # en vez de sumarlos en una sola salida.
+                 "es_privado": bool(r.get("es_privado")),
                  "horario_inicio": r["horario_inicio"], "horario_fin": r["horario_fin"],
                  "grupo_operativo": r.get("grupo_operativo", "A"),
                  # El pax es de CADA tour, no de la reserva: de dos huéspedes, uno puede
@@ -3753,7 +3757,9 @@ def detalle_reserva(conf_no: str, user: dict = Depends(exige("reservas"))):
     ).fetchall()
     tours = conn.execute(
         """SELECT ta.fecha, ta.tour_codigo, ta.guia_nombre, ta.bote_nombre, ta.pax,
-                  ta.conf_entrada_sinac, tc.horario_inicio, tc.horario_fin
+                  ta.es_privado, ta.capitan_nombre, ta.ayudante_nombre,
+                  ta.conf_entrada_sinac, tc.horario_inicio, tc.horario_fin,
+                  tc.requiere_bote
            FROM tour_asignado ta LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
            WHERE ta.conf_no = ? ORDER BY ta.fecha, tc.horario_inicio""",
         (conf_no,),
@@ -3943,21 +3949,30 @@ async def traslados_asignar_tour(payload: dict,
     fecha = (payload.get("fecha") or "").strip()
     codigo = (payload.get("tour_codigo") or "").strip()
     grupo = (payload.get("grupo") or "A").strip() or "A"
+    privado = 1 if payload.get("privado") else 0
+    # Una salida privada va sola, así que se identifica además por SU reserva.
+    conf_no = (payload.get("conf_no") or "").strip() or None
     conn = get_connection()
     try:
         cuantas, problema = _tras.asignar_tour(
             conn, fecha, codigo, grupo,
             bote=payload.get("bote"),
             capitan=payload.get("capitan"),
-            ayudante=payload.get("ayudante"))
+            ayudante=payload.get("ayudante"),
+            privado=privado, conf_no=conf_no)
         if problema:
             raise HTTPException(status_code=400, detail=problema)
         # El id de una fila cualquiera del grupo, para pasar por la validación de
         # capacidad que ya existe: cuenta el pax de todo el tour, no el de esa fila.
+        cond = ""
+        extra = ()
+        if privado and conf_no:
+            cond, extra = " AND conf_no = ?", (conf_no,)
         una = conn.execute(
-            """SELECT id FROM tour_asignado
-               WHERE fecha = ? AND tour_codigo = ? AND COALESCE(grupo_operativo,'A') = ?
-               LIMIT 1""", (fecha, codigo, grupo)).fetchone()
+            f"""SELECT id FROM tour_asignado
+                WHERE fecha = ? AND tour_codigo = ? AND COALESCE(grupo_operativo,'A') = ?
+                  AND COALESCE(es_privado,0) = ?{cond}
+                LIMIT 1""", (fecha, codigo, grupo, privado, *extra)).fetchone()
     finally:
         conn.close()
 

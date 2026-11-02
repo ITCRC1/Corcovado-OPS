@@ -392,6 +392,11 @@ def _guardar_tours(cur, r, borrar_si_vacio=True):
     # reservas del ciclo, no solo esta—. Un código nuevo en la nomenclatura, o una errata
     # de Reservaciones, bastaba para dejar al hotel sin actualizar y sin saber por qué.
     del_catalogo = {x["codigo"] for x in cur.execute("SELECT codigo FROM tour_catalogo")}
+    # Los códigos que el catálogo ya marca como privados («PNC PRIVADO»). Es la otra vía
+    # por la que llega la modalidad: Opera la manda pegada al código y un PDF la escribe
+    # en el nombre del tour. Las dos acaban en tour_asignado.es_privado.
+    privados_del_catalogo = {x["codigo"] for x in cur.execute(
+        "SELECT codigo FROM tour_catalogo WHERE es_privado = 1")}
 
     for a in r.get("agenda") or []:
         # Se traduce AQUÍ, en la última puerta antes de escribir. Los códigos ya vienen
@@ -441,24 +446,39 @@ def _guardar_tours(cur, r, borrar_si_vacio=True):
                  AND IFNULL(origen,'PDF') = 'MANUAL'""",
             (r["conf_no"], a["fecha"], a["tour"]),
         ).fetchone()
+        # LA MODALIDAD, por sus dos vías. Opera la manda pegada al código («PRV-PNC») y
+        # llega en a["privado"]; un PDF escribe el código privado del catálogo («PNC
+        # PRIVADO»). Las dos acaban en la misma columna para que ninguna pantalla tenga
+        # que mirar en dos sitios y puedan contradecirse.
+        # Tres vías, porque hay tres formas de que un tour llegue privado: el paquete de
+        # Opera lo dice con el prefijo, el PDF lo dice en el código del catálogo, y hay
+        # servicios que el lodge solo vende en privado —la pesca deportiva— y que por la
+        # nota del itinerario llegarían sin decirlo.
+        import opera_paquetes as _op_priv
+        es_privado = 1 if (a.get("privado")
+                           or a["tour"] in privados_del_catalogo
+                           or a["tour"] in _op_priv.TOURS_SIEMPRE_PRIVADOS) else 0
         if ya_manual:
             # El pax puesto a mano NO se pisa: el reporte solo sabe cuánta gente hay en la
-            # habitación, y aquí ya alguien anotó cuántos van de verdad.
+            # habitación, y aquí ya alguien anotó cuántos van de verdad. La modalidad SÍ
+            # se refresca: la pone la fuente, no recepción, y si el huésped pasó su tour a
+            # privado hay que enterarse.
             cur.execute(
                 """UPDATE tour_asignado
                       SET origen = 'PDF',
                           pax = CASE WHEN pax_editado_a_mano THEN pax ELSE ? END,
-                          conf_entrada_sinac = COALESCE(conf_entrada_sinac, ?)
+                          conf_entrada_sinac = COALESCE(conf_entrada_sinac, ?),
+                          es_privado = ?
                    WHERE id = ?""",
-                (pax_del_tour, a.get("conf_entrada"), ya_manual["id"]))
+                (pax_del_tour, a.get("conf_entrada"), es_privado, ya_manual["id"]))
             continue
         cur.execute(
             """INSERT INTO tour_asignado
                (conf_no, fecha, tour_codigo, pax, pax_editado_a_mano, conf_entrada_sinac,
-                guia_nombre, bote_nombre, grupo_operativo, origen)
-               VALUES (?,?,?,?,?,?,?,?,?,'PDF')""",
+                guia_nombre, bote_nombre, grupo_operativo, es_privado, origen)
+               VALUES (?,?,?,?,?,?,?,?,?,?,'PDF')""",
             (r["conf_no"], a["fecha"], a["tour"], pax_del_tour, pax_a_mano,
-             a.get("conf_entrada"), guia_prev, bote_prev, grupo_prev),
+             a.get("conf_entrada"), guia_prev, bote_prev, grupo_prev, es_privado),
         )
 
 

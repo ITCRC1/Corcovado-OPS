@@ -209,6 +209,13 @@ COLUMNAS_NUEVAS = [
     # igual que la de una corrida de muelle, así que el tour también tiene que guardarla.
     ("tour_asignado", "capitan_nombre", "TEXT"),
     ("tour_asignado", "ayudante_nombre", "TEXT"),
+    # La modalidad privada de CADA salida. La siembra recupera lo que ya estaba guardado
+    # de otra forma: las importaciones de PDF escribían el código «PNC PRIVADO», que el
+    # catálogo marca como privado. Sin esta línea esas filas seguirían contándose con las
+    # normales hasta que alguien las volviera a importar.
+    ("tour_asignado", "es_privado", "INTEGER NOT NULL DEFAULT 0",
+     "UPDATE tour_asignado SET es_privado = 1 WHERE tour_codigo IN "
+     "(SELECT codigo FROM tour_catalogo WHERE es_privado = 1)"),
     # Los precios de la lavandería. Van aquí y no solo en schema.sql porque las tablas de
     # housekeeping ya existen en la base instalada: el CREATE TABLE IF NOT EXISTS no corre
     # y las columnas nuevas no aparecerían solas.
@@ -344,12 +351,22 @@ def _crear_indices(conn):
 def _migrar(conn):
     """Agrega las columnas que falten. Es idempotente: se puede correr siempre."""
     agregadas = []
-    for tabla, columna, tipo in COLUMNAS_NUEVAS:
+    for fila in COLUMNAS_NUEVAS:
+        # El cuarto elemento es OPCIONAL: un SQL que se corre UNA sola vez, justo después
+        # de crear la columna, para rellenarla con lo que ya se sabe. Hace falta porque
+        # el DEFAULT solo sirve para un valor fijo, y a veces el valor correcto está en
+        # otra tabla —la modalidad privada de un tour, por ejemplo, que el catálogo ya
+        # conoce—. Sin esto, las filas viejas se quedarían en el valor por defecto hasta
+        # que alguien las volviera a importar, que puede no pasar nunca.
+        tabla, columna, tipo = fila[0], fila[1], fila[2]
+        siembra = fila[3] if len(fila) > 3 else None
         existentes = {r[1] for r in conn.execute(f"PRAGMA table_info({tabla})")}
         if not existentes:
             continue          # la tabla aún no existe; el esquema ya la creará con la columna
         if columna not in existentes:
             conn.execute(f"ALTER TABLE {tabla} ADD COLUMN {columna} {tipo}")
+            if siembra:
+                conn.execute(siembra)
             agregadas.append(f"{tabla}.{columna}")
     if agregadas:
         conn.commit()

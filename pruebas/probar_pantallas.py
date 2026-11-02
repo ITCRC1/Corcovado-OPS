@@ -363,6 +363,50 @@ def el_guia_no_se_edita_en_transporte_ni_el_bote_en_la_agenda(c):
     c.igual('params.append("bote"' in guardar, False, "y no toca el bote")
 
 
+def el_tour_privado_se_ve_y_se_cuenta_aparte(c):
+    """Lo pidio el lodge: «que los tours que vienen declarados como privados aparezcan asi
+    tanto en reserva, itinerario y mas importante en la agenda de tours o transporte... y
+    que no se sume de manera automatica con los tours normales sino en una casilla resumen
+    aparte».
+
+    Las dos mitades importan por separado:
+
+      · VERSE. Un privado lleva su propio guia y su propio bote. Si en la pantalla se lee
+        igual que un compartido, quien asigna no tiene como saberlo.
+      · CONTARSE APARTE. Es lo que de verdad rompe: sumados dan una salida donde hay dos,
+        con un pax que ningun bote va a llevar junto."""
+    html = _html()
+
+    # Una sola forma de dibujar la marca, para que las tres pantallas digan lo mismo.
+    c.cierto("function insigniaPrivado(" in html, "hay UNA insignia compartida")
+    c.cierto("function claveTipoTour(" in html, "y UNA forma de armar la clave")
+
+    resumen = _cuerpo_de_funcion(html, "resumenPorTour")
+    c.cierto("claveTipoTour(t)" in resumen,
+             "el resumen agrupa por codigo Y modalidad")
+    c.igual("const k = t.tour_codigo" in resumen, False,
+            "ya no agrupa solo por codigo, que era lo que los sumaba")
+
+    clave = _cuerpo_de_funcion(html, "claveTipoTour")
+    c.cierto("es_privado" in clave and "PRIV" in clave,
+             "la clave lleva la modalidad dentro")
+
+    # Transporte: la modalidad viaja en la clave de la corrida, o el bote del privado
+    # acabaria puesto tambien en el compartido.
+    tours = _cuerpo_de_funcion(html, "seccionToursEnBote")
+    c.cierto("t.privado" in tours, "Transporte distingue la salida privada")
+    c.cierto("insigniaPrivado()" in tours, "y la marca")
+    envio = _cuerpo_de_funcion(html, "asignarTourBote")
+    c.cierto("privado: priv" in envio, "y se manda al servidor al asignar")
+
+    # Agenda y detalle de la reserva.
+    agenda = _cuerpo_de_funcion(html, "loadAgenda")
+    c.cierto("t.es_privado" in agenda and "insigniaPrivado()" in agenda,
+             "la agenda marca la fila privada")
+    c.cierto(html.count("insigniaPrivado()") >= 4,
+             "la marca sale en el resumen, la agenda, transporte y la reserva")
+
+
 def el_capitan_y_el_ayudante_se_eligen_en_transporte(c):
     """Los dos selectores nuevos, y que salgan de la misma lista de capitanes."""
     html = _html()
@@ -593,6 +637,7 @@ PRUEBAS = [
     las_canceladas_no_salen_en_reservas,
     el_bote_se_elige_en_transporte_y_el_guia_en_la_agenda,
     el_guia_no_se_edita_en_transporte_ni_el_bote_en_la_agenda,
+    el_tour_privado_se_ve_y_se_cuenta_aparte,
     el_capitan_y_el_ayudante_se_eligen_en_transporte,
     reservas_muestra_los_ingresos_de_la_fecha_elegida,
 ]
