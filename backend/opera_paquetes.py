@@ -41,6 +41,10 @@ TOURS_POR_RAIZ = {
     # Caño Island Snorkeling -> SNORKEL (no ISLA: lo definió la operación)
     "CIS": "SNORKEL",
     "SCI": "SNORKEL",
+    # «PARED» es como el lodge llama de palabra a la pared de escalada, que en el
+    # catálogo es CLW. Sin esta línea, una reserva que la escriba así no encuentra
+    # código, se avisa como «tour sin catálogo» y la actividad no llega a la agenda.
+    "PARED": "CLW",
     # San Pedrillo y Corcovado -> PNC. 'Hiking To Corcovado National Park' es la misma
     # estación de San Pedrillo con otro nombre comercial.
     "PNWALK": "PNC",

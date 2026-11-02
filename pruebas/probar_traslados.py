@@ -848,6 +848,101 @@ def la_pesca_es_privada_aunque_llegue_por_la_nota(c):
     conn.close()
 
 
+# Los que el lodge nombro uno por uno: «cuando sean tours terrestres (CABALGATA, CLARO,
+# CLW, GTT, HDA, NGW, NW, PAJAREO, PARED, PNC, PNC PRIVADO, PRV-SIR, TREENET) no solicite
+# bote o capitan ya que no necesita, y en el modulo de transporte no aparezcan estos
+# tours ya que no necesitan transporte».
+#
+# PARED no es un codigo del catalogo: es como se le dice de palabra a CLW, la pared de
+# escalada. Entra como alias, no como tour nuevo.
+# PRV-SIR tampoco: es el codigo de Opera del Sirena privado, que se guarda como SIRENA
+# con la marca de privado. Queda fuera de esta lista a proposito — ver el comentario de
+# TOURS_QUE_VAN_POR_TIERRA.
+TERRESTRES = ["CABALGATA", "CLARO", "CLW", "GTT", "HDA", "NGW", "NW", "PAJAREO",
+              "PNC", "PNC PRIVADO", "TREENET"]
+
+
+def los_tours_terrestres_no_piden_bote(c):
+    """Lo que el lodge nombro uno por uno. El que mas pesa es PNC: es el tour mas comun
+    —137 salidas cargadas— y pedia bote, capitan y ayudante todos los dias."""
+    conn = base_limpia()
+    piden = {r["codigo"]: r["requiere_bote"] for r in conn.execute(
+        "SELECT codigo, requiere_bote FROM tour_catalogo")}
+    for codigo in TERRESTRES:
+        c.igual(piden.get(codigo), 0, f"{codigo} no pide bote")
+    # Y la contraparte, que es la que evita pasarse: los que SI van en bote siguen
+    # pidiendolo. Una lista que apaga todo no se distingue de una bien hecha.
+    for codigo in ("SNORKEL", "ISLA", "MANGLAR", "BALLENAS", "PESCA"):
+        c.igual(piden.get(codigo), 1, f"{codigo} sigue pidiendo bote")
+    conn.close()
+
+
+def la_base_ya_instalada_tambien_se_corrige(c):
+    """EL CAMINO DE PRODUCCION, que es el unico que importa aqui.
+
+    Cambiar la tupla del catalogo solo sirve para una base NUEVA: el sembrado es un
+    INSERT OR IGNORE, asi que en la base del lodge —que ya tiene PNC con bote— no cambia
+    nada. La correccion la hace _corregir_tours_por_tierra al arrancar.
+
+    Y corre UNA SOLA VEZ: el catalogo se edita desde la pantalla, asi que si corriera en
+    cada arranque, el dia que alguien marcara un tour como de bote a proposito el sistema
+    se lo desharia solo al reiniciar."""
+    import init_db
+    conn = base_limpia()
+    # Se simula la base instalada: PNC con bote y sin la marca de correccion.
+    conn.execute("UPDATE tour_catalogo SET requiere_bote = 1 "
+                 "WHERE codigo IN ('PNC','PNC PRIVADO')")
+    conn.execute("DELETE FROM sistema_meta WHERE clave = ?", (init_db._MARCA_TIERRA,))
+    conn.commit()
+
+    init_db._corregir_tours_por_tierra(conn)
+    piden = {r["codigo"]: r["requiere_bote"] for r in conn.execute(
+        "SELECT codigo, requiere_bote FROM tour_catalogo")}
+    c.igual(piden.get("PNC"), 0, "la base instalada queda corregida")
+    c.igual(piden.get("PNC PRIVADO"), 0, "la version privada tambien")
+
+    # Y si el lodge lo vuelve a poner a mano, no se le deshace al reiniciar.
+    conn.execute("UPDATE tour_catalogo SET requiere_bote = 1 WHERE codigo = 'PNC'")
+    conn.commit()
+    init_db._corregir_tours_por_tierra(conn)
+    c.igual(conn.execute(
+        "SELECT requiere_bote FROM tour_catalogo WHERE codigo = 'PNC'").fetchone()[0], 1,
+        "lo que el lodge cambie a mano se respeta")
+    conn.close()
+
+
+def un_tour_terrestre_no_sale_en_transporte(c):
+    """Transporte es la pantalla de lo que se mueve en bote. Una caminata ahi es una
+    fila que nunca se va a poder cerrar: no hay bote que asignarle."""
+    limpiar()
+    cargar([_con_tour("810080", "PNC"),          # terrestre
+            _con_tour("810081", "SNORKEL")])     # va en bote
+    conn = conexion()
+    fechas = [f["fecha"] for f in conn.execute(
+        "SELECT DISTINCT fecha FROM tour_asignado ORDER BY fecha")]
+    lista = tr.salidas_de_tour(conn, min(fechas), max(fechas))
+    c.igual(sorted(t["tour_codigo"] for t in lista), ["SNORKEL"],
+            "solo sale el que va en bote")
+    conn.close()
+
+
+def la_pared_de_escalada_se_reconoce_por_su_nombre(c):
+    """«PARED» es como se le dice en el lodge a CLW. Sin el alias, una reserva que lo
+    escriba asi no encuentra codigo y la actividad no llega a la agenda: se avisa como
+    «tour sin catalogo» y alguien tiene que ir a corregir la nota."""
+    limpiar()
+    cargar([reserva("810090", "07", "01-01-26", "06-01-26",
+                    operacion=[{"dia": 2, "tour": "PARED"}])])
+    conn = conexion()
+    fila = conn.execute("SELECT tour_codigo FROM tour_asignado").fetchone()
+    c.cierto(fila is not None, "la actividad llega a la agenda")
+    if fila:
+        c.igual(fila["tour_codigo"], "CLW", "y entra como la pared de escalada")
+    c.igual(len(comun.alertas(conn, "TOUR_SIN_CATALOGO")), 0,
+            "sin avisar de un codigo que no existe")
+    conn.close()
+
+
 def el_codigo_privado_del_catalogo_tambien_cuenta(c):
     """La otra via: un PDF escribe «PNC PRIVADO», que el catalogo ya marca como privado.
     Si solo se mirara la marca de Opera, esa fila se contaria con las compartidas."""
@@ -888,6 +983,10 @@ PRUEBAS = [
     dos_privados_del_mismo_dia_no_van_en_el_mismo_bote,
     dos_compartidos_del_mismo_dia_SI_van_juntos,
     la_pesca_es_privada_aunque_llegue_por_la_nota,
+    los_tours_terrestres_no_piden_bote,
+    la_base_ya_instalada_tambien_se_corrige,
+    un_tour_terrestre_no_sale_en_transporte,
+    la_pared_de_escalada_se_reconoce_por_su_nombre,
     el_codigo_privado_del_catalogo_tambien_cuenta,
     dejar_sin_asignar_es_distinto_de_no_mandar_el_dato,
     no_se_asigna_a_un_punto_inventado,

@@ -2680,7 +2680,11 @@ function resumenPorTour(rows) {
     x.salidas += 1;
     x.pax += (t.pax != null ? t.pax : r.pax) || 0;
     if (!t.guia_nombre) x.sinGuia += 1;
-    if (!t.bote_nombre) x.sinBote += 1;
+    // UN TOUR TERRESTRE NO FALTA DE BOTE. La cabalgata, el claro del bosque o el
+    // pajareo no llevan ninguno, y la tarjeta decía «2 sin bote» igual: un aviso que
+    // sale siempre se deja de mirar, y el día que falta un bote de verdad se pierde
+    // entre los que nunca lo necesitaron.
+    if (t.requiere_bote && !t.bote_nombre) x.sinBote += 1;
     if (t.fuera_de_estadia) { x.fuera += 1; fueraTotal += 1; }
   }));
   const lista = Object.values(porTour).sort((a, b) =>

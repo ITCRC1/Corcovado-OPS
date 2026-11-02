@@ -55,8 +55,11 @@ TOURS = [
     ("PAJAREO", "Pajareo", "06:00", "08:00", None, None, 6, 0, 0, 0, None),
     ("PAJAREO PRIVADO", "Pajareo privado", "06:00", "08:00", None, None, 6, 0, 0, 1, "PAJAREO"),
     ("PESCA", "Pesca (medio día)", "08:00", "12:00", None, None, 6, 0, 1, 0, None),
-    ("PNC", "PNC", "07:30", "12:30", None, None, 8, 1, 1, 0, None),
-    ("PNC PRIVADO", "PNC privado", "07:30", "12:30", None, None, 8, 1, 1, 1, "PNC"),
+    # PNC va por tierra: lo dijo el lodge al pedir que no se le pidiera bote ni capitán.
+    # Sigue necesitando entrada al SINAC —es el parque— pero no ocupa un bote ni sale en
+    # la pantalla de Transporte.
+    ("PNC", "PNC", "07:30", "12:30", None, None, 8, 1, 0, 0, None),
+    ("PNC PRIVADO", "PNC privado", "07:30", "12:30", None, None, 8, 1, 0, 1, "PNC"),
     ("SIRENA", "Sirena", "06:15", "13:30", None, None, 8, 1, 1, 0, None),
     ("SNORKEL", "Snorkel", "07:15", "12:30", None, None, 8, 1, 1, 0, None),
     # Actividades en el lodge: no llevan bote ni entrada al SINAC. El horario es
@@ -372,6 +375,7 @@ def _migrar(conn):
         conn.commit()
         print("Base actualizada, columnas agregadas: " + ", ".join(agregadas))
     _renombrar_restaurante(conn, "Vitrales", "Bar el Bosque")
+    _corregir_tours_por_tierra(conn)
     _materializar_permisos(conn)
     # Después de materializar: primero se le da rejilla a quien no la tenga, y luego se
     # le agregan a todos las pantallas nuevas. En ese orden, un usuario recién creado no
@@ -783,6 +787,38 @@ CAMPOS_CON_RESTAURANTE = [
     ("restaurante_historico", "almuerzo"),
     ("reserva", "forzar_restaurante"),          # restaurante fijo de toda la estadía
 ]
+
+
+# Tours que el catálogo instalado tiene como «lleva bote» y que el lodge corrigió: van
+# por tierra. La corrección se aplica UNA SOLA VEZ y queda anotada, porque el catálogo es
+# editable desde la pantalla: si corriera en cada arranque, el día que alguien marcara
+# uno como de bote a propósito el sistema se lo desharía solo al reiniciar.
+TOURS_QUE_VAN_POR_TIERRA = ["PNC", "PNC PRIVADO"]
+_MARCA_TIERRA = "tours_por_tierra_v1"
+
+
+def _corregir_tours_por_tierra(conn):
+    """Les quita el bote a los tours terrestres, una sola vez.
+
+    POR QUÉ IMPORTA: con el bote puesto, PNC salía en Transporte pidiendo bote, capitán y
+    ayudante —137 salidas, el tour más común del lodge— y contaba como «sin bote» todos
+    los días. Un aviso que sale siempre se deja de mirar, y el día que falta un bote de
+    verdad se pierde entre los que nunca lo necesitaron.
+    """
+    if _meta(conn, _MARCA_TIERRA):
+        return 0
+    marcadores = ",".join("?" for _ in TOURS_QUE_VAN_POR_TIERRA)
+    cur = conn.execute(
+        f"UPDATE tour_catalogo SET requiere_bote = 0 "
+        f"WHERE codigo IN ({marcadores}) AND requiere_bote = 1",
+        TOURS_QUE_VAN_POR_TIERRA)
+    cambiados = cur.rowcount or 0
+    conn.commit()
+    _meta(conn, _MARCA_TIERRA, "hecho")
+    if cambiados:
+        print(f"Catálogo corregido: {cambiados} tour(s) pasan a ir por tierra "
+              f"({', '.join(TOURS_QUE_VAN_POR_TIERRA)}).")
+    return cambiados
 
 
 def _renombrar_restaurante(conn, viejo, nuevo):

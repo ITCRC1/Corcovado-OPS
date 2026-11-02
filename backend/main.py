@@ -5461,7 +5461,8 @@ def pendientes_manana(fecha: str = None, user: dict = Depends(exige("dashboard")
     conn = get_connection()
     filas = [dict(r) for r in conn.execute(
         """SELECT ta.id, ta.tour_codigo, ta.grupo_operativo, ta.guia_nombre, ta.bote_nombre,
-                  ta.pax, tc.horario_inicio, r.room_no, r.nombre_principal
+                  ta.pax, ta.es_privado, ta.conf_no,
+                  tc.horario_inicio, tc.requiere_bote, r.room_no, r.nombre_principal
            FROM tour_asignado ta
            JOIN reserva r ON r.conf_no = ta.conf_no
            LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
@@ -5469,14 +5470,20 @@ def pendientes_manana(fecha: str = None, user: dict = Depends(exige("dashboard")
            ORDER BY tc.horario_inicio""", (objetivo,)).fetchall()]
     conn.close()
 
-    # Se agrupa por salida (tour + grupo), que es la unidad que lleva guía y bote
+    # Se agrupa por salida (tour + modalidad + grupo), que es la unidad que lleva guía y
+    # bote. Una salida privada va además por reserva: va sola, por definición.
     salidas = {}
     for f in filas:
-        k = (f["tour_codigo"], f["grupo_operativo"])
+        priv = 1 if f["es_privado"] else 0
+        k = (f["tour_codigo"], priv, f["grupo_operativo"],
+             f["conf_no"] if priv else "")
         if k not in salidas:
             salidas[k] = {"tour_codigo": f["tour_codigo"], "grupo": f["grupo_operativo"],
+                          "privado": bool(priv),
                           "horario": f["horario_inicio"], "guia": f["guia_nombre"],
-                          "bote": f["bote_nombre"], "pax": 0, "habitaciones": []}
+                          "bote": f["bote_nombre"],
+                          "requiere_bote": bool(f["requiere_bote"]),
+                          "pax": 0, "habitaciones": []}
         salidas[k]["pax"] += f["pax"] or 0
         salidas[k]["habitaciones"].append(f["room_no"])
     lista = list(salidas.values())
@@ -5485,7 +5492,11 @@ def pendientes_manana(fecha: str = None, user: dict = Depends(exige("dashboard")
         "salidas": lista,
         "total_salidas": len(lista),
         "sin_guia": [s for s in lista if not s["guia"]],
-        "sin_bote": [s for s in lista if not s["bote"]],
+        # UN TOUR TERRESTRE NO FALTA DE BOTE. Una caminata por los senderos del lodge no
+        # lleva ninguno, y contarla aquí ponía en amarillo el aviso de la tarde anterior
+        # todos los días: cuando un aviso sale siempre, se deja de mirar y el día que
+        # falta un bote de verdad pasa igual de desapercibido.
+        "sin_bote": [s for s in lista if s["requiere_bote"] and not s["bote"]],
         "conflictos": detectar_conflictos_asignacion(objetivo),
     }
 
