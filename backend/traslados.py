@@ -149,13 +149,17 @@ def asignaciones(conn, fechas=None):
             for f in filas}
 
 
-def asignar(conn, fecha, tipo, punto, hora, guia=None, bote=None, nota=None):
+def asignar(conn, fecha, tipo, punto, hora, guia=None, bote=None, nota=None,
+            capitan=None, ayudante=None):
     """Guarda quién lleva una corrida. Devuelve (ok, problema).
 
     Se distingue "no me mandaron el dato" de "lo dejaron en Sin asignar", igual que en
     los tours: un parámetro ausente no toca lo que había, y uno vacío borra la
     asignación y la deja en NULL. Tiene que quedar en NULL y no en texto vacío, porque
     los avisos de «sin guía» buscan justamente NULL y una cadena vacía se les escaparía.
+
+    El CAPITÁN y el AYUDANTE salen los dos del catálogo de capitanes: en el lodge la
+    misma persona hace de una cosa o de la otra según con quién le toque el bote.
     """
     tipo = (tipo or "").strip().lower()
     if tipo not in TIPOS:
@@ -168,13 +172,31 @@ def asignar(conn, fecha, tipo, punto, hora, guia=None, bote=None, nota=None):
     hora = (hora or "").strip()
 
     fila = conn.execute(
-        """SELECT id, guia_nombre, bote_nombre, nota FROM traslado
+        """SELECT id, guia_nombre, bote_nombre, capitan_nombre, ayudante_nombre, nota
+           FROM traslado
            WHERE fecha = ? AND tipo = ? AND punto = ? AND COALESCE(hora,'') = ?""",
         (fecha, tipo, p, hora)).fetchone()
 
     nuevo_guia = None if guia is None else (guia.strip() or None)
     nuevo_bote = None if bote is None else (bote.strip() or None)
+    nuevo_capitan = None if capitan is None else (capitan.strip() or None)
+    nuevo_ayudante = None if ayudante is None else (ayudante.strip() or None)
     nueva_nota = None if nota is None else (nota.strip()[:300] or None)
+
+    # NADIE VA DE CAPITÁN Y DE AYUDANTE EN LA MISMA CORRIDA.
+    #
+    # Se comprueba contra lo que VA A QUEDAR guardado, no solo contra lo que llega en
+    # esta llamada. Los dos selectores se cambian por separado: poner de ayudante a quien
+    # ya era capitán llega aquí con el capitán ausente, y mirando solo los parámetros se
+    # dejaría pasar. El resultado sería una corrida con una sola persona escrita dos
+    # veces, y en el muelle faltaría alguien.
+    final_capitan = nuevo_capitan if capitan is not None else (
+        fila["capitan_nombre"] if fila else None)
+    final_ayudante = nuevo_ayudante if ayudante is not None else (
+        fila["ayudante_nombre"] if fila else None)
+    if final_capitan and final_capitan == final_ayudante:
+        return None, (f"{final_capitan} no puede ir de capitán y de ayudante "
+                      f"en la misma corrida.")
 
     if fila:
         campos, valores = [], []
@@ -182,6 +204,10 @@ def asignar(conn, fecha, tipo, punto, hora, guia=None, bote=None, nota=None):
             campos.append("guia_nombre = ?"); valores.append(nuevo_guia)
         if bote is not None:
             campos.append("bote_nombre = ?"); valores.append(nuevo_bote)
+        if capitan is not None:
+            campos.append("capitan_nombre = ?"); valores.append(nuevo_capitan)
+        if ayudante is not None:
+            campos.append("ayudante_nombre = ?"); valores.append(nuevo_ayudante)
         if nota is not None:
             campos.append("nota = ?"); valores.append(nueva_nota)
         if campos:
@@ -191,9 +217,11 @@ def asignar(conn, fecha, tipo, punto, hora, guia=None, bote=None, nota=None):
         return fila["id"], None
 
     cur = conn.execute(
-        """INSERT INTO traslado (fecha, tipo, punto, hora, guia_nombre, bote_nombre, nota)
-           VALUES (?,?,?,?,?,?,?)""",
-        (fecha, tipo, p, hora, nuevo_guia, nuevo_bote, nueva_nota))
+        """INSERT INTO traslado (fecha, tipo, punto, hora, guia_nombre, bote_nombre,
+                                 capitan_nombre, ayudante_nombre, nota)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (fecha, tipo, p, hora, nuevo_guia, nuevo_bote, nuevo_capitan, nuevo_ayudante,
+         nueva_nota))
     conn.commit()
     return cur.lastrowid, None
 
@@ -268,8 +296,16 @@ def corridas(conn, desde, hasta, capacidades=None):
         puesta = puestas.get(clave) or {}
         g["guia_nombre"] = puesta.get("guia_nombre")
         g["bote_nombre"] = puesta.get("bote_nombre")
+        g["capitan_nombre"] = puesta.get("capitan_nombre")
+        g["ayudante_nombre"] = puesta.get("ayudante_nombre")
         g["nota"] = puesta.get("nota")
-        g["falta"] = [x for x, v in (("guía", g["guia_nombre"]), ("bote", g["bote_nombre"]))
+        # El AYUDANTE no entra en 'falta': no todas las corridas llevan uno —un bote
+        # chico con dos pasajeros va solo con su capitán— así que contarlo como faltante
+        # pintaría de amarillo media pantalla todos los días y el aviso dejaría de
+        # significar algo.
+        g["falta"] = [x for x, v in (("guía", g["guia_nombre"]),
+                                     ("bote", g["bote_nombre"]),
+                                     ("capitán", g["capitan_nombre"]))
                       if not v]
         g["aviso_capacidad"] = _aviso_capacidad(g, caps)
         salida.append(g)
@@ -332,10 +368,13 @@ def resumen(lista):
     """Cuántas corridas hay y cuántas están sin cubrir. Para el encabezado y los avisos."""
     sin_guia = [c for c in lista if not c["guia_nombre"]]
     sin_bote = [c for c in lista if not c["bote_nombre"]]
+    # El ayudante no se cuenta: no todas las corridas llevan uno. Ver 'falta'.
+    sin_capitan = [c for c in lista if not c.get("capitan_nombre")]
     return {
         "corridas": len(lista),
         "pax": sum(c["pax"] for c in lista),
         "sin_guia": len(sin_guia),
         "sin_bote": len(sin_bote),
+        "sin_capitan": len(sin_capitan),
         "sin_hora": len([c for c in lista if c["hora"] == SIN_HORA]),
     }

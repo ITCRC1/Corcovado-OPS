@@ -2156,15 +2156,12 @@ async function loadAgenda(fecha, desde, hasta) {
   if (fecha === null) F.modo = "rango";              // se pidió ver un rango
   if (fecha === undefined) fecha = F.modo === "dia" ? F.fecha : null;
   let url = fecha ? `${API}/api/tours/agenda?fecha=${fecha}` : `${API}/api/tours/agenda?desde=${F.desde}&hasta=${F.hasta}`;
-  const urlTras = fecha ? `${API}/api/traslados?fecha=${fecha}`
-                        : `${API}/api/traslados?desde=${F.desde}&hasta=${F.hasta}`;
-  const [rows, cat, tras] = await Promise.all([
+  // Las corridas de bote YA NO SE PIDEN AQUÍ. Vivían en esta pantalla y el lodge las
+  // mandó a Transporte, que es donde se coordina el movimiento del día. Esta queda solo
+  // con los tours, que es lo que dice su nombre.
+  const [rows, cat] = await Promise.all([
     fetchAuth(url).then(r => r.json()),
     getCatalogo(),
-    // El fallo se DEVUELVE, no se traga: seccionTraslados lo muestra. Devolviendo null
-    // la sección desaparecía de la pantalla y no había forma de saber que existía.
-    fetchAuth(urlTras).then(r => r.json())
-      .catch(e => ({ detail: "No hubo respuesta del servidor (" + e.message + ")." })),
   ]);
   // Se guardan para el detalle de cada tipo de tour: la pantalla ya los tiene, así que
   // desplegarlo no cuesta otra consulta y no puede contradecir a la tabla de abajo.
@@ -2223,7 +2220,6 @@ async function loadAgenda(fecha, desde, hasta) {
           <p style="margin:0 0 6px;font-weight:600;">⚠ ${conflictos.length} conflicto${conflictos.length>1?'s':''} de asignación</p>
           ${conflictos.map(x => `<p style="margin:0 0 3px;">${x.mensaje}</p>`).join("")}
         </div>` : ""}
-      ${seccionTraslados(tras)}
       ${resumenPorTour(rows)}
       ${rows.length ? `
       <table>
@@ -2302,6 +2298,14 @@ function seccionTraslados(d) {
   const puedo = puedeEscribir("agenda");
   const opcG = (actual) => `<option value="">Sin asignar</option>` + (d.guias || [])
     .map(g => `<option value="${escaparHTML(g.nombre)}"${g.nombre === actual ? " selected" : ""}>${escaparHTML(g.nombre)}</option>`).join("");
+  // Capitán y ayudante salen de la MISMA lista: en el lodge la misma persona hace de
+  // una cosa o de la otra según con quién le toque el bote. Se le quita al selector la
+  // persona que ya está puesta en el otro puesto de ESA corrida, para que no se pueda
+  // dejar la misma dos veces —el servidor también lo rechaza, pero ofrecerlo y después
+  // decir que no es peor que no ofrecerlo—.
+  const opcC = (actual, ocupado) => `<option value="">Sin asignar</option>` + (d.capitanes || [])
+    .filter(c => c.nombre !== ocupado || c.nombre === actual)
+    .map(c => `<option value="${escaparHTML(c.nombre)}"${c.nombre === actual ? " selected" : ""}>${escaparHTML(c.nombre)}</option>`).join("");
   const opcB = (actual) => `<option value="">Sin asignar</option>` + (d.botes || [])
     .filter(b => b.gestionado_por_hotel || b.nombre === actual)
     .map(b => `<option value="${escaparHTML(b.nombre)}"${b.nombre === actual ? " selected" : ""}>${escaparHTML(b.nombre)}${b.capacidad_max ? ` (${b.capacidad_max})` : ""}</option>`).join("");
@@ -2329,6 +2333,12 @@ function seccionTraslados(d) {
             ? `<select onchange="asignarTraslado('${k}','bote',this.value)">${opcB(c.bote_nombre)}</select>`
             : escaparHTML(c.bote_nombre || "Sin asignar")}
         ${c.aviso_capacidad ? `<br><span style="font-size:10.5px;color:var(--danger-text);">no cabe</span>` : ""}</td>
+      <td>${puedo
+            ? `<select onchange="asignarTraslado('${k}','capitan',this.value)">${opcC(c.capitan_nombre, c.ayudante_nombre)}</select>`
+            : escaparHTML(c.capitan_nombre || "Sin asignar")}</td>
+      <td>${puedo
+            ? `<select onchange="asignarTraslado('${k}','ayudante',this.value)">${opcC(c.ayudante_nombre, c.capitan_nombre)}</select>`
+            : escaparHTML(c.ayudante_nombre || "—")}</td>
     </tr>`;
   };
 
@@ -2341,6 +2351,7 @@ function seccionTraslados(d) {
         Ingresos y salidas por locación · ${R.corridas} corrida${R.corridas === 1 ? "" : "s"} · ${R.pax} pax
         ${R.sin_guia ? `<span style="color:var(--warn-text);"> · ${R.sin_guia} sin guía</span>` : ""}
         ${R.sin_bote ? `<span style="color:var(--warn-text);"> · ${R.sin_bote} sin bote</span>` : ""}
+        ${R.sin_capitan ? `<span style="color:var(--warn-text);"> · ${R.sin_capitan} sin capitán</span>` : ""}
       </p>
       <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">
         Quién va al muelle de Sierpe o a la pista de Drake. Los que se mueven a la misma
@@ -2355,7 +2366,8 @@ function seccionTraslados(d) {
         <tr><th style="width:88px;">Fecha</th><th style="width:64px;">Dir.</th>
             <th style="width:74px;">Punto</th><th style="width:64px;">Hora</th>
             <th>Habitaciones</th><th style="width:50px;text-align:right;">Pax</th>
-            <th style="width:150px;">Guía</th><th style="width:150px;">Bote</th></tr>
+            <th style="width:130px;">Guía</th><th style="width:130px;">Bote</th>
+            <th style="width:130px;">Capitán</th><th style="width:130px;">Ayudante</th></tr>
         ${d.corridas.map(fila).join("")}
       </table>
     </div>`;
@@ -2374,14 +2386,19 @@ async function asignarTraslado(clave, campo, valor) {
     return;
   }
   const d = await res.json();
-  avisar(valor ? `${campo === "guia" ? "Guía" : "Bote"} asignado` : "Asignación quitada");
+  const COMO_SE_LLAMA = { guia: "Guía", bote: "Bote", capitan: "Capitán",
+                          ayudante: "Ayudante" };
+  avisar(valor ? `${COMO_SE_LLAMA[campo] || campo} asignado` : "Asignación quitada");
   const panel = document.getElementById("ag-alertas");
   if (panel) {
     panel.innerHTML = (d.alertas || []).length
       ? `<div style="background:var(--warn-bg);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--warn-text);">${d.alertas.map(a => `⚠ ${escaparHTML(a)}`).join("<br>")}</div>`
       : "";
   }
-  loadAgenda();
+  // Se recarga TRANSPORTE, que es donde vive ahora esta sección. Mientras estuvo en
+  // Agenda esto decía loadAgenda(), y dejarlo así mandaba al usuario a otra pantalla
+  // cada vez que asignaba a alguien.
+  loadTransporte();
 }
 
 // Cuántas salidas hay de cada tour, con su pax y lo que falta por asignar.
@@ -2675,6 +2692,15 @@ async function loadTransporte(fecha, desde, hasta) {
   const pendientes = await (await fetchAuth(
     fecha ? `${API}/api/transporte/pendientes?fecha=${fecha}`
           : `${API}/api/transporte/pendientes?desde=${F.desde}&hasta=${F.hasta}`)).json();
+  // Las corridas de bote: qué viajes hay que cubrir y quién va en cada uno. Estaban en
+  // Agenda de tours y el lodge las mandó aquí, que es donde se coordina el movimiento.
+  //
+  // El fallo se DEVUELVE, no se traga: seccionTraslados lo muestra. Devolviendo null la
+  // sección desaparecía de la pantalla y no había forma de saber que existía.
+  const urlTras = fecha ? `${API}/api/traslados?fecha=${fecha}`
+                        : `${API}/api/traslados?desde=${F.desde}&hasta=${F.hasta}`;
+  const tras = await fetchAuth(urlTras).then(r => r.json())
+    .catch(e => ({ detail: "No hubo respuesta del servidor (" + e.message + ")." }));
   const app = document.getElementById("app");
   // La hora la resuelve el servidor con las reglas del lodge: por Sierpe el horario
   // fijo del bote, por Drake el vuelo o el bote calculado desde él. Se marca de dónde
@@ -2714,6 +2740,7 @@ async function loadTransporte(fecha, desde, hasta) {
           <button class="btn" onclick="descargar('transporte', {fecha: '${fecha||''}', desde: '${fecha?'':F.desde}', hasta: '${fecha?'':F.hasta}'}, 'pdf')">⬇ PDF</button>
         </div>
       </div>
+      ${seccionTraslados(tras)}
       <p style="font-weight:600;font-size:14px;">Entradas</p>
       ${d.entradas.length ? `<table><tr><th>Fecha</th><th>Hab.</th><th>Huésped</th><th>Punto</th><th>Hora</th><th>Guía / bote</th><th>Pax</th></tr>${d.entradas.map(filaE).join("")}</table>` : `<p class="empty">Nadie ingresa este día.<small>Cambia la fecha con las flechas para revisar otro día.</small></p>`}
       <p style="font-weight:600;font-size:14px;margin-top:16px;">Salidas</p>
@@ -6399,6 +6426,19 @@ async function loadCatalogoAdmin() {
     </div>
 
     <div class="card">
+      <div class="header"><p class="title">Catálogo — Capitanes</p><button class="btn btn-primary" onclick="mostrarFormCapitan()">+ Nuevo capitán</button></div>
+      <div id="form-capitan"></div>
+      <p class="subtitle" style="margin:0 0 10px;">
+        De aquí salen el <strong>capitán</strong> y el <strong>ayudante</strong> de cada
+        corrida de bote, en Transporte. Es una sola lista a propósito: la misma persona
+        hace de una cosa o de la otra según con quién le toque el bote.</p>
+      <table>
+        <tr><th>Nombre</th><th>Estado</th><th></th></tr>
+        ${(cat.capitanes || []).map((c, i) => `<tr id="cat-capitan-${i}">${filaCapitanHTML(c, i)}</tr>`).join("")}
+      </table>
+    </div>
+
+    <div class="card">
       <div class="header"><p class="title">Catálogo — Botes</p><button class="btn btn-primary" onclick="mostrarFormBote()">+ Nuevo bote</button></div>
       <div id="form-bote"></div>
       <table>
@@ -6456,6 +6496,51 @@ function filaGuiaHTML(g, i) {
     <td>${g.es_externo ? "Sí" : "No"}</td>
     <td>${insigniaEstado(g.activo)}</td>
     <td>${botonesFila("guia", i, g.activo)}</td>`;
+}
+
+function filaCapitanHTML(c, i) {
+  // Sin botón de editar: un capitán es solo un nombre, y renombrarlo dejaría huérfanas
+  // las corridas que ya lo nombran. Para corregir un nombre mal escrito se apaga y se
+  // crea el bueno, que es lo mismo que hace el catálogo con todo lo demás.
+  return `<td>${escaparHTML(c.nombre)}</td>
+    <td>${insigniaEstado(c.activo)}</td>
+    <td>${c.activo
+      ? `<button class="btn" onclick="estadoCapitan('${encodeURIComponent(c.nombre)}', false)">Desactivar</button>`
+      : `<button class="btn" onclick="estadoCapitan('${encodeURIComponent(c.nombre)}', true)">Activar</button>`}</td>`;
+}
+
+function mostrarFormCapitan() {
+  document.getElementById("form-capitan").innerHTML = `
+    <div style="background:var(--warn-bg);border-radius:8px;padding:12px;margin-bottom:14px;">
+      <div class="filterbar" style="flex-wrap:wrap;">
+        <input type="text" id="ncap-nombre" placeholder="Nombre del capitán">
+        <button class="btn btn-primary" onclick="crearCapitan()">Crear</button>
+      </div>
+      <div id="ncap-error" style="color:var(--danger-text);font-size:12px;margin-top:6px;"></div>
+    </div>`;
+}
+
+async function crearCapitan() {
+  const nombre = document.getElementById("ncap-nombre").value.trim().toUpperCase();
+  if (!nombre) return;
+  const res = await fetchAuth(`${API}/api/catalogo/capitan`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nombre }),
+  });
+  if (!res.ok) {
+    document.getElementById("ncap-error").textContent =
+      (await res.json().catch(() => ({}))).detail || "No se pudo crear";
+    return;
+  }
+  CATALOGO = null;
+  loadCatalogoAdmin();
+}
+
+async function estadoCapitan(nombre, activo) {
+  await fetchAuth(`${API}/api/catalogo/capitan/${nombre}/estado?activo=${activo}`,
+                  { method: "POST" });
+  CATALOGO = null;
+  loadCatalogoAdmin();
 }
 
 function filaBoteHTML(b, i) {

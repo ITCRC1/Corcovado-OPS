@@ -114,6 +114,10 @@ GUIAS = [
     ("TIBI", 0), ("JOHAN", 0), ("EXTERNO", 1),
 ]
 
+# Los capitanes del lodge. De aquí salen TAMBIÉN los ayudantes: la misma persona es
+# capitán un día y ayudante otro, según con quién le toque el bote.
+CAPITANES = ["WILL", "JUNIOR", "EZEQUIEL", "NERYS", "DYLAN"]
+
 AMENIDADES = [
     ("Cena privada", "Notificar a cocina/servicio para coordinar montaje y menú", "Cocina/Servicio"),
     ("Decoración por cumpleaños", "Notificar a housekeeping para preparar decoración en la habitación", "Housekeeping"),
@@ -196,6 +200,11 @@ COLUMNAS_NUEVAS = [
     ("tour_asignado", "pax_editado_a_mano", "INTEGER NOT NULL DEFAULT 0"),
     # La marca de modificación de Opera, para no reprocesar lo que no cambió.
     ("reserva", "opera_modificado_en", "TEXT"),
+    # Quién maneja el bote de cada corrida y quién lo acompaña. La tabla 'traslado' ya
+    # existe en la base instalada, así que el CREATE TABLE IF NOT EXISTS no corre y estas
+    # dos no aparecerían solas.
+    ("traslado", "capitan_nombre", "TEXT"),
+    ("traslado", "ayudante_nombre", "TEXT"),
     # Los precios de la lavandería. Van aquí y no solo en schema.sql porque las tablas de
     # housekeeping ya existen en la base instalada: el CREATE TABLE IF NOT EXISTS no corre
     # y las columnas nuevas no aparecerían solas.
@@ -810,6 +819,10 @@ def init_db(reset=False):
         "INSERT OR IGNORE INTO guia (nombre, es_externo) VALUES (?,?)",
         GUIAS,
     )
+    # OR IGNORE, no REPLACE: si alguien apagó a un capitán desde el Catálogo, el
+    # siguiente arranque no vuelve a encenderlo.
+    cur.executemany("INSERT OR IGNORE INTO capitan (nombre) VALUES (?)",
+                    [(c,) for c in CAPITANES])
     cur.executemany(
         "INSERT OR IGNORE INTO amenidad_catalogo (nombre, tarea_automatica, area_responsable) VALUES (?,?,?)",
         AMENIDADES,

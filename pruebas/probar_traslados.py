@@ -194,7 +194,7 @@ def se_asigna_guia_y_bote_a_una_corrida(c):
     lista = [x for x in tr.corridas(conn, iso(MANANA), iso(MANANA))
              if x["tipo"] == "entrada"]
     hora = lista[0]["hora"]
-    c.igual(lista[0]["falta"], ["guía", "bote"], "arranca sin nada asignado")
+    c.igual(lista[0]["falta"], ["guía", "bote", "capitán"], "arranca sin nada asignado")
 
     guia = conn.execute("SELECT nombre FROM guia LIMIT 1").fetchone()["nombre"]
     bote = conn.execute(
@@ -207,7 +207,9 @@ def se_asigna_guia_y_bote_a_una_corrida(c):
              if x["tipo"] == "entrada"]
     c.igual(lista[0]["guia_nombre"], guia, "queda el guia")
     c.igual(lista[0]["bote_nombre"], bote, "y el bote")
-    c.igual(lista[0]["falta"], [], "y ya no falta nada")
+    # Desde que los botes viven en Transporte la corrida tambien lleva capitan, asi
+    # que guia + bote ya no la dejan completa: sigue faltando quien la maneje.
+    c.igual(lista[0]["falta"], ["capitán"], "pero sigue faltando el capitan")
     conn.close()
 
 
@@ -276,7 +278,7 @@ def cambiar_la_hora_del_vuelo_deja_la_corrida_sin_asignar(c):
         c.igual(lista[0]["hora"], "14:30", "a la hora nueva")
         c.igual(lista[0]["guia_nombre"], None,
                 "y SIN guia: hay que volver a decidir quien va")
-        c.igual(lista[0]["falta"], ["guía", "bote"], "marcada como que falta cubrirla")
+        c.igual(lista[0]["falta"], ["guía", "bote", "capitán"], "marcada como que falta cubrirla")
     conn.close()
 
 
@@ -430,6 +432,102 @@ def el_resumen_cuenta_lo_que_falta_cubrir(c):
     c.igual(r["sin_hora"], 1, "y una sin hora")
 
 
+def se_asigna_capitan_y_ayudante_a_una_corrida(c):
+    """Lo pidio el lodge: los botes se coordinan desde Transporte, con capitan y
+    ayudante. Los dos salen del MISMO catalogo: en el lodge la misma persona es capitan
+    un dia y ayudante otro, segun con quien le toque el bote."""
+    conn = base_limpia()
+    r = dict(reserva(710001, "01", ddmmyy(HOY),
+                     ddmmyy(HOY + datetime.timedelta(days=3)), adl=2),
+             punto_entrada="Sierpe")
+    cargar([r], vistas=[r])
+
+    lista = tr.corridas(conn, iso(HOY), iso(HOY))
+    c.igual(len(lista), 1, "hay una corrida")
+    k = lista[0]
+
+    ok, problema = tr.asignar(conn, k["fecha"], k["tipo"], k["punto"], k["hora"],
+                              capitan="WILL", ayudante="JUNIOR")
+    c.igual(problema, None, "se asignan los dos")
+
+    lista = tr.corridas(conn, iso(HOY), iso(HOY))
+    c.igual(lista[0]["capitan_nombre"], "WILL", "queda el capitan")
+    c.igual(lista[0]["ayudante_nombre"], "JUNIOR", "y el ayudante")
+
+    # Dejar uno en «Sin asignar» lo borra, sin tocar el otro.
+    tr.asignar(conn, k["fecha"], k["tipo"], k["punto"], k["hora"], ayudante="")
+    lista = tr.corridas(conn, iso(HOY), iso(HOY))
+    c.igual(lista[0]["ayudante_nombre"], None, "se puede quitar el ayudante")
+    c.igual(lista[0]["capitan_nombre"], "WILL", "y el capitan sigue puesto")
+    conn.close()
+
+
+def nadie_va_de_capitan_y_de_ayudante_a_la_vez(c):
+    """Una corrida con la misma persona en los dos puestos tiene UNA persona, no dos, y
+    en el muelle faltaria alguien.
+
+    EL CASO QUE IMPORTA es el segundo: los dos selectores se cambian por separado, asi
+    que poner de ayudante a quien ya era capitan llega al servidor con el capitan
+    AUSENTE. Mirando solo lo que llega se dejaria pasar; hay que mirar lo que va a
+    quedar guardado."""
+    conn = base_limpia()
+    r = dict(reserva(710002, "02", ddmmyy(HOY),
+                     ddmmyy(HOY + datetime.timedelta(days=3)), adl=2),
+             punto_entrada="Sierpe")
+    cargar([r], vistas=[r])
+    k = tr.corridas(conn, iso(HOY), iso(HOY))[0]
+
+    ok, problema = tr.asignar(conn, k["fecha"], k["tipo"], k["punto"], k["hora"],
+                              capitan="WILL", ayudante="WILL")
+    c.cierto(problema is not None, "no se deja poner a la misma persona dos veces")
+    c.cierto("WILL" in (problema or ""), "y el aviso dice quien es")
+
+    # Y por separado, que es como pasa de verdad en la pantalla.
+    tr.asignar(conn, k["fecha"], k["tipo"], k["punto"], k["hora"], capitan="NERYS")
+    ok, problema = tr.asignar(conn, k["fecha"], k["tipo"], k["punto"], k["hora"],
+                              ayudante="NERYS")
+    c.cierto(problema is not None,
+             "tampoco cambiando solo el ayudante sobre un capitan ya puesto")
+
+    lista = tr.corridas(conn, iso(HOY), iso(HOY))
+    c.igual(lista[0]["capitan_nombre"], "NERYS", "el capitan no se toco")
+    c.igual(lista[0]["ayudante_nombre"], None, "y el ayudante quedo sin poner")
+    conn.close()
+
+
+def sin_capitan_se_cuenta_pero_sin_ayudante_no(c):
+    """No todas las corridas llevan ayudante —un bote chico con dos pasajeros va solo con
+    su capitan— asi que contarlo como faltante pintaria de amarillo media pantalla todos
+    los dias y el aviso dejaria de significar algo."""
+    conn = base_limpia()
+    r = dict(reserva(710003, "03", ddmmyy(HOY),
+                     ddmmyy(HOY + datetime.timedelta(days=3)), adl=2),
+             punto_entrada="Sierpe")
+    cargar([r], vistas=[r])
+
+    lista = tr.corridas(conn, iso(HOY), iso(HOY))
+    c.igual(tr.resumen(lista)["sin_capitan"], 1, "sin capitan se cuenta")
+    c.cierto("capitán" in lista[0]["falta"], "y sale en lo que falta")
+    c.igual("ayudante" in lista[0]["falta"], False, "el ayudante NO se cuenta")
+
+    k = lista[0]
+    tr.asignar(conn, k["fecha"], k["tipo"], k["punto"], k["hora"], capitan="DYLAN")
+    lista = tr.corridas(conn, iso(HOY), iso(HOY))
+    c.igual(tr.resumen(lista)["sin_capitan"], 0, "y deja de contarse al ponerlo")
+    conn.close()
+
+
+def los_capitanes_del_lodge_estan_en_el_catalogo(c):
+    """Los cinco que dio el lodge. Si el catalogo llegara vacio, los selectores de
+    Transporte saldrian sin nadie y no se podria asignar a ninguno."""
+    conn = base_limpia()
+    nombres = sorted(x["nombre"] for x in conn.execute(
+        "SELECT nombre FROM capitan WHERE activo = 1"))
+    c.igual(nombres, ["DYLAN", "EZEQUIEL", "JUNIOR", "NERYS", "WILL"],
+            "estan los cinco capitanes")
+    conn.close()
+
+
 PRUEBAS = [
     los_que_van_a_la_misma_hora_van_juntos,
     horas_distintas_son_corridas_distintas,
@@ -439,6 +537,10 @@ PRUEBAS = [
     el_que_no_tiene_hora_no_se_esconde,
     una_reserva_cancelada_sale_de_su_corrida,
     se_asigna_guia_y_bote_a_una_corrida,
+    se_asigna_capitan_y_ayudante_a_una_corrida,
+    nadie_va_de_capitan_y_de_ayudante_a_la_vez,
+    sin_capitan_se_cuenta_pero_sin_ayudante_no,
+    los_capitanes_del_lodge_estan_en_el_catalogo,
     dejar_sin_asignar_es_distinto_de_no_mandar_el_dato,
     no_se_asigna_a_un_punto_inventado,
     cambiar_la_hora_del_vuelo_deja_la_corrida_sin_asignar,

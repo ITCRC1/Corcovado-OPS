@@ -974,11 +974,15 @@ def catalogo(todos: bool = False, user: dict = Depends(exige("agenda", "catalogo
     tours = conn.execute(f"SELECT * FROM tour_catalogo {cond} ORDER BY codigo").fetchall()
     botes = conn.execute(f"SELECT * FROM bote {cond} ORDER BY nombre").fetchall()
     guias = conn.execute(f"SELECT * FROM guia {cond} ORDER BY nombre").fetchall()
+    capitanes = conn.execute(f"SELECT * FROM capitan {cond} ORDER BY nombre").fetchall()
     conn.close()
     return {
         "tours": [dict(t) for t in tours],
         "botes": [dict(b) for b in botes],
         "guias": [dict(g) for g in guias],
+        # De aquí salen el capitán Y el ayudante de cada corrida: en el lodge la misma
+        # persona hace de una cosa o de la otra según con quién le toque el bote.
+        "capitanes": [dict(c) for c in capitanes],
     }
 
 
@@ -1839,6 +1843,37 @@ async def crear_guia(payload: dict, user: dict = Depends(exige("catalogo", escri
 def estado_guia(nombre: str, activo: bool, user: dict = Depends(exige("catalogo", escribir=True))):
     conn = get_connection()
     conn.execute("UPDATE guia SET activo = ? WHERE nombre = ?", (1 if activo else 0, nombre))
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/api/catalogo/capitan")
+async def crear_capitan(payload: dict,
+                        user: dict = Depends(exige("catalogo", escribir=True))):
+    nombre = (payload.get("nombre") or "").strip()
+    if not nombre:
+        raise HTTPException(status_code=400, detail="Falta el nombre del capitán")
+    conn = get_connection()
+    existe = conn.execute("SELECT nombre FROM capitan WHERE nombre = ? COLLATE NOCASE",
+                          (nombre,)).fetchone()
+    if existe:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Ya existe un capitán con ese nombre")
+    conn.execute("INSERT INTO capitan (nombre) VALUES (?)", (nombre,))
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/api/catalogo/capitan/{nombre}/estado")
+def estado_capitan(nombre: str, activo: bool,
+                   user: dict = Depends(exige("catalogo", escribir=True))):
+    """Apagar un capitán no lo borra: las corridas viejas tienen que seguir diciendo
+    quién las llevó. Deja de ofrecerse para las nuevas, y nada más."""
+    conn = get_connection()
+    conn.execute("UPDATE capitan SET activo = ? WHERE nombre = ?",
+                 (1 if activo else 0, nombre))
     conn.commit()
     conn.close()
     return {"status": "ok"}
@@ -3822,6 +3857,10 @@ def traslados_listar(fecha: str = None, desde: str = None, hasta: str = None,
         botes = [dict(r) for r in conn.execute(
             "SELECT nombre, capacidad_max, gestionado_por_hotel FROM bote "
             "WHERE activo = 1 ORDER BY nombre")]
+        # Una sola lista para los dos selectores: el capitán y el ayudante salen del
+        # mismo catálogo. Ver el comentario de la tabla en schema.sql.
+        capitanes = [dict(r) for r in conn.execute(
+            "SELECT nombre FROM capitan WHERE activo = 1 ORDER BY nombre")]
     finally:
         conn.close()
 
@@ -3832,13 +3871,14 @@ def traslados_listar(fecha: str = None, desde: str = None, hasta: str = None,
         "conflictos": _tras.conflictos(lista),
         "guias": guias,
         "botes": botes,
+        "capitanes": capitanes,
     }
 
 
 @app.post("/api/traslados/asignar")
 async def traslados_asignar(payload: dict,
                             user: dict = Depends(exige("agenda", escribir=True))):
-    """Pone el guía y el bote de una corrida.
+    """Pone el guía, el bote, el capitán y el ayudante de una corrida.
 
     La corrida se identifica por fecha + tipo + punto + hora, no por un id: no existe
     como fila hasta que alguien le asigna algo, porque sale de las reservas. Así no hay
@@ -3855,6 +3895,8 @@ async def traslados_asignar(payload: dict,
             payload.get("hora"),
             guia=payload.get("guia"),
             bote=payload.get("bote"),
+            capitan=payload.get("capitan"),
+            ayudante=payload.get("ayudante"),
             nota=payload.get("nota"))
         if problema:
             raise HTTPException(status_code=400, detail=problema)

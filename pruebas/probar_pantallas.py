@@ -30,6 +30,19 @@ def _html():
         return f.read()
 
 
+def _sin_comentarios(texto):
+    """El mismo trozo de JavaScript sin sus renglones de comentario.
+
+    Estas pruebas leen el HTML como texto, asi que un comentario que NOMBRA una funcion
+    pesa igual que una llamada de verdad. Pasó: el comentario que explica por qué tras
+    asignar se recarga Transporte dice «antes esto decía loadAgenda()», y la prueba de
+    que ya no se llama a la Agenda fallaba por esa frase, con el código correcto.
+
+    Se quitan solo los renglones que EMPIEZAN por //, para no partir un `https://`.
+    """
+    return "\n".join(r for r in texto.split("\n") if not r.lstrip().startswith("//"))
+
+
 def _lista(html, nombre):
     """El contenido de un `const NOMBRE = [...]` como lista de textos entre comillas."""
     m = re.search(nombre + r"\s*=\s*\[(.*?)\]", html, re.S)
@@ -237,6 +250,73 @@ def reservas_muestra_los_ingresos_de_la_fecha_elegida(c):
              "el titulo dice que la lista son los ingresos")
     c.cierto("Nadie ingresa" in pantalla,
              "y el dia vacio se explica en vez de salir en blanco")
+
+
+def los_botes_viven_en_transporte_y_no_en_la_agenda(c):
+    """Lo pidio el lodge: «eliminemos del modulo de agenda tours la seccion de botes, y
+    agregamos en el modulo de transporte la seccion de botes».
+
+    Tiene sentido: una corrida de bote no es un tour. Se coordina el dia del movimiento,
+    con el vuelo y el muelle delante, y esa pantalla es Transporte.
+
+    LO QUE NO PUEDE PASAR es que la seccion no quede en NINGUNA de las dos. Por eso se
+    comprueban las dos cosas: que no este en Agenda Y que si este en Transporte."""
+    html = _html()
+
+    def cuerpo(nombre):
+        """El cuerpo de UNA funcion, hasta donde empieza la siguiente.
+
+        El corte mira «\\nfunction » ademas de «\\nasync function »: seccionTraslados
+        esta definida justo despues de loadAgenda y NO es async, asi que cortando solo
+        por async el recorte se la tragaba entera y la comprobacion encontraba su
+        definicion creyendo que era una llamada. Fallaba la prueba, no el codigo.
+
+        Y se devuelve sin comentarios, para no confundir lo que el codigo HACE con lo
+        que un comentario CUENTA."""
+        i = html.find(f"async function {nombre}(")
+        c.cierto(i > 0, f"existe {nombre}")
+        siguientes = [x for x in (html.find("\nfunction ", i + 20),
+                                  html.find("\nasync function ", i + 20)) if x > i]
+        trozo = html[i:min(siguientes)] if siguientes else html[i:i + 9000]
+        return _sin_comentarios(trozo)
+
+    agenda = cuerpo("loadAgenda")
+    transporte = cuerpo("loadTransporte")
+
+    c.igual("seccionTraslados" in agenda, False,
+            "la agenda ya no dibuja las corridas de bote")
+    c.igual("/api/traslados" in agenda, False,
+            "y ni siquiera las pide: seria trabajo del servidor para nada")
+    c.cierto("seccionTraslados" in transporte,
+             "y Transporte SI las dibuja")
+    c.cierto("/api/traslados" in transporte, "pidiendolas al servidor")
+
+    # Al asignar hay que volver a Transporte, no a Agenda: mientras la seccion vivio
+    # alla esto decia loadAgenda(), y dejarlo asi mandaria al usuario a otra pantalla
+    # cada vez que asigna a alguien.
+    bloque = cuerpo("asignarTraslado")
+    c.cierto("loadTransporte()" in bloque, "y tras asignar se recarga Transporte")
+    c.igual("loadAgenda()" in bloque, False, "no la Agenda")
+
+
+def el_capitan_y_el_ayudante_se_eligen_en_transporte(c):
+    """Los dos selectores nuevos, y que salgan de la misma lista de capitanes."""
+    html = _html()
+    i = html.find("function seccionTraslados(")
+    bloque = _sin_comentarios(html[i:html.find("async function asignarTraslado(", i)])
+    for campo in ("capitan", "ayudante"):
+        c.cierto(f"'{campo}'" in bloque, f"la corrida tiene selector de {campo}")
+    c.cierto("Capitán" in bloque and "Ayudante" in bloque,
+             "y las dos columnas tienen su titulo")
+    # Se le quita al selector quien ya esta en el OTRO puesto: ofrecer algo que el
+    # servidor va a rechazar es peor que no ofrecerlo.
+    c.cierto("c.nombre !== ocupado" in bloque,
+             "no se ofrece a quien ya esta en el otro puesto de esa corrida")
+
+    # Y el catalogo tiene su seccion de capitanes.
+    c.cierto("Catálogo — Capitanes" in html, "el catalogo tiene seccion de capitanes")
+    c.cierto("crearCapitan" in html and "estadoCapitan" in html,
+             "con crear y activar/desactivar, como el resto del catalogo")
 
 
 def las_canceladas_no_salen_en_transporte(c):
@@ -447,6 +527,8 @@ PRUEBAS = [
     el_filtro_de_fecha_manda_en_toda_la_pantalla,
     las_canceladas_no_salen_en_transporte,
     las_canceladas_no_salen_en_reservas,
+    los_botes_viven_en_transporte_y_no_en_la_agenda,
+    el_capitan_y_el_ayudante_se_eligen_en_transporte,
     reservas_muestra_los_ingresos_de_la_fecha_elegida,
 ]
 

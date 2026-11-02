@@ -55,6 +55,21 @@ CREATE TABLE IF NOT EXISTS guia (
     activo INTEGER NOT NULL DEFAULT 1
 );
 
+-- Catálogo de capitanes.
+--
+-- Mismo formato que el de guías, y por el mismo motivo: son personas que se asignan a
+-- una corrida y que un día dejan de estar. Por eso 'activo' en vez de borrarlas: una
+-- corrida vieja seguiría nombrando a quien ya no trabaja aquí, y el histórico tiene que
+-- poder leerse.
+--
+-- EL AYUDANTE SALE DE ESTA MISMA TABLA, no de otra. En el lodge la misma persona es
+-- capitán un día y ayudante otro, según con quién le toque el bote. Dos catálogos
+-- obligarían a escribir a cada uno dos veces y a acordarse de apagarlo en los dos.
+CREATE TABLE IF NOT EXISTS capitan (
+    nombre TEXT PRIMARY KEY,
+    activo INTEGER NOT NULL DEFAULT 1
+);
+
 -- Catálogo de amenidades y su tarea automática asociada
 CREATE TABLE IF NOT EXISTS amenidad_catalogo (
     nombre TEXT PRIMARY KEY,
@@ -192,6 +207,10 @@ CREATE TABLE IF NOT EXISTS traslado (
     hora TEXT NOT NULL DEFAULT '',    -- 'HH:MM', o '' si todavía no se sabe
     guia_nombre TEXT REFERENCES guia(nombre),
     bote_nombre TEXT REFERENCES bote(nombre),
+    -- Quién maneja el bote y quién lo acompaña. Los dos salen del catálogo de capitanes:
+    -- ver el comentario de esa tabla.
+    capitan_nombre TEXT REFERENCES capitan(nombre),
+    ayudante_nombre TEXT REFERENCES capitan(nombre),
     nota TEXT,
     creado_en TEXT DEFAULT (datetime('now')),
     UNIQUE(fecha, tipo, punto, hora)
