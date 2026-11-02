@@ -279,6 +279,10 @@ def la_alergia_sale_en_restaurantes_y_NO_en_amenidades(c):
         ("Tarjeta de bienvenida", None, "Regalo de bienvenida", False),
         # La cena privada es de cocina pero tiene su propio sitio: no es una alergia.
         ("Cena privada", "Notificar a cocina", "Cena privada en la playa", False),
+        # Y la alergia que NO es de comida tampoco: cocina no puede hacer nada con ella.
+        ("Restricción alimentaria / alergia", None, "Down Feather Allergy", False),
+        ("Restricción alimentaria / alergia", None,
+         "Ambos tiene alergía a las plumas", False),
     ]
     for amenidad, tarea, detalle, en_restaurantes in FILAS:
         es = bool(rest.es_restriccion_alimentaria(amenidad, tarea, detalle))
@@ -295,6 +299,81 @@ def la_alergia_sale_en_restaurantes_y_NO_en_amenidades(c):
     c.cierto(i > 0, "la pantalla de amenidades dice por que las excluye")
     c.cierto("es_restriccion_alimentaria" in servidor[i:i + 1600],
              "y decide con la misma funcion que Restaurantes")
+
+
+def la_alergia_que_no_es_de_comida_va_como_alerta(c):
+    """Lo decidio el lodge: «eliminemos solo lo que son alergias gastronomicas de la hoja
+    de amenidades, las otras alergias tiremoslas como alerta a la reserva nada mas».
+
+    Una alergia a las plumas no la arregla cocina —no hay desayuno que ayude— y tampoco
+    se prepara desde la hoja de amenidades. Lo que hace falta es que alguien la vea al
+    abrir la reserva: eso es un aviso.
+
+    EL «Y» DE LA REGLA ES LO DELICADO. Se exige que nombre un alergeno no alimentario Y
+    que NO nombre ninguna comida: «allergic to feathers and peanuts» es las dos cosas, y
+    tratarla como no alimentaria le esconderia el mani a cocina. Ante la duda, de comida
+    —que es el lado seguro—."""
+    NO_COMIDA = ["Down Feather Allergy",
+                 "Ambos tiene alergía a las plumas",
+                 "Alergia al latex",
+                 "allergic to bee sting"]
+    for texto in NO_COMIDA:
+        c.cierto(rest.es_alergia_no_alimentaria("Restricción alimentaria / alergia",
+                                                None, texto),
+                 f"«{texto[:34]}» no es de comida")
+        c.igual(rest.es_restriccion_alimentaria("Restricción alimentaria / alergia",
+                                                None, texto), False,
+                f"y por eso NO va a la pestaña de cocina")
+
+    # LAS DOS COSAS A LA VEZ se tratan como de comida. Es el caso que no puede fallar.
+    MIXTAS = ["allergic to feathers and peanuts",
+              "Alergia a las plumas y al gluten",
+              "down feather allergy + lactose intolerant"]
+    for texto in MIXTAS:
+        c.igual(rest.es_alergia_no_alimentaria(None, None, texto), False,
+                f"«{texto[:34]}» nombra comida: NO se saca de cocina")
+        c.cierto(rest.es_restriccion_alimentaria("Restricción alimentaria / alergia",
+                                                 None, texto),
+                 "y sigue saliendo en la pestaña de alergias")
+
+    # Y una alergia de comida normal no se confunde con las de plumas.
+    for texto in ("Lactose, hazelnut and peanut allergy", "No pork or octopus",
+                  "One allergy to gluten (James)"):
+        c.igual(rest.es_alergia_no_alimentaria(None, None, texto), False,
+                f"«{texto[:30]}» es de comida")
+
+
+def la_alerta_de_la_alergia_no_alimentaria_llega_a_la_base(c):
+    """De punta a punta: la nota entra, la alergia de plumas no sale en amenidades ni en
+    cocina, y queda un aviso con la habitacion y el texto."""
+    conn = comun.base_limpia()
+    llega = ddmmyy(HOY)
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    r = dict(reserva(670200, "13", llega, sale, adl=2),
+             notas="Down Feather Allergy")
+    cargar([r], vistas=[r])
+
+    # No esta en la pestaña de cocina.
+    c.igual(rest.restricciones_del_dia(conn, HOY), [],
+            "la alergia a las plumas no llega a la pestaña de cocina")
+
+    # Pero hay aviso, con la habitacion y el texto.
+    avisos = conn.execute(
+        """SELECT mensaje FROM alerta
+           WHERE tipo = 'ALERGIA_NO_ALIMENTARIA' AND resuelto = 0""").fetchall()
+    c.igual(len(avisos), 1, "queda UN aviso para la reserva")
+    msg = avisos[0]["mensaje"]
+    c.cierto("13" in msg, "el aviso dice la habitacion")
+    c.cierto("Feather" in msg, "y el texto de la alergia")
+    c.cierto("almohada" in msg.lower(), "y que hay que mirar las almohadas")
+
+    # Cargar otra vez no lo duplica: el ciclo pasa muchas veces por la misma reserva.
+    cargar([r], vistas=[r])
+    n = conn.execute("""SELECT COUNT(*) n FROM alerta
+                        WHERE tipo='ALERGIA_NO_ALIMENTARIA' AND resuelto=0"""
+                     ).fetchone()["n"]
+    c.igual(n, 1, "y no se duplica al recargar")
+    conn.close()
 
 
 def la_fila_de_la_alergia_no_se_borra(c):
@@ -333,6 +412,8 @@ PRUEBAS = [
     el_almuerzo_usa_su_propia_comida,
     el_boton_manda_lo_del_grupo,
     la_alergia_sale_en_restaurantes_y_NO_en_amenidades,
+    la_alergia_que_no_es_de_comida_va_como_alerta,
+    la_alerta_de_la_alergia_no_alimentaria_llega_a_la_base,
     la_fila_de_la_alergia_no_se_borra,
 ]
 

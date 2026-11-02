@@ -272,6 +272,43 @@ PALABRAS_RESTRICCION = (
 )
 
 
+# Palabras que dicen que HAY una restricción pero no de qué. Sirven para encontrarla; no
+# sirven para saber si es de comida.
+_GENERICAS = ("alergi", "alérgi", "alerg", "allerg",
+              "restricc", "restrict", "dietary", "diet", "intoleran")
+
+# Las que sí nombran una comida. Se derivan de la lista de arriba en vez de escribirse
+# otra vez: así, el día que alguien agregue «mostaza» a PALABRAS_RESTRICCION, cuenta como
+# comida sola. Dos listas a mano se desincronizan, y la que se quedara corta mandaría una
+# alergia de comida al departamento equivocado.
+PALABRAS_COMIDA = tuple(p for p in PALABRAS_RESTRICCION if p not in _GENERICAS)
+
+# Alergias que NO son de comida. Cocina no puede hacer nada con ellas y housekeeping sí:
+# una almohada de plumas se cambia, un desayuno no arregla nada.
+#
+# Medido sobre las 24 restricciones de la ventana: dos son de este tipo —«Down Feather
+# Allergy» y «Ambos tiene alergía a las plumas», las dos del 22 de noviembre— y las otras
+# veintidós son de comida.
+PALABRAS_NO_ALIMENTARIAS = (
+    "pluma", "feather", "ácaro", "acaro", "dust mite", "polen", "pollen",
+    "látex", "latex", "penicilin", "abeja", "bee sting", "picadura de",
+)
+
+
+def es_alergia_no_alimentaria(amenidad, tarea=None, detalle=None):
+    """Si es una alergia que NO tiene que ver con la comida.
+
+    Se exige que nombre un alérgeno no alimentario Y que NO nombre ninguna comida. Ese
+    «y» es lo importante: «allergic to feathers and peanuts» es las dos cosas, y tratarla
+    como no alimentaria le escondería el maní a cocina. Ante la duda, es de comida — que
+    es el lado seguro.
+    """
+    texto = " ".join(str(x or "") for x in (amenidad, tarea, detalle)).lower()
+    if not any(p in texto for p in PALABRAS_NO_ALIMENTARIAS):
+        return False
+    return not any(p in texto for p in PALABRAS_COMIDA)
+
+
 def es_restriccion_alimentaria(amenidad, tarea=None, detalle=None):
     """Si esta amenidad es algo que la cocina TIENE que saber antes de servir.
 
@@ -288,6 +325,11 @@ def es_restriccion_alimentaria(amenidad, tarea=None, detalle=None):
     diciendo lo contrario de lo que parece.
     """
     if es_cena_privada(amenidad, tarea):
+        return False
+    # Y la alergia que no es de comida tampoco: cocina no puede hacer nada con una
+    # alergia a las plumas, y ocupando una fila de esta pestaña solo consigue que se lea
+    # con menos atención la de al lado, que sí puede mandar a alguien al hospital.
+    if es_alergia_no_alimentaria(amenidad, tarea, detalle):
         return False
     texto = " ".join(str(x or "") for x in (amenidad, tarea, detalle))
     import importer

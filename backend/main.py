@@ -523,6 +523,8 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
     import restaurantes as _rest_resumen
     amenidades = [a for a in amenidades
                   if not _rest_resumen.es_restriccion_alimentaria(
+                      a.get("amenidad"), a.get("tarea"), a.get("detalle"))
+                  and not _rest_resumen.es_alergia_no_alimentaria(
                       a.get("amenidad"), a.get("tarea"), a.get("detalle"))]
 
     # Se calcula ANTES de cerrar la conexión. Estaba dentro del return, o sea después
@@ -4321,7 +4323,12 @@ def listar_amenidades(desde: str = None, hasta: str = None, estado: str = None,
         # Se usa la MISMA función que usa Restaurantes para elegirlas. Es lo que garantiza
         # que las dos pantallas sean complementarias exactas: con dos reglas distintas,
         # una fila podría caer fuera de las dos y no aparecer en ninguna parte.
-        if _rest.es_restriccion_alimentaria(d["amenidad"], d["tarea"], d["detalle"]):
+        # Y la alergia que NO es de comida tampoco: el lodge decidió que esas van como
+        # ALERTA de la reserva «y nada más». Tampoco se prepara una alergia a las plumas
+        # desde esta hoja; lo que hace falta es que alguien la vea al abrir la reserva.
+        if (_rest.es_restriccion_alimentaria(d["amenidad"], d["tarea"], d["detalle"])
+                or _rest.es_alergia_no_alimentaria(d["amenidad"], d["tarea"],
+                                                   d["detalle"])):
             continue
         d["estadia_desde"], d["estadia_hasta"] = _noches_de_estadia(r)
         d["es_cena_privada"] = _rest.es_cena_privada(d["amenidad"], d["tarea"])

@@ -741,6 +741,8 @@ def amenidades(conn, desde, hasta):
     # restaurantes, que es donde se miran.
     filas = [f for f in filas
              if not _rest.es_restriccion_alimentaria(
+                 f.get("amenidad"), f.get("tarea"), f.get("detalle"))
+             and not _rest.es_alergia_no_alimentaria(
                  f.get("amenidad"), f.get("tarea"), f.get("detalle"))]
 
     def cuenta(clave, traducir=False):

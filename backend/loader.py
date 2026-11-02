@@ -266,6 +266,27 @@ def _guardar_amenidades(cur, r, llegada_iso, origen="PDF"):
                 """INSERT OR IGNORE INTO amenidad_area (amenidad_id, area, estado)
                    VALUES (?,?,?)""", (nueva_id, nombre_area, estado_area))
 
+        # LA ALERGIA QUE NO ES DE COMIDA VA COMO ALERTA DE LA RESERVA, y nada más.
+        #
+        # Lo decidió el lodge: no sale en la hoja de amenidades —no se prepara desde
+        # ahí— ni en la pestaña de cocina —no pueden hacer nada con ella—. Lo que hace
+        # falta es que alguien la vea al abrir la reserva, y para eso está el aviso.
+        #
+        # La fila de amenidad se guarda igual: es donde vive el texto y el estado. El
+        # aviso la señala; no la reemplaza.
+        if _rest.es_alergia_no_alimentaria(nombre, tarea, detalle):
+            mensaje = (f"Alergia NO alimentaria en la hab. {r.get('room_no') or '—'} "
+                       f"(reserva {r['conf_no']}, llega {r.get('arr_date')}): "
+                       f"«{(detalle or nombre).strip()[:160]}». "
+                       f"No es de cocina — revisar almohadas y ropa de cama.")
+            ya = cur.execute(
+                "SELECT 1 FROM alerta WHERE tipo='ALERGIA_NO_ALIMENTARIA' "
+                "AND mensaje=? AND resuelto=0", (mensaje,)).fetchone()
+            if not ya:
+                cur.execute(
+                    "INSERT INTO alerta (tipo, referencia_id, mensaje) "
+                    "VALUES ('ALERGIA_NO_ALIMENTARIA', ?, ?)", (nueva_id, mensaje))
+
 
 def _sacar_de_la_operacion(cur, conf_no):
     """Una reserva cancelada deja de ocupar la operación. Devuelve cuánto se quitó.
