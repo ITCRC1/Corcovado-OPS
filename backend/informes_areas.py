@@ -726,6 +726,8 @@ def _lectura_sinac(filas, compradas, pendientes, por_vencer):
 # ---------------------------------------------------------------------------
 
 def amenidades(conn, desde, hasta):
+    import restaurantes as _rest
+
     d0i, d1i = inf.yymmdd(desde), inf.yymmdd(hasta)
     filas = [dict(r) for r in conn.execute(
         f"""SELECT a.*, r.room_no, r.nombre_principal, r.arr_date
@@ -733,6 +735,13 @@ def amenidades(conn, desde, hasta):
             WHERE (a.fecha BETWEEN ? AND ?)
                OR (a.fecha IS NULL AND {inf.sql_fecha('r.arr_date')} BETWEEN ? AND ?)
             ORDER BY a.fecha""", (desde, hasta, d0i, d1i))]
+    # Fuera las restricciones alimentarias, igual que en la pantalla. El informe tiene
+    # que contar lo MISMO que se ve: si la pantalla dice 40 requerimientos y el PDF dice
+    # 67, quien lo recibe no sabe cuál de los dos creer. Van en el informe de
+    # restaurantes, que es donde se miran.
+    filas = [f for f in filas
+             if not _rest.es_restriccion_alimentaria(
+                 f.get("amenidad"), f.get("tarea"), f.get("detalle"))]
 
     def cuenta(clave, traducir=False):
         salida = {}

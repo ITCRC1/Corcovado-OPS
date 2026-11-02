@@ -517,6 +517,13 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
            WHERE a.estado = 'PENDIENTE' AND a.conf_no IN ({marcas})
            ORDER BY a.id""",
         confs_ingresan)
+    # Las restricciones alimentarias YA tienen su bloque en esta misma hoja —el de
+    # cocina, unas líneas más arriba— así que aquí salían DOS veces. Una hoja del día que
+    # repite la misma alergia en dos sitios hace dudar de si son dos personas distintas.
+    import restaurantes as _rest_resumen
+    amenidades = [a for a in amenidades
+                  if not _rest_resumen.es_restriccion_alimentaria(
+                      a.get("amenidad"), a.get("tarea"), a.get("detalle"))]
 
     # Se calcula ANTES de cerrar la conexión. Estaba dentro del return, o sea después
     # del close, así que siempre fallaba por dentro y _restaurantes_resumen devolvía
@@ -4302,6 +4309,20 @@ def listar_amenidades(desde: str = None, hasta: str = None, estado: str = None,
     salida = []
     for r in rows:
         d = dict(r)
+        # LAS RESTRICCIONES ALIMENTARIAS NO SALEN AQUÍ. Lo pidió el lodge: que se vean
+        # SOLO en la pestaña de alergias de Restaurantes, que es donde cocina las mira
+        # antes de servir. En esta hoja ocupaban sitio entre tareas que hay que preparar
+        # —una cuna, una decoración— y una alergia no se prepara, se sabe.
+        #
+        # La FILA NO SE BORRA: sigue en amenidad_tarea, con su estado y su detalle, y es
+        # la que lee Restaurantes. Lo único que cambia es quién la muestra. Por eso el
+        # botón de «marcar avisada» sigue funcionando desde allá sobre la misma fila.
+        #
+        # Se usa la MISMA función que usa Restaurantes para elegirlas. Es lo que garantiza
+        # que las dos pantallas sean complementarias exactas: con dos reglas distintas,
+        # una fila podría caer fuera de las dos y no aparecer en ninguna parte.
+        if _rest.es_restriccion_alimentaria(d["amenidad"], d["tarea"], d["detalle"]):
+            continue
         d["estadia_desde"], d["estadia_hasta"] = _noches_de_estadia(r)
         d["es_cena_privada"] = _rest.es_cena_privada(d["amenidad"], d["tarea"])
         # Los departamentos con el estado de cada uno. Si por lo que sea no tuviera

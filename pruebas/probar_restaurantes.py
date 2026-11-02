@@ -253,6 +253,74 @@ def el_boton_manda_lo_del_grupo(c):
     c.cierto("cap_bosque" in bloque, "y el aviso de capacidad ya mira Bar el Bosque")
 
 
+def la_alergia_sale_en_restaurantes_y_NO_en_amenidades(c):
+    """Lo pidio el lodge: «elimina las restricciones alimenticias de la hoja de
+    amenidades y que solo se reflejen en la parte de alergias del modulo de restaurante».
+
+    En Amenidades ocupaban sitio entre tareas que hay que PREPARAR —una cuna, una
+    decoracion, una botella de vino— y una alergia no se prepara, se sabe.
+
+    LO QUE NO PUEDE PASAR, y es el riesgo de verdad de este cambio: que una fila caiga
+    fuera de las DOS pantallas y no aparezca en ninguna parte. Por eso las dos deciden
+    con la MISMA funcion, y esto comprueba que sean complementarias exactas."""
+    FILAS = [
+        # (amenidad, tarea, detalle, deberia_verse_en_Restaurantes)
+        ("Restricción alimentaria / alergia", "AVISAR A COCINA",
+         "Lactose, hazelnut and peanut allergy", True),
+        ("Restricción alimentaria / alergia", "AVISAR A COCINA",
+         "*no pork, no shellfish", True),
+        # Recepcion a veces la escribe con otro nombre y la alergia va en el detalle.
+        ("Preferencia del huesped", None, "alergico a mariscos", True),
+        # Y las que NO son restriccion se quedan en Amenidades.
+        ("Cuna / bebé", "Notificar a housekeeping", "viaja con un niño de 2 años", False),
+        ("Decoración por cumpleaños", None, "Ann Evelyn celebra su cumpleaños", False),
+        ("Botella de vino cortesía", None, "Autorizado por gerencia", False),
+        ("Almohadas o toallas extra", None, "EXTRA PILLOWS", False),
+        ("Tarjeta de bienvenida", None, "Regalo de bienvenida", False),
+        # La cena privada es de cocina pero tiene su propio sitio: no es una alergia.
+        ("Cena privada", "Notificar a cocina", "Cena privada en la playa", False),
+    ]
+    for amenidad, tarea, detalle, en_restaurantes in FILAS:
+        es = bool(rest.es_restriccion_alimentaria(amenidad, tarea, detalle))
+        c.igual(es, en_restaurantes,
+                f"«{str(detalle)[:34]}» va a "
+                f"{'Restaurantes' if en_restaurantes else 'Amenidades'}")
+
+    # La pantalla de Amenidades usa ESA funcion, no una copia suya. Con dos reglas
+    # distintas una fila podria caer fuera de las dos y no verse en ninguna parte.
+    raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(raiz, "backend", "main.py"), encoding="utf-8") as f:
+        servidor = f.read()
+    i = servidor.find("LAS RESTRICCIONES ALIMENTARIAS NO SALEN AQUÍ")
+    c.cierto(i > 0, "la pantalla de amenidades dice por que las excluye")
+    c.cierto("es_restriccion_alimentaria" in servidor[i:i + 1600],
+             "y decide con la misma funcion que Restaurantes")
+
+
+def la_fila_de_la_alergia_no_se_borra(c):
+    """Se deja de MOSTRAR en Amenidades, pero la fila sigue en la base: es la que lee
+    Restaurantes y la que guarda el estado. Si se borrara, el boton de «marcar avisada»
+    no tendria sobre que escribir y la alergia desapareceria de las dos pantallas."""
+    conn = comun.base_limpia()
+    llega = ddmmyy(HOY)
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    r = dict(reserva(670100, "07", llega, sale, adl=2),
+             notas="Lactose, hazelnut and peanut allergy")
+    cargar([r], vistas=[r])
+
+    fila = conn.execute(
+        """SELECT id, amenidad, detalle, estado FROM amenidad_tarea
+           WHERE conf_no = '670100'""").fetchone()
+    c.cierto(fila is not None, "la fila de la alergia se guarda igual que siempre")
+    c.igual(fila["estado"], "PENDIENTE", "con su estado")
+    c.cierto("Lactose" in (fila["detalle"] or ""), "y con su detalle")
+
+    hallazgo = rest.restricciones_del_dia(conn, HOY)
+    c.igual([x["room_no"] for x in hallazgo], ["07"],
+            "y la pestaña de alergias la muestra")
+    conn.close()
+
+
 PRUEBAS = [
     el_reparto_automatico_no_parte_un_grupo,
     mover_una_habitacion_del_grupo_las_mueve_todas,
@@ -264,6 +332,8 @@ PRUEBAS = [
     mover_dos_veces_no_duplica_filas,
     el_almuerzo_usa_su_propia_comida,
     el_boton_manda_lo_del_grupo,
+    la_alergia_sale_en_restaurantes_y_NO_en_amenidades,
+    la_fila_de_la_alergia_no_se_borra,
 ]
 
 
