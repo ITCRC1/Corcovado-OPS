@@ -252,6 +252,7 @@ def detectar_conflictos_asignacion(fecha=None):
             JOIN reserva r ON r.conf_no = ta.conf_no
             LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
             {filtro}
+            {'AND' if filtro else 'WHERE'} r.res_status != 'CANCELADA'
             ORDER BY ta.fecha, tc.horario_inicio""", params).fetchall()]
     conn.close()
 

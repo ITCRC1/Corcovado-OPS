@@ -367,7 +367,7 @@ def restricciones_del_dia(conn, fecha, distribucion=None, cache=None):
         marcas = ",".join("?" * len(lote))
         for f in conn.execute(
             f"""SELECT a.id, a.conf_no, a.amenidad, a.tarea, a.detalle, a.estado,
-                       a.area_responsable
+                       a.area_responsable, a.origen, a.editado_a_mano
                 FROM amenidad_tarea a
                 WHERE a.conf_no IN ({marcas}) ORDER BY a.id""", lote).fetchall():
             d = dict(f)
@@ -390,8 +390,70 @@ def restricciones_del_dia(conn, fecha, distribucion=None, cache=None):
                 "tarea": d["tarea"],
                 "estado": d["estado"],
                 "tipo": r.get("tipo"),
+                # Para que la pantalla pueda ofrecer lo que de verdad se puede hacer:
+                # una restricción que vino de Opera NO se puede borrar —volvería en la
+                # siguiente sincronización— pero sí se puede corregir, y al corregirla
+                # queda marcada y el cargador ya no la pisa.
+                "origen": d["origen"],
+                "editado_a_mano": bool(d["editado_a_mano"]),
             })
     salida.sort(key=lambda x: int(x["room_no"]) if (x["room_no"] or "").isdigit() else 999)
+    return juntar_las_repetidas(salida)
+
+
+def _clave_de_texto(detalle):
+    """El mismo texto escrito igual, para poder reconocerlo repetido.
+
+    Se normaliza poco a propósito —espacios y mayúsculas— y nada más: dos textos que
+    solo se PAREZCAN son dos restricciones distintas hasta que alguien diga lo contrario.
+    Juntar por parecido escondería una alergia de verdad, que es el error caro aquí.
+    """
+    return " ".join((detalle or "").split()).lower()
+
+
+def juntar_las_repetidas(filas):
+    """Una línea por restricción, aunque esté escrita en varias reservas.
+
+    POR QUÉ EXISTE. El lodge lo vio como «las alergias se están duplicando». No era la
+    base: medido sobre las 331 reservas cargadas, no hay una sola reserva con la misma
+    restricción dos veces. Lo que pasa es que una familia que toma DOS habitaciones lleva
+    la misma nota copiada en las dos —el agente la escribe igual en ambas reservas de
+    Opera— y la hoja de cocina enseñaba el mismo texto dos veces, como si fueran dos
+    personas distintas con la misma alergia.
+
+    Se juntan SOLO las de texto idéntico, y las habitaciones se listan todas: la cocina
+    sirve por mesa y necesita saber en cuáles está. Se quita la línea repetida, no la
+    información.
+
+    Una restricción SIN detalle no se junta con otra sin detalle: no hay texto que
+    comparar, y dos vacías pueden ser dos cosas distintas que alguien no escribió.
+    """
+    grupos, orden = {}, []
+    for f in filas:
+        texto = _clave_de_texto(f.get("detalle"))
+        clave = (texto, f.get("amenidad")) if texto else ("", f["id"])
+        if clave not in grupos:
+            g = dict(f)
+            g["ids"], g["habitaciones"], g["nombres"] = [], [], []
+            g["estados"] = []
+            grupos[clave] = g
+            orden.append(clave)
+        g = grupos[clave]
+        g["ids"].append(f["id"])
+        g["estados"].append(f.get("estado"))
+        if f.get("room_no") and f["room_no"] not in g["habitaciones"]:
+            g["habitaciones"].append(f["room_no"])
+        if f.get("nombre") and f["nombre"] not in g["nombres"]:
+            g["nombres"].append(f["nombre"])
+
+    salida = []
+    for clave in orden:
+        g = grupos[clave]
+        # Solo está avisada si lo están TODAS. Con una pendiente la línea sigue en rojo:
+        # esa es la mitad que nadie revisó.
+        g["estado"] = "HECHA" if all(e == "HECHA" for e in g.pop("estados")) else "PENDIENTE"
+        g["en_cuantas_reservas"] = len(g["ids"])
+        salida.append(g)
     return salida
 
 

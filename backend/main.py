@@ -149,6 +149,27 @@ def sql_fecha(col):
     return f"(substr({col},7,2)||'-'||substr({col},4,2)||'-'||substr({col},1,2))"
 
 
+# UNA RESERVA CANCELADA NO ES PARTE DE LA OPERACIÓN. No entra, no sale, no duerme, no
+# come y no va a ningún tour. El lodge lo pidió expresamente —«eliminar las reservas
+# canceladas del dashboard y de todos los módulos para no crear confusión»— y no es solo
+# ruido: hay 98 canceladas cargadas, y cuando una habitación tiene a la vez una cancelada
+# y una viva, la lista del día enseña dos huéspedes donde hay uno.
+#
+# Se escribe UNA sola vez. Una condición copiada a mano en quince consultas se desalinea
+# en la primera que alguien agregue, y el que falta no da error: enseña de más, que es la
+# forma de fallar que nadie revisa.
+#
+# OJO con lo que NO lleva esta condición: abrir UNA reserva por su número, su itinerario
+# o su ficha. Ahí el usuario pidió ver esa reserva concreta, y esconderla porque está
+# cancelada sería mentirle sobre algo que existe.
+VIVA = "res_status != 'CANCELADA'"
+
+
+def viva(alias="r"):
+    """La misma regla cuando la tabla va con alias ('r.res_status != ...')."""
+    return f"{alias}.{VIVA}"
+
+
 def yymmdd(iso_date):
     """Convierte '2026-08-01' a '26-08-01', el formato que produce sql_fecha()."""
     y, m, d = iso_date.split("-")
@@ -234,8 +255,12 @@ def dashboard(fecha: str, user: dict = Depends(exige("dashboard"))):
     conn = get_connection()
     dd = ddmmyy(fecha)
     yy = yymmdd(fecha)   # formato comparable cronológicamente
-    entran = conn.execute("SELECT * FROM reserva WHERE arr_date = ?", (dd,)).fetchall()
-    salen = conn.execute("SELECT * FROM reserva WHERE dep_date = ?", (dd,)).fetchall()
+    # Las canceladas no entran ni salen. 'en_casa' ya las dejaba fuera y estas dos no,
+    # así que el mismo día podía decir que entraban 6 y que había 4 en casa.
+    entran = conn.execute(
+        f"SELECT * FROM reserva WHERE arr_date = ? AND {VIVA}", (dd,)).fetchall()
+    salen = conn.execute(
+        f"SELECT * FROM reserva WHERE dep_date = ? AND {VIVA}", (dd,)).fetchall()
     en_casa = conn.execute(
         # Se cuenta por fechas de estadía, no por estado: el PMS marca CKIN solo
         # cuando el huésped ya ingresó, así que exigirlo dejaba en cero cualquier
@@ -254,14 +279,14 @@ def dashboard(fecha: str, user: dict = Depends(exige("dashboard"))):
     ).fetchall()
 
     tours = conn.execute(
-        """SELECT ta.fecha, ta.tour_codigo, ta.grupo_operativo, tc.horario_inicio,
-                  tc.horario_fin, tc.requiere_bote, ta.pax, ta.guia_nombre,
-                  ta.bote_nombre, r.nombre_principal, r.room_no
-           FROM tour_asignado ta
-           JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
-           JOIN reserva r ON r.conf_no = ta.conf_no
-           WHERE ta.fecha = ?
-           ORDER BY tc.horario_inicio""",
+        f"""SELECT ta.fecha, ta.tour_codigo, ta.grupo_operativo, ta.es_privado,
+                   tc.horario_inicio, tc.horario_fin, tc.requiere_bote, ta.pax,
+                   ta.guia_nombre, ta.bote_nombre, r.nombre_principal, r.room_no
+            FROM tour_asignado ta
+            JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
+            JOIN reserva r ON r.conf_no = ta.conf_no
+            WHERE ta.fecha = ? AND {viva()}
+            ORDER BY tc.horario_inicio""",
         (fecha,),
     ).fetchall()
 
@@ -465,14 +490,15 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
     # principal. Se busca en la lista de departamentos además de en la columna de
     # siempre: sin el EXISTS, una alergia asignada a "Cocina y Recepción" dejaría de
     # aparecer en la hoja de cocina en cuanto Recepción quedara primera.
-    SQL_RESTRICCIONES = """
+    SQL_RESTRICCIONES = f"""
         SELECT a.id AS _orden, r.conf_no, r.room_no, r.nombre_principal, a.amenidad,
                a.detalle, a.tarea, a.estado
         FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
         WHERE (a.area_responsable = 'Cocina'
                OR EXISTS (SELECT 1 FROM amenidad_area x
                           WHERE x.amenidad_id = a.id AND x.area = 'Cocina'))
-          AND a.conf_no IN ({marcas})
+          AND {viva()}
+          AND a.conf_no IN ({{marcas}})
         ORDER BY a.id"""
     restricciones = por_reserva(SQL_RESTRICCIONES, confs_en_casa)
 
@@ -509,13 +535,14 @@ def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
     # hoja del día los muestre completos. Antes salía solo el principal, y una tarea que
     # también era de cocina se leía como si fuera solo de housekeeping.
     amenidades = por_reserva(
-        """SELECT a.id AS _orden, r.conf_no, r.room_no, r.nombre_principal, a.amenidad,
-                  a.detalle, a.tarea, a.area_responsable, a.estado,
-                  (SELECT GROUP_CONCAT(x.area, ' · ') FROM amenidad_area x
-                   WHERE x.amenidad_id = a.id) AS areas
-           FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
-           WHERE a.estado = 'PENDIENTE' AND a.conf_no IN ({marcas})
-           ORDER BY a.id""",
+        f"""SELECT a.id AS _orden, r.conf_no, r.room_no, r.nombre_principal, a.amenidad,
+                   a.detalle, a.tarea, a.area_responsable, a.estado,
+                   (SELECT GROUP_CONCAT(x.area, ' · ') FROM amenidad_area x
+                    WHERE x.amenidad_id = a.id) AS areas
+            FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
+            WHERE a.estado = 'PENDIENTE' AND {viva()}
+              AND a.conf_no IN ({{marcas}})
+            ORDER BY a.id""",
         confs_ingresan)
     # Las restricciones alimentarias YA tienen su bloque en esta misma hoja —el de
     # cocina, unas líneas más arriba— así que aquí salían DOS veces. Una hoja del día que
@@ -908,6 +935,7 @@ def analitica(desde: str, hasta: str, user: dict = Depends(exige("analitica"))):
     movimiento = conn.execute(
         f"""SELECT punto_entrada AS punto, SUM(adl + chl) pax FROM reserva
            WHERE {sql_fecha('arr_date')} BETWEEN ? AND ? AND punto_entrada IS NOT NULL
+             AND {VIVA}
            GROUP BY punto_entrada""",
         (yymmdd(desde), yymmdd(hasta)),
     ).fetchall()
@@ -954,10 +982,10 @@ def analitica(desde: str, hasta: str, user: dict = Depends(exige("analitica"))):
 def analitica_bote_detalle(nombre: str, desde: str, hasta: str, user: dict = Depends(exige("analitica"))):
     conn = get_connection()
     rows = conn.execute(
-        """SELECT ta.fecha, ta.tour_codigo, ta.pax, ta.guia_nombre, r.nombre_principal, r.room_no
-           FROM tour_asignado ta JOIN reserva r ON r.conf_no = ta.conf_no
-           WHERE ta.bote_nombre = ? AND ta.fecha BETWEEN ? AND ?
-           ORDER BY ta.fecha""",
+        f"""SELECT ta.fecha, ta.tour_codigo, ta.pax, ta.guia_nombre, r.nombre_principal, r.room_no
+            FROM tour_asignado ta JOIN reserva r ON r.conf_no = ta.conf_no
+            WHERE ta.bote_nombre = ? AND ta.fecha BETWEEN ? AND ? AND {viva()}
+            ORDER BY ta.fecha""",
         (nombre, desde, hasta),
     ).fetchall()
     conn.close()
@@ -968,9 +996,9 @@ def analitica_bote_detalle(nombre: str, desde: str, hasta: str, user: dict = Dep
 def analitica_guia_detalle(nombre: str, desde: str, hasta: str, user: dict = Depends(exige("analitica"))):
     conn = get_connection()
     rows = conn.execute(
-        """SELECT ta.fecha, ta.tour_codigo, ta.pax, ta.bote_nombre, r.nombre_principal, r.room_no
-           FROM tour_asignado ta JOIN reserva r ON r.conf_no = ta.conf_no
-           WHERE ta.guia_nombre = ? AND ta.fecha BETWEEN ? AND ?
+        f"""SELECT ta.fecha, ta.tour_codigo, ta.pax, ta.bote_nombre, r.nombre_principal, r.room_no
+            FROM tour_asignado ta JOIN reserva r ON r.conf_no = ta.conf_no
+            WHERE ta.guia_nombre = ? AND ta.fecha BETWEEN ? AND ? AND {viva()}
            ORDER BY ta.fecha""",
         (nombre, desde, hasta),
     ).fetchall()
@@ -4294,8 +4322,14 @@ async def cambiar_fecha_amenidad(amenidad_id: int, payload: dict,
 
 @app.post("/api/amenidades/{amenidad_id}/texto")
 async def cambiar_texto_amenidad(amenidad_id: int, payload: dict,
-                                 user: dict = Depends(exige("amenidades", escribir=True))):
+                                 user: dict = Depends(exige("amenidades", "restaurantes",
+                                                            escribir=True))):
     """Cambia la descripción de una amenidad: el detalle y la tarea.
+
+    Vale el permiso de Amenidades O el de Restaurantes: las alergias se corrigen desde la
+    hoja de cocina, que es donde se leen y donde se nota que están mal. Exigir solo
+    'amenidades' obligaba a quien ve el error a pedírselo a otra persona, y una alergia
+    mal escrita que hay que delegar para arreglar se queda mal escrita.
 
     Hasta ahora de una amenidad solo se podía cambiar el día. El texto venía del catálogo
     y no se tocaba, así que cuando el huésped llamaba para decir que la alergia era
@@ -4354,9 +4388,14 @@ async def cambiar_texto_amenidad(amenidad_id: int, payload: dict,
 
 
 @app.delete("/api/amenidades/{amenidad_id}")
-def eliminar_amenidad(amenidad_id: int, user: dict = Depends(exige("amenidades", escribir=True))):
+def eliminar_amenidad(amenidad_id: int,
+                      user: dict = Depends(exige("amenidades", "restaurantes",
+                                                 escribir=True))):
     """Solo se pueden eliminar los requerimientos agregados manualmente; los detectados
-    del PDF se vuelven a generar en cada importación."""
+    del PDF se vuelven a generar en cada importación.
+
+    Vale también el permiso de Restaurantes, por lo mismo que cambiar el texto: las
+    alergias se revisan en la hoja de cocina."""
     conn = get_connection()
     row = conn.execute("SELECT origen FROM amenidad_tarea WHERE id = ?", (amenidad_id,)).fetchone()
     if not row:
@@ -4398,15 +4437,18 @@ def listar_amenidades(desde: str = None, hasta: str = None, estado: str = None,
     # sql_fecha() deja las fechas de la reserva. Sin eso se compararían dos formatos
     # distintos y el filtro no encontraría nada.
     FECHA_EFECTIVA = f"COALESCE(substr(a.fecha, 3), {sql_fecha('r.arr_date')})"
-    condiciones, params = [], []
+    # Una amenidad de una reserva cancelada no hay que prepararla. El cargador ya las
+    # borra al cancelar, pero la condición va igual: así la pantalla no depende de que
+    # la limpieza haya corrido, y una amenidad escrita a mano sobre una reserva que
+    # luego se cancela tampoco se cuela.
+    condiciones, params = [viva()], []
     if desde and hasta:
         condiciones.append(f"{FECHA_EFECTIVA} BETWEEN ? AND ?")
         params += [yymmdd(desde), yymmdd(hasta)]
     if estado in ("PENDIENTE", "HECHA"):
         condiciones.append("a.estado = ?")
         params.append(estado)
-    if condiciones:
-        query += " WHERE " + " AND ".join(condiciones)
+    query += " WHERE " + " AND ".join(condiciones)
     query += f" ORDER BY {FECHA_EFECTIVA}, r.room_no"
     rows = conn.execute(query, params).fetchall()
     conn.close()

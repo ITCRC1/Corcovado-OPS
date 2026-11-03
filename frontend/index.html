@@ -4012,10 +4012,11 @@ function detalleAlergias() {
     </div>`;
     return;
   }
-  // Agrupadas por habitación: una misma mesa puede tener dos restricciones distintas y
-  // al salonero le sirve verlas juntas, no repartidas por la lista.
-  const porHab = {};
-  lista.forEach(x => { (porHab[x.conf_no] = porHab[x.conf_no] || []).push(x); });
+  // El servidor ya junta las que están escritas IGUAL en varias reservas: una familia en
+  // dos habitaciones lleva la misma nota copiada en las dos, y la hoja enseñaba el mismo
+  // texto dos veces como si fueran dos personas. Ver juntar_las_repetidas en
+  // backend/restaurantes.py.
+  const puedoEditar = puedeEscribir("restaurantes") || puedeEscribir("amenidades");
 
   panel.innerHTML = `<div class="detail-panel">
     <p style="margin:0 0 4px;font-weight:600;color:var(--warn-text);">
@@ -4023,35 +4024,106 @@ function detalleAlergias() {
     <p style="margin:0 0 10px;font-size:12px;color:var(--muted);">
       Aplican toda la estadía, no solo el día que se anotaron. Revisar antes de servir.</p>
     <table>
-      <tr><th>Hab.</th><th>Huésped</th><th>Restricción</th><th>Detalle</th><th>Estado</th>${puedeEscribir("restaurantes") || puedeEscribir("amenidades") ? "<th></th>" : ""}</tr>
-      ${Object.values(porHab).map(grupo => grupo.map((x, i) => `
+      <tr><th>Hab.</th><th>Huésped</th><th>Restricción</th><th>Detalle</th><th>Estado</th>${puedoEditar ? "<th></th>" : ""}</tr>
+      ${lista.map(x => {
+        const habs = (x.habitaciones && x.habitaciones.length) ? x.habitaciones : [x.room_no];
+        const nombres = (x.nombres && x.nombres.length) ? x.nombres : [x.nombre];
+        const ids = (x.ids && x.ids.length) ? x.ids : [x.id];
+        // Una restricción que vino de Opera no se puede borrar: volvería en la
+        // siguiente sincronización. Lo que sí se puede es corregirla, y al corregirla
+        // queda marcada y el cargador ya no la pisa. Se ofrece lo que de verdad hace.
+        const sePuedeQuitar = x.origen === "MANUAL";
+        return `
         <tr>
-          <td>${i === 0 ? `<strong>${x.room_no || "—"}</strong>${etiquetaGrupo(x.conf_no)}` : ""}</td>
-          <td>${i === 0 ? `${x.nombre || "—"}${x.tipo === "ENTRA" ? ' <span class="badge badge-warn" style="font-size:10px;">entra hoy</span>' : ""}` : ""}</td>
-          <td><span class="badge badge-warn">${x.amenidad || "Restricción"}</span></td>
+          <td><strong>${habs.filter(Boolean).map(escaparHTML).join(" · ") || "—"}</strong>${etiquetaGrupo(x.conf_no)}</td>
+          <td>${nombres.filter(Boolean).map(escaparHTML).join(" · ") || "—"}${x.tipo === "ENTRA" ? ' <span class="badge badge-warn" style="font-size:10px;">entra hoy</span>' : ""}
+            ${x.en_cuantas_reservas > 1 ? `<br><span style="font-size:10.5px;color:var(--muted);">misma nota en ${x.en_cuantas_reservas} reservas</span>` : ""}</td>
+          <td><span class="badge badge-warn">${escaparHTML(x.amenidad || "Restricción")}</span></td>
           <td style="font-size:12.5px;">${x.detalle
-              ? `<strong>${x.detalle}</strong>`
-              : `<span style="color:var(--muted);">sin detalle — revisar la reserva</span>`}</td>
+              ? `<strong>${escaparHTML(x.detalle)}</strong>`
+              : `<span style="color:var(--muted);">sin detalle — revisar la reserva</span>`}
+            ${x.editado_a_mano ? `<br><span style="font-size:10.5px;color:var(--muted);">editada a mano</span>` : ""}</td>
           <td><span class="badge ${x.estado === 'HECHA' ? 'badge-ok' : 'badge-warn'}">${x.estado === 'HECHA' ? 'AVISADA' : 'PENDIENTE'}</span></td>
-          ${puedeEscribir("restaurantes") || puedeEscribir("amenidades") ? `<td>
-            <button class="btn" onclick="marcarRestriccion(${x.id}, '${x.estado === 'HECHA' ? 'PENDIENTE' : 'HECHA'}')"
+          ${puedoEditar ? `<td style="white-space:nowrap;">
+            <button class="btn" onclick="marcarRestriccion('${ids.join(",")}', '${x.estado === 'HECHA' ? 'PENDIENTE' : 'HECHA'}')"
               title="${x.estado === 'HECHA' ? 'Volver a marcarla como pendiente' : 'Cocina ya está enterada de esta restricción'}">
-              ${x.estado === 'HECHA' ? 'Reabrir' : 'Marcar avisada'}</button></td>` : ""}
-        </tr>`).join("")).join("")}
+              ${x.estado === 'HECHA' ? 'Reabrir' : 'Marcar avisada'}</button>
+            <button class="btn" onclick="editarRestriccion('${ids.join(",")}')"
+              title="Corregir el texto de la restricción">Editar</button>
+            ${sePuedeQuitar ? `<button class="btn" onclick="quitarRestriccion('${ids.join(",")}')"
+              title="Quitarla del todo">Quitar</button>` : ""}
+          </td>` : ""}
+        </tr>`; }).join("")}
     </table>
     <p style="margin:10px 0 0;font-size:12px;color:var(--muted);">
       «Avisada» significa que cocina ya lo sabe, no que la restricción desapareció:
       sigue en pie toda la estadía y se seguirá mostrando cada noche.
-      Se anotan y se editan desde <strong>Amenidades</strong>.</p>
+      Al editarla queda marcada a mano y la siguiente sincronización ya no la pisa.</p>
   </div>`;
 }
 
-async function marcarRestriccion(id, estado) {
-  const res = await fetchAuth(`${API}/api/restaurantes/restriccion/${id}/estado`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ estado }),
-  });
-  if (!res.ok) { avisar((await res.json()).detail, true); return; }
+// Corregir el texto de una restricción desde la hoja de cocina, que es donde se lee y
+// donde se nota que está mal. Antes había que irse a Amenidades a buscarla.
+//
+// Si la nota está copiada en varias reservas se corrigen TODAS: es el mismo texto, y
+// dejar una vieja volvería a enseñar dos versiones de la misma alergia.
+async function editarRestriccion(ids) {
+  const lista = String(ids).split(",").filter(Boolean);
+  const actual = (window._restData.restricciones || [])
+    .find(x => (x.ids || [x.id]).map(String).join(",") === String(ids));
+  const texto = prompt(
+    lista.length > 1
+      ? `Corregir la restricción. Está escrita igual en ${lista.length} reservas y se corrige en todas.`
+      : "Corregir la restricción:",
+    (actual && actual.detalle) || "");
+  if (texto === null) return;                      // canceló
+  if (!texto.trim()) {
+    avisar("El texto no puede quedar vacío. Si ya no aplica, usa «Quitar».", true);
+    return;
+  }
+  for (const id of lista) {
+    const res = await fetchAuth(`${API}/api/amenidades/${id}/texto`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ detalle: texto.trim() }),
+    });
+    if (!res.ok) {
+      avisar((await res.json().catch(() => ({}))).detail || "No se pudo guardar", true);
+      return;
+    }
+  }
+  avisar(lista.length > 1 ? `Corregida en ${lista.length} reservas` : "Restricción corregida");
+  await loadRestaurantes();
+  detalleAlergias();
+}
+
+async function quitarRestriccion(ids) {
+  const lista = String(ids).split(",").filter(Boolean);
+  if (!confirm(lista.length > 1
+      ? `Quitar esta restricción de ${lista.length} reservas. ¿Seguro?`
+      : "Quitar esta restricción. ¿Seguro?")) return;
+  for (const id of lista) {
+    const res = await fetchAuth(`${API}/api/amenidades/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      avisar((await res.json().catch(() => ({}))).detail || "No se pudo quitar", true);
+      return;
+    }
+  }
+  avisar("Restricción quitada");
+  await loadRestaurantes();
+  detalleAlergias();
+}
+
+// Recibe uno o varios ids separados por coma: una nota copiada en dos reservas es UNA
+// restricción en la hoja, y marcarla avisada tiene que marcarlas todas. Si solo se
+// marcara la primera, la línea seguiría en rojo y parecería que no se guardó.
+async function marcarRestriccion(ids, estado) {
+  for (const id of String(ids).split(",").filter(Boolean)) {
+    const res = await fetchAuth(`${API}/api/restaurantes/restriccion/${id}/estado`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ estado }),
+    });
+    if (!res.ok) { avisar((await res.json()).detail, true); return; }
+  }
   avisar(estado === "HECHA" ? "Cocina avisada" : "Marcada como pendiente otra vez");
   // Se recarga la pantalla y se vuelve a abrir el tab, para no perder de vista la lista
   // que la persona estaba revisando.

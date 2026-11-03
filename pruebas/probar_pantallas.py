@@ -407,6 +407,71 @@ def el_tour_privado_se_ve_y_se_cuenta_aparte(c):
              "la marca sale en el resumen, la agenda, transporte y la reserva")
 
 
+def la_alergia_se_puede_corregir_desde_la_hoja_de_cocina(c):
+    """Lo pidio el lodge: «crear opcion para editar las alergias».
+
+    Se edita DONDE SE LEE. Antes habia que irse a Amenidades a buscarla, y una alergia
+    mal escrita que hay que ir a buscar a otra pantalla se queda mal escrita."""
+    html = _html()
+    hoja = _cuerpo_de_funcion(html, "detalleAlergias")
+    c.cierto("editarRestriccion(" in hoja, "la hoja ofrece corregir la restriccion")
+    c.cierto("marcarRestriccion(" in hoja, "y marcarla avisada, como antes")
+
+    editar = _cuerpo_de_funcion(html, "editarRestriccion")
+    c.cierto("/api/amenidades/" in editar and "/texto" in editar,
+             "y escribe por la ruta que ya existia")
+    # Si el texto queda vacio no se guarda: una restriccion sin texto es una fila que
+    # dice que hay una alergia y no dice cual, que es peor que no tenerla.
+    c.cierto("no puede quedar vacío" in editar, "no deja guardar un texto vacio")
+
+    # Una nota copiada en dos reservas se corrige en LAS DOS: es el mismo texto, y dejar
+    # una vieja volveria a enseñar dos versiones de la misma alergia.
+    c.cierto("for (const id of lista)" in editar, "corrige todas las que comparten texto")
+    marcar = _cuerpo_de_funcion(html, "marcarRestriccion")
+    c.cierto("split(\",\")" in marcar, "y marcarla avisada tambien las marca todas")
+
+    # «Quitar» solo sale cuando de verdad quita: lo que vino de Opera vuelve en la
+    # siguiente sincronizacion.
+    c.cierto('x.origen === "MANUAL"' in hoja,
+             "solo ofrece quitar lo que se puede quitar")
+
+
+def las_canceladas_no_salen_en_ningun_modulo(c):
+    """Lo pidio el lodge: «eliminar las reservas canceladas del dashboard y de todos los
+    modulos para no crear confusion».
+
+    No es solo ruido: hay 98 canceladas cargadas, y cuando una habitacion tiene a la vez
+    una cancelada y una viva, la lista del dia enseña dos huespedes donde hay uno.
+
+    Se comprueba que la regla este escrita UNA vez y que las consultas la usen. Una
+    condicion copiada a mano en quince consultas se desalinea en la primera que alguien
+    agregue, y la que falta no da error: enseña de mas, que es la forma de fallar que
+    nadie revisa."""
+    raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(raiz, "backend", "main.py"), encoding="utf-8") as f:
+        servidor = f.read()
+
+    c.cierto('VIVA = "res_status != \'CANCELADA\'"' in servidor,
+             "la regla esta escrita una sola vez")
+    c.cierto("def viva(" in servidor, "y hay una forma de usarla con alias")
+
+    # El dashboard: las tres listas del dia tienen que decidir igual. 'en_casa' ya la
+    # filtraba y las otras dos no, asi que el mismo dia podia decir que entraban 6 y que
+    # habia 4 en casa.
+    i = servidor.find("def dashboard(")
+    c.cierto(i > 0, "existe el dashboard")
+    bloque = servidor[i:i + 2600]
+    # Se busca la consulta COMPLETA, con su parametro. Mirar solo «arr_date = ?» no sirve
+    # —es un prefijo del texto nuevo, asi que la comprobacion pasaba igual— y una prueba
+    # que pasa con el codigo viejo y con el nuevo no comprueba nada.
+    for vieja in ('"SELECT * FROM reserva WHERE arr_date = ?", (dd,)',
+                  '"SELECT * FROM reserva WHERE dep_date = ?", (dd,)'):
+        c.igual(vieja in bloque, False, f"ya no queda la consulta sin filtrar: {vieja[:46]}")
+    for que in ("arr_date = ? AND {VIVA}", "dep_date = ? AND {VIVA}"):
+        c.cierto(que in bloque, f"se filtra en «{que.split()[0]}»")
+    c.cierto("res_status != 'CANCELADA'" in bloque, "y en_casa sigue filtrando")
+
+
 def el_capitan_y_el_ayudante_se_eligen_en_transporte(c):
     """Los dos selectores nuevos, y que salgan de la misma lista de capitanes."""
     html = _html()
@@ -638,6 +703,8 @@ PRUEBAS = [
     el_bote_se_elige_en_transporte_y_el_guia_en_la_agenda,
     el_guia_no_se_edita_en_transporte_ni_el_bote_en_la_agenda,
     el_tour_privado_se_ve_y_se_cuenta_aparte,
+    la_alergia_se_puede_corregir_desde_la_hoja_de_cocina,
+    las_canceladas_no_salen_en_ningun_modulo,
     el_capitan_y_el_ayudante_se_eligen_en_transporte,
     reservas_muestra_los_ingresos_de_la_fecha_elegida,
 ]

@@ -400,6 +400,114 @@ def la_fila_de_la_alergia_no_se_borra(c):
     conn.close()
 
 
+def la_misma_nota_en_dos_reservas_es_UNA_alergia(c):
+    """Lo que el lodge vio como «las alergias se estan duplicando».
+
+    NO era la base: medido sobre las 331 reservas cargadas, ninguna tiene la misma
+    restriccion dos veces. Lo que pasa es que una familia que toma DOS habitaciones lleva
+    la misma nota copiada en las dos —el agente la escribe igual en ambas reservas de
+    Opera— y la hoja de cocina enseñaba el mismo texto dos veces, como si fueran dos
+    personas distintas con la misma alergia.
+
+    Es el caso real de las habitaciones 04 y 16 del 1 de enero: las dos de Forrester, las
+    dos con «My adult son, Reed... has a dairy allergy».
+
+    LO QUE NO PUEDE PASAR es que se pierda una habitacion al juntarlas: cocina sirve por
+    mesa y necesita saber en cuales esta."""
+    conn = comun.base_limpia()
+    llega = ddmmyy(HOY)
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    NOTA = "Reed has a dairy allergy, no butter"
+    lote = [dict(reserva(670200, "04", llega, sale, adl=2), notas=NOTA),
+            dict(reserva(670201, "16", llega, sale, adl=2), notas=NOTA),
+            # Y una tercera con OTRA alergia, que no se puede juntar con las anteriores.
+            dict(reserva(670202, "09", llega, sale, adl=2),
+                 notas="One allergy to gluten")]
+    cargar(lote, vistas=lote)
+
+    guardadas = conn.execute(
+        "SELECT COUNT(*) FROM amenidad_tarea WHERE amenidad LIKE 'Restricci%'").fetchone()[0]
+    c.igual(guardadas, 3, "en la base siguen las tres filas, una por reserva")
+
+    lista = rest.restricciones_del_dia(conn, HOY)
+    c.igual(len(lista), 2, "pero en la hoja son DOS restricciones, no tres")
+
+    juntas = [x for x in lista if x["en_cuantas_reservas"] > 1]
+    c.igual(len(juntas), 1, "una sola quedo agrupada")
+    if juntas:
+        c.igual(sorted(juntas[0]["habitaciones"]), ["04", "16"],
+                "y lista las DOS habitaciones, que es lo que cocina necesita")
+        c.igual(len(juntas[0]["ids"]), 2,
+                "con los dos ids, para poder marcarlas y corregirlas juntas")
+
+    sola = [x for x in lista if x["en_cuantas_reservas"] == 1]
+    c.igual([x["habitaciones"] for x in sola], [["09"]], "la otra alergia queda aparte")
+    conn.close()
+
+
+def dos_alergias_sin_detalle_no_se_juntan(c):
+    """La contraparte, que es la que evita pasarse de listo: sin texto que comparar, dos
+    restricciones vacias pueden ser dos cosas distintas que alguien no escribio. Juntarlas
+    esconderia una alergia de verdad, que es el error caro de esta pantalla."""
+    conn = comun.base_limpia()
+    llega = ddmmyy(HOY)
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    lote = [dict(reserva(670210, "04", llega, sale, adl=2), notas=""),
+            dict(reserva(670211, "16", llega, sale, adl=2), notas="")]
+    cargar(lote, vistas=lote)
+    # Se les pone la restriccion a mano, sin detalle, como cuando recepcion la anota por
+    # telefono y no escribe de que es.
+    for conf in ("670210", "670211"):
+        conn.execute(
+            """INSERT INTO amenidad_tarea (conf_no, amenidad, origen, detalle, tarea,
+                                           area_responsable, estado)
+               VALUES (?, 'Restricción alimentaria / alergia', 'MANUAL', NULL,
+                       'AVISAR A COCINA', 'Cocina', 'PENDIENTE')""", (conf,))
+    conn.commit()
+
+    lista = rest.restricciones_del_dia(conn, HOY)
+    c.igual(len(lista), 2, "sin texto no se juntan: siguen siendo dos")
+    conn.close()
+
+
+def la_hoja_de_cocina_dice_si_se_puede_quitar(c):
+    """Una restriccion que vino de Opera NO se puede borrar: volveria en la siguiente
+    sincronizacion. Lo que si se puede es corregirla, y al corregirla queda marcada y el
+    cargador ya no la pisa.
+
+    La pantalla tiene que saberlo para ofrecer lo que de verdad hace. Un boton «Quitar»
+    que no quita nada es peor que no tenerlo: se usa, parece que funciono, y la alergia
+    reaparece al dia siguiente."""
+    conn = comun.base_limpia()
+    llega = ddmmyy(HOY)
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    r = dict(reserva(670220, "07", llega, sale, adl=2),
+             notas="One allergy to gluten")
+    cargar([r], vistas=[r])
+
+    lista = rest.restricciones_del_dia(conn, HOY)
+    c.igual(len(lista), 1, "hay una restriccion")
+    if lista:
+        c.cierto("origen" in lista[0], "la hoja sabe de donde vino")
+        # Lo que importa no es el nombre del origen —'OPERA' hoy, 'PDF' cuando entra por
+        # el reporte— sino que NO sea MANUAL, que es la unica que se puede borrar.
+        c.igual(lista[0]["origen"] == "MANUAL", False,
+                "esta vino de la fuente, asi que no se puede borrar")
+        c.igual(lista[0]["editado_a_mano"], False, "y todavia nadie la toco")
+
+    # Y una anotada a mano SI se puede quitar: si no, el boton no tendria sentido nunca.
+    conn.execute(
+        """INSERT INTO amenidad_tarea (conf_no, amenidad, origen, detalle, tarea,
+                                       area_responsable, estado)
+           VALUES ('670220', 'Restricción alimentaria / alergia', 'MANUAL',
+                   'sin cilantro', 'AVISAR A COCINA', 'Cocina', 'PENDIENTE')""")
+    conn.commit()
+    a_mano = [x for x in rest.restricciones_del_dia(conn, HOY)
+              if x["origen"] == "MANUAL"]
+    c.igual(len(a_mano), 1, "la anotada a mano sale marcada como tal")
+    conn.close()
+
+
 PRUEBAS = [
     el_reparto_automatico_no_parte_un_grupo,
     mover_una_habitacion_del_grupo_las_mueve_todas,
@@ -415,6 +523,9 @@ PRUEBAS = [
     la_alergia_que_no_es_de_comida_va_como_alerta,
     la_alerta_de_la_alergia_no_alimentaria_llega_a_la_base,
     la_fila_de_la_alergia_no_se_borra,
+    la_misma_nota_en_dos_reservas_es_UNA_alergia,
+    dos_alergias_sin_detalle_no_se_juntan,
+    la_hoja_de_cocina_dice_si_se_puede_quitar,
 ]
 
 
