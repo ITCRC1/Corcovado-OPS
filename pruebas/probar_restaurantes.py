@@ -400,6 +400,80 @@ def la_fila_de_la_alergia_no_se_borra(c):
     conn.close()
 
 
+def la_misma_alergia_vista_por_dos_fuentes_es_UNA_fila(c):
+    """EL DUPLICADO DE VERDAD, el que el lodge ve en la hoja de cocina.
+
+    Cada fuente borra y regenera SOLO sus filas —el PDF las suyas, Opera las suyas— y
+    eso dejaba dos filas de la misma alergia en cuanto las dos la veian. En la pantalla
+    salia la habitacion 09 con «Lactose, hazelnut and peanut allergy Mr.» y «Lactose,
+    hazelnut and peanut allergy», una debajo de la otra, con recortes distintos del
+    mismo texto.
+
+    No se veia en una base recien creada: hace falta que la reserva haya pasado por las
+    DOS fuentes, que es lo que lleva meses pasando en el lodge.
+    """
+    conn = comun.base_limpia()
+    llega = ddmmyy(HOY)
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    NOTA = "Lactose, hazelnut and peanut allergy"
+
+    # Primero el PDF (camino completo), que es como entro la reserva hace meses.
+    r = dict(reserva(680100, "09", llega, sale, adl=2), notas=NOTA)
+    cargar([r], vistas=[r], manda_en="TODO")
+    c.igual(conn.execute(
+        "SELECT COUNT(*) FROM amenidad_tarea WHERE amenidad LIKE 'Restricci%'"
+    ).fetchone()[0], 1, "el PDF deja una fila")
+
+    # Y despues Opera, que la vuelve a ver. Antes aqui aparecia la segunda.
+    cargar([r], vistas=[r])
+    filas = [dict(f) for f in conn.execute(
+        """SELECT id, origen, detalle FROM amenidad_tarea
+           WHERE amenidad LIKE 'Restricci%' ORDER BY id""")]
+    c.igual(len(filas), 1, "Opera NO agrega una segunda: sigue siendo una sola")
+    if filas:
+        c.igual(filas[0]["origen"], "OPERA",
+                "y queda la de la fuente que acaba de escribir, que es la que esta al dia")
+
+    # Y la hoja de cocina enseña una, no dos.
+    c.igual(len(rest.restricciones_del_dia(conn, HOY)), 1, "la hoja enseña una")
+    conn.close()
+
+
+def al_juntar_las_dos_fuentes_no_se_pierde_el_trabajo_hecho(c):
+    """La contraparte, y es la que importa: juntar no puede borrar lo que alguien hizo.
+
+    Si cocina ya marco la alergia como avisada, o recepcion le corrigio el texto, eso
+    tiene que sobrevivir aunque la fila que lo guardaba fuera de la otra fuente. Perderlo
+    en silencio es peor que el duplicado: la alergia reaparece como pendiente y nadie
+    sabe que ya se habia revisado."""
+    conn = comun.base_limpia()
+    llega = ddmmyy(HOY)
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    r = dict(reserva(680110, "09", llega, sale, adl=2),
+             notas="Lactose, hazelnut and peanut allergy")
+    cargar([r], vistas=[r], manda_en="TODO")          # entra por el PDF
+
+    # Recepcion le corrige el texto y cocina la marca avisada.
+    conn.execute("""UPDATE amenidad_tarea SET detalle = ?, editado_a_mano = 1,
+                                              estado = 'HECHA'
+                    WHERE amenidad LIKE 'Restricci%'""",
+                 ("Lactosa, avellana y mani. Confirmado por telefono.",))
+    conn.commit()
+
+    cargar([r], vistas=[r])                            # y entra Opera
+
+    filas = [dict(f) for f in conn.execute(
+        """SELECT origen, detalle, estado, editado_a_mano FROM amenidad_tarea
+           WHERE amenidad LIKE 'Restricci%'""")]
+    c.igual(len(filas), 1, "sigue siendo una sola fila")
+    if filas:
+        c.igual(filas[0]["detalle"], "Lactosa, avellana y mani. Confirmado por telefono.",
+                "con el texto que escribio recepcion")
+        c.igual(filas[0]["estado"], "HECHA", "y sin reabrir lo que cocina ya reviso")
+        c.igual(filas[0]["editado_a_mano"], 1, "sigue marcada como editada")
+    conn.close()
+
+
 def la_misma_nota_en_dos_reservas_es_UNA_alergia(c):
     """Lo que el lodge vio como «las alergias se estan duplicando».
 
@@ -470,6 +544,73 @@ def dos_alergias_sin_detalle_no_se_juntan(c):
     conn.close()
 
 
+def una_alergia_quitada_a_mano_no_vuelve_al_sincronizar(c):
+    """Lo pidio el lodge: «que tambien las alergias se puedan eliminar o agregar de forma
+    manual».
+
+    Quitar la que vino de una fuente no puede ser un DELETE: la siguiente sincronizacion
+    la regenera, y el boton pareceria no haber hecho nada —se usa, parece que funciono, y
+    la alergia reaparece al dia siguiente—. Se marca, y el cargador respeta la marca.
+
+    Es la misma regla que ya protegia lo editado a mano, y por la misma razon: es la
+    decision de una persona, no un dato de la fuente."""
+    conn = comun.base_limpia()
+    llega = ddmmyy(HOY)
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    r = dict(reserva(680200, "09", llega, sale, adl=2),
+             notas="Lactose, hazelnut and peanut allergy")
+    cargar([r], vistas=[r])
+    c.igual(len(rest.restricciones_del_dia(conn, HOY)), 1, "la alergia esta")
+
+    # Alguien la quita porque no aplica.
+    conn.execute("UPDATE amenidad_tarea SET oculta = 1 WHERE amenidad LIKE 'Restricci%'")
+    conn.commit()
+    c.igual(len(rest.restricciones_del_dia(conn, HOY)), 0, "sale de la hoja de cocina")
+
+    # Y NO vuelve en la siguiente sincronizacion, que es lo que importa.
+    cargar([r], vistas=[r])
+    c.igual(len(rest.restricciones_del_dia(conn, HOY)), 0,
+            "y sigue fuera despues de sincronizar")
+    # La fila sigue ahi: si mañana alguien pregunta por que desaparecio, hay rastro.
+    c.igual(conn.execute(
+        "SELECT COUNT(*) FROM amenidad_tarea WHERE amenidad LIKE 'Restricci%'"
+    ).fetchone()[0], 1, "pero la fila se conserva, no se borra el rastro")
+    conn.close()
+
+
+def una_alergia_agregada_a_mano_sale_en_la_hoja(c):
+    """La otra mitad: la que el huesped avisa por telefono o al sentarse a comer.
+
+    Se anota DONDE SE LEE. Y se borra de verdad al quitarla: no la genera ninguna
+    fuente, asi que no vuelve."""
+    conn = comun.base_limpia()
+    llega = ddmmyy(HOY)
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    r = dict(reserva(680210, "12", llega, sale, adl=2), notas="")
+    cargar([r], vistas=[r])
+    c.igual(len(rest.restricciones_del_dia(conn, HOY)), 0, "no tenia ninguna")
+
+    conn.execute(
+        """INSERT INTO amenidad_tarea (conf_no, amenidad, origen, detalle, tarea,
+                                       area_responsable, estado)
+           VALUES ('680210', 'Restricción alimentaria / alergia', 'MANUAL',
+                   'Celiaco, avisa al llegar', 'AVISAR A COCINA', 'Cocina',
+                   'PENDIENTE')""")
+    conn.commit()
+
+    lista = rest.restricciones_del_dia(conn, HOY)
+    c.igual(len(lista), 1, "la anotada a mano sale en la hoja")
+    if lista:
+        c.igual(lista[0]["habitaciones"], ["12"], "en su habitacion")
+        c.igual(lista[0]["origen"], "MANUAL", "y marcada como puesta a mano")
+
+    # Y sobrevive a la sincronizacion: cada fuente administra solo lo suyo.
+    cargar([r], vistas=[r])
+    c.igual(len(rest.restricciones_del_dia(conn, HOY)), 1,
+            "y no se la lleva la siguiente sincronizacion")
+    conn.close()
+
+
 def la_hoja_de_cocina_dice_si_se_puede_quitar(c):
     """Una restriccion que vino de Opera NO se puede borrar: volveria en la siguiente
     sincronizacion. Lo que si se puede es corregirla, y al corregirla queda marcada y el
@@ -523,9 +664,13 @@ PRUEBAS = [
     la_alergia_que_no_es_de_comida_va_como_alerta,
     la_alerta_de_la_alergia_no_alimentaria_llega_a_la_base,
     la_fila_de_la_alergia_no_se_borra,
+    la_misma_alergia_vista_por_dos_fuentes_es_UNA_fila,
+    al_juntar_las_dos_fuentes_no_se_pierde_el_trabajo_hecho,
     la_misma_nota_en_dos_reservas_es_UNA_alergia,
     dos_alergias_sin_detalle_no_se_juntan,
     la_hoja_de_cocina_dice_si_se_puede_quitar,
+    una_alergia_quitada_a_mano_no_vuelve_al_sincronizar,
+    una_alergia_agregada_a_mano_sale_en_la_hoja,
 ]
 
 

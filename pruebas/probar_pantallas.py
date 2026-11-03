@@ -430,10 +430,19 @@ def la_alergia_se_puede_corregir_desde_la_hoja_de_cocina(c):
     marcar = _cuerpo_de_funcion(html, "marcarRestriccion")
     c.cierto("split(\",\")" in marcar, "y marcarla avisada tambien las marca todas")
 
-    # «Quitar» solo sale cuando de verdad quita: lo que vino de Opera vuelve en la
-    # siguiente sincronizacion.
-    c.cierto('x.origen === "MANUAL"' in hoja,
-             "solo ofrece quitar lo que se puede quitar")
+    # Y se puede quitar CUALQUIERA, y agregar una nueva. Lo pidio el lodge: «que tambien
+    # las alergias se puedan eliminar o agregar de forma manual».
+    c.cierto("quitarRestriccion(" in hoja, "se puede quitar")
+    c.cierto("agregarRestriccion()" in hoja, "y agregar una que no venia en la reserva")
+
+    agregar = _cuerpo_de_funcion(html, "agregarRestriccion")
+    c.cierto("/api/amenidades" in agregar, "la nueva se guarda por la ruta que ya existia")
+    # La habitacion se ELIGE de entre las que comen, no se escribe a mano: una alergia
+    # anotada en el cuarto equivocado es peor que no anotarla, porque cocina se confia.
+    c.cierto("d.cena" in agregar and "terra_kitchen" in agregar,
+             "y la habitacion sale de quienes comen esa noche")
+    c.cierto("no come esta noche" in agregar,
+             "si la habitacion no come, se dice en vez de guardar mal")
 
 
 def las_canceladas_no_salen_en_ningun_modulo(c):

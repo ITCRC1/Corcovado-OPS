@@ -284,6 +284,13 @@ CREATE TABLE IF NOT EXISTS amenidad_tarea (
     tarea TEXT NOT NULL,
     area_responsable TEXT NOT NULL,
     estado TEXT NOT NULL DEFAULT 'PENDIENTE', -- PENDIENTE | HECHA
+    -- Quitada a mano. No se borra la fila: la que viene de una fuente volvería en la
+    -- siguiente sincronización, y el botón de «quitar» parecería no funcionar. Con la
+    -- marca, el cargador la respeta y las pantallas no la muestran.
+    --
+    -- Importa que quede el rastro: lo que se quita aquí suele ser una alergia que no
+    -- aplica, y si mañana alguien se pregunta por qué desapareció, la fila sigue ahí.
+    oculta INTEGER NOT NULL DEFAULT 0,
     -- Noche concreta a la que aplica, en formato ISO. La usa la cena privada: el PDF
     -- avisa que existe pero casi nunca dice el día, así que recepción lo confirma
     -- desde la pantalla de restaurantes.

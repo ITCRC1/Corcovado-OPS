@@ -160,11 +160,15 @@ def _guardar_amenidades(cur, r, llegada_iso, origen="PDF"):
 
     trabajo_previo = {}
     for prev in cur.execute(
-        """SELECT id, amenidad, fecha, detalle, tarea, estado, editado_a_mano
+        """SELECT id, amenidad, fecha, detalle, tarea, estado, editado_a_mano, oculta
            FROM amenidad_tarea WHERE conf_no = ? AND origen = ? ORDER BY id""",
         (r["conf_no"], origen),
     ).fetchall():
-        if prev["editado_a_mano"] or prev["estado"] != "PENDIENTE":
+        # 'oculta' se guarda igual que lo editado a mano, y por la misma razón: es una
+        # decisión de una persona. Si no se conservara, la alergia que alguien quitó
+        # porque no aplicaba volvería en la siguiente sincronización y el botón de
+        # «quitar» parecería no haber hecho nada.
+        if prev["editado_a_mano"] or prev["oculta"] or prev["estado"] != "PENDIENTE":
             d = dict(prev)
             # Los departamentos con el estado de cada uno, para poder devolverlos tal
             # cual: si cocina ya hizo su parte y housekeeping no, reimportar no debe
@@ -232,6 +236,7 @@ def _guardar_amenidades(cur, r, llegada_iso, origen="PDF"):
         detalle = (r.get("detalles_de_amenidad") or {}).get(nombre)
         estado = "PENDIENTE"
         editado = 0
+        oculta = 0
         # Lo que recepción ya había hecho sobre esta misma amenidad manda sobre lo que
         # dice el reporte: el reporte no sabe qué noche se acordó la cena, ni que la
         # alergia resultó ser también a la lactosa, ni que la cuna ya está puesta.
@@ -240,6 +245,7 @@ def _guardar_amenidades(cur, r, llegada_iso, origen="PDF"):
         if guardado:
             p = guardado.pop(0)
             estado = p["estado"]
+            oculta = 1 if p["oculta"] else 0
             if p["editado_a_mano"]:
                 editado = 1
                 fecha = p["fecha"]
@@ -249,14 +255,54 @@ def _guardar_amenidades(cur, r, llegada_iso, origen="PDF"):
                 # de uno; si alguien decidió que esto también le toca a cocina, el
                 # reporte no tiene por qué deshacerlo.
                 areas_previas = p.get("areas")
+        # LA MISMA AMENIDAD VISTA POR DOS FUENTES ES UNA SOLA.
+        #
+        # Cada fuente borra y regenera SOLO sus filas —por lo que dice el docstring— y
+        # eso dejaba un duplicado en cuanto la misma alergia la veían el PDF y Opera: dos
+        # filas de «Restricción alimentaria / alergia» para la misma reserva, con recortes
+        # distintos del mismo texto. Es lo que el lodge vio en la hoja de cocina: la
+        # habitación 09 con «Lactose, hazelnut and peanut allergy Mr.» y «Lactose,
+        # hazelnut and peanut allergy», una debajo de la otra.
+        #
+        # Se borra la de la OTRA fuente, no la de esta: la que acaba de escribir es la
+        # que está al día. Si el huésped cambió su alergia, Opera lo sabe y el PDF
+        # importado hace meses no.
+        #
+        # NO se toca la que alguien editó a mano o ya marcó hecha: eso es trabajo de
+        # recepción o de cocina, y el principio de no pisarlo sigue mandando. En ese caso
+        # se hereda aquí abajo, igual que si fuera de esta misma fuente.
+        gemela = cur.execute(
+            """SELECT id, estado, editado_a_mano, oculta, fecha, detalle, tarea
+               FROM amenidad_tarea
+               WHERE conf_no = ? AND amenidad = ? AND origen <> ?
+               ORDER BY id LIMIT 1""",
+            (r["conf_no"], nombre, origen)).fetchone()
+        if gemela:
+            if gemela["oculta"]:
+                oculta = 1
+            if gemela["editado_a_mano"] or gemela["estado"] != "PENDIENTE":
+                # Se adopta su trabajo y se queda UNA sola fila, la de esta fuente.
+                estado = gemela["estado"]
+                if gemela["editado_a_mano"]:
+                    editado = 1
+                    fecha = gemela["fecha"]
+                    detalle = gemela["detalle"]
+                    tarea = gemela["tarea"] or tarea
+                    areas_previas = [(x["area"], x["estado"]) for x in cur.execute(
+                        "SELECT area, estado FROM amenidad_area WHERE amenidad_id = ? "
+                        "ORDER BY rowid", (gemela["id"],))] or areas_previas
+            cur.execute("DELETE FROM amenidad_area WHERE amenidad_id = ?",
+                        (gemela["id"],))
+            cur.execute("DELETE FROM amenidad_tarea WHERE id = ?", (gemela["id"],))
+
         cur.execute(
             """INSERT INTO amenidad_tarea (conf_no, amenidad, detalle, tarea,
                                            area_responsable, fecha, estado,
-                                           editado_a_mano, origen)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                                           editado_a_mano, oculta, origen)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (r["conf_no"], nombre, detalle, tarea,
              (areas_previas or [(area, estado)])[0][0], fecha, estado, editado,
-             origen),
+             oculta, origen),
         )
         nueva_id = cur.lastrowid
         # Su fila de departamento. Sin esto la amenidad no le aparecería a nadie en la

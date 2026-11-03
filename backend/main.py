@@ -4208,9 +4208,14 @@ async def cambiar_areas_amenidad(amenidad_id: int, payload: dict,
 
 
 @app.post("/api/amenidades")
-async def crear_amenidad_manual(payload: dict, user: dict = Depends(exige("amenidades", escribir=True))):
+async def crear_amenidad_manual(payload: dict,
+                                user: dict = Depends(exige("amenidades", "restaurantes",
+                                                           escribir=True))):
     """Permite a recepción/gerencia agregar un requerimiento del huésped que no venía
     en el PDF: alergias reportadas por teléfono, preferencias, peticiones especiales.
+
+    Vale también el permiso de Restaurantes: una alergia que el huésped avisa al
+    sentarse a comer se anota en la hoja de cocina, que es donde está quien la escucha.
 
     La fecha es opcional. Si no viene, se pone la de llegada —que es cuando hay que
     tener listas casi todas las amenidades—, salvo en la cena privada, que se deja sin
@@ -4391,8 +4396,16 @@ async def cambiar_texto_amenidad(amenidad_id: int, payload: dict,
 def eliminar_amenidad(amenidad_id: int,
                       user: dict = Depends(exige("amenidades", "restaurantes",
                                                  escribir=True))):
-    """Solo se pueden eliminar los requerimientos agregados manualmente; los detectados
-    del PDF se vuelven a generar en cada importación.
+    """Quita un requerimiento. Se puede quitar CUALQUIERA, pero de dos formas distintas.
+
+    · La agregada a mano se BORRA: no la genera nadie, así que no vuelve.
+    · La que vino del PDF o de Opera se MARCA como quitada y se deja la fila. Borrarla
+      no serviría —la siguiente sincronización la regenera— y el botón parecería no
+      haber hecho nada: se usa, parece que funcionó, y la alergia reaparece al día
+      siguiente. Con la marca, el cargador la respeta y las pantallas no la muestran.
+
+    Antes esto rechazaba todo lo que no fuera manual, así que una alergia que no aplicaba
+    no había forma de sacarla de la hoja de cocina.
 
     Vale también el permiso de Restaurantes, por lo mismo que cambiar el texto: las
     alergias se revisan en la hoja de cocina."""
@@ -4401,17 +4414,19 @@ def eliminar_amenidad(amenidad_id: int,
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="No encontrado")
-    if row["origen"] != "MANUAL":
-        conn.close()
-        raise HTTPException(status_code=400, detail="Solo se pueden eliminar los agregados manualmente")
-    # Las filas de departamento se borran a mano: la clave foránea tiene ON DELETE
-    # CASCADE, pero solo actúa si el PRAGMA foreign_keys está encendido en ESA conexión,
-    # y no vale la pena que la limpieza dependa de eso.
-    conn.execute("DELETE FROM amenidad_area WHERE amenidad_id = ?", (amenidad_id,))
-    conn.execute("DELETE FROM amenidad_tarea WHERE id = ?", (amenidad_id,))
+    if row["origen"] == "MANUAL":
+        # Las filas de departamento se borran a mano: la clave foránea tiene ON DELETE
+        # CASCADE, pero solo actúa si el PRAGMA foreign_keys está encendido en ESA
+        # conexión, y no vale la pena que la limpieza dependa de eso.
+        conn.execute("DELETE FROM amenidad_area WHERE amenidad_id = ?", (amenidad_id,))
+        conn.execute("DELETE FROM amenidad_tarea WHERE id = ?", (amenidad_id,))
+        como = "borrada"
+    else:
+        conn.execute("UPDATE amenidad_tarea SET oculta = 1 WHERE id = ?", (amenidad_id,))
+        como = "quitada"
     conn.commit()
     conn.close()
-    return {"status": "ok"}
+    return {"status": "ok", "como": como}
 
 
 @app.get("/api/amenidades")
@@ -4441,7 +4456,8 @@ def listar_amenidades(desde: str = None, hasta: str = None, estado: str = None,
     # borra al cancelar, pero la condición va igual: así la pantalla no depende de que
     # la limpieza haya corrido, y una amenidad escrita a mano sobre una reserva que
     # luego se cancela tampoco se cuela.
-    condiciones, params = [viva()], []
+    # Y las que alguien quitó a mano tampoco: ver el comentario de 'oculta' en schema.sql.
+    condiciones, params = [viva(), "COALESCE(a.oculta, 0) = 0"], []
     if desde and hasta:
         condiciones.append(f"{FECHA_EFECTIVA} BETWEEN ? AND ?")
         params += [yymmdd(desde), yymmdd(hasta)]

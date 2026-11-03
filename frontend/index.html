@@ -4029,10 +4029,6 @@ function detalleAlergias() {
         const habs = (x.habitaciones && x.habitaciones.length) ? x.habitaciones : [x.room_no];
         const nombres = (x.nombres && x.nombres.length) ? x.nombres : [x.nombre];
         const ids = (x.ids && x.ids.length) ? x.ids : [x.id];
-        // Una restricción que vino de Opera no se puede borrar: volvería en la
-        // siguiente sincronización. Lo que sí se puede es corregirla, y al corregirla
-        // queda marcada y el cargador ya no la pisa. Se ofrece lo que de verdad hace.
-        const sePuedeQuitar = x.origen === "MANUAL";
         return `
         <tr>
           <td><strong>${habs.filter(Boolean).map(escaparHTML).join(" · ") || "—"}</strong>${etiquetaGrupo(x.conf_no)}</td>
@@ -4050,16 +4046,72 @@ function detalleAlergias() {
               ${x.estado === 'HECHA' ? 'Reabrir' : 'Marcar avisada'}</button>
             <button class="btn" onclick="editarRestriccion('${ids.join(",")}')"
               title="Corregir el texto de la restricción">Editar</button>
-            ${sePuedeQuitar ? `<button class="btn" onclick="quitarRestriccion('${ids.join(",")}')"
-              title="Quitarla del todo">Quitar</button>` : ""}
+            <button class="btn" onclick="quitarRestriccion('${ids.join(",")}')"
+              title="Quitarla de la hoja de cocina">Quitar</button>
           </td>` : ""}
         </tr>`; }).join("")}
     </table>
+    ${puedoEditar ? `<p style="margin:10px 0 0;">
+      <button class="btn btn-primary" onclick="agregarRestriccion()">+ Agregar alergia</button>
+      <span style="font-size:12px;color:var(--muted);margin-left:8px;">
+        Para una alergia que el huésped avisa por teléfono o al llegar.</span></p>` : ""}
     <p style="margin:10px 0 0;font-size:12px;color:var(--muted);">
       «Avisada» significa que cocina ya lo sabe, no que la restricción desapareció:
       sigue en pie toda la estadía y se seguirá mostrando cada noche.
       Al editarla queda marcada a mano y la siguiente sincronización ya no la pisa.</p>
   </div>`;
+}
+
+// Agregar una alergia que no venía en la reserva: la que el huésped avisa por teléfono
+// o al sentarse a comer. Se anota DONDE SE LEE, que es esta hoja.
+//
+// Se elige la habitación de entre las que comen esta noche, no se escribe a mano: una
+// alergia anotada en el cuarto equivocado es peor que no anotarla, porque además hace
+// que cocina se confíe.
+async function agregarRestriccion() {
+  const d = window._restData;
+  const comen = [];
+  for (const comida of [d.cena, d.almuerzo]) {
+    for (const bloque of [(comida || {}).terra_kitchen, (comida || {}).bar_el_bosque]) {
+      for (const x of (bloque || [])) {
+        if (x.conf_no && !comen.some(y => y.conf_no === x.conf_no)) comen.push(x);
+      }
+    }
+  }
+  comen.sort((a, b) => (parseInt(a.room_no) || 999) - (parseInt(b.room_no) || 999));
+  if (!comen.length) {
+    avisar("No hay nadie comiendo esta noche a quien anotarle una alergia", true);
+    return;
+  }
+  const cual = prompt(
+    "¿De qué habitación?\n\n" +
+    comen.map(x => `${x.room_no} · ${(x.nombre || "").split(",")[0]}`).join("\n"),
+    comen[0].room_no);
+  if (cual === null) return;
+  const quien = comen.find(x => String(x.room_no) === String(cual).trim());
+  if (!quien) { avisar(`La habitación ${cual} no come esta noche`, true); return; }
+
+  const texto = prompt(`Alergia o restricción de la hab. ${quien.room_no}:`, "");
+  if (texto === null) return;
+  if (!texto.trim()) { avisar("Hace falta escribir de qué es", true); return; }
+
+  const res = await fetchAuth(`${API}/api/amenidades`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      conf_no: quien.conf_no,
+      amenidad: "Restricción alimentaria / alergia",
+      detalle: texto.trim(),
+      tarea: "AVISAR A COCINA",
+      areas: ["Cocina"],
+    }),
+  });
+  if (!res.ok) {
+    avisar((await res.json().catch(() => ({}))).detail || "No se pudo agregar", true);
+    return;
+  }
+  avisar(`Alergia anotada en la hab. ${quien.room_no}`);
+  await loadRestaurantes();
+  detalleAlergias();
 }
 
 // Corregir el texto de una restricción desde la hoja de cocina, que es donde se lee y

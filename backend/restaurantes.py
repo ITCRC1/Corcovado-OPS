@@ -369,7 +369,8 @@ def restricciones_del_dia(conn, fecha, distribucion=None, cache=None):
             f"""SELECT a.id, a.conf_no, a.amenidad, a.tarea, a.detalle, a.estado,
                        a.area_responsable, a.origen, a.editado_a_mano
                 FROM amenidad_tarea a
-                WHERE a.conf_no IN ({marcas}) ORDER BY a.id""", lote).fetchall():
+                WHERE a.conf_no IN ({marcas}) AND COALESCE(a.oculta, 0) = 0
+                ORDER BY a.id""", lote).fetchall():
             d = dict(f)
             if not es_restriccion_alimentaria(d["amenidad"], d["tarea"], d["detalle"]):
                 continue
