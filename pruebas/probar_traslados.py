@@ -145,6 +145,67 @@ def sierpe_usa_el_horario_fijo_del_bote(c):
         c.igual(lista[0]["hora_origen"], "horario fijo de Sierpe", "y se dice de donde")
 
 
+def por_sierpe_la_hora_fija_manda_sobre_la_de_la_reserva(c):
+    """La regla que dio el lodge: «cuando sea un ingreso que se indique la misma hora, y
+    cuando sea una salida dos horas antes de lo que diga la reserva; esto en el caso
+    EXCLUSIVO de Drake. Para Sierpe se mantiene la hora fija».
+
+    Antes cualquier hora escrita en la reserva ganaba, y por Sierpe salian horas de la
+    tarde: medido, la habitacion 09 del 2 de noviembre a las 14:20, y las 21 y 13 del
+    dia 3 a las 15:13 y 15:11. Por Sierpe el bote sale a la misma hora para todos, asi
+    que esas horas eran otra cosa —el check-in del PMS— y ademas PARTIAN EN TRES
+    CORRIDAS a gente que viaja en el mismo bote."""
+    import catalogo_itinerario as cat
+    limpiar()
+    cargar([
+        # Las tres por Sierpe el mismo dia, dos de ellas con hora escrita y distinta.
+        reserva("S1", "09", ddmmyy(MANANA),
+                ddmmyy(MANANA + datetime.timedelta(days=2)),
+                punto_entrada="Sierpe", arr_time="14:20"),
+        reserva("S2", "21", ddmmyy(MANANA),
+                ddmmyy(MANANA + datetime.timedelta(days=2)),
+                punto_entrada="Sierpe", hora_vuelo_entrada="15:13"),
+        reserva("S3", "13", ddmmyy(MANANA),
+                ddmmyy(MANANA + datetime.timedelta(days=2)),
+                punto_entrada="Sierpe"),
+    ])
+    conn = conexion()
+    lista = [x for x in tr.corridas(conn, iso(MANANA), iso(MANANA))
+             if x["tipo"] == "entrada"]
+    c.igual(len(lista), 1, "las tres van en UNA corrida: es el mismo bote")
+    if lista:
+        c.igual(lista[0]["hora"], cat.SIERPE_BOTE_LLEGADA,
+                "a la hora fija de Sierpe, no a la que diga la reserva")
+        c.igual(lista[0]["hora_origen"], "horario fijo de Sierpe", "y se dice de donde")
+        c.igual(len(lista[0]["huespedes"]), 3, "con las tres habitaciones dentro")
+    conn.close()
+
+
+def por_drake_el_ingreso_lleva_la_hora_del_vuelo_sin_tocar(c):
+    """La otra mitad de la regla, y la que evita pasarse: por Drake el bote espera al
+    avion, asi que en el INGRESO la hora es la del vuelo tal cual. Las dos horas antes
+    son solo para la SALIDA."""
+    limpiar()
+    cargar([reserva("D1", "07", ddmmyy(MANANA),
+                    ddmmyy(MANANA + datetime.timedelta(days=2)),
+                    punto_entrada="Drake", hora_vuelo_entrada="9:15 a.m.",
+                    punto_salida="Drake", hora_vuelo_salida="9:25 a.m.")])
+    conn = conexion()
+    entra = [x for x in tr.corridas(conn, iso(MANANA), iso(MANANA))
+             if x["tipo"] == "entrada"]
+    c.igual([x["hora"] for x in entra], ["9:15 a.m."],
+            "el ingreso por Drake va a la hora del vuelo, sin restar nada")
+
+    sale_dia = MANANA + datetime.timedelta(days=2)
+    sale = [x for x in tr.corridas(conn, iso(sale_dia), iso(sale_dia))
+            if x["tipo"] == "salida"]
+    c.igual([x["hora"] for x in sale], ["7:25 a.m."],
+            "y la salida por Drake, dos horas antes del vuelo")
+    if sale:
+        c.igual(sale[0]["hora_origen"], "calculado del vuelo", "y se dice de donde")
+    conn.close()
+
+
 def el_que_no_tiene_hora_no_se_esconde(c):
     """Drake sin hora de vuelo no se puede ubicar en ninguna corrida. Tiene que salir
     igual, marcado: es justo el que hay que resolver. Una lista que solo muestre a los
@@ -1119,6 +1180,8 @@ PRUEBAS = [
     sierpe_y_drake_no_se_mezclan,
     la_entrada_y_la_salida_son_corridas_distintas,
     sierpe_usa_el_horario_fijo_del_bote,
+    por_sierpe_la_hora_fija_manda_sobre_la_de_la_reserva,
+    por_drake_el_ingreso_lleva_la_hora_del_vuelo_sin_tocar,
     el_que_no_tiene_hora_no_se_esconde,
     una_reserva_cancelada_sale_de_su_corrida,
     se_asigna_guia_y_bote_a_una_corrida,

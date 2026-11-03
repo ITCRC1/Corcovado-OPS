@@ -95,12 +95,21 @@ def hora_de_traslado(fila, es_entrada):
     salían tantas líneas en blanco: por Sierpe el bote sale a la misma hora todos los
     días y el PDF no la repite, y en las salidas por Sierpe la hora estaba fija en "—".
 
-    El orden es: lo que diga el PDF manda; si no dice nada, se aplica la regla del punto.
+    LA REGLA, tal como la dio el lodge: «cuando sea un ingreso que se indique la misma
+    hora, y cuando sea una salida dos horas antes de lo que diga la reserva; esto en el
+    caso exclusivo de Drake. Para Sierpe se mantiene la hora fija».
 
-      · Sierpe → horario fijo del bote (llegada y salida).
-      · Drake, llegada → la hora del vuelo; sin vuelo no se puede saber.
-      · Drake, salida  → el bote, calculado hacia atrás desde el vuelo, la misma cuenta
-        que se le imprime al huésped en su itinerario.
+      · Sierpe → horario fijo del bote, SIEMPRE. Llegada y salida.
+      · Drake, llegada → la hora del vuelo, tal cual; sin vuelo no se puede saber.
+      · Drake, salida  → el bote, dos horas antes del vuelo, la misma cuenta que se le
+        imprime al huésped en su itinerario.
+
+    EL PUNTO MANDA SOBRE LO QUE DIGA LA RESERVA, y por eso se mira primero. Antes era al
+    revés —cualquier hora escrita ganaba— y por Sierpe salían horas de la tarde: la
+    habitación 09 del 2 de noviembre a las 14:20, y las 21 y 13 del día 3 a las 15:13 y
+    15:11. Por Sierpe el bote sale a la misma hora para todos, así que esas horas eran
+    otra cosa —el check-in del PMS— y además partían en tres corridas distintas a gente
+    que viaja en el mismo bote.
 
     Devuelve (hora, origen). El origen sirve para que recepción distinga de un vistazo
     lo confirmado de lo que sigue pendiente de verdad.
@@ -114,14 +123,21 @@ def hora_de_traslado(fila, es_entrada):
 
     if es_entrada:
         punto = (fila.get("punto_entrada") or "").lower()
+        if punto == "sierpe":
+            return cat.SIERPE_BOTE_LLEGADA, "horario fijo de Sierpe"
+        if punto == "drake":
+            # La hora del vuelo SIN tocar: en el ingreso el bote espera al avión.
+            if fila.get("hora_vuelo_entrada"):
+                return fila["hora_vuelo_entrada"], "del PDF"
+            if fila.get("arr_time"):
+                return fila["arr_time"], "del PDF"
+            return None, "falta la hora del vuelo"
+        # Sin punto confirmado no hay regla que aplicar, pero si la reserva trae una
+        # hora escrita vale más que nada: es lo único que se sabe.
         if fila.get("hora_vuelo_entrada"):
             return fila["hora_vuelo_entrada"], "del PDF"
         if fila.get("arr_time"):
             return fila["arr_time"], "del PDF"
-        if punto == "sierpe":
-            return cat.SIERPE_BOTE_LLEGADA, "horario fijo de Sierpe"
-        if punto == "drake":
-            return None, "falta la hora del vuelo"
         return None, "falta el punto"
 
     punto = (fila.get("punto_salida") or "").lower()
