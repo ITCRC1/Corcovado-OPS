@@ -355,6 +355,17 @@ def dashboard(fecha: str, user: dict = Depends(exige("dashboard"))):
 def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
     """Resumen del día pensado para que cada departamento encuentre lo suyo:
     recepción, cocina, housekeeping, guías y transporte."""
+    return _datos_del_resumen(fecha)
+
+
+def _datos_del_resumen(fecha):
+    """El cálculo del resumen, aparte del endpoint.
+
+    Lo usan DOS cosas: la pantalla de Resumen y la hoja del día que se descarga para
+    mandarle al staff. Tienen que salir del mismo sitio — si cada una contara por su
+    lado, el pantallazo que circula por WhatsApp diría un número y la pantalla otro, y
+    nadie sabría cuál creer.
+    """
     conn = get_connection()
     dd = ddmmyy(fecha)
     yy = yymmdd(fecha)
@@ -3676,7 +3687,25 @@ def export_entradas(desde: str = None, hasta: str = None, formato: str = "xlsx",
 @app.get("/api/export/resumen-operacion")
 def export_resumen(fecha: str, formato: str = "xlsx",
                    user: dict = Depends(exige("resumen"))):
-    return _informe("resumen", "daily-summary", fecha=fecha, formato=formato)
+    """La hoja del día, con el formato que el lodge ya manda al staff.
+
+    No es el informe analítico de las demás áreas: esto se imprime o se fotografía y se
+    manda al grupo, así que imita el Excel que el lodge lleva meses armando a mano. El
+    PDF sale apaisado y de una hoja por eso mismo.
+
+    Los datos son los MISMOS que ve la pantalla de Resumen —se piden a la misma
+    función— para que el pantallazo que circula no pueda decir un número distinto del
+    que se ve al abrir la app.
+    """
+    import hoja_dia
+    datos = _datos_del_resumen(fecha)
+    conn = get_connection()
+    try:
+        d = hoja_dia.definicion(conn, fecha, datos)
+    finally:
+        conn.close()
+    buf = hoja_dia.excel(d) if formato == "xlsx" else hoja_dia.pdf(d)
+    return export_response(buf, f"operacion-{fecha}", formato)
 
 
 @app.get("/api/export/restaurantes")

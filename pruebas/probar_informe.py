@@ -349,6 +349,77 @@ def el_spa_si_entra_en_el_informe(c):
     conn.close()
 
 
+# ---------------------------------------------------------------------------
+# La hoja del dia que se le manda al staff
+# ---------------------------------------------------------------------------
+
+def la_hoja_del_dia_cabe_en_el_ancho(c):
+    """El fallo que esta prueba evita NO DA ERROR: recorta.
+
+    Con las columnas sumando mas de lo que mide la hoja, la tabla se sale por los dos
+    lados y la primera columna se lee «CASA» en vez de «EN CASA» — justo la que dice de
+    un vistazo quien llega y quien se va. El PDF se genera igual, asi que nadie se
+    entera hasta que alguien lee el pantallazo en el muelle.
+
+    A4 apaisado son 297 mm y los margenes se comen 14."""
+    import hoja_dia
+    ancho = sum(col[2] for col in hoja_dia.COLUMNAS)
+    c.cierto(ancho <= hoja_dia.ANCHO_UTIL_MM,
+             f"las columnas caben en la hoja ({ancho} mm de {hoja_dia.ANCHO_UTIL_MM})")
+    c.igual(len(hoja_dia.COLUMNAS), sum(n for _, n in hoja_dia.GRUPOS),
+            "los grupos de la cabecera cubren todas las columnas")
+
+
+def la_hoja_del_dia_sale_en_pdf_y_en_excel(c):
+    """De punta a punta, con datos de verdad. Y los DOS formatos de la MISMA definicion:
+    el pantallazo que circula por WhatsApp es el que nadie contrasta, asi que no puede
+    decir algo distinto del Excel."""
+    import hoja_dia
+    conn = comun.base_limpia()
+    llega = ddmmyy(HOY)
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    lote = [dict(reserva(700100, "07", llega, sale, adl=2), punto_entrada="Sierpe"),
+            dict(reserva(700101, "12", llega, sale, adl=2), punto_entrada="Drake",
+                 hora_vuelo_entrada="14:45", vuelo_entrada="RZ1124")]
+    cargar(lote, vistas=lote)
+
+    resumen = {
+        "ingresos": [{"conf_no": "700100", "room_no": "07",
+                      "nombre_principal": "Johnson/Derek", "adl": 2, "chl": 0},
+                     {"conf_no": "700101", "room_no": "12",
+                      "nombre_principal": "Grimm/Christine", "adl": 2, "chl": 0}],
+        "salidas": [], "en_casa": [], "tours": [],
+        "puntos": [{"punto": "Sierpe", "detalle": [
+            {"tipo": "Entrada", "room_no": "07", "pax": 2, "hora": None,
+             "hora_traslado": "11:30 a.m.", "guia": None, "bote": None}]}],
+        "total_ingresos": 2, "pax_ingresos": 4, "total_salidas": 0, "pax_salidas": 0,
+        "total_en_casa": 2, "pax_en_casa": 4, "pax_desayunos": 4,
+    }
+    d = hoja_dia.definicion(conn, HOY.isoformat(), resumen)
+    conn.close()
+
+    c.igual(len(d["filas"]), 2, "una fila por habitacion")
+    # El nombre se escribe como lo escribe el lodge, no como lo guarda el PMS.
+    c.cierto(all("/" not in f["huesped"] for f in d["filas"]),
+             "el nombre sale legible, no «Apellido/Nombre»")
+    c.igual(d["totales_punto"]["Sierpe"]["ENTRA"], 2, "el pax va al muelle que le toca")
+
+    paginas, texto = _paginas(hoja_dia.pdf(d))
+    c.igual(paginas, 1, "el PDF es de UNA hoja: es lo que se fotografia")
+    for esperado in ("HUÉSPEDES", "INGRESOS Y SALIDAS", "ACTIVIDADES", "IN HOUSE"):
+        c.cierto(esperado in texto, f"el PDF trae «{esperado}»")
+    # La columna de estado tiene que salir ENTERA. Es la comprobacion que habria
+    # cazado el recorte, y la que no se ve mirando si «el PDF se genero».
+    c.cierto("ENTRA" in texto, "y el estado sin recortar")
+
+    from openpyxl import load_workbook
+    wb = load_workbook(hoja_dia.excel(d))
+    ws = wb.active
+    cabeceras = [ws.cell(row=12, column=i).value for i in range(1, len(hoja_dia.COLUMNAS) + 1)]
+    c.igual(cabeceras, [col[1] for col in hoja_dia.COLUMNAS],
+            "el Excel lleva las MISMAS columnas que el PDF, en el mismo orden")
+
+
 def un_area_inventada_se_rechaza(c):
     conn = comun.base_limpia()
     try:
@@ -376,6 +447,8 @@ PRUEBAS = [
     las_cortesias_se_cuentan_no_se_valoran,
     la_ocupacion_usa_el_mismo_total_que_la_pantalla,
     el_spa_si_entra_en_el_informe,
+    la_hoja_del_dia_cabe_en_el_ancho,
+    la_hoja_del_dia_sale_en_pdf_y_en_excel,
     un_area_inventada_se_rechaza,
 ]
 
