@@ -578,6 +578,44 @@ def una_alergia_quitada_a_mano_no_vuelve_al_sincronizar(c):
     conn.close()
 
 
+def una_alergia_quitada_se_puede_devolver(c):
+    """Quitar es facil de hacer por equivocacion: el lodge quito las de un dia entero
+    creyendo que estaban duplicadas. Por eso no se borran, se marcan — y por eso tiene
+    que haber donde verlas y devolverlas. Sin esa segunda mitad, la marca no sirve de
+    nada y la alergia se pierde igual que si se hubiera borrado."""
+    conn = comun.base_limpia()
+    llega = ddmmyy(HOY)
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    lote = [dict(reserva(680300, "09", llega, sale, adl=2),
+                 notas="Lactose, hazelnut and peanut allergy"),
+            dict(reserva(680301, "21", llega, sale, adl=2),
+                 notas="*no pork, no shellfish")]
+    cargar(lote, vistas=lote)
+    c.igual(len(rest.restricciones_del_dia(conn, HOY)), 2, "hay dos alergias")
+    c.igual(len(rest.restricciones_del_dia(conn, HOY, solo_quitadas=True)), 0,
+            "y ninguna quitada")
+
+    # Se quitan las dos, como paso de verdad.
+    conn.execute("UPDATE amenidad_tarea SET oculta = 1 WHERE amenidad LIKE 'Restricci%'")
+    conn.commit()
+    c.igual(len(rest.restricciones_del_dia(conn, HOY)), 0, "la hoja queda vacia")
+    quitadas = rest.restricciones_del_dia(conn, HOY, solo_quitadas=True)
+    c.igual(len(quitadas), 2, "pero las dos siguen ahi, listas para devolver")
+    c.igual(sorted(x["habitaciones"][0] for x in quitadas), ["09", "21"],
+            "con su habitacion, para saber de quien es cada una")
+
+    # Y devolver una la trae de vuelta sin tocar la otra.
+    ids = [x["id"] for x in quitadas if x["habitaciones"] == ["09"]]
+    conn.execute("UPDATE amenidad_tarea SET oculta = 0 WHERE id = ?", (ids[0],))
+    conn.commit()
+    c.igual([x["habitaciones"] for x in rest.restricciones_del_dia(conn, HOY)], [["09"]],
+            "vuelve la que se devolvio")
+    c.igual([x["habitaciones"] for x in
+             rest.restricciones_del_dia(conn, HOY, solo_quitadas=True)], [["21"]],
+            "y la otra sigue quitada")
+    conn.close()
+
+
 def una_alergia_agregada_a_mano_sale_en_la_hoja(c):
     """La otra mitad: la que el huesped avisa por telefono o al sentarse a comer.
 
@@ -670,6 +708,7 @@ PRUEBAS = [
     dos_alergias_sin_detalle_no_se_juntan,
     la_hoja_de_cocina_dice_si_se_puede_quitar,
     una_alergia_quitada_a_mano_no_vuelve_al_sincronizar,
+    una_alergia_quitada_se_puede_devolver,
     una_alergia_agregada_a_mano_sale_en_la_hoja,
 ]
 

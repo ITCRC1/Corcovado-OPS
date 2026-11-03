@@ -338,7 +338,8 @@ def es_restriccion_alimentaria(amenidad, tarea=None, detalle=None):
     return any(p in texto.lower() for p in PALABRAS_RESTRICCION)
 
 
-def restricciones_del_dia(conn, fecha, distribucion=None, cache=None):
+def restricciones_del_dia(conn, fecha, distribucion=None, cache=None,
+                          solo_quitadas=False):
     """Las restricciones alimentarias de todo el que come ese día.
 
     NO se filtra por la fecha de la amenidad, y es deliberado: una alergia no es de un
@@ -348,6 +349,11 @@ def restricciones_del_dia(conn, fecha, distribucion=None, cache=None):
 
     Quien sale ese día no aparece: el bote se va de madrugada y no desayuna aquí. Es el
     mismo criterio que usa el reparto de mesas.
+
+    `solo_quitadas` devuelve las que alguien quitó a mano en vez de las vigentes, para
+    poder enseñarlas y devolverlas. Es la MISMA función a propósito: las dos listas
+    tienen que decidir con la misma regla quién come esa noche, o una alergia quitada
+    podría no aparecer en ninguna de las dos y quedarse perdida sin que nadie lo note.
     """
     if isinstance(fecha, str):
         fecha = datetime.date.fromisoformat(fecha)
@@ -369,7 +375,8 @@ def restricciones_del_dia(conn, fecha, distribucion=None, cache=None):
             f"""SELECT a.id, a.conf_no, a.amenidad, a.tarea, a.detalle, a.estado,
                        a.area_responsable, a.origen, a.editado_a_mano
                 FROM amenidad_tarea a
-                WHERE a.conf_no IN ({marcas}) AND COALESCE(a.oculta, 0) = 0
+                WHERE a.conf_no IN ({marcas})
+                  AND COALESCE(a.oculta, 0) = {1 if solo_quitadas else 0}
                 ORDER BY a.id""", lote).fetchall():
             d = dict(f)
             if not es_restriccion_alimentaria(d["amenidad"], d["tarea"], d["detalle"]):

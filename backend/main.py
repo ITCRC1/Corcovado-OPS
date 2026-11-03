@@ -5737,9 +5737,41 @@ def restaurantes_dia(fecha: str, user: dict = Depends(exige("restaurantes"))):
         # no vuelve a leer las reservas: es una sola consulta más.
         comen = datos["cena"]["terra_kitchen"] + datos["cena"]["bar_el_bosque"]
         datos["restricciones"] = rest.restricciones_del_dia(conn, fecha, comen)
+        # Y las que alguien quitó a mano, para poder devolverlas. Van aparte y no se
+        # cuentan como alergias del día: quitarlas fue una decisión, y volver a
+        # enseñarlas en la lista principal la desharía sola.
+        #
+        # Existe porque quitar es fácil de hacer por equivocación —el lodge borró las de
+        # un día creyendo que estaban duplicadas— y una alergia perdida sin forma de
+        # recuperarla es de las cosas caras de esta pantalla.
+        datos["restricciones_quitadas"] = rest.restricciones_del_dia(
+            conn, fecha, comen, solo_quitadas=True)
     finally:
         conn.close()
     return datos
+
+
+@app.post("/api/amenidades/{amenidad_id}/devolver")
+def devolver_amenidad(amenidad_id: int,
+                      user: dict = Depends(exige("amenidades", "restaurantes",
+                                                 escribir=True))):
+    """Deshace un «quitar»: la amenidad vuelve a la hoja.
+
+    Solo se puede devolver lo que se quitó marcándolo, que es todo lo que venía de una
+    fuente. Lo agregado a mano se borra de verdad al quitarlo y no hay nada que devolver
+    —se vuelve a escribir, que para eso está el botón de agregar—.
+    """
+    conn = get_connection()
+    try:
+        fila = conn.execute(
+            "SELECT id, oculta FROM amenidad_tarea WHERE id = ?", (amenidad_id,)).fetchone()
+        if not fila:
+            raise HTTPException(status_code=404, detail="No encontrado")
+        conn.execute("UPDATE amenidad_tarea SET oculta = 0 WHERE id = ?", (amenidad_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
 
 
 @app.post("/api/restaurantes/restriccion/{amenidad_id}/estado")

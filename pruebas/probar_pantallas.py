@@ -435,6 +435,21 @@ def la_alergia_se_puede_corregir_desde_la_hoja_de_cocina(c):
     c.cierto("quitarRestriccion(" in hoja, "se puede quitar")
     c.cierto("agregarRestriccion()" in hoja, "y agregar una que no venia en la reserva")
 
+    # Y EL BOTON TAMBIEN CUANDO NO HAY NINGUNA. Lo pidio el lodge despues de quedarse
+    # sin ninguna: «crea una opcion de hacer una alergia ahi mismo en esa pantalla en
+    # caso de que no hayan alergias». El dia vacio era un callejon sin salida — el unico
+    # sitio para anotar una era la lista, y la lista no existia—, justo cuando mas falta
+    # hace: alguien avisa de una alergia y no hay ninguna anotada.
+    vacio = hoja[:hoja.find("Agrupadas por habitación") if "Agrupadas por habitación" in hoja
+                 else hoja.find("const puedoEditar")]
+    c.cierto("agregarRestriccion()" in vacio,
+             "el dia sin alergias tambien deja anotar una")
+
+    # Quitar no borra, asi que tiene que haber donde devolverlas.
+    c.cierto("panelQuitadas(" in hoja, "las quitadas se pueden ver")
+    devolver = _cuerpo_de_funcion(html, "devolverRestriccion")
+    c.cierto("/devolver" in devolver, "y devolver a la hoja")
+
     agregar = _cuerpo_de_funcion(html, "agregarRestriccion")
     c.cierto("/api/amenidades" in agregar, "la nueva se guarda por la ruta que ya existia")
     # La habitacion se ELIGE de entre las que comen, no se escribe a mano: una alergia
