@@ -400,6 +400,87 @@ def un_request_del_huesped_es_una_amenidad(c):
     c.cierto(PEDIDO not in cama, "y no se marca tambien como almohadas")
 
 
+# El texto REAL de la reserva 591649170 (Healey/Emma, hab 18, llega el 06-11-26), tal
+# como lo manda Opera. Se copia entero a proposito: lo que rompia el reconocimiento era
+# justo la forma de escribirlo —el precio metido entre las dos palabras— y un ejemplo
+# limpio no lo habria encontrado.
+NOTA_DEL_QUEQUE = (
+    "se agrega adicional Sirena $772.92 facturar a la agencia Para el vuelo de salida "
+    "deben estar registrando a las 13:45 PM, favor indicar salida del Lodge. "
+    "Favor confirmar el queque ($24.6) el de 2 personas y de vainilla para la noche "
+    "Agregar unas fresas ($28.25) con chocolate en la habitacion para el check in "
+    "con una tarjeta que diga: Dear Ann Happy Birthday!"
+)
+
+
+def el_queque_y_las_fresas_con_chocolate_se_reconocen(c):
+    """Lo encontro el lodge: «en esta reserva solicita un queque y fresas pero no se esta
+    leyendo».
+
+    Eran TRES fallos a la vez en la misma nota:
+
+      · El queque no existia: ni patron ni ficha en el catalogo. La nota lo pedia y la
+        hoja de cocina no decia nada. Es una tarea con antelacion —hay que hornearlo—
+        asi que perderla no se arregla el dia del cumpleaños.
+      · Las fresas no se reconocian por DOS motivos juntos: el patron pedia «frutas» y
+        la nota dice «fresas», y ademas exigia las dos palabras pegadas mientras el PMS
+        mete el precio en medio: «fresas ($28.25) con chocolate».
+      · La tarjeta tampoco: el patron pedia la palabra «bienvenida» y esta es «una
+        tarjeta que diga: Dear Ann…», que es justo la que da trabajo porque hay que
+        copiar el texto.
+    """
+    encontradas = importer.detectar_amenidades(reserva_con(NOTA_DEL_QUEQUE))
+    for esperada in ("Pastel / queque", "Frutas con chocolate cortesía",
+                     "Tarjeta de bienvenida", "Decoración por cumpleaños"):
+        c.cierto(esperada in encontradas, f"se detecta «{esperada}»")
+
+
+def las_formas_de_pedir_el_queque_y_las_fresas(c):
+    """Las variantes que escribe la agencia, y las que NO se pueden confundir."""
+    for texto in ("queque de cumpleanos para 4 personas", "Birthday cake, chocolate",
+                  "un pastel de vainilla", "bizcocho para la cena"):
+        c.cierto("Pastel / queque" in importer.detectar_amenidades(reserva_con(texto)),
+                 f"es un queque: {texto[:40]}")
+    for texto in ("fresas con chocolate en la habitacion",
+                  "fresas ($28.25) con chocolate",
+                  "chocolate covered strawberries",
+                  "frutas con chocolate"):
+        c.cierto("Frutas con chocolate cortesía" in
+                 importer.detectar_amenidades(reserva_con(texto)),
+                 f"son fresas con chocolate: {texto[:40]}")
+
+    # LO QUE NO PUEDE DISPARARSE. 'cake' va con \b a los dos lados justamente por esto:
+    # una amenidad que salta con el menu del desayuno enseña a ignorar la lista, y
+    # entonces el dia que hay un queque de verdad tampoco se mira.
+    for texto in ("Breakfast includes pancakes and fresh fruit",
+                  "Dessert: cheesecake for the table"):
+        c.igual("Pastel / queque" in importer.detectar_amenidades(reserva_con(texto)),
+                False, f"NO es un queque: {texto[:40]}")
+
+
+def el_queque_llega_hasta_la_base(c):
+    """De punta a punta por el camino REAL de carga: detectarlo no sirve de nada si no
+    llega a la hoja de cocina con su ficha y su area."""
+    conn = comun.base_limpia()
+    r = dict(comun.reserva(690100, "18", "06-11-26", "11-11-26", adl=2),
+             notas=NOTA_DEL_QUEQUE)
+    comun.cargar([r], vistas=[r])
+
+    guardadas = {f["amenidad"]: dict(f) for f in conn.execute(
+        """SELECT amenidad, tarea, area_responsable, detalle FROM amenidad_tarea
+           WHERE conf_no = '690100'""")}
+    c.cierto("Pastel / queque" in guardadas, "el queque llega a la base")
+    if "Pastel / queque" in guardadas:
+        q = guardadas["Pastel / queque"]
+        c.igual(q["area_responsable"], "Cocina", "y le toca a cocina")
+        c.cierto("sabor" in (q["tarea"] or "").lower(),
+                 "con la tarea que dice que hay que confirmar sabor y personas")
+        c.cierto("queque" in (q["detalle"] or "").lower(),
+                 "y el trozo de la nota por el que se reconocio")
+    c.cierto("Frutas con chocolate cortesía" in guardadas, "y las fresas tambien")
+    conn.close()
+
+
 def el_catalogo_y_los_patrones_no_se_desincronizan(c):
     """Una amenidad que se detecta pero no esta en el catalogo entra con una tarea
     generica y sin area de verdad, asi que no le llega a nadie."""
@@ -491,6 +572,9 @@ PRUEBAS = [
     el_regimen_sigue_saliendo_de_los_mismos_textos,
     el_regimen_pegado_al_paquete_con_un_mas,
     un_request_del_huesped_es_una_amenidad,
+    el_queque_y_las_fresas_con_chocolate_se_reconocen,
+    las_formas_de_pedir_el_queque_y_las_fresas,
+    el_queque_llega_hasta_la_base,
     el_catalogo_y_los_patrones_no_se_desincronizan,
     las_bebidas_y_la_cortesia_LLEGAN_A_LA_BASE,
     toda_columna_nueva_esta_en_las_dos_rutas,

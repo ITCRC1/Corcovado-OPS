@@ -129,6 +129,11 @@ AMENIDADES = [
     ("Frutas de cortesía", "Notificar a cocina para preparar canasta antes del check-in", "Cocina"),
     ("Tarjeta de bienvenida", "Notificar a recepción para colocarla antes del check-in", "Recepción"),
     ("Frutas con chocolate cortesía", "Notificar a cocina para preparar antes del check-in", "Cocina"),
+    # El queque de cumpleaños. Lo encargan por la reserva, con sabor y número de
+    # personas, y hasta ahora no estaba en ninguna lista: la nota lo pedía y la hoja de
+    # cocina no decía nada. Es una tarea con antelación —hay que hornearlo— así que
+    # perderla no se arregla el mismo día.
+    ("Pastel / queque", "Notificar a cocina — confirmar sabor y para cuántas personas", "Cocina"),
     ("Sofá cama extra", "Notificar a housekeeping para armar la habitación con anticipación", "Housekeeping"),
     ("Restricción alimentaria / alergia", "AVISAR A COCINA antes del check-in — revisar el detalle en la reserva", "Cocina"),
     ("Requerimiento de movilidad / accesibilidad", "Coordinar habitación accesible y apoyo en traslados", "Recepción/Operaciones"),

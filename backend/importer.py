@@ -48,10 +48,37 @@ AMENIDADES_PATRONES = [
     )),
     ("Botella de vino cortesía", r"botella\s+de\s+vino|vino\s+de\s+cortes[íi]a|champ[áa]n|champagne|"
                                  r"bottle\s+of\s+wine|wine\s+bottle|complimentary\s+wine"),
-    ("Frutas con chocolate cortesía", r"frutas?\s+con\s+chocolate|chocolate\s+covered"),
+    # FRESAS, no solo «frutas», y con el precio en medio.
+    #
+    # La reserva real decía «Agregar unas fresas ($28.25) con chocolate en la habitación»
+    # y no la reconocía por dos motivos a la vez: «fresas» no es «frutas», y el patrón
+    # exigía las dos palabras pegadas mientras el PMS mete el precio entre ellas. Cocina
+    # no se enteró de que había que prepararlas.
+    #
+    # Se admiten hasta dos trozos de por medio, igual que en la cena privada: es como
+    # escribe esta gente —«fresas ($28.25) con chocolate»— y no abre la puerta a
+    # cualquier cosa, porque las dos palabras tienen que seguir estando.
+    ("Frutas con chocolate cortesía",
+     r"(?:frutas?|fresas?|frutillas?|fresones?)\s+(?:\S+\s+){0,2}con\s+chocolate|"
+     r"chocolate[\s-]*covered|chocolate[\s-]*dipped|"
+     r"(?:strawberr(?:y|ies))\s+(?:\S+\s+){0,2}(?:with|in)\s+chocolate"),
+    # EL QUEQUE DE CUMPLEAÑOS. Se encarga por la reserva, con sabor y número de
+    # personas, y hay que hornearlo: perderlo no se arregla el mismo día.
+    #
+    # «cake» va con \b a los dos lados a propósito: sin eso cazaría «pancakes» del
+    # desayuno y «cheesecake» de la carta, y una amenidad que salta con el menú enseña
+    # a ignorar la lista.
+    ("Pastel / queque",
+     r"\bqueque\w*|\bpastel(?:es)?\b|\bbizcocho\b|\btarta\b|\bcake\b|birthday\s+cake"),
     ("Frutas de cortesía", r"frutas?\s+(?:de\s+)?cortes[íi]a|canasta\s+de\s+frutas|"
                            r"fruit\s+basket|basket\s+of\s+fruit|complimentary\s+fruit"),
-    ("Tarjeta de bienvenida", r"tarjeta\s+de\s+bienvenida|regalo\s+de\s+bienvenida|welcome\s+(?:card|gift)"),
+    # «con una tarjeta que diga: Dear Ann…» es un encargo igual que la tarjeta de
+    # bienvenida: alguien tiene que escribirla y ponerla en la habitación. El patrón
+    # pedía la palabra «bienvenida» y se perdía justo la que trae el texto a copiar,
+    # que es la que más trabajo da.
+    ("Tarjeta de bienvenida",
+     r"tarjeta\s+de\s+bienvenida|regalo\s+de\s+bienvenida|welcome\s+(?:card|gift)|"
+     r"(?:tarjeta|nota)\s+que\s+diga|(?:card|note)\s+that\s+says"),
     # Restricciones alimentarias y de salud: información crítica para cocina, que el
     # PDF suele escribir en inglés ("Dietary Restrictions: No seafood") o en español.
     # «Dietary:» a secas, sin la palabra «restriction», es como lo escribe media agencia:
