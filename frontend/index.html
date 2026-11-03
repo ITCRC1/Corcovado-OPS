@@ -2400,15 +2400,23 @@ function seccionTraslados(d) {
     const k = [c.fecha, c.tipo, c.punto, c.hora].map(x => encodeURIComponent(x)).join("|");
     const quienes = c.huespedes.map(h =>
       `${escaparHTML(h.room_no || "?")} ${escaparHTML((h.nombre || "").split(",")[0])}`).join(" · ");
+    // El BT es un viaje EXTRA que pidió una reserva, no la llegada ni la salida de
+    // nadie. Se marca distinto porque se coordina distinto: suele engancharse con otro
+    // operador a una hora concreta, y lo que dice la reserva está en la nota.
+    const esBT = c.tipo === "extra";
+    const etiqueta = esBT ? "BT" : (c.tipo === "entrada" ? "Entra" : "Sale");
+    const clase = esBT ? "" : (c.tipo === "entrada" ? "badge-ok" : "badge-warn");
     return `<tr>
       <td>${escaparHTML(c.fecha)}</td>
-      <td><span class="badge ${c.tipo === "entrada" ? "badge-ok" : "badge-warn"}">${c.tipo === "entrada" ? "Entra" : "Sale"}</span></td>
-      <td><strong>${escaparHTML(c.punto)}</strong></td>
+      <td><span class="badge ${clase}" ${esBT ? 'style="background:var(--forest, #2C4A3E);color:#fff;" title="Boat transfer: viaje extra que pidió la reserva"' : ""}>${etiqueta}</span></td>
+      <td><strong>${esBT ? "hab. " + escaparHTML(c.punto) : escaparHTML(c.punto)}</strong></td>
       <td>${c.hora
             ? escaparHTML(c.hora)
             : `<span style="color:var(--warn-text);font-size:11.5px;">${escaparHTML(c.hora_origen || "sin hora")}</span>`}</td>
       <td>${c.huespedes.length} hab.
-        <br><span style="font-size:10.5px;color:var(--muted);">${quienes}</span></td>
+        <br><span style="font-size:10.5px;color:var(--muted);">${quienes}</span>
+        ${c.nota_bt ? `<br><span style="font-size:10.5px;color:var(--forest, #2C4A3E);"
+             title="${escaparHTML(c.nota_bt)}">${escaparHTML(c.nota_bt.slice(0, 95))}${c.nota_bt.length > 95 ? "…" : ""}</span>` : ""}</td>
       <td style="text-align:right;font-variant-numeric:tabular-nums;"><strong>${c.pax}</strong></td>
       <td>${celdaGuia(c.guia_nombre)}</td>
       <td>${puedo

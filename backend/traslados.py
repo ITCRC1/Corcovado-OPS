@@ -35,7 +35,9 @@ confirmó, es lo que deja a alguien esperando en la pista.
 import datetime
 
 PUNTOS = ("Sierpe", "Drake")
-TIPOS = ("entrada", "salida")
+# El BT («boat transfer») es el tercer tipo: un viaje de bote EXTRA, a mitad de estadía,
+# que no es ni la llegada ni la salida del huésped. Ver boat_transfer.py.
+TIPOS = ("entrada", "salida", "extra")
 
 # La corrida de los que todavía no tienen hora. No se esconden: son justamente los que
 # hay que resolver, y una lista que solo muestre a los que ya tienen hora esconde el
@@ -163,10 +165,13 @@ def asignar(conn, fecha, tipo, punto, hora, guia=None, bote=None, nota=None,
     """
     tipo = (tipo or "").strip().lower()
     if tipo not in TIPOS:
-        return None, "El traslado es de entrada o de salida."
-    p = normalizar_punto(punto)
+        return None, "El traslado es de entrada, de salida o un BT."
+    # El BT no sale de un muelle fijo: su «punto» es la habitación que lo pidió, porque
+    # es un viaje de ESA reserva y no de todos los que coinciden en hora.
+    p = (punto or "").strip() if tipo == "extra" else normalizar_punto(punto)
     if not p:
-        return None, "El punto tiene que ser Sierpe o Drake."
+        return None, ("Falta la habitación del BT." if tipo == "extra"
+                      else "El punto tiene que ser Sierpe o Drake.")
     if not (fecha or "").strip():
         return None, "Falta la fecha del traslado."
     hora = (hora or "").strip()
@@ -281,6 +286,38 @@ def corridas(conn, desde, hasta, capacidades=None):
             })
             g["pax"] += (d["adl"] or 0) + (d["chl"] or 0)
 
+    # --- Los BT: viajes de bote EXTRA que pide una reserva ---
+    #
+    # Van en la MISMA lista que las demás corridas a propósito. Lo pidió el lodge: «debe
+    # ser cargada en la parte de transporte para ser asignada el capitán o ayudante».
+    # Tenerlos en otra tabla de la pantalla sería tener dos sitios donde mirar quién
+    # maneja un bote ese día, y el que se mira menos es el que se olvida.
+    #
+    # Cada BT es una corrida PROPIA de su reserva, no se junta con nadie: el huésped lo
+    # pidió para él, normalmente para engancharse con otro operador a una hora concreta.
+    # Por eso el «punto» de la clave es su habitación.
+    for f in conn.execute(
+            """SELECT e.conf_no, e.fecha, e.hora, e.nota,
+                      r.room_no, r.nombre_principal, r.adl, r.chl
+               FROM traslado_extra e JOIN reserva r ON r.conf_no = e.conf_no
+               WHERE e.fecha BETWEEN ? AND ? AND r.res_status != 'CANCELADA'
+               ORDER BY e.fecha, e.hora, r.room_no""", (desde, hasta)).fetchall():
+        d = dict(f)
+        punto = str(d["room_no"] or d["conf_no"])
+        clave = (d["fecha"], "extra", punto, d["hora"] or SIN_HORA)
+        g = grupos.setdefault(clave, {
+            "fecha": d["fecha"], "tipo": "extra", "punto": punto,
+            "hora": d["hora"] or SIN_HORA,
+            "hora_origen": "de la nota" if d["hora"] else "no dice la hora",
+            "huespedes": [], "pax": 0, "nota_bt": d["nota"],
+        })
+        g["huespedes"].append({
+            "conf_no": d["conf_no"], "room_no": d["room_no"],
+            "nombre": d["nombre_principal"],
+            "pax": (d["adl"] or 0) + (d["chl"] or 0),
+        })
+        g["pax"] += (d["adl"] or 0) + (d["chl"] or 0)
+
     puestas = asignaciones(conn, sorted({k[0] for k in grupos}))
     caps = capacidades if capacidades is not None else capacidades_de_botes(conn)
 
@@ -299,6 +336,9 @@ def corridas(conn, desde, hasta, capacidades=None):
         g["capitan_nombre"] = puesta.get("capitan_nombre")
         g["ayudante_nombre"] = puesta.get("ayudante_nombre")
         g["nota"] = puesta.get("nota")
+        # Lo que la reserva escribió del BT: con quién se engancha, a qué hora lo
+        # recogen. Quien asigna el bote lo necesita y no está en ningún otro sitio.
+        g.setdefault("nota_bt", None)
         # El AYUDANTE no entra en 'falta': no todas las corridas llevan uno —un bote
         # chico con dos pasajeros va solo con su capitán— así que contarlo como faltante
         # pintaría de amarillo media pantalla todos los días y el aviso dejaría de

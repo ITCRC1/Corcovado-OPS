@@ -722,6 +722,21 @@ def procesar_linea(line, current, section):
                     # sobra es contexto (quién coordina, la hora, una nota) y avisarlo
                     # sería un falso positivo: los avisos falsos enseñan a ignorar los
                     # avisos de verdad. El texto completo queda igual en las notas.
+                    # EL BT («boat transfer»): un viaje de bote EXTRA que pide la
+                    # reserva, escrito en el itinerario como cualquier otro día:
+                    # «08: BT».
+                    #
+                    # Aquí el día viene DADO, y eso es lo que lo hace fiable: no hay que
+                    # deducirlo de una frase en texto libre, donde un número suelto
+                    # puede ser un precio, un vuelo o una hora. Antes esta línea se
+                    # perdía en silencio —«BT» tiene dos letras y el aviso de actividad
+                    # no reconocida pide más de dos— así que el viaje no llegaba a
+                    # Transporte y nadie le asignaba bote ni capitán.
+                    #
+                    # «\bBT\b» no caza «C-EBT», que es otra cosa (cama o almohada extra)
+                    # y aparece en la misma reserva.
+                    if re.search(r"\bBT\b", resto, re.IGNORECASE):
+                        current.setdefault("traslados_extra", []).append({"dia": dia})
                     if not encontrados:
                         resto_limpio = re.sub(r"\([^)]*\)", " ", resto)
                         resto_limpio = re.sub(

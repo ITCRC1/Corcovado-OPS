@@ -765,6 +765,10 @@ def incorporar_texto_de_nota(reserva, texto):
         reserva["notas_operacion"] = leido_nota["notas_operacion"]
     if leido_nota.get("actividades_no_reconocidas"):
         reserva["actividades_no_reconocidas"] = leido_nota["actividades_no_reconocidas"]
+    # Los BT («08: BT») del itinerario. Van aparte de los tours porque no lo son: son un
+    # viaje de bote extra, y lo que necesitan es salir en Transporte con su capitán.
+    if leido_nota.get("traslados_extra"):
+        reserva["traslados_extra"] = leido_nota["traslados_extra"]
     # El itinerario de la nota ('10: PNC 123456') es LA fuente de los tours: el día
     # correcto y el número de entrada del SINAC, que el paquete no tiene.
     # ¿La nota TIENE una sección de operación? Es distinto de que esté vacía.

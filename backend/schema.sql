@@ -156,6 +156,24 @@ CREATE TABLE IF NOT EXISTS huesped (
 );
 
 -- Tours asignados (agenda real, día por día)
+-- El BT («boat transfer»): el viaje de bote EXTRA que pide una reserva, aparte del de
+-- llegada y el de salida. Se lee de la nota —ver boat_transfer.py— y existe para que
+-- aparezca en Transporte y alguien le asigne bote, capitán y ayudante.
+--
+-- La fila la regenera la fuente en cada carga, como las amenidades: lo que manda es lo
+-- que diga la reserva. La ASIGNACIÓN no vive aquí sino en 'traslado', con la misma
+-- clave que las demás corridas, para que una sola pantalla las cubra todas.
+CREATE TABLE IF NOT EXISTS traslado_extra (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conf_no TEXT REFERENCES reserva(conf_no),
+    fecha TEXT NOT NULL,              -- ISO, el día del viaje
+    hora TEXT,                        -- 'HH:MM', o NULL si la nota no lo dice
+    nota TEXT,                        -- el trozo de la reserva, para quien lo coordine
+    origen TEXT NOT NULL DEFAULT 'PDF',
+    creado_en TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_traslado_extra_fecha ON traslado_extra(fecha);
+
 CREATE TABLE IF NOT EXISTS tour_asignado (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conf_no TEXT REFERENCES reserva(conf_no),

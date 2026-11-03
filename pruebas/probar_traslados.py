@@ -957,6 +957,162 @@ def el_codigo_privado_del_catalogo_tambien_cuenta(c):
     conn.close()
 
 
+# ---------------------------------------------------------------------------
+# El BT: el viaje de bote EXTRA que pide una reserva
+# ---------------------------------------------------------------------------
+#
+# Lo pidio el lodge: «existe una nomenclatura denominada BT (boat transfer), cuando en
+# alguna reserva aparezca esta debe ser cargada en la parte de transporte para ser
+# asignada el capitan o ayudante correspondiente».
+#
+# Transporte armaba sus corridas con el punto de ENTRADA y el de SALIDA, asi que un BT
+# no aparecia en ninguna parte: nadie le asignaba bote ni capitan y el dia del viaje
+# habia que acordarse.
+
+# Los dos textos REALES del lodge. Se copian enteros a proposito: lo que decide si esto
+# funciona es la forma de escribirlo, y un ejemplo limpio no prueba nada.
+BT_HAB_09 = ("Clientes solicitan BT el 08 para tour con Pacheco. Llegan a las 6:25 AM "
+             "y regresan a las 2:00 PM · C-EBT 07/11")
+BT_HAB_08 = ("Para el 25 solicitan BT roundtrip  a un bote de unos amigos que van para "
+             "Sirena. Llegan por ellos cerca de la orilla a las 6:20 AM")
+
+
+def el_dia_del_BT_sale_del_itinerario_no_del_texto(c):
+    """EL DIA LO DA EL ITINERARIO, y esto es lo que hace fiable todo lo demas.
+
+    La reserva escribe «08: BT» en su linea de operacion, igual que un tour. Deducirlo
+    de una frase suelta no es fiable —un numero en una nota puede ser un precio, un
+    vuelo o una hora— y, medido sobre las reservas reales, ademas repetia el mismo viaje
+    una vez por cada campo donde la nota aparecia: la habitacion 09 salia con CINCO
+    corridas donde hay dos, y con el pax duplicado."""
+    import boat_transfer as bt
+
+    viajes, avisos = bt.leer(["08"], BT_HAB_09, "2026-11-06", "2026-11-11")
+    c.igual(avisos, [], "la hab 09 se entiende entera")
+    c.igual([(v["fecha"], v["hora"]) for v in viajes],
+            [("2026-11-08", "06:25"), ("2026-11-08", "14:00")],
+            "ida y vuelta el dia 8: son DOS movimientos de bote")
+
+    viajes, _ = bt.leer(["25"], BT_HAB_08, "2026-11-25", "2026-11-28")
+    c.igual([(v["fecha"], v["hora"]) for v in viajes], [("2026-11-25", "06:20")],
+            "y uno solo para la hab 08, que trae una sola hora")
+
+    # El MISMO dia nombrado dos veces no son dos viajes: la nota llega por varios campos.
+    viajes, _ = bt.leer(["08", "08"], BT_HAB_09, "2026-11-06", "2026-11-11")
+    c.igual(len(viajes), 2, "el dia repetido no duplica las corridas")
+
+
+def el_parser_recoge_el_BT_del_itinerario(c):
+    """La linea «08: BT» se perdia EN SILENCIO: «BT» tiene dos letras y el aviso de
+    actividad no reconocida pide mas de dos. Asi que el viaje no llegaba a Transporte y
+    nadie le asignaba bote ni capitan — sin ningun error de por medio."""
+    import pdf_parser
+    leido = pdf_parser.leer_texto_de_reserva(
+        "Operacion:\n06: In\n07: C-EBT\n08: BT\n11: Out\n")
+    dias = [x["dia"] for x in (leido.get("traslados_extra") or [])]
+    c.igual(dias, ["08"], "el BT del itinerario se recoge, con su dia")
+    # «C-EBT» NO es un BT: es el aviso de cama o almohada extra, y esta en la linea de
+    # al lado en la misma reserva.
+    c.igual(len(leido.get("traslados_extra") or []), 1,
+            "y «C-EBT» no se confunde con uno")
+
+
+def un_BT_sin_dia_no_se_inventa(c):
+    """El error caro de esta pantalla. Un bote preparado el dia que no era cuesta lo
+    mismo que no prepararlo, y encima nadie lo revisa porque la pantalla ya decia que
+    estaba cubierto. Se avisa y que recepcion lo escriba en el itinerario."""
+    import boat_transfer as bt
+
+    viajes, avisos = bt.leer([], "Clientes solicitan BT para ir al pueblo",
+                             "2026-11-06", "2026-11-11")
+    c.igual(viajes, [], "sin dia en el itinerario no se crea ninguna corrida")
+    c.igual(len(avisos), 1, "pero se avisa, que es lo que hace que alguien lo escriba")
+
+    # Y NO se avisa cuando el BT viene incluido en la tarifa: ahi no hay nada extra que
+    # preparar, y los avisos falsos enseñan a ignorar los de verdad.
+    viajes, avisos = bt.leer([], "PAQUETE 3N/4D+FULL BOARD BT INCLUDED PNC + CIS",
+                             "2026-11-06", "2026-11-11")
+    c.igual(viajes, [], "el BT del paquete no es un viaje extra")
+    c.igual(avisos, [], "y no se avisa de el")
+
+    # Un dia del itinerario que no cae en la estadia tampoco se usa.
+    viajes, avisos = bt.leer(["28"], "Solicitan BT", "2026-11-06", "2026-11-11")
+    c.igual(viajes, [], "un dia fuera de la estadia no se usa")
+    c.igual(len(avisos), 1, "tambien se avisa")
+
+    # Sin hora SI se crea: la corrida sale «sin hora» y la pantalla lo señala, que es
+    # distinto de inventarsela.
+    viajes, _ = bt.leer(["09"], "Solicitan BT para ir a Drake",
+                        "2026-11-06", "2026-11-11")
+    c.igual([(v["fecha"], v["hora"]) for v in viajes], [("2026-11-09", None)],
+            "sin hora la corrida existe igual, marcada")
+
+
+def el_BT_sale_en_transporte_y_se_le_asigna_capitan(c):
+    """De punta a punta por el camino REAL de carga, que es lo que pidio el lodge:
+    que aparezca en Transporte para poder asignarle capitan."""
+    limpiar()
+    dia = HOY + datetime.timedelta(days=2)
+    r = dict(reserva(720100, "09", ddmmyy(HOY),
+                     ddmmyy(HOY + datetime.timedelta(days=5)), adl=2),
+             punto_entrada="Sierpe",
+             # El dia sale del ITINERARIO, como lo escribe la reserva de verdad.
+             traslados_extra=[{"dia": f"{dia.day:02d}"}],
+             notas=("Clientes solicitan BT para tour con Pacheco. "
+                    "Llegan a las 6:25 AM y regresan a las 2:00 PM"))
+    cargar([r], vistas=[r])
+
+    conn = conexion()
+    guardados = [dict(x) for x in conn.execute(
+        "SELECT fecha, hora, nota FROM traslado_extra ORDER BY hora")]
+    c.igual(len(guardados), 2, "se guardan los dos viajes del BT")
+    if guardados:
+        c.igual(guardados[0]["fecha"], dia.isoformat(), "el dia que dice la nota")
+        c.cierto("Pacheco" in (guardados[0]["nota"] or ""),
+                 "con el texto de la reserva, que es lo que necesita quien lo coordina")
+
+    lista = [x for x in tr.corridas(conn, iso(dia), iso(dia)) if x["tipo"] == "extra"]
+    c.igual(len(lista), 2, "y salen DOS corridas en Transporte")
+    if lista:
+        c.igual(lista[0]["punto"], "09", "identificadas por su habitacion")
+        c.cierto("capitán" in lista[0]["falta"], "pidiendo capitan, como cualquier corrida")
+
+        # Y se les puede asignar, que es para lo que estan.
+        k = lista[0]
+        ok, problema = tr.asignar(conn, k["fecha"], "extra", k["punto"], k["hora"],
+                                  bote="TIBURON", capitan="WILL")
+        c.igual(problema, None, "se puede asignar bote y capitan")
+        de_nuevo = [x for x in tr.corridas(conn, iso(dia), iso(dia))
+                    if x["tipo"] == "extra" and x["hora"] == k["hora"]]
+        c.igual(de_nuevo[0]["capitan_nombre"], "WILL", "y queda guardado")
+        # La OTRA corrida del mismo dia no se toca: son dos viajes distintos.
+        otra = [x for x in tr.corridas(conn, iso(dia), iso(dia))
+                if x["tipo"] == "extra" and x["hora"] != k["hora"]]
+        c.igual(otra[0]["capitan_nombre"], None, "sin tocar el otro viaje del dia")
+    conn.close()
+
+
+def el_BT_de_una_cancelada_no_pide_bote(c):
+    """Lo mismo que ya valia para las demas corridas: una cancelada no viaja."""
+    limpiar()
+    dia = HOY + datetime.timedelta(days=2)
+    r = dict(reserva(720110, "09", ddmmyy(HOY),
+                     ddmmyy(HOY + datetime.timedelta(days=5)), adl=2),
+             punto_entrada="Sierpe",
+             traslados_extra=[{"dia": f"{dia.day:02d}"}],
+             notas="Solicitan BT a las 7:00 AM")
+    cargar([r], vistas=[r])
+    conn = conexion()
+    c.igual(len([x for x in tr.corridas(conn, iso(dia), iso(dia))
+                 if x["tipo"] == "extra"]), 1, "viva, el BT pide bote")
+
+    conn.execute("UPDATE reserva SET res_status = 'CANCELADA' WHERE conf_no = '720110'")
+    conn.commit()
+    c.igual(len([x for x in tr.corridas(conn, iso(dia), iso(dia))
+                 if x["tipo"] == "extra"]), 0, "cancelada, no")
+    conn.close()
+
+
 PRUEBAS = [
     los_que_van_a_la_misma_hora_van_juntos,
     horas_distintas_son_corridas_distintas,
@@ -987,6 +1143,11 @@ PRUEBAS = [
     la_base_ya_instalada_tambien_se_corrige,
     un_tour_terrestre_no_sale_en_transporte,
     la_pared_de_escalada_se_reconoce_por_su_nombre,
+    el_dia_del_BT_sale_del_itinerario_no_del_texto,
+    el_parser_recoge_el_BT_del_itinerario,
+    un_BT_sin_dia_no_se_inventa,
+    el_BT_sale_en_transporte_y_se_le_asigna_capitan,
+    el_BT_de_una_cancelada_no_pide_bote,
     el_codigo_privado_del_catalogo_tambien_cuenta,
     dejar_sin_asignar_es_distinto_de_no_mandar_el_dato,
     no_se_asigna_a_un_punto_inventado,

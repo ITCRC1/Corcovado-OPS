@@ -528,6 +528,71 @@ def _guardar_tours(cur, r, borrar_si_vacio=True):
         )
 
 
+def _guardar_traslados_extra(cur, r, origen="PDF"):
+    """Los BT («boat transfer») que pide la reserva, para que salgan en Transporte.
+
+    Se regeneran como las amenidades —se borran los de esta fuente y se vuelven a leer—
+    porque lo que manda es lo que diga la reserva: si recepción corrige el día en Opera,
+    la corrida tiene que moverse con él.
+
+    La ASIGNACIÓN no se toca: vive en 'traslado', con la misma clave que las demás
+    corridas, así que mover el día deja la corrida nueva sin cubrir —que es justo lo que
+    hay que ver— en vez de arrastrar un bote que nadie confirmó para la fecha nueva.
+    """
+    import boat_transfer as _bt
+
+    llegada = _iso_de_ddmmyy(r.get("arr_date"))
+    salida = _iso_de_ddmmyy(r.get("dep_date"))
+    # EL DÍA sale del itinerario («08: BT»), que es donde la reserva lo escribe. El
+    # texto solo aporta la hora y el contexto. Deducir el día de una frase suelta ponía
+    # botes en fechas inventadas y repetía el mismo viaje una vez por cada campo donde
+    # la nota aparecía: medido, la habitación 09 salía con 5 corridas donde hay 2.
+    dias = [x.get("dia") for x in (r.get("traslados_extra") or []) if x.get("dia")]
+    # 'notas_operacion' va el PRIMERO y no puede faltar: es donde el lodge escribe la
+    # frase que pide el BT («Clientes solicitan BT para tour con Pacheco. Llegan a las
+    # 6:25 AM»). Sin ella, el trozo que se enseñaba en la corrida acababa siendo el del
+    # rooming —que está al lado y tiene números de pasaporte— y quien iba a coordinar el
+    # bote leía «Rooming: Donna Hoyle 644669711…» en vez de con quién se engancha.
+    def _plano(valor):
+        """Algunos de estos campos son LISTAS de renglones, no texto.
+
+        Con str() se colaban los corchetes de Python y la corrida mostraba
+        «['Clientes solicitan BT…']» en la pantalla del muelle.
+        """
+        if isinstance(valor, (list, tuple)):
+            return " ".join(_plano(x) for x in valor)
+        return str(valor or "")
+
+    texto = " ".join(_plano(r.get(c)) for c in
+                     ("notas_operacion", "notas", "texto_completo", "adicionales_raw",
+                      "nota_ingreso", "nota_en_casa", "nota_salida"))
+    viajes, avisos = _bt.leer(dias, texto, llegada, salida)
+
+    cur.execute("DELETE FROM traslado_extra WHERE conf_no = ? AND origen = ?",
+                (r["conf_no"], origen))
+    for v in viajes:
+        cur.execute(
+            """INSERT INTO traslado_extra (conf_no, fecha, hora, nota, origen)
+               VALUES (?,?,?,?,?)""",
+            (r["conf_no"], v["fecha"], v["hora"], v["nota"], origen))
+
+    # Un BT sin día NO se inventa: se avisa. Un bote preparado el día que no era cuesta
+    # lo mismo que no prepararlo, y encima nadie lo revisa porque la pantalla ya decía
+    # que estaba cubierto.
+    # UN aviso por reserva, no uno por frase. El mismo BT se nombra en varios campos y
+    # el texto del aviso cambia un poco entre ellos, así que deduplicar por el mensaje
+    # exacto dejaba pasar dos y tres avisos del mismo viaje.
+    for aviso in avisos[:1]:
+        mensaje = (f"Hab. {r.get('room_no') or '—'} (reserva {r['conf_no']}): {aviso}")
+        ya = cur.execute(
+            "SELECT 1 FROM alerta WHERE tipo='BT_SIN_FECHA' AND resuelto=0 "
+            "AND mensaje LIKE ?", (f"Hab.%(reserva {r['conf_no']}):%",)).fetchone()
+        if not ya:
+            cur.execute(
+                "INSERT INTO alerta (tipo, referencia_id, mensaje) "
+                "VALUES ('BT_SIN_FECHA', NULL, ?)", (mensaje,))
+
+
 def _codigo_del_catalogo(codigo, del_catalogo):
     """El código del lodge para lo que venga, o None si no se reconoce.
 
@@ -714,6 +779,9 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
             if "amenidades" in manda:
                 _guardar_amenidades(cur, r, _iso_de_ddmmyy(r.get("arr_date")),
                                     origen=origen_parcial)
+            # El BT va con el transporte, que es lo que es: un viaje de bote.
+            if "transporte" in manda:
+                _guardar_traslados_extra(cur, r, origen=origen_parcial)
             if "tours" in manda:
                 # Solo se borran los tours si la fuente LEYÓ el itinerario y estaba
                 # vacío. Si ni siquiera pudo leerlo, no sabe nada y no debe borrar.
@@ -773,6 +841,7 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
             _sacar_de_la_operacion(cur, r["conf_no"])
         else:
             _guardar_amenidades(cur, r, _iso_de_ddmmyy(r.get("arr_date")))
+            _guardar_traslados_extra(cur, r)
             _guardar_rooming(cur, r)
             _guardar_tours(cur, r)
 
