@@ -1319,7 +1319,7 @@ async function loadDashboard(fecha) {
         <div class="stat" onclick="mostrarListaDash('entran_hoy')"><p class="stat-label">Entran hoy</p><p class="stat-value">${d.entran_hoy.length}</p></div>
         <div class="stat" onclick="mostrarListaDash('salen_hoy')"><p class="stat-label">Salen hoy</p><p class="stat-value">${d.salen_hoy.length}</p></div>
         <div class="stat" onclick="mostrarListaDash('en_casa')"><p class="stat-label">En casa</p><p class="stat-value">${d.en_casa.length}</p></div>
-        <div class="stat" onclick="mostrarListaDash('alertas')"><p class="stat-label">Alertas activas</p><p class="stat-value">${d.alertas.length}</p></div>
+        <div class="stat" onclick="mostrarListaDash('alertas')"><p class="stat-label">Alertas del día</p><p class="stat-value">${d.alertas.length}</p></div>
       </div>
       <div id="dash-detalle"></div>
       ${(d.sinac_vencidas?.length || d.sinac_urgentes?.length) ? `
@@ -1505,7 +1505,23 @@ function mostrarListaDash(campo) {
   if (event && event.currentTarget) event.currentTarget.classList.add("selected");
   const d = window._dashData;
   if (campo === "alertas") {
-    panel.innerHTML = `<div class="detail-panel">${d.alertas.length ? d.alertas.map(a => `<p class="note-line">⚠ ${a.mensaje}</p>`).join("") : "Sin alertas activas."}</div>`;
+    // Los avisos llegan ya acotados al día que se está mirando (ver alertas.py). Aquí
+    // solo se separan los que no son de ningún día: esos van rotulados aparte, porque
+    // mezclados con los del día parecerían de hoy y nadie los resolvería nunca.
+    const delDia = d.alertas.filter(a => a.desde);
+    const sinFecha = d.alertas.filter(a => !a.desde);
+    const otros = d.alertas_otros_dias || 0;
+    const linea = a => `<p class="note-line">⚠ ${escaparHTML(a.mensaje)}</p>`;
+    panel.innerHTML = `<div class="detail-panel">
+      ${delDia.length ? `<p style="font-weight:600;margin:0 0 6px;">Del ${d.fecha} (${delDia.length})</p>
+        ${delDia.map(linea).join("")}` : ""}
+      ${sinFecha.length ? `<p style="font-weight:600;margin:${delDia.length ? "14px" : "0"} 0 2px;">Sin fecha (${sinFecha.length})</p>
+        <p style="font-size:11px;color:var(--muted);margin:0 0 6px;">No son de un día concreto — salen siempre hasta que alguien los resuelva.</p>
+        ${sinFecha.map(linea).join("")}` : ""}
+      ${(!delDia.length && !sinFecha.length) ? "Sin alertas para este día." : ""}
+      ${otros ? `<p style="font-size:11px;color:var(--muted);margin:14px 0 0;">
+        Hay ${otros} aviso${otros > 1 ? "s" : ""} de otras fechas. Cambia la fecha de arriba para ver${otros > 1 ? "los" : "lo"}.</p>` : ""}
+    </div>`;
     return;
   }
   const titulo = {entran_hoy:"Entran hoy", salen_hoy:"Salen hoy", en_casa:"En casa"}[campo];

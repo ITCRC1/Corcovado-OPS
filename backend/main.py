@@ -16,6 +16,7 @@ from validations import (validar_todos_los_tours, validar_tour_asignado,
                          detectar_conflictos_asignacion, guias_ocupados)
 import auth
 import tours_pax
+import alertas as _alertas
 
 app = FastAPI(title="Sistema de Operación Hotelera - Sierpe/Drake")
 
@@ -290,16 +291,19 @@ def dashboard(fecha: str, user: dict = Depends(exige("dashboard"))):
         (fecha,),
     ).fetchall()
 
-    # LAS ALERTAS DE OPERA SE ACOTAN AL DÍA. Son 52 en la ventana y el dashboard las
-    # enseñaba todas: una lista de avisos que no caben en la pantalla es una lista que
-    # nadie lee, y entonces tampoco se lee el aviso que sí era de hoy. Las demás siguen
-    # donde siempre, en el detalle de su reserva.
-    confs_del_dia = {str(x["conf_no"]) for x in (list(entran) + list(en_casa))
-                     if x["conf_no"]}
-    alertas = [a for a in conn.execute(
-        "SELECT tipo, mensaje, referencia_texto FROM alerta WHERE resuelto = 0").fetchall()
-        if a["tipo"] != "ALERTA_OPERA"
-        or str(a["referencia_texto"] or "") in confs_del_dia]
+    # LOS AVISOS SON DEL DÍA QUE SE ESTÁ MIRANDO, igual que todo lo demás en esta
+    # pantalla. Antes solo los de Opera se acotaban al día y el resto salía entero, de
+    # cualquier fecha y aunque ya hubiera pasado: trece avisos de capacidad repartidos
+    # por toda la ventana, y entre ellos el de hoy. Lo pidió el lodge —«eliminar las
+    # alertas con fechas vencidas y solo mostrar las alertas que el usuario filtre por
+    # fechas»— y la regla vive en alertas.py, que es donde se explica cómo se le saca la
+    # fecha a un aviso que no tiene columna de fecha.
+    del_dia, sin_fecha, alertas_otros_dias = _alertas.repartir(
+        conn,
+        conn.execute("""SELECT id, tipo, mensaje, referencia_id, referencia_texto
+                        FROM alerta WHERE resuelto = 0""").fetchall(),
+        fecha)
+    alertas = del_dia + sin_fecha
 
     # Resumen de entradas SINAC cuyo plazo de compra (15 días antes) está vencido o
     # por vencer, para avisarlo en el dashboard sin tener que entrar a esa pantalla.
@@ -355,6 +359,8 @@ def dashboard(fecha: str, user: dict = Depends(exige("dashboard"))):
         "en_casa": [reserva_resumen(r) for r in en_casa],
         "tours": [dict(t) for t in tours],
         "alertas": [dict(a) for a in alertas],
+        "alertas_sin_fecha": len(sin_fecha),
+        "alertas_otros_dias": alertas_otros_dias,
         "spa": spa_citas,
         "spa_por_confirmar": len([c for c in spa_citas if c["estado"] == "SOLICITADA"]),
     }
