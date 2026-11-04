@@ -2906,6 +2906,78 @@ async function guardarAsignacion(tourId) {
   }
 }
 
+// ---------- VISTA PREVIA DE LA HOJA DEL DÍA ----------
+//
+// Se enseña EL PDF DE VERDAD, no un dibujo parecido hecho en HTML. Esta hoja se imprime
+// y se fotografía para mandarla al grupo, así que una vista previa que no sea el
+// documento final podría mentir justo en lo que se va a repartir: una columna que
+// allá se recorta, una fila que se va a la segunda página.
+//
+// El PDF se pide UNA vez y se reutiliza para ver, imprimir y descargar, así que lo que
+// se mira y lo que se manda son el mismo archivo, no dos generaciones distintas.
+async function vistaPreviaHoja(fecha) {
+  avisar("Preparando la hoja…");
+  let blob;
+  try {
+    const res = await fetchAuth(
+      `${API}/api/export/resumen-operacion?fecha=${fecha}&formato=pdf`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
+    blob = await res.blob();
+  } catch (e) {
+    avisar("No se pudo generar la hoja: " + e.message, true);
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+
+  const fondo = document.createElement("div");
+  fondo.className = "modal-fondo";
+  fondo.id = "modal-hoja";
+  const cerrar = () => { URL.revokeObjectURL(url); fondo.remove(); };
+  fondo.onclick = (e) => { if (e.target === fondo) cerrar(); };
+  fondo.innerHTML = `
+    <div class="modal-caja" style="max-width:1180px;">
+      <div class="modal-encabezado">
+        <div>
+          <p class="title">Hoja de operación ${etiquetaFecha(fecha)}</p>
+          <p class="subtitle">Así se va a imprimir. Es el mismo archivo que se descarga.</p>
+        </div>
+        <button class="modal-cerrar" id="hoja-x" title="Cerrar">×</button>
+      </div>
+      <iframe id="hoja-marco" src="${url}#toolbar=0&navpanes=0"
+              style="width:100%;height:68vh;min-height:420px;border:1px solid var(--linea,#d8d8d0);
+                     border-radius:8px;background:#fff;margin-top:10px;"></iframe>
+      <p style="margin:10px 0 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <button class="btn btn-primary" id="hoja-imprimir">🖨 Imprimir</button>
+        <button class="btn" id="hoja-descargar">⬇ Descargar PDF</button>
+        <span style="font-size:11.5px;color:var(--muted);">
+          Si el recuadro sale en blanco —pasa en algunos teléfonos, que no traen visor de
+          PDF— descárgalo y se abre igual.</span>
+      </p>
+    </div>`;
+  document.body.appendChild(fondo);
+
+  fondo.querySelector("#hoja-x").onclick = cerrar;
+  fondo.querySelector("#hoja-imprimir").onclick = () => {
+    // Se imprime el PDF que ya está cargado, no la página: imprimir la pantalla daría
+    // el menú, las tarjetas y los botones.
+    const marco = document.getElementById("hoja-marco");
+    try {
+      marco.contentWindow.focus();
+      marco.contentWindow.print();
+    } catch (e) {
+      // Algunos navegadores no dejan imprimir dentro de un iframe de blob. Abrirlo en
+      // su propia pestaña siempre funciona, y desde ahí se imprime.
+      window.open(url, "_blank");
+    }
+  };
+  fondo.querySelector("#hoja-descargar").onclick = () => {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `operacion-${fecha}.pdf`;
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+}
+
 // ---------- TRANSPORTE ----------
 async function loadTransporte(fecha, desde, hasta) {
   setActive(3);
@@ -5666,6 +5738,7 @@ async function loadResumenOperacion(fecha) {
           <button class="btn" onclick="loadResumenOperacion(shiftDate('${fecha}',1))">›</button>
           <button class="btn" onclick="loadResumenOperacion(hoyISO())">Hoy</button>
           <button class="btn" onclick="loadResumenOperacion(masDiasISO(1))">Mañana</button>
+          <button class="btn btn-primary" onclick="vistaPreviaHoja('${fecha}')">👁 Vista previa</button>
           <button class="btn" onclick="descargar('resumen-operacion', {fecha:'${fecha}'}, 'xlsx')">⬇ Excel</button>
           <button class="btn" onclick="descargar('resumen-operacion', {fecha:'${fecha}'}, 'pdf')">⬇ PDF</button>
         </div>

@@ -496,6 +496,37 @@ def las_canceladas_no_salen_en_ningun_modulo(c):
     c.cierto("res_status != 'CANCELADA'" in bloque, "y en_casa sigue filtrando")
 
 
+def la_hoja_del_dia_se_puede_ver_antes_de_imprimir(c):
+    """Lo pidio el lodge: «en la parte de resumen de operacion necesito tener una vista
+    previa antes de imprimir un pdf».
+
+    Se enseña EL PDF DE VERDAD, no un dibujo parecido hecho en HTML. Esta hoja se
+    imprime y se fotografia para mandarla al grupo, asi que una vista previa que no sea
+    el documento final podria mentir justo en lo que se reparte: una columna que alla se
+    recorta, una fila que se va a la segunda pagina. Ya paso una vez — la tabla se salia
+    de la hoja y el PDF se generaba sin error."""
+    html = _html()
+    resumen = _cuerpo_de_funcion(html, "loadResumenOperacion")
+    c.cierto("vistaPreviaHoja(" in resumen, "el resumen ofrece la vista previa")
+
+    previa = _cuerpo_de_funcion(html, "vistaPreviaHoja")
+    c.cierto("/api/export/resumen-operacion" in previa and "formato=pdf" in previa,
+             "que pide el PDF de verdad")
+    c.cierto("<iframe" in previa, "y lo enseña dentro de la pantalla")
+
+    # UNA sola generacion para ver, imprimir y descargar: si se pidiera otra vez, lo
+    # que se mira y lo que se manda podrian ser archivos distintos.
+    c.igual(previa.count("/api/export/resumen-operacion"), 1,
+            "el PDF se pide una sola vez y se reutiliza")
+    c.cierto("hoja-imprimir" in previa and "hoja-descargar" in previa,
+             "con imprimir y descargar sobre el mismo archivo")
+    # Imprimir tiene que imprimir el PDF, no la pantalla: imprimir la pagina daria el
+    # menu, las tarjetas y los botones.
+    c.cierto("contentWindow.print()" in previa, "imprime el PDF, no la pantalla")
+    # Y el objeto se libera al cerrar: son megabytes por cada vez que se abre.
+    c.cierto("revokeObjectURL" in previa, "y se libera la memoria al cerrar")
+
+
 def el_capitan_y_el_ayudante_se_eligen_en_transporte(c):
     """Los dos selectores nuevos, y que salgan de la misma lista de capitanes."""
     html = _html()
@@ -729,6 +760,7 @@ PRUEBAS = [
     el_tour_privado_se_ve_y_se_cuenta_aparte,
     la_alergia_se_puede_corregir_desde_la_hoja_de_cocina,
     las_canceladas_no_salen_en_ningun_modulo,
+    la_hoja_del_dia_se_puede_ver_antes_de_imprimir,
     el_capitan_y_el_ayudante_se_eligen_en_transporte,
     reservas_muestra_los_ingresos_de_la_fecha_elegida,
 ]
