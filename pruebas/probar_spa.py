@@ -170,6 +170,59 @@ def el_choque_se_mira_con_la_duracion_NUEVA(c):
     conn.close()
 
 
+def las_terapeutas_tienen_nombre(c):
+    """Lo pidio el lodge: «cambiar los nombres de terapeuta 1 a Hellen y terapeuta 2 a
+    Rocio». Se sembraron sin nombre y se editaban desde el Catalogo."""
+    conn = comun.base_limpia()
+    nombres = sorted(r[0] for r in conn.execute(
+        "SELECT nombre FROM spa_terapeuta WHERE activo = 1"))
+    c.igual(nombres, ["Hellen", "Rocío"], "las dos terapeutas del lodge")
+    conn.close()
+
+
+def renombrar_una_terapeuta_arrastra_sus_citas(c):
+    """EL CAMINO DE PRODUCCION, y donde esto se habria roto en silencio.
+
+    El nombre es la LLAVE de spa_terapeuta y spa_cita lo guarda como texto. Un UPDATE a
+    secas dejaria las citas apuntando a una terapeuta que ya no existe: la agenda del
+    spa las mostraria sin nadie asignado y el reparto de carga contaria una terapeuta
+    de menos — sin ningun error de por medio."""
+    import init_db
+    conn = comun.base_limpia()
+    # Se simula la base instalada: los nombres de fabrica, con citas asignadas.
+    conn.execute("DELETE FROM spa_terapeuta")
+    conn.executemany("INSERT INTO spa_terapeuta (nombre, activo) VALUES (?,1)",
+                     [("Terapeuta 1",), ("Terapeuta 2",)])
+    cita = _cita(conn, "JUNGLE")
+    conn.execute("UPDATE spa_cita SET terapeuta = 'Terapeuta 1' WHERE id = ?", (cita,))
+    conn.execute("DELETE FROM sistema_meta WHERE clave = ?", (init_db._MARCA_TERAPEUTAS,))
+    conn.commit()
+
+    init_db._poner_nombre_a_las_terapeutas(conn)
+
+    nombres = sorted(r[0] for r in conn.execute("SELECT nombre FROM spa_terapeuta"))
+    c.igual(nombres, ["Hellen", "Rocío"], "quedan con su nombre")
+    c.igual(dict(conn.execute("SELECT terapeuta FROM spa_cita WHERE id = ?",
+                              (cita,)).fetchone())["terapeuta"], "Hellen",
+            "y la cita se fue con ella, no quedo huerfana")
+
+    # Y lo que el lodge cambie a mano NO se le deshace al reiniciar.
+    #
+    # El cambio se hace con los TRES pasos —crear, mover las citas, borrar— porque es
+    # lo que hace la pantalla y porque un UPDATE del nombre a secas lo rechaza la base:
+    # el nombre es la llave y la cita la referencia. Esa es, justamente, la razon de ser
+    # de la funcion que se esta probando.
+    conn.execute("INSERT INTO spa_terapeuta (nombre, activo) VALUES ('Helen', 1)")
+    conn.execute("UPDATE spa_cita SET terapeuta = 'Helen' WHERE terapeuta = 'Hellen'")
+    conn.execute("DELETE FROM spa_terapeuta WHERE nombre = 'Hellen'")
+    conn.execute("DELETE FROM sistema_meta WHERE clave = ?", (init_db._MARCA_TERAPEUTAS,))
+    conn.commit()
+    init_db._poner_nombre_a_las_terapeutas(conn)
+    nombres = sorted(r[0] for r in conn.execute("SELECT nombre FROM spa_terapeuta"))
+    c.igual(nombres, ["Helen", "Rocío"], "se respeta lo que cambiaron a mano")
+    conn.close()
+
+
 def la_pantalla_deja_cambiar_el_tratamiento(c):
     """Y que el selector este donde se lee la cita, no en otra pantalla."""
     raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -199,6 +252,8 @@ PRUEBAS = [
     sin_cambio_no_pasa_nada,
     sin_duracion_en_el_catalogo_se_conserva_la_que_tenia,
     el_choque_se_mira_con_la_duracion_NUEVA,
+    las_terapeutas_tienen_nombre,
+    renombrar_una_terapeuta_arrastra_sus_citas,
     la_pantalla_deja_cambiar_el_tratamiento,
 ]
 

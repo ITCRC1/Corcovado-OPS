@@ -172,7 +172,14 @@ SERVICIOS_SPA = [
 
 # Las dos terapeutas. Sin nombre todavía: se editan desde el Catálogo. Se siembran para
 # que la agenda pueda repartir citas desde el primer día sin tener que configurar nada.
-TERAPEUTAS_SPA = [("Terapeuta 1",), ("Terapeuta 2",)]
+TERAPEUTAS_SPA = [("Hellen",), ("Rocío",)]
+
+# Las que se sembraron sin nombre antes de que el lodge los diera. Se renombran una sola
+# vez al arrancar, arrastrando sus citas: el nombre es la llave y 'spa_cita.terapeuta'
+# lo guarda como texto, así que cambiarlo a secas dejaría las citas apuntando a alguien
+# que ya no existe.
+TERAPEUTAS_RENOMBRADAS = [("Terapeuta 1", "Hellen"), ("Terapeuta 2", "Rocío")]
+_MARCA_TERAPEUTAS = "terapeutas_con_nombre_v1"
 
 # Las prendas de lavandería: las ocho del formulario de Google que se le manda hoy al
 # huésped, en el mismo orden.
@@ -385,6 +392,7 @@ def _migrar(conn):
         print("Base actualizada, columnas agregadas: " + ", ".join(agregadas))
     _renombrar_restaurante(conn, "Vitrales", "Bar el Bosque")
     _corregir_tours_por_tierra(conn)
+    _poner_nombre_a_las_terapeutas(conn)
     _materializar_permisos(conn)
     # Después de materializar: primero se le da rejilla a quien no la tenga, y luego se
     # le agregan a todos las pantallas nuevas. En ese orden, un usuario recién creado no
@@ -828,6 +836,49 @@ def _corregir_tours_por_tierra(conn):
         print(f"Catálogo corregido: {cambiados} tour(s) pasan a ir por tierra "
               f"({', '.join(TOURS_QUE_VAN_POR_TIERRA)}).")
     return cambiados
+
+
+def _poner_nombre_a_las_terapeutas(conn):
+    """«Terapeuta 1» y «Terapeuta 2» pasan a Hellen y Rocío, con sus citas.
+
+    El nombre es la LLAVE de spa_terapeuta y spa_cita lo guarda como texto, así que un
+    UPDATE a secas dejaría las citas apuntando a una terapeuta que ya no existe: la
+    agenda del spa las mostraría sin nadie asignado y el reparto de carga contaría una
+    terapeuta de menos.
+
+    Corre UNA sola vez y SOLO si el nombre sigue siendo el de fábrica. Si alguien ya lo
+    cambió desde el Catálogo, eso manda: deshacérselo al reiniciar sería peor que no
+    haber hecho nada.
+    """
+    if _meta(conn, _MARCA_TERAPEUTAS):
+        return 0
+    cambiadas = 0
+    for viejo, nuevo in TERAPEUTAS_RENOMBRADAS:
+        if not conn.execute("SELECT 1 FROM spa_terapeuta WHERE nombre = ?",
+                            (viejo,)).fetchone():
+            continue
+        if conn.execute("SELECT 1 FROM spa_terapeuta WHERE nombre = ? COLLATE NOCASE",
+                        (nuevo,)).fetchone():
+            continue          # ya existe con el nombre nuevo: no se duplica
+        # Primero la fila nueva, después las citas, y al final se borra la vieja: así
+        # en ningún momento hay una cita apuntando a alguien que no existe.
+        fila = dict(conn.execute("SELECT * FROM spa_terapeuta WHERE nombre = ?",
+                                 (viejo,)).fetchone())
+        fila["nombre"] = nuevo
+        columnas = list(fila.keys())
+        conn.execute(
+            f"INSERT INTO spa_terapeuta ({','.join(columnas)}) "
+            f"VALUES ({','.join('?' for _ in columnas)})", [fila[c] for c in columnas])
+        conn.execute("UPDATE spa_cita SET terapeuta = ? WHERE terapeuta = ?",
+                     (nuevo, viejo))
+        conn.execute("DELETE FROM spa_terapeuta WHERE nombre = ?", (viejo,))
+        cambiadas += 1
+    conn.commit()
+    _meta(conn, _MARCA_TERAPEUTAS, "hecho")
+    if cambiadas:
+        print(f"Spa: {cambiadas} terapeuta(s) renombradas "
+              f"({', '.join(n for _, n in TERAPEUTAS_RENOMBRADAS)}).")
+    return cambiadas
 
 
 def _renombrar_restaurante(conn, viejo, nuevo):
