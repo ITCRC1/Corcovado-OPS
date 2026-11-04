@@ -219,6 +219,53 @@ def terapeuta_sugerida(citas_del_dia, hora, minutos, terapeutas, cfg, excluir_id
 
 
 # ---------------------------------------------------------------------------
+# Cambiar el tratamiento de una cita
+# ---------------------------------------------------------------------------
+
+class TratamientoInvalido(Exception):
+    """El tratamiento que se pidió no se puede poner en la cita."""
+
+
+def cambiar_tratamiento(conn, cita_id, codigo):
+    """El tratamiento de una cita, SIN cancelarla. Devuelve (codigo, minutos).
+
+    Lo pidió el lodge: «editar el tipo de masaje en caso que el cliente quiera cambiarlo
+    y no cancelar del todo la reserva del masaje». Cancelar y volver a crear perdía dos
+    cosas: la ficha médica —que es un consentimiento para ESA cita— y el sitio en la
+    agenda, que en temporada alta no se recupera.
+
+    LOS MINUTOS SE RECALCULAN, y es la mitad que importa. La duración se copia del
+    catálogo al crear la cita, así que cambiar el tratamiento sin tocarla dejaría un
+    masaje de 90 minutos ocupando el hueco de 40: la agenda diría que cabe, el aviso de
+    choque no saltaría, y el spa lo descubriría con la huésped ya en la camilla.
+
+    Vive aquí, con las demás reglas del spa, y no dentro del endpoint, porque la regla
+    de la duración tiene que poder comprobarse sola.
+    """
+    cita = conn.execute("SELECT * FROM spa_cita WHERE id = ?", (cita_id,)).fetchone()
+    if not cita:
+        raise TratamientoInvalido("No existe esa cita")
+    actual = dict(cita)
+
+    codigo = (codigo or "").strip()
+    if not codigo or codigo == actual["servicio_codigo"]:
+        return actual["servicio_codigo"], actual["minutos"]
+
+    fila = conn.execute(
+        "SELECT codigo, minutos FROM spa_servicio WHERE codigo = ? AND activo = 1",
+        (codigo,)).fetchone()
+    if not fila:
+        raise TratamientoInvalido("Ese tratamiento no está en el catálogo activo")
+
+    # Si el tratamiento nuevo no trae duración se conserva la que tenía. Dejarla en
+    # blanco haría INVISIBLE el choque, que es peor que una duración aproximada.
+    minutos = fila["minutos"] or actual["minutos"]
+    conn.execute("UPDATE spa_cita SET servicio_codigo = ?, minutos = ? WHERE id = ?",
+                 (fila["codigo"], minutos, cita_id))
+    return fila["codigo"], minutos
+
+
+# ---------------------------------------------------------------------------
 # Avisos de salud
 # ---------------------------------------------------------------------------
 

@@ -5112,6 +5112,29 @@ function cambioDeCuarto(c) {
     title="El huésped se cambió de cuarto después de pedir la cita">se cambió de la ${escaparHTML(c.room_no_pedida)}</span>`;
 }
 
+// Los tratamientos del catálogo, para poder cambiar el de una cita sin cancelarla.
+//
+// Lo pidió el lodge: «editar el tipo de masaje en caso que el cliente quiera cambiarlo
+// y no cancelar del todo la reserva del masaje». Cancelar y volver a crear perdía la
+// ficha médica —que es un consentimiento de ESA cita— y el sitio en la agenda.
+//
+// El que tiene puesto sale SIEMPRE, aunque ya no esté activo en el catálogo: si no,
+// una cita con un tratamiento retirado mostraría otro distinto al abrir la lista, y
+// bastaría con tocar cualquier cosa para cambiárselo sin querer.
+function opcionesServicio(c) {
+  const lista = ((_spaCat && _spaCat.servicios) || []).filter(s => s.activo !== 0);
+  const actual = c.servicio_codigo || "";
+  const hay = lista.some(s => s.codigo === actual);
+  const todas = hay || !actual
+    ? lista
+    : [{ codigo: actual, nombre: c.servicio_nombre || actual, minutos: c.minutos }]
+        .concat(lista);
+  return todas.map(s =>
+    `<option value="${escaparHTML(s.codigo)}" ${s.codigo === actual ? "selected" : ""}>`
+    + `${escaparHTML(s.nombre || s.codigo)}${s.minutos ? ` · ${s.minutos}′` : ""}</option>`
+  ).join("");
+}
+
 function filaCitaSpa(c, terapeutas) {
   const [clase, texto] = ESTADO_SPA[c.estado] || ["badge-tour", c.estado];
   const apagada = c.estado === "CANCELADA" || c.estado === "HECHA";
@@ -5131,7 +5154,11 @@ function filaCitaSpa(c, terapeutas) {
         ${cambioDeCuarto(c)}</td>
       <td>${escaparHTML(c.nombre_huesped || c.nombre_principal || "")}
         ${c.origen === "HUESPED" ? '<br><span style="font-size:10px;color:var(--muted);">lo pidió el huésped</span>' : ""}</td>
-      <td><span class="badge badge-tour">${escaparHTML(c.servicio_nombre || c.servicio_codigo || "")}</span>
+      <td>${puedeEscribir("spa") && !apagada
+        ? `<select onchange="moverCita(${c.id}, {servicio: this.value})"
+             title="Cambiar el tratamiento sin perder la cita ni la ficha médica"
+             style="font-size:11.5px;width:160px;">${opcionesServicio(c)}</select>`
+        : `<span class="badge badge-tour">${escaparHTML(c.servicio_nombre || c.servicio_codigo || "")}</span>`}
         <span style="font-size:10.5px;color:var(--muted);">${c.minutos || "?"}′</span></td>
       <td>${puedeEscribir("spa") && !apagada
         ? `<select onchange="moverCita(${c.id}, {terapeuta: this.value})"
@@ -5259,13 +5286,14 @@ async function moverCita(id, cambios) {
     body: JSON.stringify(cambios),
   });
   if (!res.ok) {
-    avisar((await res.json()).detail || "No se pudo mover", true);
+    avisar((await res.json()).detail || "No se pudo guardar el cambio", true);
     loadSpa();
     return;
   }
   const d = await res.json();
   if ((d.avisos || []).length) avisar("⚠ " + d.avisos.join(" · "), true);
   else if (d.terapeuta_sugerida) avisar(`Guardado · libre: ${d.terapeuta_sugerida}`);
+  else if (cambios.servicio) avisar(`Tratamiento cambiado · ${d.minutos || "?"} min`);
   else avisar("Guardado");
   loadSpa();
 }

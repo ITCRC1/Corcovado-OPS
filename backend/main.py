@@ -2597,7 +2597,12 @@ def _reflejar_cita_en_itinerario(conn, conf_no, estado):
 @app.post("/api/spa/citas/{cita_id}/mover")
 async def mover_cita_spa(cita_id: int, payload: dict,
                          user: dict = Depends(exige("spa", escribir=True))):
-    """Cambia la fecha, la hora o la terapeuta de una cita.
+    """Cambia una cita sin cancelarla: la fecha, la hora, la terapeuta o EL SERVICIO.
+
+    Lo pidió el lodge para el servicio: «poder editar el tipo de masaje en caso que el
+    cliente quiera cambiarlo y no cancelar del todo la reserva del masaje». Cancelar y
+    volver a crear perdía la ficha médica —que es un consentimiento de esa cita— y el
+    sitio en la agenda.
 
     Devuelve los avisos de choque en vez de bloquear: el spa sabe si puede absorber algo
     que el sistema ve apretado, y bloquearlo llevaría a inventar citas para saltárselo.
@@ -2608,6 +2613,13 @@ async def mover_cita_spa(cita_id: int, payload: dict,
         if not cita:
             raise HTTPException(status_code=404, detail="No existe esa cita")
         d = dict(cita)
+
+        # EL TRATAMIENTO, y con él la DURACIÓN. La regla vive en spa.py.
+        try:
+            servicio, minutos = _spa.cambiar_tratamiento(
+                conn, cita_id, payload.get("servicio"))
+        except _spa.TratamientoInvalido as e:
+            raise HTTPException(status_code=404, detail=str(e))
 
         fecha = d["fecha"]
         if payload.get("fecha"):
@@ -2630,20 +2642,24 @@ async def mover_cita_spa(cita_id: int, payload: dict,
                 raise HTTPException(status_code=404, detail="Esa terapeuta no está en la lista")
 
         conn.execute(
-            "UPDATE spa_cita SET fecha = ?, hora = ?, terapeuta = ? WHERE id = ?",
-            (fecha, hora, terapeuta, cita_id))
+            """UPDATE spa_cita SET fecha = ?, hora = ?, terapeuta = ?,
+                                   servicio_codigo = ?, minutos = ?
+               WHERE id = ?""",
+            (fecha, hora, terapeuta, servicio, minutos, cita_id))
         conn.commit()
 
         cfg = _spa.cargar_config()
         citas = _citas_spa(conn, fecha, fecha, incluir_canceladas=False)
         terapeutas = _terapeutas_spa(conn)
         avisos = []
+        # Con los minutos NUEVOS: el choque hay que mirarlo con lo que va a durar la
+        # cita ahora, no con lo que duraba antes.
         if hora:
-            avisos = _spa.revisar_choque(citas, hora, d["minutos"], terapeutas, cfg,
+            avisos = _spa.revisar_choque(citas, hora, minutos, terapeutas, cfg,
                                          excluir_id=cita_id, terapeuta=terapeuta)
         sugerida = None
         if hora and not terapeuta:
-            sugerida = _spa.terapeuta_sugerida(citas, hora, d["minutos"], terapeutas,
+            sugerida = _spa.terapeuta_sugerida(citas, hora, minutos, terapeutas,
                                                cfg, excluir_id=cita_id)
         # Si la cita ya estaba confirmada, su fila del itinerario tiene la hora vieja.
         itinerario = None
@@ -2653,6 +2669,7 @@ async def mover_cita_spa(cita_id: int, payload: dict,
     finally:
         conn.close()
     return {"status": "ok", "fecha": fecha, "hora": hora, "terapeuta": terapeuta,
+            "servicio": servicio, "minutos": minutos,
             "avisos": avisos, "terapeuta_sugerida": sugerida, "itinerario": itinerario}
 
 
