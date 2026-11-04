@@ -528,6 +528,43 @@ def _guardar_tours(cur, r, borrar_si_vacio=True):
         )
 
 
+def _guardar_alertas_de_opera(cur, r):
+    """Las alertas de la reserva, como aviso que alguien tiene que LEER.
+
+    Se regeneran en cada ciclo, igual que las notas y las PM: si recepción corrige la
+    alerta en Opera, el módulo se corrige con ella. Por eso se borran antes las de esta
+    reserva en vez de ir añadiendo.
+
+    Lo que PIDE algo preparable —un queque, una cama extra— ya entró por el detector de
+    amenidades, porque su texto se sumó al de la reserva en opera_mapeo. Aquí el aviso
+    es para lo que NO se prepara: una condición médica, un cobro pendiente, un encargo.
+    Son cosas que se leen al abrir la reserva, no tareas que alguien cierre.
+    """
+    import alertas_opera as _al
+
+    cur.execute("DELETE FROM alerta WHERE tipo = 'ALERTA_OPERA' AND referencia_texto = ?",
+                (str(r["conf_no"]),))
+    for a in r.get("alertas_opera") or []:
+        texto = _al.sin_encabezado(a.get("texto"))
+        if not texto:
+            continue
+        # TODAS salen como aviso, también las de cocina.
+        #
+        # Al principio me las saltaba para no repetir el dato, y el resultado fue que no
+        # salía NINGUNA: las tres alertas de la paciente trasplantada hablan de comida
+        # en algún punto —incluso la que pide reunirse con el gerente— así que todas
+        # daban «de cocina» y se perdían enteras.
+        #
+        # Y no es el mismo sitio dos veces: la hoja de cocina dice qué no puede comer,
+        # el aviso de la reserva dice por qué. Quien sirve el plato necesita lo primero;
+        # quien recibe al huésped, lo segundo.
+        mensaje = (f"Hab. {r.get('room_no') or '—'} · {r.get('nombre_principal') or ''} "
+                   f"(llega {r.get('arr_date')}): {texto[:600]}")
+        cur.execute(
+            "INSERT INTO alerta (tipo, referencia_id, referencia_texto, mensaje) "
+            "VALUES ('ALERTA_OPERA', NULL, ?, ?)", (str(r["conf_no"]), mensaje))
+
+
 def _guardar_traslados_extra(cur, r, origen="PDF"):
     """Los BT («boat transfer») que pide la reserva, para que salgan en Transporte.
 
@@ -782,6 +819,10 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
             # El BT va con el transporte, que es lo que es: un viaje de bote.
             if "transporte" in manda:
                 _guardar_traslados_extra(cur, r, origen=origen_parcial)
+            # Las alertas van con el núcleo: no son una amenidad ni un tour, son lo que
+            # alguien tiene que leer al abrir la reserva.
+            if "nucleo" in manda:
+                _guardar_alertas_de_opera(cur, r)
             if "tours" in manda:
                 # Solo se borran los tours si la fuente LEYÓ el itinerario y estaba
                 # vacío. Si ni siquiera pudo leerlo, no sabe nada y no debe borrar.
@@ -842,6 +883,7 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
         else:
             _guardar_amenidades(cur, r, _iso_de_ddmmyy(r.get("arr_date")))
             _guardar_traslados_extra(cur, r)
+            _guardar_alertas_de_opera(cur, r)
             _guardar_rooming(cur, r)
             _guardar_tours(cur, r)
 

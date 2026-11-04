@@ -945,6 +945,26 @@ def incorporar_detalle(reserva, detalle):
     if texto:
         incorporar_texto_de_nota(reserva, texto)
 
+    # --- 1b. Las ALERTAS de la reserva ---
+    #
+    # Son otra cosa que las notas: avisos que saltan en pantalla al abrir la reserva, y
+    # es donde el lodge escribe lo que no quiere que se pase por alto. Medido, 49 de 53
+    # no estaban en ninguna otra parte del sistema.
+    #
+    # Su texto se SUMA al que analizan los detectores de amenidades y restricciones, de
+    # modo que un queque o una alergia escritos en una alerta se reconocen con las
+    # mismas reglas que si estuvieran en la nota. Una segunda lista de patrones acabaría
+    # diciendo cosas distintas de la primera.
+    import alertas_opera as _al
+    alertas = _al.leer(detalle)
+    if alertas:
+        reserva["alertas_opera"] = alertas
+        extra = _al.texto_para_amenidades(alertas)
+        reserva["texto_completo"] = (
+            (reserva.get("texto_completo") or "") + "\n" + extra).strip()
+        # 'notas' es lo que miran los detectores que leen la reserva ya mapeada.
+        reserva["notas"] = ((reserva.get("notas") or "") + "\n" + extra).strip()
+
     # --- 2. Los paquetes ---
     leido = op.leer_paquetes(detalle or {})
 

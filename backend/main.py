@@ -290,7 +290,16 @@ def dashboard(fecha: str, user: dict = Depends(exige("dashboard"))):
         (fecha,),
     ).fetchall()
 
-    alertas = conn.execute("SELECT tipo, mensaje FROM alerta WHERE resuelto = 0").fetchall()
+    # LAS ALERTAS DE OPERA SE ACOTAN AL DÍA. Son 52 en la ventana y el dashboard las
+    # enseñaba todas: una lista de avisos que no caben en la pantalla es una lista que
+    # nadie lee, y entonces tampoco se lee el aviso que sí era de hoy. Las demás siguen
+    # donde siempre, en el detalle de su reserva.
+    confs_del_dia = {str(x["conf_no"]) for x in (list(entran) + list(en_casa))
+                     if x["conf_no"]}
+    alertas = [a for a in conn.execute(
+        "SELECT tipo, mensaje, referencia_texto FROM alerta WHERE resuelto = 0").fetchall()
+        if a["tipo"] != "ALERTA_OPERA"
+        or str(a["referencia_texto"] or "") in confs_del_dia]
 
     # Resumen de entradas SINAC cuyo plazo de compra (15 días antes) está vencido o
     # por vencer, para avisarlo en el dashboard sin tener que entrar a esa pantalla.
@@ -3812,6 +3821,12 @@ def detalle_reserva(conf_no: str, user: dict = Depends(exige("reservas"))):
     huespedes = conn.execute(
         "SELECT nombre_completo, pasaporte, nacionalidad FROM huesped WHERE conf_no = ?", (conf_no,)
     ).fetchall()
+    # Las alertas que el lodge escribió en Opera para ESTA reserva. Es donde tienen
+    # sentido: se leen al abrir la reserva, que es cuando alguien va a atender a esa
+    # persona. Ver alertas_opera.py.
+    alertas_reserva = [dict(a)["mensaje"] for a in conn.execute(
+        "SELECT mensaje FROM alerta WHERE tipo = 'ALERTA_OPERA' "
+        "AND referencia_texto = ? AND resuelto = 0 ORDER BY id", (conf_no,))]
     tours = conn.execute(
         """SELECT ta.fecha, ta.tour_codigo, ta.guia_nombre, ta.bote_nombre, ta.pax,
                   ta.es_privado, ta.capitan_nombre, ta.ayudante_nombre,
@@ -3842,6 +3857,7 @@ def detalle_reserva(conf_no: str, user: dict = Depends(exige("reservas"))):
     d["tours"] = [dict(t) for t in tours]
     d["amenidades"] = [dict(a) for a in amenidades]
     d["grupo_reservas"] = [dict(g) for g in grupo_reservas]
+    d["alertas_opera"] = alertas_reserva
     return d
 
 

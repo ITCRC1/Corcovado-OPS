@@ -580,7 +580,19 @@ RUTA_UNA_RESERVA = "/rsv/v1/hotels/{hotel}/reservations/{id}"
 # imposible la automatización: 'ReservationComments' se rechaza con 400 GEN01346 y
 # parece que la propiedad no expone las notas, cuando lo que no existe es ese nombre.
 # Se probaron 70 nombres hasta encontrarlo.
-BLOQUES_DE_UNA_RESERVA = ("Reservation", "Comments")
+#
+# 'Alerts' es LA MISMA HISTORIA OTRA VEZ. El nombre que parece —'ReservationAlerts'— se
+# rechaza con 400, así que las alertas parecían no estar disponibles. Se llaman 'Alerts'
+# a secas, y caben en ESTA misma petición: medido, con los tres bloques vienen las
+# alertas, los comentarios y los paquetes de una sola vez, sin una llamada extra por
+# reserva.
+#
+# Importan, y mucho: medido sobre las 347 reservas de la ventana, 44 traen alerta y 49
+# de las 53 alertas NO estaban en ninguna otra parte del sistema. Ahí es donde el lodge
+# escribe las condiciones médicas del huésped —una paciente trasplantada con un
+# inmunosupresor y alimentos que debe evitar—, los cobros pendientes y los encargos de
+# recepción.
+BLOQUES_DE_UNA_RESERVA = ("Reservation", "Comments", "Alerts")
 
 
 def traer_una_reserva(reserva_id, fetch=BLOQUES_DE_UNA_RESERVA):

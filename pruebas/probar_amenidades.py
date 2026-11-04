@@ -481,6 +481,85 @@ def el_queque_llega_hasta_la_base(c):
     conn.close()
 
 
+# Textos REALES de alertas de Opera del lodge, copiados enteros. Lo que decide si esto
+# sirve es como las escriben ellos, no un ejemplo limpio.
+AL_TRASPLANTE = ("Andrea es una paciente con trasplante de corazón y tiene el sistema "
+                 "inmunitario comprometido, por lo que necesita seguir precauciones "
+                 "específicas de higiene y seguridad alimentaria para reducir el riesgo "
+                 "de enfermedades transmitidas por los alimentos.")
+AL_MEDICAMENTO = ("ATENCION FRONT DESK Andrea toma un medicamento inmunosupresor "
+                  "llamado tacrolimus, por lo que debe evitar los siguientes alimentos")
+AL_GERENTE = ("ATENCION GUEST SERVICE & OPERATIONS: Andrea solicita amablemente poder "
+              "reunirse con el gerente del alojamiento al momento de su llegada")
+AL_COBRO = "ATENCION FRONT DESK COBRAR $678 POR EL TOUR DE MANGLAR"
+
+
+def las_alertas_de_opera_se_reparten_por_lo_que_son(c):
+    """Lo pidio el lodge: revisar las alertas de cada reserva y traer lo que importe.
+
+    Medido contra Opera: 44 de 347 reservas traen alerta, y 49 de las 53 NO estaban en
+    ninguna otra parte del sistema. Ahi es donde se escribe la condicion medica de un
+    huesped, un cobro pendiente o un encargo de recepcion.
+
+    NO todas son lo mismo, y meterlas todas en el mismo sitio las inutiliza: «avisar a
+    reservaciones si hay mas interesados» no es una tarea que alguien pueda cerrar."""
+    import alertas_opera as al
+
+    # Las que hablan de comida van a cocina.
+    c.cierto(al.es_de_cocina("ADDITIONAL_INFO", AL_TRASPLANTE),
+             "la seguridad alimentaria de una paciente inmunodeprimida es de cocina")
+    c.cierto(al.es_de_cocina("FRONT_DESK", AL_MEDICAMENTO),
+             "y los alimentos que debe evitar por su medicamento, tambien")
+    # Opera ya las trae clasificadas: ahi la alergia viene MARCADA, no deducida.
+    for codigo in ("ALG_SFD", "ALG_NUT", "DIET_VEGN"):
+        c.cierto(al.es_de_cocina(codigo, "sin texto util"),
+                 f"el codigo {codigo} basta: lo clasifico Opera")
+
+    # Y las que NO hablan de comida, no.
+    c.igual(al.es_de_cocina("GUEST_SERVICE", AL_GERENTE), False,
+            "reunirse con el gerente NO es de cocina")
+    c.igual(al.es_de_cocina("FRONT_DESK", AL_COBRO), False,
+            "y un cobro pendiente tampoco")
+
+
+def la_alerta_de_cocina_llega_a_la_hoja_aunque_no_case_con_ningun_patron(c):
+    """El caso que obligo a esto. Los patrones estan escritos para como se anota una
+    alergia en una NOTA —«alergia a X», «dietary», «no pork»— y en una ALERTA el lodge
+    explica el caso entero, que no se parece en nada. El texto de la paciente
+    trasplantada no disparaba NADA, y es justo lo que cocina no puede no tener."""
+    # Sin alerta, ese texto no se reconoce: por eso hace falta la via del codigo.
+    suelto = importer.detectar_amenidades(reserva_con(AL_TRASPLANTE))
+    c.igual("Restricción alimentaria / alergia" in suelto, False,
+            "el texto por si solo no casa con ningun patron")
+
+    # Con la alerta marcada, si entra.
+    r = dict(comun.reserva(730100, "08", "04-11-26", "07-11-26", adl=2),
+             notas="", alertas_opera=[
+                 {"codigo": "ADDITIONAL_INFO", "texto": AL_TRASPLANTE,
+                  "para_cocina": True}])
+    lote = [r]
+    importer.build_review_batch_desde_reservas(lote)
+    c.cierto("Restricción alimentaria / alergia" in (r.get("amenidades_detectadas") or []),
+             "la alerta de cocina entra como restriccion")
+    detalle = (r.get("detalles_de_amenidad") or {}).get("Restricción alimentaria / alergia")
+    c.cierto("trasplante" in (detalle or "").lower(),
+             "con el texto de la alerta, que es lo que cocina tiene que leer")
+
+
+def lo_que_ya_se_sabia_de_la_nota_no_se_pisa(c):
+    """La alerta SUMA, no reemplaza. La nota puede decir algo que la alerta no repite, y
+    antes de servir un plato hacen falta las dos cosas."""
+    r = dict(comun.reserva(730110, "08", "04-11-26", "07-11-26", adl=2),
+             notas="Allergy to shellfish",
+             alertas_opera=[{"codigo": "ADDITIONAL_INFO", "texto": AL_TRASPLANTE,
+                             "para_cocina": True}])
+    importer.build_review_batch_desde_reservas([r])
+    detalle = (r.get("detalles_de_amenidad") or {}).get(
+        "Restricción alimentaria / alergia") or ""
+    c.cierto("shellfish" in detalle.lower(), "sigue lo que decia la nota")
+    c.cierto("trasplante" in detalle.lower(), "y se le suma lo de la alerta")
+
+
 def el_catalogo_y_los_patrones_no_se_desincronizan(c):
     """Una amenidad que se detecta pero no esta en el catalogo entra con una tarea
     generica y sin area de verdad, asi que no le llega a nadie."""
@@ -575,6 +654,9 @@ PRUEBAS = [
     el_queque_y_las_fresas_con_chocolate_se_reconocen,
     las_formas_de_pedir_el_queque_y_las_fresas,
     el_queque_llega_hasta_la_base,
+    las_alertas_de_opera_se_reparten_por_lo_que_son,
+    la_alerta_de_cocina_llega_a_la_hoja_aunque_no_case_con_ningun_patron,
+    lo_que_ya_se_sabia_de_la_nota_no_se_pisa,
     el_catalogo_y_los_patrones_no_se_desincronizan,
     las_bebidas_y_la_cortesia_LLEGAN_A_LA_BASE,
     toda_columna_nueva_esta_en_las_dos_rutas,

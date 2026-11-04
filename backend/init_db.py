@@ -219,6 +219,8 @@ COLUMNAS_NUEVAS = [
     # igual que la de una corrida de muelle, así que el tour también tiene que guardarla.
     ("tour_asignado", "capitan_nombre", "TEXT"),
     ("tour_asignado", "ayudante_nombre", "TEXT"),
+    # La reserva de un aviso regenerado por una fuente. Ver el comentario en schema.sql.
+    ("alerta", "referencia_texto", "TEXT"),
     # La modalidad privada de CADA salida. La siembra recupera lo que ya estaba guardado
     # de otra forma: las importaciones de PDF escribían el código «PNC PRIVADO», que el
     # catálogo marca como privado. Sin esta línea esas filas seguirían contándose con las

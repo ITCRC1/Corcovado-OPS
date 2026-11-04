@@ -544,6 +544,11 @@ CREATE TABLE IF NOT EXISTS alerta (
                         -- | 'RESERVA_CANCELADA' | 'CANCELACION_SOSPECHOSA' | 'CUARTO_DOBLE'
                         -- | 'TRANSPORTE_SIN_CONFIRMAR' | 'TOUR_FUERA_DE_ESTADIA'
     referencia_id INTEGER,
+    -- La reserva a la que pertenece el aviso, cuando lo regenera una fuente. Las
+    -- alertas de Opera se vuelven a leer en cada ciclo, así que hay que poder borrar
+    -- las de ESA reserva sin tocar las demás; 'referencia_id' no sirve porque apunta a
+    -- filas con id numérico y el número de confirmación es texto.
+    referencia_texto TEXT,
     mensaje TEXT NOT NULL,
     resuelto INTEGER NOT NULL DEFAULT 0,
     creado_en TEXT DEFAULT (datetime('now'))

@@ -631,6 +631,44 @@ def build_review_batch(pdf_path):
     return build_review_batch_desde_reservas(parse_reservations(pdf_path))
 
 
+RESTRICCION = "Restricción alimentaria / alergia"
+
+
+def _restriccion_desde_las_alertas(r):
+    """Una alerta de Opera que habla de comida entra a la hoja de cocina aunque su
+    texto no case con ningún patrón.
+
+    POR QUÉ HACE FALTA. Los patrones están escritos para cómo se anota una alergia en
+    una nota: «alergia a X», «dietary», «no pork». En una ALERTA el lodge explica el
+    caso entero, y eso no se parece: «Andrea es una paciente con trasplante de corazón…
+    necesita seguir precauciones específicas de higiene y seguridad alimentaria», o
+    «toma tacrolimus, por lo que debe evitar los siguientes alimentos». Ninguna de las
+    dos disparaba nada, y es justo la información que cocina no puede no tener.
+
+    Además Opera trae códigos propios —ALG_SFD, ALG_NUT, DIET_VEGN— donde la alergia
+    viene MARCADA y no deducida. Esa es mejor fuente que cualquier patrón.
+    """
+    de_cocina = [a for a in (r.get("alertas_opera") or []) if a.get("para_cocina")]
+    if not de_cocina:
+        return
+    import alertas_opera as _al
+    textos = [_al.sin_encabezado(a["texto"]) for a in de_cocina]
+
+    detectadas = list(r.get("amenidades_detectadas") or [])
+    if RESTRICCION not in detectadas:
+        detectadas.append(RESTRICCION)
+        r["amenidades_detectadas"] = detectadas
+
+    detalles = dict(r.get("detalles_de_amenidad") or {})
+    ya = (detalles.get(RESTRICCION) or "").strip()
+    # Lo que ya se habia reconocido NO se pisa: puede venir de la nota y decir algo que
+    # la alerta no repite. Se suma, que es lo que hace falta antes de servir un plato.
+    nuevos = [t for t in textos if t and t not in ya]
+    if nuevos:
+        detalles[RESTRICCION] = " · ".join(([ya] if ya else []) + nuevos)[:600]
+        r["detalles_de_amenidad"] = detalles
+
+
 def build_review_batch_desde_reservas(reservas):
     """Aplica las reglas del lodge a una lista de reservas ya extraídas.
 
@@ -647,6 +685,7 @@ def build_review_batch_desde_reservas(reservas):
         r["amenidades_detectadas"] = detectar_amenidades(r)
         # Con qué texto se reconoció cada una, para que el detalle no se pierda.
         r["detalles_de_amenidad"] = detallar_amenidades(r)
+        _restriccion_desde_las_alertas(r)
         r["regimen"] = detectar_regimen(r)
         # Lo que trae pagado la reserva más allá de las comidas. Va junto al régimen,
         # no como amenidad: no hay nada que preparar, hay algo que saber.
