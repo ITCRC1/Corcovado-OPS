@@ -21,11 +21,22 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Dos pruebas importan `main` para pasar por el endpoint de verdad, y al importarlo se
+# enciende el buzon de correo si hay llaves puestas en la maquina. Una prueba no sale a
+# internet: se quitan antes de que nadie las lea.
+for _clave in [k for k in os.environ if k.startswith("BUZON_")]:
+    os.environ.pop(_clave)
+
 import comun                                     # noqa: E402
 
 import spa as _spa                               # noqa: E402
 
 HOY = datetime.date.today()
+
+
+def _pms(fecha):
+    """date -> el 'DD-MM-YY' en que el PMS guarda las fechas."""
+    return fecha.strftime("%d-%m-%y")
 
 
 def _cita(conn, servicio="JUNGLE", hora="10:00", estado="CONFIRMADA"):
@@ -245,6 +256,134 @@ def la_pantalla_deja_cambiar_el_tratamiento(c):
              "el tratamiento que ya tiene sale aunque este dado de baja")
 
 
+# ---------------------------------------------------------------------------
+# Quien recibe el tratamiento
+# ---------------------------------------------------------------------------
+# Lo pidio el lodge: «en algunas habitaciones hay 2 pax y no sabemos cual toma el
+# masaje». La reserva trae un solo nombre —el titular— asi que en una doble la cita
+# entraba a nombre del que no era. No daba error: llegaba completa, con su hora y su
+# ficha medica, solo que de otra persona. La terapeuta se entera cuando ya esta delante.
+
+
+def el_nombre_escrito_manda_sobre_el_titular(c):
+    conn = comun.base_limpia()
+    c.igual(_spa.nombre_de_la_cita("Ana Perez", "Perez/Juan"), "Ana Perez",
+            "manda quien va a recibir el tratamiento")
+    c.igual(_spa.nombre_de_la_cita("  Ana Perez  ", "Perez/Juan"), "Ana Perez",
+            "sin los espacios de sobra")
+    c.igual(_spa.nombre_de_la_cita("", "Perez/Juan"), "Perez/Juan",
+            "si no escribio nada, el titular: una cita sin nombre no la atiende nadie")
+    c.igual(_spa.nombre_de_la_cita("   ", "Perez/Juan"), "Perez/Juan",
+            "y un nombre de puros espacios es no haber escrito nada")
+    c.igual(_spa.nombre_de_la_cita(None, None), None, "sin ninguno de los dos, nada")
+    # El tope no es paranoia de formulario publico: el nombre va a la hoja del dia, que
+    # es un PDF de columnas fijas. Un nombre larguisimo no da error, desmaqueta la hoja.
+    c.igual(len(_spa.nombre_de_la_cita("A" * 400, "Perez/Juan")), _spa.LARGO_NOMBRE,
+            "se corta antes de romper la hoja del dia")
+    conn.close()
+
+
+def el_enlace_del_huesped_guarda_el_nombre_que_escribio(c):
+    """EL CAMINO COMPLETO, por el endpoint de verdad.
+
+    La regla se decide en spa.nombre_de_la_cita, pero el fallo vivia una capa mas
+    arriba: el endpoint publico pisaba el nombre con el titular DESPUES de recibirlo.
+    Probar solo la funcion habria dado verde con el error intacto.
+    """
+    import asyncio
+    conn = comun.base_limpia()
+    conn.execute(
+        """INSERT INTO reserva (conf_no, room_no, nombre_principal, arr_date, dep_date,
+                                adl, chl, rooms, res_status)
+           VALUES ('910001','12','Perez/Juan',?,?,2,0,1,'POR INGRESAR')""",
+        (_pms(HOY), _pms(HOY + datetime.timedelta(days=3))))
+    token = _spa.token_de_reserva(conn, "910001")
+    conn.commit()
+    conn.close()                      # el endpoint abre la suya y toma BEGIN IMMEDIATE
+
+    import main
+    pedido = {
+        "nombre_huesped": "Ana Perez", "servicio_codigo": "JUNGLE",
+        "fecha": HOY.isoformat(), "hora": "10:00", "acepto_terminos": True,
+        "condicion_medica": "ninguna", "cirugia_reciente": "0", "alergias": "ninguna",
+        "embarazo": "0", "buceo_24h": "0",
+    }
+    respuesta = asyncio.run(main.spa_publico_pedir("910001", token, dict(pedido)))
+
+    conn = comun.conexion()
+    fila = dict(conn.execute("SELECT * FROM spa_cita WHERE id = ?",
+                             (respuesta["id"],)).fetchone())
+    c.igual(fila["nombre_huesped"], "Ana Perez", "se guardo a quien recibe el masaje")
+    c.igual(fila["room_no"], "12", "la habitacion sigue saliendo de la reserva")
+    c.igual(fila["conf_no"], "910001", "y la reserva tambien")
+    c.igual(fila["estado"], "SOLICITADA", "entra por confirmar, como antes")
+
+    # La lista que el huesped ve de vuelta dice de quien es cada cita: en una doble, sin
+    # el nombre las dos se ven iguales y la segunda parece repetida.
+    c.cierto(any(x.get("nombre_huesped") == "Ana Perez"
+                 for x in respuesta.get("mis_citas", [])),
+             "y la lista de «lo que ya tienes pedido» dice de quien es")
+    conn.close()
+
+
+def sin_nombre_escrito_el_enlace_se_queda_con_el_titular(c):
+    """Una cita sin nombre no la atiende nadie, asi que el titular es la red."""
+    import asyncio
+    conn = comun.base_limpia()
+    conn.execute(
+        """INSERT INTO reserva (conf_no, room_no, nombre_principal, arr_date, dep_date,
+                                adl, chl, rooms, res_status)
+           VALUES ('910002','14','Perez/Juan',?,?,2,0,1,'POR INGRESAR')""",
+        (_pms(HOY), _pms(HOY + datetime.timedelta(days=3))))
+    token = _spa.token_de_reserva(conn, "910002")
+    conn.commit()
+    conn.close()
+
+    import main
+    respuesta = asyncio.run(main.spa_publico_pedir("910002", token, {
+        "servicio_codigo": "JUNGLE", "fecha": HOY.isoformat(), "hora": "11:00",
+        "acepto_terminos": True}))
+
+    conn = comun.conexion()
+    fila = dict(conn.execute("SELECT nombre_huesped FROM spa_cita WHERE id = ?",
+                             (respuesta["id"],)).fetchone())
+    c.igual(fila["nombre_huesped"], "Perez/Juan", "queda el titular de la reserva")
+    conn.close()
+
+
+def el_formulario_pregunta_el_nombre_de_primero(c):
+    """Y lo pide VACIO.
+
+    Precargarlo con el titular seria contestar la pregunta por el huesped justo con la
+    respuesta que suele estar mal — y la ficha medica de abajo quedaria a nombre de
+    quien no la contesto.
+    """
+    import spa_pagina
+    plantilla = spa_pagina._PLANTILLA
+
+    c.cierto('id="nombre"' in plantilla, "el campo existe")
+    # De primero DENTRO de la tarjeta de pedir, antes del tratamiento.
+    i_nombre = plantilla.find('id="nombre"')
+    i_trat = plantilla.find('id="serv"')
+    c.cierto(0 < i_nombre < i_trat, "va antes que el tratamiento")
+    c.cierto('value="${esc(D.nombre' not in plantilla, "no viene precargado")
+    c.cierto('nombre_huesped: nombre' in plantilla, "se manda al guardar")
+    c.cierto('if (!nombre) return mostrar(T("falta_nombre"))' in plantilla,
+             "y no se puede enviar sin el")
+    # Que sobreviva al boton EN/ES: cambiar de idioma no puede costarle lo ya escrito.
+    c.cierto('nombre: v("nombre")' in plantilla, "se lee al cambiar de idioma")
+    c.cierto('p("nombre", d.nombre)' in plantilla, "y se vuelve a escribir")
+
+    # El lodge lo pidio en ingles, que es el idioma por omision de la pagina; el espanol
+    # va igual porque la pagina tiene el boton y, sin la entrada, caeria al ingles.
+    for idioma in ("en", "es"):
+        for clave in ("nombre_q", "nombre_ayuda", "nombre_ph", "falta_nombre", "para"):
+            c.cierto(bool(spa_pagina.TEXTOS[idioma].get(clave)),
+                     f"{idioma}: esta el texto «{clave}»")
+    c.igual(spa_pagina.TEXTOS["en"]["nombre_q"], "Name", "en ingles se llama Name")
+    c.igual(spa_pagina.IDIOMA_POR_DEFECTO, "en", "y el ingles sigue siendo el de salida")
+
+
 PRUEBAS = [
     cambiar_el_tratamiento_recalcula_la_duracion,
     cambiar_el_tratamiento_no_cancela_ni_pierde_la_ficha,
@@ -255,6 +394,10 @@ PRUEBAS = [
     las_terapeutas_tienen_nombre,
     renombrar_una_terapeuta_arrastra_sus_citas,
     la_pantalla_deja_cambiar_el_tratamiento,
+    el_nombre_escrito_manda_sobre_el_titular,
+    el_enlace_del_huesped_guarda_el_nombre_que_escribio,
+    sin_nombre_escrito_el_enlace_se_queda_con_el_titular,
+    el_formulario_pregunta_el_nombre_de_primero,
 ]
 
 

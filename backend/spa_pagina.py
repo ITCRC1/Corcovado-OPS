@@ -17,6 +17,13 @@ cambiarlo otra vez.
 
 OTRAS DECISIONES QUE IMPORTAN
 -----------------------------
+· EL NOMBRE SE PREGUNTA Y VA VACÍO. Es la primera pregunta y lo pidió el lodge: «en
+  algunas habitaciones hay 2 pax y no sabemos cuál toma el masaje». La reserva trae un
+  solo nombre —el titular—, así que en una doble el spa recibía siempre ese y la
+  terapeuta se enteraba de quién se acuesta en la camilla cuando ya estaba ahí.
+  No se precarga con el titular a propósito: precargarlo sería responder la pregunta por
+  el huésped justo con la respuesta que suele estar mal, y además la ficha médica que
+  viene abajo quedaría a nombre de quien no la contestó.
 · Las respuestas médicas NO vienen precargadas. Un enlace se reenvía por WhatsApp, y no
   tiene por qué exponer las alergias de la habitación 23 a quien lo reciba. Son las
   MISMAS once preguntas del formulario que el spa ya usaba; el cruce con lo que el
@@ -50,6 +57,10 @@ TEXTOS = {
         "por_confirmar": "awaiting confirmation",
         "pide_t": "Book your treatment",
         "pide_d": "The spa is open from {abre} to {cierra}.",
+        "nombre_q": "Name",
+        "nombre_ayuda": "— who is having the treatment",
+        "nombre_ph": "Full name of the guest",
+        "para": "for",
         "tratamiento": "Treatment",
         "elige_uno": "Choose one…",
         "minutos": "minutes",
@@ -78,6 +89,7 @@ TEXTOS = {
         "enviando": "Sending…",
         "si": "Yes",
         "no": "No",
+        "falta_nombre": "Write the name of the guest having the treatment.",
         "falta_trat": "Choose the treatment.",
         "falta_dia": "Choose the day.",
         "falta_hora": "Choose the time.",
@@ -105,6 +117,10 @@ TEXTOS = {
         "por_confirmar": "por confirmar",
         "pide_t": "Pide tu tratamiento",
         "pide_d": "El spa abre de {abre} a {cierra}.",
+        "nombre_q": "Nombre",
+        "nombre_ayuda": "— quién recibe el tratamiento",
+        "nombre_ph": "Nombre completo del huésped",
+        "para": "para",
         "tratamiento": "Tratamiento",
         "elige_uno": "Elige uno…",
         "minutos": "minutos",
@@ -133,6 +149,7 @@ TEXTOS = {
         "enviando": "Enviando…",
         "si": "Sí",
         "no": "No",
+        "falta_nombre": "Escribe el nombre de quien recibe el tratamiento.",
         "falta_trat": "Elige el tratamiento.",
         "falta_dia": "Elige el día.",
         "falta_hora": "Elige la hora.",
@@ -306,7 +323,7 @@ function leerFormulario() {
   const r = (n) => { const e = document.querySelector(`input[name="${n}"]:checked`);
                      return e ? e.value : null; };
   const c = document.getElementById("q6");
-  return { serv: v("serv"), fecha: v("fecha"), hora: HORA,
+  return { nombre: v("nombre"), serv: v("serv"), fecha: v("fecha"), hora: HORA,
            q1: v("q1"), q3: v("q3"), q2: r("q2"), q4: r("q4"), q5: r("q5"),
            q6: c ? c.checked : false };
 }
@@ -314,7 +331,7 @@ function leerFormulario() {
 function escribirFormulario(d) {
   if (!d) return;
   const p = (id, val) => { const e = document.getElementById(id); if (e && val) e.value = val; };
-  p("serv", d.serv); p("fecha", d.fecha); p("q1", d.q1); p("q3", d.q3);
+  p("nombre", d.nombre); p("serv", d.serv); p("fecha", d.fecha); p("q1", d.q1); p("q3", d.q3);
   for (const n of ["q2", "q4", "q5"]) {
     if (d[n] === null || d[n] === undefined) continue;
     const e = document.querySelector(`input[name="${n}"][value="${d[n]}"]`);
@@ -355,7 +372,8 @@ function dibujar(mensaje) {
       ${mias.length ? `<div class="mias">
         <p style="font-weight:600;">${esc(T("ya_pedido"))}</p>
         ${mias.map(c => `<p>${esc(c.fecha)}${c.hora ? " · " + esc(c.hora) : ""} ·
-          ${esc(c.servicio_nombre || "")}
+          ${esc(c.servicio_nombre || "")}${c.nombre_huesped
+            ? ` <span class="ayuda">${esc(T("para"))} ${esc(c.nombre_huesped)}</span>` : ""}
           <span class="etiqueta ${c.estado === "CONFIRMADA" ? "ok" : ""}">${
             esc(c.estado === "CONFIRMADA" ? T("confirmada") : T("por_confirmar"))}</span></p>`).join("")}
       </div>` : ""}
@@ -364,6 +382,9 @@ function dibujar(mensaje) {
     <div class="tarjeta">
       <h2>${esc(T("pide_t"))}</h2>
       <p class="sub">${esc(T("pide_d", { abre: D.config.abre, cierra: D.config.cierra }))}</p>
+
+      <label>${esc(T("nombre_q"))} <span class="ayuda">${esc(T("nombre_ayuda"))}</span></label>
+      <input type="text" id="nombre" maxlength="60" placeholder="${esc(T("nombre_ph"))}">
 
       <label>${esc(T("tratamiento"))}</label>
       <select id="serv" onchange="verHoras()">
@@ -461,8 +482,10 @@ async function enviar() {
   const error = document.getElementById("error");
   const mostrar = (t) => { error.textContent = t; error.style.display = "block";
                            error.scrollIntoView({ behavior: "smooth", block: "center" }); };
+  const nombre = document.getElementById("nombre").value.trim();
   const serv = document.getElementById("serv").value;
   const fecha = document.getElementById("fecha").value;
+  if (!nombre) return mostrar(T("falta_nombre"));
   if (!serv) return mostrar(T("falta_trat"));
   if (!fecha) return mostrar(T("falta_dia"));
   if (!HORA) return mostrar(T("falta_hora"));
@@ -478,6 +501,7 @@ async function enviar() {
     const res = await fetch(API, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        nombre_huesped: nombre,
         servicio_codigo: serv, fecha, hora: HORA,
         condicion_medica: document.getElementById("q1").value.trim(),
         cirugia_reciente: radio("q2"),

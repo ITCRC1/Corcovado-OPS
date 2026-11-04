@@ -110,6 +110,31 @@ def normalizar_hora(hhmm):
     return _hhmm(m) if m is not None else None
 
 
+# Tope del nombre. No es paranoia de formulario público: el nombre sale en la agenda del
+# spa, en el dashboard y en la hoja del día, que es un PDF de columnas fijas. Un nombre
+# de trescientos caracteres no da error en ninguna parte — desmaqueta la hoja que el
+# staff lee por WhatsApp, que es la forma de fallar que nadie reporta.
+LARGO_NOMBRE = 60
+
+
+def nombre_de_la_cita(escrito, titular):
+    """Quién recibe el tratamiento: lo que escribió el huésped y, si no escribió, el
+    titular de la reserva.
+
+    EN UNA HABITACIÓN DE DOS LA RESERVA TRAE UN SOLO NOMBRE. Lo pidió el lodge: «en
+    algunas habitaciones hay 2 pax y no sabemos cuál toma el masaje». Sin preguntarlo, la
+    cita entraba siempre a nombre del titular, y eso no falla de forma visible: la cita
+    llega completa, con su hora y su ficha médica, solo que a nombre de quien no se va a
+    acostar en la camilla. La terapeuta se entera cuando ya está delante.
+
+    Las dos puertas —el enlace del huésped y el alta de recepción— tienen que decidir
+    esto IGUAL, así que lo deciden aquí y no cada una por su lado.
+    """
+    return ((escrito or "").strip()[:LARGO_NOMBRE]
+            or (titular or "").strip()[:LARGO_NOMBRE]
+            or None)
+
+
 def _ocupa(cita, cfg):
     """(desde, hasta) en minutos del día que esta cita le quita a una terapeuta.
 

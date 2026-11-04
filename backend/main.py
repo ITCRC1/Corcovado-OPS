@@ -2427,16 +2427,19 @@ def _crear_cita(conn, payload, origen, user_id=None):
         raise HTTPException(status_code=400, detail="La hora no tiene el formato hora:minutos.")
 
     room_no = (payload.get("room_no") or "").strip() or None
-    nombre = (payload.get("nombre_huesped") or "").strip() or None
+    nombre = _spa.nombre_de_la_cita(payload.get("nombre_huesped"), None)
     if conf_no:
         r = conn.execute("SELECT room_no, nombre_principal FROM reserva WHERE conf_no = ?",
                          (conf_no,)).fetchone()
         if r:
-            # Lo que dice la reserva manda sobre lo que se escriba: es de donde salen la
-            # habitación y el nombre correctos, y evita el error de teclear mal el cuarto
-            # —que es justo lo que pasaba con el formulario de Google.
+            # LA HABITACIÓN sale de la reserva, porque tecleada se escribe mal y ese era
+            # justo el error del formulario de Google. EL NOMBRE no: en una doble la
+            # reserva trae solo al titular y hay que poder decir cuál de los dos recibe
+            # el tratamiento. La regla vive en spa.nombre_de_la_cita, para que esta
+            # puerta y la del enlace del huésped decidan igual.
             room_no = room_no or r["room_no"]
-            nombre = nombre or r["nombre_principal"]
+            nombre = _spa.nombre_de_la_cita(payload.get("nombre_huesped"),
+                                            r["nombre_principal"])
     if not room_no and not conf_no:
         raise HTTPException(
             status_code=400,
@@ -2758,7 +2761,10 @@ def _datos_publicos_spa(conn, reserva):
                   "tipo": s["tipo"]}
                  for s in _servicios_spa(conn)]
     mias = conn.execute(
-        """SELECT c.id, c.fecha, c.hora, c.estado, s.nombre AS servicio_nombre
+        # El nombre va en la lista para que, en una habitación de dos, cada quien vea
+        # cuál cita es suya. Sin él las dos se ven iguales y la segunda parece repetida.
+        """SELECT c.id, c.fecha, c.hora, c.estado, c.nombre_huesped,
+                  s.nombre AS servicio_nombre
            FROM spa_cita c LEFT JOIN spa_servicio s ON s.codigo = c.servicio_codigo
            WHERE c.conf_no = ? AND c.estado != 'CANCELADA'
            ORDER BY c.fecha, c.hora""", (reserva["conf_no"],)).fetchall()
@@ -2831,11 +2837,20 @@ async def spa_publico_pedir(conf_no: str, token: str, payload: dict):
                         "Habla con recepción para agregar otra."))
 
         datos = dict(payload)
-        # Lo que decide el sistema y no el formulario: quién es y en qué estado entra.
+        # Lo que decide el sistema y no el formulario: de qué reserva es, qué habitación
+        # y en qué estado entra. El cuarto sale de la reserva porque tecleado se escribe
+        # mal, y ese era el error del formulario de Google.
         datos["conf_no"] = conf_no
         datos["room_no"] = reserva["room_no"]
-        datos["nombre_huesped"] = reserva["nombre_principal"]
         datos["estado"] = "SOLICITADA"
+
+        # EL NOMBRE NO. Lo pidió el lodge: «en algunas habitaciones hay 2 pax y no
+        # sabemos cuál toma el masaje». Aquí se pisaba siempre con el titular de la
+        # reserva, así que en una doble el spa recibía el nombre equivocado la mitad de
+        # las veces —y sin dar error: la cita llegaba completa, solo que a nombre de
+        # quien no se iba a acostar en la camilla, con la ficha médica del otro.
+        datos["nombre_huesped"] = _spa.nombre_de_la_cita(
+            payload.get("nombre_huesped"), reserva["nombre_principal"])
         datos.pop("terapeuta", None)      # la asigna el spa al confirmar
 
         # LA HORA TOMADA SE BLOQUEA, aquí sí. En la pantalla del spa los choques solo se
@@ -2882,7 +2897,9 @@ async def spa_publico_pedir(conf_no: str, token: str, payload: dict):
     try:
         import notificaciones as notif
         notif.aviso_cita_spa(
-            {"room_no": reserva["room_no"], "nombre": reserva["nombre_principal"],
+            # El nombre del aviso es el de QUIEN RECIBE el tratamiento, no el del titular
+            # de la reserva: el aviso sirve para saber a quién se espera en la camilla.
+            {"room_no": reserva["room_no"], "nombre": datos["nombre_huesped"],
              "fecha": datos.get("fecha"), "hora": datos.get("hora"),
              "servicio": datos.get("servicio_codigo")})
     except Exception as e:
@@ -6154,11 +6171,19 @@ def restaurantes_avisos(dias: int = 30, user: dict = Depends(exige("restaurantes
         conn.close()
 
 
+# HOTEL_RESOURCE_DIR significa DOS cosas distintas según quién la lea: para init_db es
+# la carpeta donde está schema.sql —o sea backend/— y aquí se estaba leyendo como si
+# fuera la raíz del proyecto. Con la variable puesta a backend/ se buscaba el frontend en
+# «backend/frontend», que no existe, y StaticFiles no avisa: revienta al importar y la
+# aplicación entera no arranca. Así que se comprueba, como ya hacen itinerario.py y
+# exports.py con los mismos assets.
 _resource_dir = os.environ.get("HOTEL_RESOURCE_DIR")
-if _resource_dir:
-    frontend_dir = os.path.join(_resource_dir, "frontend")
-else:
-    frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
+frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
+for _candidato in ([os.path.join(_resource_dir, "frontend"),
+                    os.path.join(_resource_dir, "..", "frontend")] if _resource_dir else []):
+    if os.path.isdir(_candidato):
+        frontend_dir = _candidato
+        break
 
 INDEX_PATH = os.path.join(frontend_dir, "index.html")
 
