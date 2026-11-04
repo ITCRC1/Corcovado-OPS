@@ -125,6 +125,103 @@ def _iso(ddmmyy):
     return f"20{y}-{m}-{d}"
 
 
+def minutos_del_reloj(texto):
+    """'06:00' y '8:00 a.m.' -> minutos desde medianoche. None si no se entiende.
+
+    Hacen falta los dos formatos porque vienen de sitios distintos: el catálogo de tours
+    guarda la hora en 24 h y los horarios del día de salida se escriben como se le
+    imprimen al huésped en su itinerario.
+    """
+    t = str(texto or "").strip().lower().replace(".", "").replace(" ", "")
+    if not t:
+        return None
+    es_pm, es_am = t.endswith("pm"), t.endswith("am")
+    reloj = t[:-2] if (es_pm or es_am) else t
+    try:
+        h, m = (int(x) for x in reloj.split(":"))
+    except ValueError:
+        return None
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        return None
+    if es_pm and h < 12:
+        h += 12
+    if es_am and h == 12:
+        h = 0
+    return h * 60 + m
+
+
+def revisar_tour_del_dia_de_salida(fila):
+    """¿Este tour cae el día que el huésped se va y, si cae, le da tiempo de volver?
+
+    LA REGLA LA DIO EL LODGE: el día de salida solo valen los tours cortos de la mañana,
+    los que terminan ANTES de que salga el bote. Cualquier otro no es un tour: es un
+    renglón que alguien va a leer en la hoja del día y va a contar para repartir guías.
+
+    El caso real que lo destapó: hab. 30, 18→21 de noviembre, con PAJAREO el 21. El
+    itinerario lo pone a las 6:00 a. m. y el pajareo dura dos horas — termina a las 8:00,
+    que es justo la hora a la que sale el bote de Sierpe (equipaje 7:00, check-out 7:45).
+    El huésped no llega. Y nada de eso daba error: el tour salía en la hoja como
+    cualquier otro.
+
+    SIN DATOS NO SE ESCONDE NADA. Si el tour no tiene hora en el catálogo, o no se sabe
+    a qué hora sale el huésped, se deja a la vista y se avisa. Esconder por falta de
+    datos es la forma de fallar que nadie revisa: la hoja sale tranquila y el renglón que
+    faltaba no se echa de menos.
+
+    Devuelve (cabe, motivo). 'motivo' es None cuando no hay nada que decir.
+    """
+    import traslados as _tras
+
+    llega, sale = _iso(fila.get("arr_date")), _iso(fila.get("dep_date"))
+    if not sale or fila.get("fecha") != sale:
+        return True, None                      # no es del día de salida: no es asunto de aquí
+
+    quien = (f"{fila.get('tour_codigo')} el {fila.get('fecha')} de "
+             f"{fila.get('nombre_principal')} (hab. {fila.get('room_no')})")
+
+    fin = minutos_del_reloj(fila.get("horario_fin"))
+    hora_salida, _origen = _tras.hora_de_traslado(fila, es_entrada=False)
+    salida = minutos_del_reloj(hora_salida)
+
+    if fin is None:
+        return True, (f"{quien} cae el día que se va y el catálogo no dice a qué hora "
+                      f"termina, así que no se puede saber si llega al bote. "
+                      f"Revisar con la agenda.")
+    if salida is None:
+        return True, (f"{quien} cae el día que se va y no se sabe a qué hora sale "
+                      f"—falta el punto o la hora del vuelo—. Revisar con la agenda.")
+    if fin < salida:
+        return True, None                      # corto de la mañana: llega de sobra
+    return False, (f"{quien} termina a las {fila.get('horario_fin')} y el bote sale a "
+                   f"las {hora_salida}: no le da tiempo. No se cuenta en la hoja del "
+                   f"día — si de verdad va, hay que mover el tour o la salida.")
+
+
+def tours_del_dia_de_salida_que_no_caben(conn, fecha):
+    """{id de tour_asignado: motivo} de los tours de ESA fecha que no llegan al bote.
+
+    Lo usa el Resumen —y con él la hoja que se le manda al staff— para no contarlos. Es
+    la MISMA función que usa el aviso, así que lo que se esconde y lo que se avisa no
+    pueden decir cosas distintas.
+    """
+    dd = f"{fecha[8:10]}-{fecha[5:7]}-{fecha[2:4]}"      # ISO -> 'DD-MM-YY' del PMS
+    filas = conn.execute(
+        """SELECT ta.id, ta.fecha, ta.tour_codigo, tc.horario_fin,
+                  r.room_no, r.nombre_principal, r.arr_date, r.dep_date,
+                  r.punto_salida, r.hora_vuelo_salida
+             FROM tour_asignado ta
+             JOIN reserva r ON r.conf_no = ta.conf_no
+             LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
+            WHERE ta.fecha = ? AND r.dep_date = ?
+              AND IFNULL(r.res_status,'') != 'CANCELADA'""", (fecha, dd)).fetchall()
+    fuera = {}
+    for f in filas:
+        cabe, motivo = revisar_tour_del_dia_de_salida(dict(f))
+        if not cabe:
+            fuera[f["id"]] = motivo
+    return fuera
+
+
 def validar_tours_fuera_de_la_estadia():
     """Tours que caen antes de la llegada o después de la salida de su reserva.
 
@@ -143,31 +240,47 @@ def validar_tours_fuera_de_la_estadia():
     conn = get_connection()
     filas = conn.execute(
         """SELECT t.id, t.fecha, t.tour_codigo, r.conf_no, r.room_no,
-                  r.nombre_principal, r.arr_date, r.dep_date
-             FROM tour_asignado t JOIN reserva r ON r.conf_no = t.conf_no
+                  r.nombre_principal, r.arr_date, r.dep_date,
+                  r.punto_salida, r.hora_vuelo_salida, tc.horario_fin
+             FROM tour_asignado t
+             JOIN reserva r ON r.conf_no = t.conf_no
+             LEFT JOIN tour_catalogo tc ON tc.codigo = t.tour_codigo
             WHERE t.fecha IS NOT NULL
               AND IFNULL(r.res_status,'') != 'CANCELADA'""").fetchall()
 
     mensajes = []
+
+    def avisar(tipo, id_tour, msg):
+        ya = conn.execute(
+            "SELECT 1 FROM alerta WHERE tipo=? AND mensaje=? AND resuelto=0",
+            (tipo, msg)).fetchone()
+        if not ya:
+            conn.execute(
+                "INSERT INTO alerta (tipo, referencia_id, mensaje) VALUES (?,?,?)",
+                (tipo, id_tour, msg))
+        mensajes.append(msg)
+
     for f in filas:
+        f = dict(f)
         llega, sale = _iso(f["arr_date"]), _iso(f["dep_date"])
         if llega and f["fecha"] < llega:
             cuando = f"antes de que llegue ({f['arr_date']})"
         elif sale and f["fecha"] > sale:
             cuando = f"después de que se vaya ({f['dep_date']})"
         else:
+            # EL BORDE DE ADENTRO. Caer DENTRO de la estadía no basta el día en que el
+            # huésped se va: el último día solo hay sitio para los tours cortos de la
+            # mañana. Se revisa aquí, con los demás tours fuera de sitio, porque es el
+            # mismo fallo —un tour en un día en que el huésped no puede ir— y la única
+            # diferencia es que este se nota menos.
+            _cabe, motivo = revisar_tour_del_dia_de_salida(f)
+            if motivo:
+                avisar("TOUR_EL_DIA_QUE_SE_VA", f["id"], motivo)
             continue
-        msg = (f"{f['tour_codigo']} el {f['fecha']} le queda {cuando} a "
+        avisar("TOUR_FUERA_DE_ESTADIA", f["id"],
+               f"{f['tour_codigo']} el {f['fecha']} le queda {cuando} a "
                f"{f['nombre_principal']} (hab. {f['room_no']}). "
                f"Revisar: cambiaron las fechas de la reserva después de repartir el tour.")
-        ya = conn.execute(
-            "SELECT 1 FROM alerta WHERE tipo='TOUR_FUERA_DE_ESTADIA' AND mensaje=? "
-            "AND resuelto=0", (msg,)).fetchone()
-        if not ya:
-            conn.execute(
-                "INSERT INTO alerta (tipo, referencia_id, mensaje) "
-                "VALUES ('TOUR_FUERA_DE_ESTADIA', ?, ?)", (f["id"], msg))
-        mensajes.append(msg)
 
     conn.commit()
     conn.close()

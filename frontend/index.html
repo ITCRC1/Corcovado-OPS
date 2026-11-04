@@ -5855,6 +5855,12 @@ async function loadResumenOperacion(fecha) {
           <td><strong>${t.pax_total}</strong></td>
         </tr>`).join("")}
       </table>` : `<p class="empty">No hay tours para esta fecha.<small>Se cargan al importar el PDF de reservas.</small></p>`}
+      ${(d.tours_fuera_por_salida || []).length ? `
+        <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:11px 13px;margin-top:14px;font-size:13px;">
+          <p style="margin:0 0 4px;font-weight:600;">No se cuentan: caen el día que el huésped se va (${d.tours_fuera_por_salida.length})</p>
+          <p style="margin:0 0 8px;font-size:12px;">El último día solo da tiempo a los tours cortos de la mañana, los que terminan antes de que salga el bote. Estos no, así que quedan fuera de la hoja y del reparto de guías.</p>
+          ${d.tours_fuera_por_salida.map(x => `<p style="margin:0 0 4px;">⚠ ${escaparHTML(x)}</p>`).join("")}
+        </div>` : ""}
     </div>
 
     ${(d.restricciones_cocina.length || (d.restricciones_cocina_salen || []).length) ? `

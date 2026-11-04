@@ -174,10 +174,18 @@ def definicion(conn, fecha, resumen):
                 fila["guia_t"] = c.get("guia_nombre") or ""
 
     # --- Los tours de cada habitación ---
+    #
+    # SE EMPAREJA POR RESERVA, NO POR HABITACIÓN. Es la misma lección que ya está escrita
+    # en el resumen para las alergias: la habitación se reutiliza cada pocos días y el
+    # número de reserva es lo único que identifica al huésped. Aquí el fallo tenía una
+    # forma concreta: el día que una habitación cambia de huésped —55 veces en los
+    # próximos cuatro meses— la fila de quien SE VA es la última que se queda con el
+    # cuarto, así que el tour del que LLEGA se habría pintado en el renglón del que se
+    # va. Y al revés: el que llega se quedaba sin su tour. Las dos mitades en silencio.
     tours = resumen.get("tours", [])
     for t in tours:
-        for hab in str(t.get("habitaciones") or "").split(","):
-            fila = por_hab.get(hab.strip())
+        for conf in str(t.get("reservas") or "").split(","):
+            fila = por_conf.get(conf.strip())
             if fila and t.get("tour_codigo") and not fila["tour"]:
                 fila["tour"] = t["tour_codigo"]
                 fila["tour_guia"] = t.get("guia_nombre") or ""
@@ -206,6 +214,10 @@ def definicion(conn, fecha, resumen):
             ("Habs. sin asignar", sum(1 for f in filas if not f["hab"]), "Reservas"),
             ("Corridas sin cubrir", sum(1 for c in corridas if c.get("falta")),
              "Transporte"),
+            # Lo que se quitó de la hoja, dicho en la hoja. Si se escondiera sin contarlo,
+            # nadie iría a arreglar la reserva y el tour seguiría mal puesto para siempre.
+            ("Tours el día que se va", len(resumen.get("tours_fuera_por_salida") or []),
+             "Agenda de tours"),
         ],
     }
 

@@ -14,6 +14,7 @@ from importer import build_review_batch
 from loader import load_batch as _load_batch
 from validations import (validar_todos_los_tours, validar_tour_asignado,
                          detectar_conflictos_asignacion, guias_ocupados)
+import validations as _val
 import auth
 import tours_pax
 import alertas as _alertas
@@ -460,16 +461,32 @@ def _datos_del_resumen(fecha):
             })
 
     # --- Tours del día (para guías y operación) ---
+    #
+    # EL DÍA QUE EL HUÉSPED SE VA NO HAY TOUR, salvo los cortos de la mañana que terminan
+    # antes de que salga el bote. Lo dio el lodge y el caso que lo destapó fue la hab. 30
+    # del 21 de noviembre: PAJAREO de 6:00 a 8:00 y el bote de Sierpe a las 8:00. Salía
+    # en la hoja del día como un tour más, contaba para repartir guías, y el huésped
+    # estaba en el muelle. La regla vive en validations para que lo que se esconde y lo
+    # que se avisa no puedan decir cosas distintas.
+    no_caben = _val.tours_del_dia_de_salida_que_no_caben(conn, fecha)
+    sin_contar = ""
+    if no_caben:
+        sin_contar = f" AND ta.id NOT IN ({','.join('?' for _ in no_caben)})"
     tours = lista(
-        """SELECT ta.tour_codigo, ta.grupo_operativo, ta.guia_nombre, ta.bote_nombre,
+        f"""SELECT ta.tour_codigo, ta.grupo_operativo, ta.guia_nombre, ta.bote_nombre,
                   SUM(ta.pax) pax_total, tc.horario_inicio, tc.horario_fin,
-                  GROUP_CONCAT(r.room_no) habitaciones
+                  GROUP_CONCAT(r.room_no) habitaciones,
+                  GROUP_CONCAT(ta.conf_no) reservas
            FROM tour_asignado ta
            JOIN reserva r ON r.conf_no = ta.conf_no
            LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
-           WHERE ta.fecha = ? AND r.res_status != 'CANCELADA'
+           WHERE ta.fecha = ? AND r.res_status != 'CANCELADA'{sin_contar}
            GROUP BY ta.tour_codigo, ta.grupo_operativo, ta.guia_nombre, ta.bote_nombre
-           ORDER BY tc.horario_inicio""", (fecha,))
+           ORDER BY tc.horario_inicio""", (fecha, *no_caben))
+
+    # Lo descartado se devuelve, no se traga. Esconder sin decirlo es justo lo que hace
+    # que nadie arregle la reserva: la hoja sale tranquila y el tour sigue mal puesto.
+    tours_fuera_por_salida = list(no_caben.values())
 
     # --- Cocina: restricciones alimentarias de quienes están en el hotel ---
     # El filtro se hace en la base y no en Python: antes se traía la tabla de amenidades
@@ -596,6 +613,7 @@ def _datos_del_resumen(fecha):
         "desayunos": desayunos, "en_casa": en_casa,
         "puntos": sorted(puntos.values(), key=lambda x: x["punto"]),
         "tours": tours,
+        "tours_fuera_por_salida": tours_fuera_por_salida,
         "restricciones_cocina": restricciones,
         # Las de quienes se van hoy, aparte: solo desayunan.
         "restricciones_cocina_salen": restricciones_salen,

@@ -35,7 +35,7 @@ import re
 
 # Avisos que nacen de UN tour. Su referencia_id apunta a tour_asignado, que tiene fecha.
 POR_TOUR = ("CAPACIDAD_BOTE", "CAPACIDAD_GUIA", "CAMBIO_ULTIMO_MOMENTO",
-            "TOUR_FUERA_DE_ESTADIA")
+            "TOUR_FUERA_DE_ESTADIA", "TOUR_EL_DIA_QUE_SE_VA")
 # Avisos que nacen de una amenidad. Su referencia_id apunta a amenidad_tarea.
 POR_AMENIDAD = ("ALERGIA_NO_ALIMENTARIA",)
 
