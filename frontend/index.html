@@ -497,6 +497,9 @@
            error: abre la pantalla equivocada. Como los botones sin permiso se ocultan,
            quien lava ve solo el suyo y el orden no le afecta. -->
       <button data-icono="🧺" onclick="irAPantalla(14)"><span class="largo">Housekeeping</span><span class="corto">Lavandería</span></button>
+      <!-- Pasaportes: también al final, por lo mismo. Es la pantalla del guía en el
+           puesto del parque, así que en el teléfono tiene que estar a un dedo. -->
+      <button data-icono="🛂" onclick="irAPantalla(15)"><span class="largo">Pasaportes</span><span class="corto">Pasaportes</span></button>
     </nav>
     <div id="app"></div>
   </div>
@@ -553,6 +556,8 @@ const DEFECTOS_FILTRO = {
   // defecto llega a tres días: lo que ya está pedido para mañana también hay que verlo
   // para saber con qué carga se llega.
   housekeeping:() => ({ fecha: hoyISO(), desde: hoyISO(), hasta: masDiasISO(3), modo: "dia" }),
+  // Pasaportes se abre en HOY: es la pantalla que el guía abre la mañana de su salida.
+  pasaportes: () => ({ fecha: hoyISO() }),
 };
 
 const FILTROS = {};
@@ -563,7 +568,8 @@ for (const p in DEFECTOS_FILTRO) FILTROS[p] = DEFECTOS_FILTRO[p]();
 // tienen filtro que reiniciar.
 const FILTRO_DE_PANTALLA = ["dashboard", "reservas", "agenda", "transporte", "sinac",
                             "amenidades", "restaurantes", "spa", "analitica", "resumen",
-                            null, null, null, "publicacion", "housekeeping"];
+                            null, null, null, "publicacion", "housekeeping",
+                            "pasaportes"];
 
 async function irAPantalla(indice) {
   // Los grupos se releen al cambiar de pantalla: una importación de PDF nueva puede
@@ -1027,7 +1033,7 @@ function cargadoresPantalla() {
   return [loadDashboard, loadReservas, loadAgenda, loadTransporte, loadEntradas,
           loadAmenidades, loadRestaurantes, loadSpa, loadAnalitica, loadResumenOperacion,
           loadImportarPDF, loadUsuarios, loadCatalogoAdmin, loadPublicacion,
-          loadHousekeeping];
+          loadHousekeeping, loadPasaportes];
 }
 
 function iniciarRefrescoAutomatico() {
@@ -1189,7 +1195,7 @@ let PERMISOS = {};
 // comprobación que lo verifica (scratchpad/ver_pantallas.cjs).
 const CLAVE_PANTALLA = ["dashboard","reservas","agenda","transporte","sinac","amenidades",
   "restaurantes","spa","analitica","resumen","importar","usuarios","catalogo","publicacion",
-  "housekeeping"];
+  "housekeeping","pasaportes"];
 
 function puedeVer(pantalla) {
   const n = PERMISOS[pantalla];
@@ -1559,6 +1565,13 @@ async function loadReservas(fecha, desde, hasta) {
   // después de que recepción lo editó a mano.
   let estadosItin = {};
   try { estadosItin = await (await fetchAuth(`${API}/api/itinerarios/estados`)).json(); } catch (e) {}
+  // Cuántos pasaportes faltan en cada reserva. Va en un pedido aparte y con try: quien no
+  // tenga el permiso de Pasaportes recibe un 403, y eso no puede tumbarle la tabla de
+  // Reservas — simplemente no ve esa columna.
+  let estadosPas = {};
+  if (puedeVer("pasaportes")) {
+    try { estadosPas = await (await fetchAuth(`${API}/api/pasaportes/estados`)).json(); } catch (e) {}
+  }
   // Habitaciones que podrían ser familia. El sistema no las une solo: las propone acá.
   let sugerencias = [];
   try { sugerencias = await (await fetchAuth(`${API}/api/grupos/sugerencias`)).json(); } catch (e) {}
@@ -1611,7 +1624,7 @@ async function loadReservas(fecha, desde, hasta) {
         </div>` : ""}
       ${rows.length === 0 ? `<p class="empty">Nadie ingresa ${fecha ? "este día" : "en estas fechas"}.<small>Esta lista son los ingresos. Quién está alojado se ve en el Dashboard y en el Resumen de operación.</small></p>` : ""}
       <table${rows.length === 0 ? ' style="display:none;"' : ""}>
-        <tr><th>N° Reserva</th><th>Hab.</th><th>Huésped</th><th>Fechas</th><th>Pax</th><th>Estatus</th><th>Grupo</th><th>Itinerario</th></tr>
+        <tr><th>N° Reserva</th><th>Hab.</th><th>Huésped</th><th>Fechas</th><th>Pax</th><th>Estatus</th><th>Grupo</th><th>Itinerario</th>${puedeVer("pasaportes") ? "<th>Pasaportes</th>" : ""}</tr>
         ${rows.map(r => { const e = estadoReserva(r); return `
           <tr class="${e.clase}">
             <td><a href="#" onclick="verDetalleReserva('${r.conf_no}'); return false;" style="color:var(--forest);font-weight:600;text-decoration:underline;cursor:pointer;">${r.conf_no}</a></td>
@@ -1628,6 +1641,7 @@ async function loadReservas(fecha, desde, hasta) {
               if (e && e.editado) return `<button class="btn" onclick="abrirItinerario('${r.conf_no}')">Editado${idi}</button>`;
               return `<button class="btn" onclick="abrirItinerario('${r.conf_no}')">Ver${idi}</button>`;
             })()}</td>
+            ${puedeVer("pasaportes") ? `<td>${botonPasaportes(r.conf_no, estadosPas[r.conf_no])}</td>` : ""}
           </tr>`; }).join("")}
       </table>
       <div class="leyenda">
@@ -6567,6 +6581,11 @@ async function loadUsuarios() {
     (await fetchAuth(`${API}/api/permisos/catalogo`)).json(),
   ]);
   window._catPermisos = cat;
+  // Los guías del catálogo, para poder decir qué cuenta es cuál. De eso depende qué
+  // pasaportes ve cada guía, así que se carga aquí y no en una pantalla aparte.
+  let guias = [];
+  try { guias = await (await fetchAuth(`${API}/api/catalogo/guias`)).json(); } catch (e) {}
+  window._guiasCatalogo = guias;
   const app = document.getElementById("app");
   app.innerHTML = `
     <div class="card">
@@ -6576,12 +6595,13 @@ async function loadUsuarios() {
       </div>
       <div id="usuarios-form"></div>
       <table>
-        <tr><th>Usuario</th><th>Nombre</th><th>Rol</th><th>Permisos por pantalla</th><th>Estado</th><th></th></tr>
+        <tr><th>Usuario</th><th>Nombre</th><th>Rol</th><th>Guía</th><th>Permisos por pantalla</th><th>Estado</th><th></th></tr>
         ${rows.map(u => `
           <tr>
             <td>${u.username}</td>
             <td>${u.nombre_completo}</td>
             <td><span class="badge badge-tour">${ {recepcion:"Recepción",gerencia:"Gerencia",staff:"Staff de campo"}[u.rol] || u.rol }</span></td>
+            <td>${selectorGuiaDeUsuario(u, guias)}</td>
             <td>${resumenPermisos(u)}</td>
             <td><span class="badge ${u.activo ? 'badge-ok' : 'badge-warn'}">${u.activo ? 'Activo' : 'Inactivo'}</span></td>
             <td>
@@ -6593,6 +6613,10 @@ async function loadUsuarios() {
           </tr>`).join("")}
       </table>
       <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">
+        <strong>Guía:</strong> enlaza la cuenta con un guía del catálogo. De esto depende
+        qué pasaportes ve: un guía ve solo los huéspedes de SUS salidas, y sin el enlace
+        el sistema no sabe cuáles son las suyas — la pantalla le sale vacía.
+        Recepción y gerencia se dejan en «no es guía».<br>
         ✎ = puede modificar en esa pantalla. Sin marca = solo la ve.
         El rol es solo una etiqueta: lo que cada persona puede hacer sale <strong>únicamente</strong>
         de sus permisos. Un usuario sin ninguna pantalla marcada no entra a nada.
@@ -6618,7 +6642,100 @@ async function loadUsuarios() {
       </p>
       <p id="respaldo-estado" style="font-size:12.5px;margin:10px 0 0;"></p>
     </div>
+
+    <div class="card">
+      <div class="header">
+        <p class="title">Respaldo de las fotos de pasaporte</p>
+        <button class="btn" id="btn-respaldo-pas" onclick="bajarRespaldoPasaportes()">
+          Descargar fotos
+        </button>
+      </div>
+      <!-- Va en una tarjeta aparte y lo dice en letra grande a propósito: el respaldo de
+           arriba NO incluye las fotos. Dejarlo implícito sería construir una pérdida de
+           datos con fecha — alguien respalda, cree que respaldó todo, y no. -->
+      <p style="font-size:12.5px;color:var(--muted);margin:0;">
+        <strong>El respaldo de la base NO incluye las fotos.</strong> Van aparte porque
+        crecen mucho más rápido: metidas en el mismo archivo, el respaldo entero se
+        volvería una descarga que por el internet del lodge no termina.
+        <br>Las fotos se guardan indefinidamente y solo se borran a mano, una por una,
+        desde la pantalla de Pasaportes.
+      </p>
+      <p id="respaldo-pas-estado" style="font-size:12.5px;margin:10px 0 0;"></p>
+    </div>
   `;
+  mostrarUsoDePasaportes();
+}
+
+function selectorGuiaDeUsuario(u, guias) {
+  const puesto = u.guia_nombre || "";
+  // Si la cuenta tiene un guía que ya no está activo en el catálogo, se agrega igual a
+  // la lista: si no, el selector mostraría «no es guía» y al tocar cualquier cosa se le
+  // borraría el enlace sin que nadie lo pidiera.
+  const nombres = guias.map(g => g.nombre);
+  if (puesto && !nombres.includes(puesto)) nombres.unshift(puesto);
+  return `<select style="font-size:12px;max-width:150px;"
+      onchange="enlazarGuia(${u.id}, this.value)">
+      <option value="">no es guía</option>
+      ${nombres.map(n => `<option value="${escaparHTML(n)}"${n === puesto ? " selected" : ""}>${escaparHTML(n)}</option>`).join("")}
+    </select>`;
+}
+
+async function enlazarGuia(usuarioId, nombre) {
+  const res = await fetchAuth(`${API}/api/usuarios/${usuarioId}/guia`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ guia_nombre: nombre }),
+  });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    avisar(e.detail || "No se pudo enlazar", true);
+    loadUsuarios();
+    return;
+  }
+  avisar(nombre ? `Cuenta enlazada con ${nombre}` : "Cuenta desenlazada");
+}
+
+async function mostrarUsoDePasaportes() {
+  const donde = document.getElementById("respaldo-pas-estado");
+  if (!donde) return;
+  try {
+    const d = await (await fetchAuth(`${API}/api/pasaportes/uso`)).json();
+    const mb = (d.bytes / (1024 * 1024)).toFixed(1);
+    donde.innerHTML = d.fotos
+      ? `Hay <strong>${d.fotos}</strong> foto${d.fotos === 1 ? "" : "s"} de
+         ${d.reservas} reserva${d.reservas === 1 ? "" : "s"} · ${mb} MB.`
+      : "Todavía no hay ninguna foto guardada.";
+  } catch (e) { /* sin permiso o sin red: la tarjeta se lee igual */ }
+}
+
+async function bajarRespaldoPasaportes() {
+  const boton = document.getElementById("btn-respaldo-pas");
+  const aviso = document.getElementById("respaldo-pas-estado");
+  boton.disabled = true;
+  boton.textContent = "Preparando…";
+  aviso.textContent = "Armando el ZIP con las fotos. Puede tardar.";
+  aviso.style.color = "var(--muted)";
+  try {
+    const res = await fetchAuth(`${API}/api/respaldo/pasaportes`);
+    if (!res.ok) throw new Error(`el servidor respondió ${res.status}`);
+    const blob = await res.blob();
+    let nombre = "corcovado_pasaportes.zip";
+    const m = (res.headers.get("content-disposition") || "").match(/filename="?([^";]+)"?/);
+    if (m) nombre = m[1];
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = nombre;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    aviso.innerHTML = `<span style="color:var(--ok-text,green);">Listo:
+      <strong>${escaparHTML(nombre)}</strong> (${(blob.size / (1024 * 1024)).toFixed(1)} MB).
+      Guárdelo fuera del servidor.</span>`;
+  } catch (e) {
+    aviso.innerHTML = `<span style="color:var(--warn-text);">No se pudo descargar:
+      ${escaparHTML(e.message)}. Las fotos NO se respaldaron.</span>`;
+  } finally {
+    boton.disabled = false;
+    boton.textContent = "Descargar fotos";
+  }
 }
 
 async function bajarRespaldo() {
@@ -7364,10 +7481,321 @@ function mostrarFalloPantalla(pantalla, error) {
   console.error(`[${pantalla}]`, error);
 }
 
+// ====================== PASAPORTES ======================
+//
+// El guardaparques pide identificación en San Pedrillo, Sirena y la Isla del Caño. Esta
+// pantalla existe para que el huésped no tenga que llevarse el documento a la selva: se
+// fotografía una vez y el guía lo enseña desde el teléfono.
+//
+// DOS COSAS LA GOBIERNAN, y las dos vienen de cómo se usa de verdad:
+//
+//  1. SE USA SIN SEÑAL. En el puesto del parque no hay internet. Por eso hay un botón
+//     que baja las fotos de la salida ANTES de salir del lodge, y por eso la foto se
+//     abre a pantalla completa desde una copia guardada, no pidiéndola otra vez.
+//  2. ES UN DOCUMENTO DE IDENTIDAD. No se enseñan miniaturas en la lista: la pantalla
+//     dice quién tiene foto y quién no, y el documento solo aparece cuando alguien lo
+//     abre a propósito. Un guía ve únicamente la gente de SUS salidas, y eso lo decide
+//     el servidor, no este archivo.
+
+async function loadPasaportes(fecha) {
+  setActive(15);
+  if (fecha) FILTROS.pasaportes.fecha = fecha;
+  const f = FILTROS.pasaportes.fecha;
+  const d = await (await fetchAuth(`${API}/api/pasaportes/dia?fecha=${f}`)).json();
+  window._pasData = d;
+  const app = document.getElementById("app");
+  app.innerHTML = `
+    <div class="card">
+      <div class="header">
+        <div>
+          <p class="title">Pasaportes</p>
+          <p class="subtitle">${d.fecha} ${etiquetaFecha(f)}${d.guia ? ` · tus salidas, ${escaparHTML(d.guia)}` : ""}</p>
+        </div>
+        <div class="filterbar">
+          <button class="btn" onclick="loadPasaportes(shiftDate('${f}',-1))">‹</button>
+          <input type="date" value="${f}" onchange="loadPasaportes(this.value)">
+          <button class="btn" onclick="loadPasaportes(shiftDate('${f}',1))">›</button>
+          <button class="btn" onclick="loadPasaportes(hoyISO())">Hoy</button>
+          <button class="btn" onclick="loadPasaportes(masDiasISO(1))">Mañana</button>
+        </div>
+      </div>
+
+      <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:10px 13px;font-size:12.5px;margin-bottom:14px;">
+        Son documentos de identidad. Se abren uno por uno para enseñarlos, no se publican
+        ni se mandan por fuera del sistema.
+      </div>
+
+      ${d.salidas.length ? d.salidas.map((s, i) => seccionSalidaPasaportes(s, i, d.puede_tomar)).join("") : `
+        <p class="empty">${d.guia
+          ? `No tenés salidas asignadas el ${d.fecha}.<small>Recepción asigna los guías en Agenda de tours. Si cubrís una salida de otro, pedí que te la asignen y acá aparece.</small>`
+          : `No hay salidas este día.<small>Los tours se cargan al importar el PDF de reservas.</small>`}</p>`}
+
+      ${(d.en_casa || []).length ? `
+        <p style="font-weight:600;font-size:14px;margin:22px 0 2px;">Alojados este día (${d.en_casa.length})</p>
+        <p style="font-size:11px;color:var(--muted);margin:0 0 8px;">Para fotografiar al ingresar, antes de que tengan tour.</p>
+        ${d.en_casa.map(h => cajaHabitacionPasaporte(h, d.puede_tomar)).join("")}` : ""}
+    </div>`;
+  adaptarTablasMovil();
+}
+
+function seccionSalidaPasaportes(s, indice, puedeTomar) {
+  const faltan = s.sin_foto;
+  return `
+    <div style="border:1px solid var(--border);border-radius:var(--r-md);padding:12px 13px;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;">
+        <p style="margin:0;font-weight:600;font-size:15px;">
+          ${s.horario_inicio ? `<span style="color:var(--muted);font-weight:400;">${s.horario_inicio}</span> ` : ""}
+          ${escaparHTML(s.tour_codigo)}${s.grupo_operativo !== "A" ? ` <span class="badge badge-tour">grupo ${escaparHTML(s.grupo_operativo)}</span>` : ""}
+          ${s.requiere_entrada_sinac ? ` <span class="badge badge-warn" title="Este tour entra al parque: el guardaparques pide identificación">parque</span>` : ""}
+        </p>
+        <span style="font-size:12px;color:${faltan ? "var(--warn-text)" : "var(--ok-text)"};font-weight:600;">
+          ${faltan ? `faltan ${faltan} de ${s.con_foto + faltan}` : `${s.con_foto} listas`}
+        </span>
+      </div>
+      <p style="margin:2px 0 10px;font-size:12px;color:var(--muted);">
+        ${s.guia_nombre ? escaparHTML(s.guia_nombre) : "sin guía asignado"} · ${s.pax} pax
+      </p>
+      <button class="btn" id="pas-bajar-${indice}" onclick="bajarParaSinSenal(${indice})">⬇ Descargar para usar sin señal</button>
+      <div style="height:8px;"></div>
+      ${s.habitaciones.map(h => cajaHabitacionPasaporte(h, puedeTomar)).join("")}
+    </div>`;
+}
+
+function cajaHabitacionPasaporte(h, puedeTomar) {
+  return `
+    <div style="border-top:1px solid var(--border);padding:9px 0;">
+      <p style="margin:0 0 5px;font-size:13px;font-weight:600;">
+        Hab. ${escaparHTML(h.room_no || "—")} · ${escaparHTML(h.nombre_principal || "")}
+      </p>
+      ${h.gente.length ? h.gente.map(g => lineaPersonaPasaporte(h.conf_no, g, puedeTomar)).join("")
+        : `<p style="font-size:12px;color:var(--muted);margin:0 0 6px;">Esta reserva no trae lista de huéspedes.</p>`}
+      ${puedeTomar ? `<button class="btn" style="font-size:12px;" onclick="agregarPersonaPasaporte('${h.conf_no}')">+ Agregar persona</button>` : ""}
+    </div>`;
+}
+
+function lineaPersonaPasaporte(confNo, g, puedeTomar) {
+  const tiene = (g.fotos || []).length;
+  const ultima = tiene ? g.fotos[g.fotos.length - 1] : null;
+  return `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0;">
+      <span style="flex:1 1 150px;font-size:13px;">
+        ${escaparHTML(g.nombre)}
+        ${g.pasaporte ? `<span style="color:var(--muted);font-size:11.5px;"> · ${escaparHTML(g.pasaporte)}</span>` : ""}
+        ${g.en_rooming ? "" : `<span class="badge badge-warn" style="font-size:10px;" title="No viene en la lista del PMS: se agregó a mano">a mano</span>`}
+      </span>
+      ${tiene ? `
+        <button class="btn btn-primary" style="font-size:12px;"
+          onclick="verPasaporte(${ultima.id}, ${JSON.stringify(g.nombre).replace(/"/g, "&quot;")}, ${JSON.stringify(g.pasaporte || "").replace(/"/g, "&quot;")})">🛂 Ver</button>
+        ${puedeTomar ? `<button class="btn" style="font-size:12px;" onclick="quitarPasaporte(${ultima.id})" title="Borrar la foto">🗑</button>` : ""}
+      ` : `<span class="badge badge-warn" style="font-size:11px;">sin foto</span>`}
+      ${puedeTomar ? `
+        <label class="btn" style="font-size:12px;cursor:pointer;margin:0;">
+          📷 ${tiene ? "Retomar" : "Tomar"}
+          <input type="file" accept="image/*" capture="environment" style="display:none;"
+            onchange="mandarPasaporte(this, '${confNo}', ${JSON.stringify(g.nombre).replace(/"/g, "&quot;")}, ${JSON.stringify(g.pasaporte || "").replace(/"/g, "&quot;")})">
+        </label>` : ""}
+    </div>`;
+}
+
+// LA CÁMARA ES LA DEL TELÉFONO, no una dentro de la página. 'capture' abre la cámara
+// nativa que la persona ya sabe usar, funciona igual en iPhone y Android, y no se rompe
+// si el navegador niega el permiso de cámara a la página. Una cámara propia habría que
+// dibujarla, pedirle permiso aparte y mantenerla.
+async function mandarPasaporte(input, confNo, nombre, pasaporte) {
+  const archivo = input.files && input.files[0];
+  input.value = "";                     // para poder repetir la misma foto si hace falta
+  if (!archivo) return;
+  avisar("Preparando la foto…");
+  try {
+    const foto = await achicarFoto(archivo);
+    const cuerpo = new FormData();
+    cuerpo.append("nombre", nombre);
+    if (pasaporte) cuerpo.append("pasaporte", pasaporte);
+    cuerpo.append("foto", foto, "pasaporte.jpg");
+    const res = await fetchAuth(`${API}/api/reservas/${confNo}/pasaportes`, {
+      method: "POST", body: cuerpo });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      avisar(e.detail || "No se pudo guardar la foto", true);
+      return;
+    }
+    avisar("Pasaporte guardado");
+    loadPasaportes();
+  } catch (e) {
+    avisar("No se pudo guardar la foto: " + (e.message || e), true);
+  }
+}
+
+// Una foto de celular pesa de 3 a 5 MB. Con el internet de Drake, un guía con ocho
+// huéspedes abandona a la tercera. Reducida a 1600 px queda en unos 300 KB y un pasaporte
+// se lee perfectamente. Si algo falla se manda el archivo tal cual: el servidor lo valida
+// igual, y es mejor una foto pesada que ninguna.
+//
+// De paso resuelve el HEIC del iPhone: al dibujarla en un lienzo se reescribe como JPEG.
+function achicarFoto(archivo, maxLado = 1600, calidad = 0.72) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(archivo);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const escala = Math.min(1, maxLado / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * escala);
+      c.height = Math.round(img.height * escala);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob((b) => resolve(b && b.size ? b : archivo), "image/jpeg", calidad);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(archivo); };
+    img.src = url;
+  });
+}
+
+async function agregarPersonaPasaporte(confNo) {
+  const nombre = prompt("Nombre completo de la persona del pasaporte:");
+  if (!nombre || !nombre.trim()) return;
+  const num = prompt("Número de pasaporte (opcional):") || "";
+  // Se abre el selector de archivo con el nombre ya puesto: pedir el nombre DESPUÉS de
+  // la foto haría que una cancelación perdiera la foto recién tomada.
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/*";
+  input.capture = "environment";
+  input.onchange = () => mandarPasaporte(input, confNo, nombre.trim(), num.trim());
+  input.click();
+}
+
+async function quitarPasaporte(id) {
+  if (!confirm("¿Borrar esta foto de pasaporte? No se puede deshacer.")) return;
+  const res = await fetchAuth(`${API}/api/pasaportes/${id}`, { method: "DELETE" });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    avisar(e.detail || "No se pudo borrar", true);
+    return;
+  }
+  avisar("Foto borrada");
+  loadPasaportes();
+}
+
+// La imagen se pide con la sesión puesta, no con <img src>: una dirección que se abra
+// sola serviría un documento de identidad a quien tenga el enlace.
+async function verPasaporte(id, nombre, pasaporte) {
+  const modal = document.createElement("div");
+  modal.className = "modal-fondo";
+  modal.onclick = (e) => { if (e.target === modal) cerrarPasaporte(modal); };
+  modal.innerHTML = `
+    <div class="modal-caja" style="max-width:980px;">
+      <button class="modal-cerrar" onclick="cerrarPasaporte(this.closest('.modal-fondo'))">×</button>
+      <p style="font-weight:600;font-size:17px;margin:0;">${escaparHTML(nombre)}</p>
+      <p style="font-size:13px;color:var(--muted);margin:2px 0 10px;">
+        ${pasaporte ? escaparHTML(pasaporte) : "sin número en la reserva"}</p>
+      <div id="pas-imagen" style="text-align:center;min-height:120px;">
+        <p class="empty" style="padding:30px 0;">Abriendo la foto…</p>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  try {
+    const res = await fetchAuth(`${API}/api/pasaportes/${id}/imagen`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
+    const url = URL.createObjectURL(await res.blob());
+    modal._url = url;
+    modal.querySelector("#pas-imagen").innerHTML =
+      `<img src="${url}" alt="" style="max-width:100%;border-radius:var(--r-sm);">`;
+  } catch (e) {
+    // Sin señal Y sin copia guardada. Se dice exactamente eso, porque es accionable:
+    // la próxima vez hay que tocar «Descargar para usar sin señal» antes de salir.
+    modal.querySelector("#pas-imagen").innerHTML =
+      `<p class="empty" style="padding:24px 0;">No se pudo abrir la foto.
+        <small>${escaparHTML(String(e.message || e))}<br>
+        Si estás sin señal, la foto no quedó descargada en este teléfono.</small></p>`;
+  }
+}
+
+function cerrarPasaporte(modal) {
+  if (modal._url) URL.revokeObjectURL(modal._url);
+  modal.remove();
+}
+
+// EL BOTÓN QUE HACE QUE ESTO SIRVA EN EL PARQUE. Pide cada foto una vez estando con
+// señal; el programa de servicio las guarda en el teléfono y después las sirve sin red.
+// Sin esto la pantalla funciona en el lodge y falla justo en el puesto del parque, que
+// es donde hace falta.
+async function bajarParaSinSenal(indice) {
+  const s = (window._pasData && window._pasData.salidas || [])[indice];
+  const boton = document.getElementById(`pas-bajar-${indice}`);
+  if (!s || !boton) return;
+  const ids = [];
+  for (const h of s.habitaciones) {
+    for (const g of h.gente) {
+      for (const f of (g.fotos || [])) ids.push(f.id);
+    }
+  }
+  if (!ids.length) { avisar("Esta salida todavía no tiene ninguna foto"); return; }
+
+  boton.disabled = true;
+  let listas = 0, fallaron = 0;
+  for (const id of ids) {
+    boton.textContent = `⬇ Descargando ${listas + fallaron + 1} de ${ids.length}…`;
+    try {
+      const res = await fetchAuth(`${API}/api/pasaportes/${id}/imagen`);
+      if (res.ok) { await res.blob(); listas++; } else { fallaron++; }
+    } catch (e) { fallaron++; }
+  }
+  boton.disabled = false;
+  boton.textContent = fallaron
+    ? `⚠ ${listas} de ${ids.length} listas · reintentá con señal`
+    : `✓ ${listas} de ${ids.length} listas sin señal`;
+  avisar(fallaron ? `Quedaron ${fallaron} sin descargar` : "Listo para usar sin señal");
+}
+
+// El botón de la columna de Reservas. Dice el ESTADO, no enseña la foto: una fila de
+// miniaturas de pasaportes en la pantalla del mostrador es exponer documentos a quien
+// pase por delante, y a ese tamaño además no se lee nada.
+function botonPasaportes(confNo, estado) {
+  const esperadas = estado ? estado.esperadas : 0;
+  const tiene = estado ? estado.con_foto : 0;
+  if (!esperadas && !tiene) {
+    return `<button class="btn" onclick="abrirPasaportesReserva('${confNo}')">—</button>`;
+  }
+  const completo = tiene >= esperadas && esperadas > 0;
+  const estilo = completo
+    ? "background:var(--ok-bg);border-color:#A5C8A5;color:var(--ok-text);"
+    : (tiene ? "background:var(--warn-bg);border-color:#E5C07B;color:var(--warn-text);" : "");
+  return `<button class="btn" style="${estilo}font-weight:600;"
+    onclick="abrirPasaportesReserva('${confNo}')"
+    title="${completo ? "Todos los pasaportes fotografiados" : "Faltan fotos de pasaporte"}"
+    >${tiene}/${esperadas}</button>`;
+}
+
+// ---------- Pasaportes desde la ficha de una reserva ----------
+async function abrirPasaportesReserva(confNo) {
+  const res = await fetchAuth(`${API}/api/reservas/${confNo}/pasaportes`);
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    avisar(e.detail || "No se pudieron abrir los pasaportes", true);
+    return;
+  }
+  const d = await res.json();
+  const puede = puedeEscribir("pasaportes");
+  const modal = document.createElement("div");
+  modal.className = "modal-fondo";
+  modal.id = "modal-pasaportes";
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+  modal.innerHTML = `
+    <div class="modal-caja" style="max-width:640px;">
+      <button class="modal-cerrar" onclick="this.closest('.modal-fondo').remove()">×</button>
+      <p style="font-weight:600;font-size:18px;margin:0;color:var(--forest-dark);">Pasaportes</p>
+      <p style="font-size:13px;color:var(--muted);margin:2px 0 12px;">Reserva ${escaparHTML(confNo)}</p>
+      ${d.gente.length ? d.gente.map(g => lineaPersonaPasaporte(confNo, g, puede)).join("")
+        : `<p class="empty" style="padding:14px 0;">Esta reserva no trae lista de huéspedes.<small>Se puede agregar a mano la persona del pasaporte.</small></p>`}
+      ${puede ? `<button class="btn" style="margin-top:10px;" onclick="agregarPersonaPasaporte('${confNo}')">+ Agregar persona</button>` : ""}
+    </div>`;
+  document.body.appendChild(modal);
+}
+
 for (const nombre of ["loadDashboard", "loadReservas", "loadAgenda", "loadTransporte",
                       "loadEntradas", "loadAmenidades", "loadRestaurantes", "loadAnalitica",
                       "loadResumenOperacion", "loadImportarPDF", "loadUsuarios",
-                      "loadCatalogoAdmin", "loadPublicacion"]) {
+                      "loadCatalogoAdmin", "loadPublicacion", "loadPasaportes"]) {
   const original = window[nombre];
   if (typeof original !== "function") continue;
   window[nombre] = async function (...args) {

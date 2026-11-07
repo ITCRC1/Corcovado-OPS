@@ -127,8 +127,12 @@ def crear_sesion(conn, usuario_id):
 # decidir qué puede hacer el usuario. Sin esta columna, permisos_de() no encontraba nada
 # y caía en los permisos del rol, así que lo configurado en la pantalla de Usuarios se
 # guardaba pero no se aplicaba nunca.
+# 'guia_nombre' viaja con el usuario en cada petición porque de él depende QUÉ ve: los
+# pasaportes de un guía son los de SUS salidas. Ir a buscarlo aparte en cada endpoint
+# sería una consulta más por petición y, peor, un sitio más donde olvidarse de mirarlo.
 _SQL_SESION = (
-    "SELECT u.id, u.username, u.nombre_completo, u.rol, u.permisos_json FROM sesion s"
+    "SELECT u.id, u.username, u.nombre_completo, u.rol, u.permisos_json, u.guia_nombre"
+    " FROM sesion s"
     " JOIN usuario u ON u.id = s.usuario_id WHERE s.token = ? AND u.activo = 1")
 
 
@@ -225,6 +229,12 @@ PANTALLAS = [
     # el índice de todas las de abajo, y una desalineación ahí no da error, abre la
     # pantalla equivocada.
     ("housekeeping", "Housekeeping"),
+    # Las fotos de los pasaportes. Permiso PROPIO, no colgado del de Agenda: es un
+    # documento de identidad, y quien reparte guías no tiene por qué poder abrirlos.
+    #
+    # También va al FINAL, y por lo mismo que housekeeping: el menú resuelve la pantalla
+    # por POSICIÓN. Meterla en medio abriría la pantalla equivocada sin dar error.
+    ("pasaportes", "Pasaportes"),
 ]
 
 # Permisos que se aplican cuando el usuario no tiene una configuración propia.
@@ -235,7 +245,12 @@ POR_ROL = {
     # El staff de campo mira la operación, pero Usuarios no: ahí se ven las cuentas del
     # sistema y quién puede hacer qué. Antes lo tenía en "ver" junto con todo lo demás,
     # y como los permisos no se aplicaban nadie lo notó.
-    "staff": {k: "ver" for k, _ in PANTALLAS if k != "usuarios"},
+    #
+    # Pasaportes tampoco, y eso es deliberado: son documentos de identidad y no se
+    # reparten solos. Un guía los recibe al asignarle el perfil «Guías» o marcándoselo a
+    # mano, que es un acto consciente de alguien. La consecuencia es que, al desplegar
+    # esto, los guías que ya existen NO lo tendrán hasta que se les dé — y es lo correcto.
+    "staff": {k: "ver" for k, _ in PANTALLAS if k not in ("usuarios", "pasaportes")},
 }
 
 # Perfiles sugeridos para crear usuarios rápido
@@ -244,7 +259,12 @@ PERFILES = {
     "Gerencia": {k: "escribir" for k, _ in PANTALLAS},
     "Restaurante": {"restaurantes": "escribir", "resumen": "ver", "reservas": "ver"},
     "Cocina": {"restaurantes": "ver", "amenidades": "escribir", "resumen": "ver"},
-    "Guías": {"agenda": "escribir", "transporte": "ver", "resumen": "ver"},
+    # El guía lleva 'pasaportes' en escribir porque es quien TOMA la foto al recibir al
+    # huésped y quien la enseña en el puesto del parque. Que la tenga en escribir no le
+    # abre la operación entera: la pantalla le muestra solo la gente de SUS salidas, y
+    # eso lo decide el nombre de guía enlazado a su cuenta, no el permiso.
+    "Guías": {"agenda": "escribir", "transporte": "ver", "resumen": "ver",
+              "pasaportes": "escribir"},
     # La terapeuta del spa: su agenda y poco más. Necesita ver Reservas para saber quién
     # está en casa, y el resumen del día. Tiene 'spa' en escribir, que es además lo que
     # hace que le lleguen los avisos de citas nuevas.
@@ -256,7 +276,9 @@ PERFILES = {
     # se decide separarlo, se quita de aquí.
     "Housekeeping": {"housekeeping": "escribir", "amenidades": "escribir",
                      "reservas": "ver", "resumen": "ver"},
-    "Solo lectura": {k: "ver" for k, _ in PANTALLAS},
+    # Sin 'pasaportes', por lo mismo que el staff: un perfil de conveniencia no reparte
+    # documentos de identidad sin que nadie lo haya decidido.
+    "Solo lectura": {k: "ver" for k, _ in PANTALLAS if k != "pasaportes"},
 }
 
 

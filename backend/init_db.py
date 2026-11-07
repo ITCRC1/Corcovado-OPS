@@ -232,6 +232,11 @@ COLUMNAS_NUEVAS = [
     ("tour_asignado", "ayudante_nombre", "TEXT"),
     # La reserva de un aviso regenerado por una fuente. Ver el comentario en schema.sql.
     ("alerta", "referencia_texto", "TEXT"),
+    # A QUÉ GUÍA corresponde esta cuenta. Hace falta porque el lodge pidió que cada guía
+    # vea los pasaportes SOLO de sus propias salidas, y hasta ahora el guía era un nombre
+    # del catálogo y el usuario era otra cosa, sin nada que los uniera. Vacío para todos
+    # los demás: recepción y gerencia no son guías y ven la operación entera.
+    ("usuario", "guia_nombre", "TEXT"),
     # La modalidad privada de CADA salida. La siembra recupera lo que ya estaba guardado
     # de otra forma: las importaciones de PDF escribían el código «PNC PRIVADO», que el
     # catálogo marca como privado. Sin esta línea esas filas seguirían contándose con las
@@ -324,6 +329,11 @@ INDICES = [
     ("idx_hk_item_pedido",
      "CREATE INDEX IF NOT EXISTS idx_hk_item_pedido ON hk_pedido_item (pedido_id)"),
     ("idx_alerta_resuelto", "CREATE INDEX IF NOT EXISTS idx_alerta_resuelto ON alerta (resuelto)"),
+    # --- pasaportes ---
+    # Siempre se piden por reserva: la pantalla del guía resuelve primero qué reservas van
+    # en su salida y después busca las fotos de cada una.
+    ("idx_pasaporte_conf",
+     "CREATE INDEX IF NOT EXISTS idx_pasaporte_conf ON pasaporte_foto (conf_no)"),
     ("idx_sugerencia_estado",
      "CREATE INDEX IF NOT EXISTS idx_sugerencia_estado ON sugerencia_grupo (estado)"),
     # --- sync_log ---

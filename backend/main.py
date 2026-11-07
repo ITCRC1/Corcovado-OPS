@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -1842,10 +1842,35 @@ def listar_usuarios(user: dict = Depends(exige("usuarios"))):
     # el editor de permisos precarga. Sin esta columna el editor abría siempre en
     # blanco y, al guardar, borraba lo que el usuario ya tenía configurado.
     rows = conn.execute(
-        """SELECT id, username, nombre_completo, rol, activo, permisos_json
+        """SELECT id, username, nombre_completo, rol, activo, permisos_json, guia_nombre
            FROM usuario ORDER BY username""").fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+@app.post("/api/usuarios/{usuario_id}/guia")
+def enlazar_guia(usuario_id: int, payload: dict,
+                 user: dict = Depends(exige("usuarios", escribir=True))):
+    """Dice qué guía del catálogo es esta cuenta. Vacío la desenlaza.
+
+    De esto depende QUÉ pasaportes ve: un guía ve los de SUS salidas, y sin el enlace el
+    sistema no sabe cuáles son las suyas. La pantalla de Pasaportes lo dice cuando falta,
+    porque si no la persona ve una lista vacía y no hay forma de adivinar por qué.
+    """
+    nombre = (payload.get("guia_nombre") or "").strip() or None
+    conn = get_connection()
+    try:
+        if nombre and not conn.execute(
+                "SELECT 1 FROM guia WHERE nombre = ?", (nombre,)).fetchone():
+            raise HTTPException(
+                status_code=400,
+                detail=f"«{nombre}» no está en el catálogo de guías.")
+        conn.execute("UPDATE usuario SET guia_nombre = ? WHERE id = ?",
+                     (nombre, usuario_id))
+        conn.commit()
+        return {"status": "ok", "guia_nombre": nombre}
+    finally:
+        conn.close()
 
 
 @app.post("/api/usuarios")
@@ -1904,6 +1929,18 @@ async def cambiar_password_usuario(usuario_id: int, payload: dict, user: dict = 
     conn.commit()
     conn.close()
     return {"status": "ok"}
+
+
+@app.get("/api/catalogo/guias")
+def listar_guias(user: dict = Depends(exige("usuarios", "catalogo", "agenda"))):
+    """Los guías activos. La pantalla de Usuarios los necesita para enlazar cada cuenta
+    con su guía, que es lo que decide qué pasaportes ve."""
+    conn = get_connection()
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT nombre, es_externo FROM guia WHERE activo = 1 ORDER BY nombre")]
+    finally:
+        conn.close()
 
 
 @app.post("/api/catalogo/guia")
@@ -6187,6 +6224,244 @@ def restaurantes_avisos(dias: int = 30, user: dict = Depends(exige("restaurantes
         return {"avisos": rest.avisos_anticipados(conn, dias)}
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Pasaportes
+# ---------------------------------------------------------------------------
+# El guardaparques pide identificación en San Pedrillo, Sirena y la Isla del Caño, y
+# hasta ahora eso significaba que el huésped se llevara el pasaporte a la selva o a un
+# bote. Se fotografía una vez y el guía lo enseña desde el teléfono.
+#
+# QUIÉN VE QUÉ, que es lo que el lodge definió: un guía ve SOLO la gente de sus propias
+# salidas. Quien no es guía —recepción, gerencia— ve la operación entera, y para eso
+# basta con tener el permiso, que no se reparte solo (ver auth.POR_ROL).
+#
+# La consecuencia, que la pantalla tiene que saber decir: un guía solo puede fotografiar
+# a los huéspedes de sus salidas. A los demás los fotografía recepción al ingresar, que
+# es el otro camino que pidió el lodge.
+import pasaportes as _pass
+
+
+def _guia_de(user):
+    return (user.get("guia_nombre") or "").strip() or None
+
+
+def _reserva_al_alcance(conn, user, conf_no):
+    """Si este usuario puede tocar los pasaportes de esa reserva.
+
+    Se comprueba en el SERVIDOR y no solo escondiendo botones: la pantalla de un guía no
+    le ofrece reservas ajenas, pero la dirección se puede escribir a mano y un documento
+    de identidad no se protege con un botón oculto.
+    """
+    guia = _guia_de(user)
+    if not guia:
+        return True
+    return bool(conn.execute(
+        "SELECT 1 FROM tour_asignado WHERE conf_no = ? AND guia_nombre = ? LIMIT 1",
+        (str(conf_no), guia)).fetchone())
+
+
+@app.get("/api/pasaportes/dia")
+def pasaportes_del_dia(fecha: str = None, user: dict = Depends(exige("pasaportes"))):
+    """Lo que la pantalla de Pasaportes necesita para un día."""
+    fecha = fecha or datetime.date.today().isoformat()
+    conn = get_connection()
+    try:
+        guia = _guia_de(user)
+        salidas = _pass.salidas_del_dia(conn, fecha, guia=guia)
+        return {
+            "fecha": fecha,
+            "guia": guia,
+            "salidas": salidas,
+            # Los alojados solo para quien no es guía: es la lista de recepción, para
+            # fotografiar al ingresar a quien todavía no tiene ninguna salida.
+            "en_casa": [] if guia else _pass.en_casa(conn, fecha),
+            "puede_tomar": auth.puede(user, "pasaportes", escribir=True),
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/pasaportes/estados")
+def estados_de_pasaportes(user: dict = Depends(exige("pasaportes"))):
+    """Cuánta gente lleva cada reserva y cuántas fotos hay, para la columna de Reservas.
+
+    LAS ESPERADAS SON EL MÁXIMO entre el rooming y el pax de la reserva, no el rooming a
+    secas. Medido: 19 reservas vivas no traen rooming, y con solo contar esa tabla la
+    columna diría «0 de 0 · listo» en las que más falta hacen.
+    """
+    conn = get_connection()
+    try:
+        rooming = {str(r["conf_no"]): r["n"] for r in conn.execute(
+            "SELECT conf_no, COUNT(*) n FROM huesped GROUP BY conf_no")}
+        fotos = {str(r["conf_no"]): r["n"] for r in conn.execute(
+            "SELECT conf_no, COUNT(DISTINCT nombre_clave) n "
+            "FROM pasaporte_foto GROUP BY conf_no")}
+        salida = {}
+        for r in conn.execute(
+                "SELECT conf_no, adl, chl FROM reserva WHERE res_status != 'CANCELADA'"):
+            conf = str(r["conf_no"])
+            esperadas = max(rooming.get(conf, 0), (r["adl"] or 0) + (r["chl"] or 0))
+            con_foto = fotos.get(conf, 0)
+            if esperadas or con_foto:
+                salida[conf] = {"esperadas": esperadas, "con_foto": con_foto}
+        return salida
+    finally:
+        conn.close()
+
+
+@app.get("/api/reservas/{conf_no}/pasaportes")
+def pasaportes_de_reserva(conf_no: str, user: dict = Depends(exige("pasaportes"))):
+    conn = get_connection()
+    try:
+        if not _reserva_al_alcance(conn, user, conf_no):
+            raise HTTPException(status_code=403,
+                                detail="Esa reserva no va en ninguna de tus salidas.")
+        return {"conf_no": conf_no, "gente": _pass.de_la_reserva(conn, conf_no)}
+    finally:
+        conn.close()
+
+
+@app.post("/api/reservas/{conf_no}/pasaportes")
+async def subir_pasaporte(conf_no: str, nombre: str = Form(...),
+                          pasaporte: str = Form(None), nota: str = Form(None),
+                          foto: UploadFile = File(...),
+                          user: dict = Depends(exige("pasaportes", escribir=True))):
+    conn = get_connection()
+    try:
+        if not conn.execute("SELECT 1 FROM reserva WHERE conf_no = ?",
+                            (str(conf_no),)).fetchone():
+            raise HTTPException(status_code=404, detail="Esa reserva no existe.")
+        if not _reserva_al_alcance(conn, user, conf_no):
+            raise HTTPException(status_code=403,
+                                detail="Esa reserva no va en ninguna de tus salidas.")
+        datos = await foto.read()
+        try:
+            fila = _pass.guardar(
+                conn, conf_no, nombre, datos, quien=user.get("username"),
+                pasaporte=pasaporte, nota=nota,
+                origen="GUIA" if _guia_de(user) else "RECEPCION")
+        except _pass.FotoInvalida as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"status": "ok", "id": fila["id"],
+                "gente": _pass.de_la_reserva(conn, conf_no)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/pasaportes/{foto_id}/imagen")
+def ver_pasaporte(foto_id: int, user: dict = Depends(exige("pasaportes"))):
+    """La imagen, con su permiso. No se sirve desde /assets ni desde una carpeta pública.
+
+    Va con Cache-Control largo a propósito: la imagen de una foto NO cambia nunca —si se
+    retoma, es otra fila con otra dirección—, y es lo que hace que el teléfono del guía
+    la tenga guardada cuando llega al puesto del parque sin señal.
+    """
+    from fastapi.responses import FileResponse
+    conn = get_connection()
+    try:
+        fila = conn.execute("SELECT * FROM pasaporte_foto WHERE id = ?",
+                            (foto_id,)).fetchone()
+        if not fila:
+            raise HTTPException(status_code=404, detail="Esa foto ya no está.")
+        if not _reserva_al_alcance(conn, user, fila["conf_no"]):
+            raise HTTPException(status_code=403,
+                                detail="Esa reserva no va en ninguna de tus salidas.")
+        ruta = _pass.ruta_de(fila)
+        if not ruta:
+            raise HTTPException(
+                status_code=404,
+                detail="La foto está anotada pero el archivo no aparece. Hay que volver "
+                       "a tomarla.")
+        return FileResponse(ruta, media_type=_pass.tipo_de(fila),
+                            headers={"Cache-Control": "private, max-age=2592000"})
+    finally:
+        conn.close()
+
+
+@app.delete("/api/pasaportes/{foto_id}")
+def borrar_pasaporte(foto_id: int,
+                     user: dict = Depends(exige("pasaportes", escribir=True))):
+    conn = get_connection()
+    try:
+        fila = conn.execute("SELECT conf_no FROM pasaporte_foto WHERE id = ?",
+                            (foto_id,)).fetchone()
+        if not fila:
+            return {"status": "ok", "borrada": False}
+        if not _reserva_al_alcance(conn, user, fila["conf_no"]):
+            raise HTTPException(status_code=403,
+                                detail="Esa reserva no va en ninguna de tus salidas.")
+        return {"status": "ok", "borrada": _pass.borrar(conn, foto_id),
+                "gente": _pass.de_la_reserva(conn, fila["conf_no"])}
+    finally:
+        conn.close()
+
+
+@app.get("/api/pasaportes/uso")
+def uso_de_pasaportes(user: dict = Depends(exige("usuarios"))):
+    conn = get_connection()
+    try:
+        return _pass.uso(conn)
+    finally:
+        conn.close()
+
+
+@app.get("/api/respaldo/pasaportes")
+def respaldo_de_pasaportes(user: dict = Depends(exige("usuarios"))):
+    """Las fotos en un ZIP, APARTE del respaldo de la base.
+
+    POR QUÉ APARTE. El respaldo de la base es un archivo de pocos megas que se baja en
+    segundos; las fotos crecen unos 400 MB al año. Metidas en el mismo ZIP, el respaldo
+    entero se volvería una descarga que por el internet del lodge no termina nunca — y un
+    respaldo que no se hace es exactamente el problema que el botón vino a resolver.
+
+    Lo que NO se puede dejar sin decir: el respaldo de la base NO incluye las fotos. Son
+    dos descargas, y la pantalla de administración lo dice.
+    """
+    import zipfile
+    from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
+
+    conn = get_connection()
+    try:
+        filas = [dict(f) for f in conn.execute(
+            "SELECT * FROM pasaporte_foto ORDER BY conf_no, tomada_en")]
+    finally:
+        conn.close()
+
+    carpeta_tmp = tempfile.mkdtemp(prefix="pasaportes_")
+    destino = os.path.join(carpeta_tmp, "pasaportes.zip")
+    faltan = 0
+    with zipfile.ZipFile(destino, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in filas:
+            ruta = _pass.ruta_de(f)
+            if not ruta:
+                faltan += 1
+                continue
+            # El nombre dentro del ZIP dice de quién es: un montón de archivos con nombre
+            # de marca de tiempo no le sirve a nadie el día que haya que buscar uno.
+            seguro = "".join(c if c.isalnum() or c in " -_" else "_" for c in f["nombre"])
+            ext = str(f["archivo"]).rsplit(".", 1)[-1]
+            z.write(ruta, f"{f['conf_no']}/{f['id']}_{seguro.strip()}.{ext}")
+        z.writestr("LEEME.txt",
+                   f"Fotos de pasaporte del Corcovado Wilderness Lodge\n"
+                   f"Generado: {datetime.datetime.now():%Y-%m-%d %H:%M}\n"
+                   f"Fotos: {len(filas) - faltan} de {len(filas)} anotadas\n"
+                   f"{'FALTAN ' + str(faltan) + ' archivos en el disco.' if faltan else ''}\n"
+                   f"\nEste ZIP NO incluye la base de datos. El respaldo de la base se\n"
+                   f"baja aparte, desde el mismo sitio.\n")
+
+    marca = datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
+    return FileResponse(
+        destino, media_type="application/zip",
+        filename=f"corcovado_pasaportes_{marca}.zip",
+        background=BackgroundTask(shutil_rmtree, carpeta_tmp))
+
+
+def shutil_rmtree(carpeta):
+    import shutil
+    shutil.rmtree(carpeta, ignore_errors=True)
 
 
 # HOTEL_RESOURCE_DIR significa DOS cosas distintas según quién la lea: para init_db es

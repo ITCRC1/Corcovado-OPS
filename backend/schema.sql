@@ -155,6 +155,37 @@ CREATE TABLE IF NOT EXISTS huesped (
     nacionalidad TEXT
 );
 
+-- La FOTO del pasaporte, para enseñarla en el puesto del parque sin que el huésped
+-- tenga que llevarse el documento a la selva.
+--
+-- NO APUNTA A huesped.id, Y ESO ES LO IMPORTANTE DE ESTA TABLA. El rooming se borra y
+-- se vuelve a escribir entero en CADA importación (ver loader._guardar_rooming), así que
+-- esos id cambian cada media hora: una clave foránea ahí dejaría todas las fotos
+-- apuntando a filas que ya no existen, y lo haría en silencio —la foto seguiría en el
+-- disco, el guía abriría la pantalla y no vería nada—.
+--
+-- Se ancla a lo que SÍ es estable: el número de reserva, y el nombre normalizado para
+-- volver a emparejarla con su fila del rooming. El nombre y el número de pasaporte se
+-- copian aquí además de leerse del rooming, por dos razones: hay 19 reservas vivas sin
+-- rooming cargado y una cuyo único «huésped» se llama «LISTA DE PASAPORTES EN
+-- ATTACHMENTS», así que tiene que poder fotografiarse a alguien que el PMS no listó.
+CREATE TABLE IF NOT EXISTS pasaporte_foto (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conf_no TEXT NOT NULL REFERENCES reserva(conf_no),
+    nombre TEXT NOT NULL,          -- como se escribe en la pantalla
+    nombre_clave TEXT NOT NULL,    -- sin tildes y en mayúsculas, para emparejar
+    pasaporte TEXT,                -- el número, cuando se sabe
+    archivo TEXT NOT NULL,         -- ruta relativa dentro de data/pasaportes
+    bytes INTEGER,
+    -- Quién la tomó y cuándo. Un documento de identidad guardado sin saber quién lo
+    -- subió no se puede auditar, y es lo primero que se pregunta si algo pasa.
+    tomada_por TEXT,
+    tomada_en TEXT DEFAULT (datetime('now')),
+    origen TEXT NOT NULL DEFAULT 'RECEPCION',   -- RECEPCION | GUIA
+    nota TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pasaporte_conf ON pasaporte_foto (conf_no);
+
 -- Tours asignados (agenda real, día por día)
 -- El BT («boat transfer»): el viaje de bote EXTRA que pide una reserva, aparte del de
 -- llegada y el de salida. Se lee de la nota —ver boat_transfer.py— y existe para que
