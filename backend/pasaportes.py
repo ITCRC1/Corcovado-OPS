@@ -37,24 +37,21 @@ nadie haya tocado ningún botón de descarga.
 """
 import datetime
 import os
-import re
 import unicodedata
 
+import archivos
 from init_db import DB_PATH
 
 # Lo que se acepta subir. La pantalla ya achica la foto a JPEG antes de mandarla, así que
 # en la práctica siempre llega JPEG; los otros dos están porque un navegador raro podría
 # mandar PNG y rechazarlo sería peor que guardarlo.
-TIPOS = {
-    b"\xff\xd8\xff": ("jpg", "image/jpeg"),
-    b"\x89PNG\r\n\x1a\n": ("png", "image/png"),
-    b"RIFF": ("webp", "image/webp"),      # se confirma con 'WEBP' en el byte 8
-}
+#
+# AQUÍ NO ENTRA EL PDF, aunque archivos.py sepa reconocerlo: esto es una foto tomada con
+# la cámara del teléfono al recibir al huésped. El tiquete del SINAC sí lo acepta, y por
+# eso cada módulo elige su lista en vez de compartir una sola.
+TIPOS = dict(archivos.IMAGENES)
 
-# Tope de lo que se acepta por archivo. No es el tamaño esperado —una foto achicada pesa
-# unos 300 KB— sino el muro: sin él, un teléfono que mande la foto sin procesar sube 5 MB
-# y basta con que alguien repita para llenar el volumen.
-LIMITE_BYTES = 8 * 1024 * 1024
+LIMITE_BYTES = archivos.LIMITE_BYTES
 
 
 class FotoInvalida(Exception):
@@ -86,21 +83,20 @@ def clave(nombre):
 
 
 def _extension(datos):
-    """('jpg', 'image/jpeg') mirando los primeros bytes. No se cree la extensión.
-
-    El nombre del archivo lo pone quien sube, y un '.jpg' no garantiza nada: lo que
-    decide qué es un archivo son sus primeros bytes.
-    """
-    for firma, (ext, mime) in TIPOS.items():
-        if datos.startswith(firma):
-            if firma == b"RIFF" and datos[8:12] != b"WEBP":
-                continue
-            return ext, mime
-    raise FotoInvalida("El archivo no es una foto (se esperaba JPG, PNG o WEBP).")
+    """('jpg', 'image/jpeg') mirando los primeros bytes. No se cree la extensión."""
+    try:
+        return archivos.tipo_de_los_bytes(datos, TIPOS)
+    except archivos.ArchivoInvalido:
+        raise FotoInvalida("El archivo no es una foto (se esperaba JPG, PNG o WEBP).")
 
 
 def revisar(datos):
-    """Comprueba el archivo antes de tocar el disco. Devuelve (extensión, tipo)."""
+    """Comprueba el archivo antes de tocar el disco. Devuelve (extensión, tipo).
+
+    El mensaje del tamaño termina diciendo qué hacer —volver a tomarla desde la
+    pantalla— porque quien lo lee está en el mostrador con el huésped delante, y un
+    «máximo 8 MB» a secas no le dice cómo salir del paso.
+    """
     if not datos:
         raise FotoInvalida("No llegó ninguna foto.")
     if len(datos) > LIMITE_BYTES:
@@ -112,18 +108,16 @@ def revisar(datos):
 
 
 def _nombre_de_archivo(conf_no, ext):
-    marca = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
-    return os.path.join(_seguro(conf_no), f"{marca}.{ext}")
+    return os.path.join(_seguro(conf_no), f"{_marca()}.{ext}")
+
+
+def _marca():
+    return datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
 
 
 def _seguro(texto):
-    """Un trozo de ruta sin sorpresas: solo letras, números y guiones.
-
-    El número de reserva viene de Opera y acaba siendo un nombre de carpeta. Sin esto,
-    un valor con «..» dentro escribiría fuera del volumen.
-    """
-    limpio = re.sub(r"[^A-Za-z0-9_-]", "", str(texto or ""))
-    return limpio or "sin_reserva"
+    """Un trozo de ruta sin sorpresas. La comprobación vive en archivos.seguro()."""
+    return archivos.seguro(texto, por_defecto="sin_reserva")
 
 
 def guardar(conn, conf_no, nombre, datos, quien=None, pasaporte=None,

@@ -418,6 +418,9 @@ def _migrar(conn):
     # pasa dos veces por lo mismo.
     _pantallas_nuevas_a_las_rejillas(conn)
     _sembrar_perfiles(conn)
+    # Después de sembrar los perfiles: este paso CORRIGE el de «Guías», que ya existe en
+    # la base y que la siembra no toca.
+    _tiquetes_del_sinac_a_los_guias(conn)
     _arreglar_entradas_sinac(conn)
     _sembrar_areas_de_amenidades(conn)
     _limpiar_grupos_sueltos(conn)
@@ -799,6 +802,89 @@ def _purgar_sesiones(conn):
     if not {r[1] for r in conn.execute("PRAGMA table_info(sesion)")}:
         return 0          # la tabla aún no existe
     return auth.purgar_sesiones_vencidas(conn)
+
+
+def _tiquetes_del_sinac_a_los_guias(conn):
+    """Le da 'sinac' en VER a los guías, para que puedan abrir el tiquete de la entrada.
+
+    POR QUÉ HACE FALTA UN PASO APARTE, y no basta con cambiar auth.PERFILES:
+
+      · _sembrar_perfiles usa INSERT OR IGNORE, así que el perfil «Guías» que ya está en
+        la base se queda como estaba por mucho que cambie el del código;
+      · _pantallas_nuevas_a_las_rejillas solo agrega pantallas NUEVAS, y 'sinac' lleva
+        aquí desde el principio — para ese paso no hay nada que agregar.
+
+    Sin esto, el botón de tiquetes se despliega, recepción sube los comprobantes, y el
+    guía no ve nada: ni el botón ni la pantalla. Es exactamente el fallo que ya pasó con
+    la pantalla del Spa, y que se ve como «el despliegue no funcionó».
+
+    A QUIÉN TOCA: a quien tenga 'agenda' y NO tenga 'sinac'. Eso son los guías y solo
+    ellos — recepción, gerencia y «Solo lectura» ya traen 'sinac'. Y solo AGREGA, nunca
+    sube un 'ver' a 'escribir' ni quita nada: comprar entradas sigue siendo de recepción.
+
+    Se anota para que corra una sola vez: si mañana alguien le quita 'sinac' a un guía a
+    propósito, este paso no se lo devuelve en el siguiente arranque.
+    """
+    import json as _json
+    if _meta(conn, "sinac_ver_a_los_guias"):
+        return 0
+    try:
+        import auth
+    except ImportError:
+        return 0
+
+    # EL PERFIL GUARDADO, que es lo que se usa al crear un guía nuevo. Se le completa
+    # TODO lo que el perfil del código tiene y el guardado no, no solo 'sinac'.
+    #
+    # Medido sobre la base del lodge: el perfil guardado era
+    # {agenda, transporte, resumen} — se quedó como estaba el día que se creó. Le
+    # faltaba 'pasaportes', que se le agregó al perfil del código al poner las fotos de
+    # pasaporte, y por INSERT OR IGNORE nunca llegó a la base. O sea que un guía creado
+    # hoy desde el perfil «Guías» no habría podido abrir ni un pasaporte, y eso se habría
+    # visto como «la función de pasaportes no sirve».
+    #
+    # Solo se AGREGA lo que falta: nunca se pisa un nivel que el hotel haya cambiado a
+    # mano, ni se quita nada que le hayan añadido.
+    fila = conn.execute(
+        "SELECT permisos_json FROM perfil_permisos WHERE nombre = 'Guías'").fetchone()
+    if fila:
+        try:
+            rejilla = _json.loads(dict(fila)["permisos_json"])
+        except ValueError:
+            rejilla = None
+        if isinstance(rejilla, dict):
+            faltaban = [p for p, nivel in auth.PERFILES["Guías"].items()
+                        if p not in rejilla]
+            for p in faltaban:
+                rejilla[p] = auth.PERFILES["Guías"][p]
+            if faltaban:
+                conn.execute(
+                    "UPDATE perfil_permisos SET permisos_json = ? WHERE nombre = 'Guías'",
+                    (_json.dumps(rejilla, ensure_ascii=False),))
+                print(f"Perfil «Guías» completado con: {', '.join(faltaban)}")
+
+    tocados = 0
+    for u in conn.execute(
+            "SELECT id, permisos_json FROM usuario "
+            "WHERE permisos_json IS NOT NULL AND permisos_json != ''").fetchall():
+        try:
+            rejilla = _json.loads(dict(u)["permisos_json"])
+        except ValueError:
+            continue
+        if not isinstance(rejilla, dict):
+            continue
+        if rejilla.get("agenda") and not rejilla.get("sinac"):
+            rejilla["sinac"] = "ver"
+            conn.execute("UPDATE usuario SET permisos_json = ? WHERE id = ?",
+                         (_json.dumps(rejilla, ensure_ascii=False), u["id"]))
+            tocados += 1
+
+    conn.commit()
+    _meta(conn, "sinac_ver_a_los_guias", "1")
+    if tocados:
+        print(f"Entradas SINAC en 'ver' para {tocados} guía(s), para que puedan abrir "
+              f"el tiquete en el puesto del parque")
+    return tocados
 
 
 def _sembrar_perfiles(conn):

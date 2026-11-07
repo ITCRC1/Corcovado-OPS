@@ -783,8 +783,17 @@ def entradas_sinac(desde: str = None, hasta: str = None, user: dict = Depends(ex
     import sinac
     relacionadas = sinac.reservas_de_varias(
         conn, [(r["tour_codigo"], r["fecha"], r["conf_entrada"]) for r in rows])
+
+    # Qué comprobante cubre cada fila. Se resuelve AQUÍ y no en la pantalla a propósito:
+    # la regla de «este tiquete sirve para esta entrada» es una sola, vive en
+    # tiquetes.cubre(), y escribirla otra vez en JavaScript es la forma segura de que
+    # dentro de seis meses las dos digan cosas distintas y nadie se entere.
+    import tiquetes
+    comprobantes = tiquetes.del_rango(conn, desde, hasta) if rows else []
+
     hoy = datetime.date.today()
     for r in rows:
+        r["tiquetes"] = [t["id"] for t in comprobantes if tiquetes.cubre(t, r)]
         reservas_rel = relacionadas.get(
             (r["tour_codigo"], r["fecha"], r["conf_entrada"] or ""), [])
         r["reservas"] = reservas_rel
@@ -6360,17 +6369,24 @@ def uso_de_pasaportes(user: dict = Depends(exige("usuarios"))):
         conn.close()
 
 
-@app.get("/api/respaldo/pasaportes")
-def respaldo_de_pasaportes(user: dict = Depends(exige("usuarios"))):
-    """Las fotos en un ZIP, APARTE del respaldo de la base.
+@app.get("/api/respaldo/archivos")
+def respaldo_de_archivos(user: dict = Depends(exige("usuarios"))):
+    """Los archivos del volumen —fotos de pasaporte y tiquetes del SINAC— en un ZIP.
 
-    POR QUÉ APARTE. El respaldo de la base es un archivo de pocos megas que se baja en
-    segundos; las fotos crecen unos 400 MB al año. Metidas en el mismo ZIP, el respaldo
-    entero se volvería una descarga que por el internet del lodge no termina nunca — y un
-    respaldo que no se hace es exactamente el problema que el botón vino a resolver.
+    POR QUÉ APARTE DE LA BASE. El respaldo de la base es un archivo de pocos megas que se
+    baja en segundos; las fotos crecen unos 400 MB al año. Metidas en el mismo ZIP, el
+    respaldo entero se volvería una descarga que por el internet del lodge no termina
+    nunca — y un respaldo que no se hace es exactamente el problema que el botón vino a
+    resolver.
 
-    Lo que NO se puede dejar sin decir: el respaldo de la base NO incluye las fotos. Son
-    dos descargas, y la pantalla de administración lo dice.
+    POR QUÉ LOS DOS JUNTOS, Y NO UN BOTÓN CADA UNO. Son lo mismo desde el punto de vista
+    del respaldo: archivos que viven en el volumen y que la copia de la base NO incluye.
+    Un segundo botón sería un segundo sitio del que acordarse, y el día que alguien se
+    olvide de uno habrá perdido esos archivos sin enterarse. Se baja una vez y están los
+    dos.
+
+    Lo que NO se puede dejar sin decir: el respaldo de la base NO incluye nada de esto.
+    Son dos descargas, y la pantalla de administración lo dice en letra grande.
     """
     import zipfile
     from fastapi.responses import FileResponse
@@ -6378,43 +6394,164 @@ def respaldo_de_pasaportes(user: dict = Depends(exige("usuarios"))):
 
     conn = get_connection()
     try:
-        filas = [dict(f) for f in conn.execute(
+        fotos = [dict(f) for f in conn.execute(
             "SELECT * FROM pasaporte_foto ORDER BY conf_no, tomada_en")]
+        tiqs = [dict(f) for f in conn.execute(
+            "SELECT * FROM tiquete_sinac ORDER BY fecha, id")]
     finally:
         conn.close()
 
-    carpeta_tmp = tempfile.mkdtemp(prefix="pasaportes_")
-    destino = os.path.join(carpeta_tmp, "pasaportes.zip")
-    faltan = 0
+    def _legible(texto):
+        return "".join(c if c.isalnum() or c in " -_" else "_" for c in str(texto or ""))
+
+    carpeta_tmp = tempfile.mkdtemp(prefix="archivos_")
+    destino = os.path.join(carpeta_tmp, "archivos.zip")
+    faltan = faltan_t = 0
     with zipfile.ZipFile(destino, "w", zipfile.ZIP_DEFLATED) as z:
-        for f in filas:
+        for f in fotos:
             ruta = _pass.ruta_de(f)
             if not ruta:
                 faltan += 1
                 continue
             # El nombre dentro del ZIP dice de quién es: un montón de archivos con nombre
             # de marca de tiempo no le sirve a nadie el día que haya que buscar uno.
-            seguro = "".join(c if c.isalnum() or c in " -_" else "_" for c in f["nombre"])
             ext = str(f["archivo"]).rsplit(".", 1)[-1]
-            z.write(ruta, f"{f['conf_no']}/{f['id']}_{seguro.strip()}.{ext}")
+            z.write(ruta, f"pasaportes/{f['conf_no']}/"
+                          f"{f['id']}_{_legible(f['nombre']).strip()}.{ext}")
+        for t in tiqs:
+            ruta = _tiq.ruta_de(t)
+            if not ruta:
+                faltan_t += 1
+                continue
+            ext = str(t["archivo"]).rsplit(".", 1)[-1]
+            etiqueta = _legible(t["titulo"] or t["tour_codigo"] or "tiquete").strip()
+            z.write(ruta, f"tiquetes_sinac/{t['fecha']}/{t['id']}_{etiqueta}.{ext}")
         z.writestr("LEEME.txt",
-                   f"Fotos de pasaporte del Corcovado Wilderness Lodge\n"
+                   f"Archivos del Corcovado Wilderness Lodge\n"
                    f"Generado: {datetime.datetime.now():%Y-%m-%d %H:%M}\n"
-                   f"Fotos: {len(filas) - faltan} de {len(filas)} anotadas\n"
-                   f"{'FALTAN ' + str(faltan) + ' archivos en el disco.' if faltan else ''}\n"
+                   f"\nFotos de pasaporte: {len(fotos) - faltan} de {len(fotos)} anotadas\n"
+                   f"{'FALTAN ' + str(faltan) + ' archivos de foto en el disco.' if faltan else ''}\n"
+                   f"Tiquetes del SINAC: {len(tiqs) - faltan_t} de {len(tiqs)} anotados\n"
+                   f"{'FALTAN ' + str(faltan_t) + ' archivos de tiquete en el disco.' if faltan_t else ''}\n"
                    f"\nEste ZIP NO incluye la base de datos. El respaldo de la base se\n"
                    f"baja aparte, desde el mismo sitio.\n")
 
     marca = datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
     return FileResponse(
         destino, media_type="application/zip",
-        filename=f"corcovado_pasaportes_{marca}.zip",
+        filename=f"corcovado_archivos_{marca}.zip",
         background=BackgroundTask(shutil_rmtree, carpeta_tmp))
 
 
 def shutil_rmtree(carpeta):
     import shutil
     shutil.rmtree(carpeta, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Tiquetes del SINAC
+# ---------------------------------------------------------------------------
+# El comprobante de la entrada al parque. Recepción lo compra en línea, el SINAC lo manda
+# por correo, y hasta ahora el guía salía con una impresión, con una captura, o sin nada.
+# En el puesto del parque no hay señal: «lo busco en el correo» no existe como opción.
+#
+# VIVE EN LA PANTALLA DE ENTRADAS SINAC, que es donde ya se mira qué falta comprar, y usa
+# SU filtro de fechas. No es una pantalla nueva: es un botón más, al lado de «Ya
+# compradas», con la misma forma que los otros cuatro.
+#
+# EL PERMISO ES 'sinac', EL MISMO DE LA PANTALLA. Ver los tiquetes es ver; subirlos y
+# borrarlos es escribir. Un comprobante de entrada no es un documento de identidad: no
+# necesita permiso propio como los pasaportes, necesita que el guía pueda abrirlo — y por
+# eso el perfil «Guías» pasa a llevar 'sinac' en ver (ver auth.PERFILES).
+import tiquetes as _tiq
+
+
+@app.get("/api/tiquetes-sinac")
+def tiquetes_sinac(desde: str = None, hasta: str = None,
+                   user: dict = Depends(exige("sinac"))):
+    """Los comprobantes de un rango de fechas, el mismo rango que filtra la pantalla."""
+    conn = get_connection()
+    try:
+        return {
+            "tiquetes": _tiq.del_rango(conn, desde, hasta),
+            "puede_subir": auth.puede(user, "sinac", escribir=True),
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/tiquetes-sinac")
+async def subir_tiquete_sinac(fecha: str = Form(...), tour_codigo: str = Form(None),
+                              conf_entrada: str = Form(None), titulo: str = Form(None),
+                              pax: str = Form(None), nota: str = Form(None),
+                              archivo: UploadFile = File(...),
+                              user: dict = Depends(exige("sinac", escribir=True))):
+    conn = get_connection()
+    try:
+        datos = await archivo.read()
+        try:
+            fila = _tiq.guardar(
+                conn, fecha, datos, tour_codigo=tour_codigo, conf_entrada=conf_entrada,
+                titulo=titulo or (archivo.filename or "").strip() or None,
+                pax=pax, nota=nota, quien=user.get("username"))
+        except _tiq.TiqueteInvalido as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"status": "ok", "id": fila["id"],
+                "tiquetes": _tiq.del_rango(conn, fila["fecha"], fila["fecha"])}
+    finally:
+        conn.close()
+
+
+@app.get("/api/tiquetes-sinac/{tiquete_id}/archivo")
+def ver_tiquete_sinac(tiquete_id: int, user: dict = Depends(exige("sinac"))):
+    """El comprobante, con su permiso. No se sirve desde /assets ni desde carpeta pública.
+
+    Va con Cache-Control largo a propósito: el archivo de un tiquete NO cambia nunca —si
+    se vuelve a subir, es otra fila con otra dirección—, y es lo que hace que el teléfono
+    del guía lo tenga guardado cuando llega al puesto del parque sin señal.
+    """
+    from fastapi.responses import FileResponse
+    conn = get_connection()
+    try:
+        fila = conn.execute("SELECT * FROM tiquete_sinac WHERE id = ?",
+                            (tiquete_id,)).fetchone()
+        if not fila:
+            raise HTTPException(status_code=404, detail="Ese tiquete ya no está.")
+        ruta = _tiq.ruta_de(fila)
+        if not ruta:
+            raise HTTPException(
+                status_code=404,
+                detail="El tiquete está anotado pero el archivo no aparece. Hay que "
+                       "volver a subirlo.")
+        return FileResponse(ruta, media_type=_tiq.tipo_de(fila),
+                            headers={"Cache-Control": "private, max-age=2592000"})
+    finally:
+        conn.close()
+
+
+@app.delete("/api/tiquetes-sinac/{tiquete_id}")
+def borrar_tiquete_sinac(tiquete_id: int,
+                         user: dict = Depends(exige("sinac", escribir=True))):
+    conn = get_connection()
+    try:
+        fila = conn.execute("SELECT fecha FROM tiquete_sinac WHERE id = ?",
+                            (tiquete_id,)).fetchone()
+        if not fila:
+            return {"status": "ok", "borrado": False, "tiquetes": []}
+        fecha = fila["fecha"]
+        return {"status": "ok", "borrado": _tiq.borrar(conn, tiquete_id),
+                "tiquetes": _tiq.del_rango(conn, fecha, fecha)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/tiquetes-sinac/uso")
+def uso_de_tiquetes(user: dict = Depends(exige("usuarios"))):
+    conn = get_connection()
+    try:
+        return _tiq.uso(conn)
+    finally:
+        conn.close()
 
 
 # HOTEL_RESOURCE_DIR significa DOS cosas distintas según quién la lea: para init_db es

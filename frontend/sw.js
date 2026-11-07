@@ -24,7 +24,10 @@
 // Se sube a v3 al agregar las fotos de pasaporte: cambia la ESTRATEGIA —pasan a servirse
 // del teléfono primero— y un teléfono que se quedara con la copia anterior del programa
 // las seguiría pidiendo a la red, que es justo lo que no sirve en el puesto del parque.
-const VERSION = "cwl-v3";
+// Se sube a v4 al agregar los tiquetes del SINAC: son archivos nuevos que también tienen
+// que servirse del teléfono, y un teléfono que se quedara con la copia anterior del
+// programa los seguiría pidiendo a la red — que es justo lo que no hay en el parque.
+const VERSION = "cwl-v4";
 const CACHE_ESTATICO = `${VERSION}-estatico`;   // fuentes, imágenes, iconos
 const CACHE_PAGINAS = `${VERSION}-paginas`;     // el HTML y las respuestas de datos
 
@@ -49,7 +52,17 @@ self.addEventListener("activate", (evento) => {
 });
 
 function esEstatico(url) {
-  return url.pathname.startsWith("/assets/") || esFotoDePasaporte(url);
+  return url.pathname.startsWith("/assets/")
+      || esFotoDePasaporte(url)
+      || esTiqueteDelSinac(url);
+}
+
+// EL TIQUETE DEL SINAC TAMPOCO CAMBIA NUNCA, por lo mismo que la foto del pasaporte: al
+// volver a subirlo se guarda como otra fila, con otro número y otra dirección. Y hace
+// falta por lo mismo: el guardaparques lo pide en el puesto del parque, donde no hay
+// señal, así que solo se puede enseñar si sus bytes ya están en el teléfono.
+function esTiqueteDelSinac(url) {
+  return /^\/api\/tiquetes-sinac\/\d+\/archivo$/.test(url.pathname);
 }
 
 // LA FOTO DE UN PASAPORTE NO CAMBIA NUNCA. Al volver a tomarla se guarda como otra foto,
@@ -73,7 +86,10 @@ function noGuardar(url) {
       // Guardado, un teléfono podría seguir mostrando "no están configurados" días
       // después de que sí lo estén, sin forma de que se entere.
       || url.pathname.startsWith("/api/avisos/")
-      || url.pathname.startsWith("/api/export/");   // descargas, van siempre a la red
+      || url.pathname.startsWith("/api/export/")    // descargas, van siempre a la red
+      // Los respaldos TAMPOCO: son un ZIP de cientos de megas, y guardarlo llenaría el
+      // almacenamiento del teléfono con una copia vieja que nadie va a volver a abrir.
+      || url.pathname.startsWith("/api/respaldo/");
 }
 
 self.addEventListener("fetch", (evento) => {

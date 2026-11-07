@@ -335,10 +335,16 @@ def las_fotos_quedan_en_el_telefono_sin_botones(c):
 
 def el_respaldo_dice_que_las_fotos_van_aparte(c):
     """El respaldo de la base no incluye las fotos. Dejarlo implicito seria construir una
-    perdida de datos con fecha: alguien respalda, cree que respaldo todo, y no."""
+    perdida de datos con fecha: alguien respalda, cree que respaldo todo, y no.
+
+    El ZIP pasó a llevar tambien los tiquetes del SINAC: son lo mismo desde el punto de
+    vista del respaldo —archivos del volumen que la copia de la base no incluye— y dos
+    botones serian dos sitios del que acordarse."""
     html = _html()
-    c.cierto("respaldo/pasaportes" in html, "hay un respaldo de fotos")
+    c.cierto("respaldo/archivos" in html, "hay un respaldo de los archivos del volumen")
     c.cierto("NO incluye las fotos" in html, "y la pantalla lo dice")
+    c.cierto("tiquetes" in html.split("Respaldo de los archivos", 1)[1][:900],
+             "y dice que ahi van tambien los tiquetes del SINAC")
 
 
 def se_entra_por_reservas_y_por_la_agenda(c):

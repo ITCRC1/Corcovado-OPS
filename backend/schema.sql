@@ -314,6 +314,39 @@ CREATE TABLE IF NOT EXISTS entrada_sinac (
     UNIQUE(tour_codigo, fecha, conf_entrada)
 );
 
+-- EL TIQUETE: el comprobante que recepción compró en el SINAC, para que el guía lo
+-- enseñe en el puesto del parque sin llevar papel y sin señal.
+--
+-- NO APUNTA A entrada_sinac.id, y es deliberado —el mismo razonamiento que en
+-- pasaporte_foto—. Las entradas pendientes SE BORRAN: sinac.limpiar_huerfanas() quita
+-- las que se quedan sin reservas detrás cuando un tour cambia de fecha o se cancela, y
+-- el importador vuelve a crearlas con otro id. Una clave foránea ahí dejaría el tiquete
+-- apuntando a una fila que ya no existe, y lo haría en silencio: el archivo seguiría en
+-- el disco, el botón del guía saldría vacío, y nadie se enteraría hasta el puesto del
+-- parque.
+--
+-- Se ancla a lo que SÍ sobrevive: la FECHA del tour —que es además por lo que filtra la
+-- pantalla y lo que el guía necesita— y, cuando se saben, el tour y el número de
+-- confirmación del SINAC. Esos dos son opcionales a propósito: recepción compra de una
+-- vez las entradas de varios tours del mismo día, y un tiquete que no se puede subir
+-- hasta saber a qué fila pertenece es un tiquete que se queda en el correo.
+CREATE TABLE IF NOT EXISTS tiquete_sinac (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fecha TEXT NOT NULL,           -- el día del tour que cubre
+    tour_codigo TEXT,              -- opcional: si el tiquete es de un tour concreto
+    conf_entrada TEXT,             -- el número que da el SINAC, cuando se sabe
+    titulo TEXT,                   -- lo que escribe recepción para reconocerlo
+    archivo TEXT NOT NULL,         -- ruta relativa dentro de data/tiquetes_sinac
+    bytes INTEGER,
+    pax INTEGER,                   -- cuántas entradas cubre, si se sabe
+    nota TEXT,
+    -- Quién lo subió y cuándo: es un comprobante de pago, y lo primero que se pregunta
+    -- si algo no cuadra es quién lo cargó.
+    subido_por TEXT,
+    subido_en TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tiquete_sinac_fecha ON tiquete_sinac (fecha);
+
 -- Tareas generadas por amenidades
 CREATE TABLE IF NOT EXISTS amenidad_tarea (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

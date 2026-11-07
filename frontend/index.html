@@ -3144,13 +3144,27 @@ async function loadEntradas(desde, hasta) {
   if (desde) FILTROS.sinac.desde = desde;
   if (hasta) FILTROS.sinac.hasta = hasta;
   desde = FILTROS.sinac.desde; hasta = FILTROS.sinac.hasta;
-  const res = await fetchAuth(`${API}/api/entradas-sinac?desde=${desde}&hasta=${hasta}`);
+  // Las dos peticiones salen juntas: son del mismo rango y la pantalla las necesita a
+  // la vez. Los tiquetes se piden con tolerancia —si fallan, la pantalla sale igual—
+  // porque un comprobante que no carga no debería dejar a recepción sin ver qué falta
+  // comprar, que es para lo que esta pantalla existía antes.
+  const [res, resTq] = await Promise.all([
+    fetchAuth(`${API}/api/entradas-sinac?desde=${desde}&hasta=${hasta}`),
+    fetchAuth(`${API}/api/tiquetes-sinac?desde=${desde}&hasta=${hasta}`).catch(() => null),
+  ]);
   const rows = await res.json();
+  const dTq = (resTq && resTq.ok) ? await resTq.json().catch(() => null) : null;
+  const tiquetes = (dTq && dTq.tiquetes) || [];
   const vencidas = rows.filter(e => e.urgencia === "VENCIDA").length;
   const urgentes = rows.filter(e => e.urgencia === "URGENTE").length;
   const aTiempo  = rows.filter(e => e.urgencia === "A_TIEMPO").length;
   const compradas = rows.filter(e => e.estado === "COMPRADA").length;
   window._sinacRows = rows;
+  window._sinacTiquetes = tiquetes;
+  window._sinacPuedeSubir = !!(dTq && dTq.puede_subir);
+  // Sin esperar: deja en el teléfono los comprobantes de los próximos días mientras hay
+  // señal, para que se abran en el puesto del parque. Ver precargarTiquetes.
+  precargarTiquetes(tiquetes);
   const colorUrg = { VENCIDA:"fila-sale", URGENTE:"fila-entra", A_TIEMPO:"", OK:"", PASADA:"fila-salio", SIN_FECHA:"" };
   const textoUrg = (e) => {
     if (e.estado === "COMPRADA") return "—";
@@ -3174,11 +3188,14 @@ async function loadEntradas(desde, hasta) {
         </div>
       </div>
       <p class="subtitle" style="margin-bottom:10px;">Compra requerida 15 días antes del tour · mostrando ${desde} a ${hasta}</p>
-      <div class="stats" style="grid-template-columns:repeat(4,1fr);">
+      <div class="stats" style="grid-template-columns:repeat(5,1fr);">
         <div class="stat" onclick="detalleSinac('VENCIDA')"><p class="stat-label">Plazo vencido</p><p class="stat-value" style="color:var(--danger-text);">${vencidas}</p></div>
         <div class="stat" onclick="detalleSinac('URGENTE')"><p class="stat-label">Urgentes (≤7 días)</p><p class="stat-value" style="color:var(--warn-text);">${urgentes}</p></div>
         <div class="stat" onclick="detalleSinac('A_TIEMPO')"><p class="stat-label">A tiempo</p><p class="stat-value">${aTiempo}</p></div>
         <div class="stat" onclick="detalleSinac('OK')"><p class="stat-label">Ya compradas</p><p class="stat-value" style="color:var(--ok-text);">${compradas}</p></div>
+        <div class="stat" id="tarjeta-tiquetes" onclick="detalleTiquetes()" title="Los comprobantes del SINAC, para enseñarlos en el puesto del parque">
+          <p class="stat-label">🎟 Tiquets adquiridos</p>
+          <p class="stat-value" style="color:var(--forest);">${tiquetes.length}</p></div>
       </div>
       <div id="sinac-detalle"></div>
       ${rows.some(e => e.huerfana) ? `
@@ -3199,7 +3216,7 @@ async function loadEntradas(desde, hasta) {
             <td><strong>${e.pax_total_grupo}</strong><br><span style="font-size:11px;color:var(--muted);">${e.pax_huespedes || 0} pax + guía</span></td>
             <td>${e.fecha_limite_compra || "—"}</td>
             <td><strong>${textoUrg(e)}</strong></td>
-            <td>${e.conf_entrada || "-"}</td>
+            <td>${e.conf_entrada || "-"}${marcaTiquete(e)}</td>
             <td><span class="badge ${e.estado === "COMPRADA" ? "badge-ok" : "badge-warn"}">${e.estado.replace("_"," ")}</span></td>
             ${puedeEscribir("sinac") ? `<td>${e.estado !== "COMPRADA" ? `<button class="btn" onclick="marcarEntrada(${e.id})">Marcar comprada</button>` : ""}</td>` : ""}
           </tr>`).join("") || `<tr><td colspan="9" class="empty">Sin entradas SINAC en estas fechas. Amplía el rango para ver las de los próximos meses.</td></tr>`}
@@ -3268,6 +3285,256 @@ function detalleSinac(urgencia) {
         </div>`).join("")
       : `<p style="font-size:13px;color:var(--muted);">Estas entradas no tienen reservas asociadas visibles.</p>`}
     </div>`;
+}
+
+// ---------- TIQUETS ADQUIRIDOS ----------
+//
+// El comprobante que el SINAC manda al comprar la entrada. Vivía en el correo de
+// recepción, y en el puesto del parque no hay señal: el guía salía con una impresión,
+// con una captura, o sin nada.
+//
+// VA AQUÍ, en la pantalla de Entradas SINAC, con el mismo filtro de fechas que ya tiene
+// y con la misma forma que los otros cuatro recuadros. No es una pantalla nueva: es
+// donde recepción ya mira qué falta comprar, y es un sitio menos que abrir para el guía.
+//
+// QUIÉN HACE QUÉ. Recepción sube y borra ('sinac' en escribir); el guía solo abre
+// ('sinac' en ver, que es lo que el perfil «Guías» pasa a llevar). Nadie descarga nada:
+// se abre para enseñarlo, igual que los pasaportes.
+//
+// CUÁL SIRVE PARA CUÁL LO DECIDE EL SERVIDOR. Cada fila de la tabla ya viene con la
+// lista de tiquetes que la cubren (ver tiquetes.cubre en el backend). Esa regla está
+// escrita UNA vez: repetirla aquí en JavaScript es cómo las dos acaban diciendo cosas
+// distintas sin que nadie se entere.
+
+// La marca que va en la celda de confirmación cuando esa entrada ya tiene comprobante.
+function marcaTiquete(e) {
+  const ids = e.tiquetes || [];
+  if (!ids.length) return "";
+  return ` <a href="#" onclick="verTiquete(${ids[0]}); return false;"
+    title="Ver el tiquete de esta entrada" style="text-decoration:none;">🎟</a>`;
+}
+
+function detalleTiquetes() {
+  const panel = document.getElementById("sinac-detalle");
+  if (window._sinacAbierto === "TIQUETES") {
+    window._sinacAbierto = null;
+    panel.innerHTML = "";
+    document.querySelectorAll("#app .stat").forEach(s => s.classList.remove("selected"));
+    return;
+  }
+  window._sinacAbierto = "TIQUETES";
+  document.querySelectorAll("#app .stat").forEach(s => s.classList.remove("selected"));
+  if (event && event.currentTarget) event.currentTarget.classList.add("selected");
+
+  const lista = window._sinacTiquetes || [];
+  const puede = window._sinacPuedeSubir;
+  // Agrupados por día: es como se usan. El guía busca «lo de mañana», no un archivo.
+  const porDia = {};
+  lista.forEach(t => (porDia[t.fecha] = porDia[t.fecha] || []).push(t));
+  const dias = Object.keys(porDia).sort();
+
+  panel.innerHTML = `
+    <div class="detail-panel">
+      <p style="font-weight:600;margin:0 0 4px;">Tiquets adquiridos — ${lista.length} comprobante(s) entre ${escaparHTML(FILTROS.sinac.desde)} y ${escaparHTML(FILTROS.sinac.hasta)}</p>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">
+        Se abren para enseñarlos en el puesto del parque. Al abrir esta pantalla con señal
+        quedan guardados en este teléfono y se ven igual sin internet.
+      </p>
+      ${puede ? formularioTiquete() : ""}
+      ${dias.length ? dias.map(f => `
+        <div style="border-top:1px solid var(--border);padding:8px 0;">
+          <p style="margin:0 0 5px;font-weight:600;font-size:13px;">${escaparHTML(f)}</p>
+          ${porDia[f].map(t => lineaTiquete(t, puede)).join("")}
+        </div>`).join("")
+      : `<p style="font-size:13px;color:var(--muted);margin:10px 0 0;">
+           Todavía no hay comprobantes subidos en estas fechas.
+           ${puede ? "Subí el que manda el SINAC al comprar la entrada." : ""}</p>`}
+    </div>`;
+}
+
+function lineaTiquete(t, puede) {
+  const titulo = t.titulo || `${t.tour_codigo || "Entrada"} ${t.fecha}`;
+  const esPdf = t.tipo === "application/pdf";
+  return `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0;">
+      <span style="flex:1 1 180px;font-size:13px;">
+        ${esPdf ? "📄" : "🖼"} ${escaparHTML(titulo)}
+        ${t.tour_codigo ? ` <span class="badge badge-tour">${escaparHTML(t.tour_codigo)}</span>` : ""}
+        ${t.conf_entrada ? `<span style="color:var(--muted);font-size:11.5px;"> · conf. ${escaparHTML(t.conf_entrada)}</span>` : ""}
+        ${t.pax ? `<span style="color:var(--muted);font-size:11.5px;"> · ${t.pax} entradas</span>` : ""}
+        <br><span style="color:var(--muted);font-size:11px;">
+          ${t.subido_por ? `subido por ${escaparHTML(t.subido_por)}` : "subido"}
+          ${t.subido_en ? ` · ${escaparHTML(String(t.subido_en).slice(0, 16))}` : ""}
+        </span>
+      </span>
+      <button class="btn btn-primary" style="font-size:12px;" onclick="verTiquete(${t.id})">🎟 Ver</button>
+      ${puede ? `<button class="btn" style="font-size:12px;" onclick="quitarTiquete(${t.id})" title="Borrar el comprobante">🗑</button>` : ""}
+    </div>`;
+}
+
+// El formulario de recepción. La lista de entradas del rango va en un desplegable para
+// que no haya que copiar a mano la fecha, el tour y el número de confirmación: elegir la
+// entrada los rellena los tres, que es donde se equivoca uno al teclear.
+function formularioTiquete() {
+  const rows = window._sinacRows || [];
+  return `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r-sm);padding:10px;margin-bottom:10px;">
+      <p style="margin:0 0 8px;font-size:12.5px;font-weight:600;">Subir un comprobante</p>
+      <div class="filterbar" style="margin-bottom:8px;">
+        ¿De cuál entrada?
+        <select id="tq-entrada" onchange="tiqueteEligeEntrada()" style="max-width:340px;">
+          <option value="">Todo un día (sin tour concreto)</option>
+          ${rows.map((e, i) => `<option value="${i}">${escaparHTML(e.fecha)} · ${escaparHTML(e.tour_codigo || "")}${e.conf_entrada ? ` · conf. ${escaparHTML(e.conf_entrada)}` : ""} · ${e.pax_total_grupo} pax</option>`).join("")}
+        </select>
+        Día del tour <input type="date" id="tq-fecha" value="${escaparHTML(FILTROS.sinac.desde)}">
+      </div>
+      <div class="filterbar">
+        <input type="text" id="tq-titulo" placeholder="Nombre para reconocerlo (opcional)" style="flex:1 1 220px;">
+        <input type="file" id="tq-archivo" accept="image/*,application/pdf" multiple>
+        <button class="btn btn-primary" onclick="subirTiquete()">Subir</button>
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin:6px 0 0;">
+        Sirve el PDF que manda el SINAC, o una foto del comprobante. Se pueden elegir
+        varios archivos a la vez; todos quedan en el día que diga la casilla.
+      </p>
+    </div>`;
+}
+
+function tiqueteEligeEntrada() {
+  const sel = document.getElementById("tq-entrada");
+  const e = (window._sinacRows || [])[Number(sel.value)];
+  if (!e) return;
+  document.getElementById("tq-fecha").value = e.fecha;
+}
+
+async function subirTiquete() {
+  const sel = document.getElementById("tq-entrada");
+  const e = (window._sinacRows || [])[Number(sel.value)];
+  const fecha = document.getElementById("tq-fecha").value;
+  const titulo = document.getElementById("tq-titulo").value.trim();
+  const archivos = document.getElementById("tq-archivo").files;
+  if (!fecha) { avisar("Falta el día del tour que cubre el tiquete", true); return; }
+  if (!archivos || !archivos.length) { avisar("Elegí el archivo del comprobante", true); return; }
+
+  let subidos = 0;
+  for (const archivo of archivos) {
+    const cuerpo = new FormData();
+    cuerpo.append("fecha", fecha);
+    // Lo del desplegable solo se manda si la fecha SIGUE siendo la de esa entrada: si
+    // recepción eligió una entrada y después cambió el día a mano, mandar el tour y el
+    // número de la otra pegaría el comprobante a una fila que no es.
+    if (e && e.fecha === fecha) {
+      if (e.tour_codigo) cuerpo.append("tour_codigo", e.tour_codigo);
+      if (e.conf_entrada) cuerpo.append("conf_entrada", e.conf_entrada);
+      if (e.pax_total_grupo) cuerpo.append("pax", e.pax_total_grupo);
+    }
+    if (titulo) cuerpo.append("titulo", archivos.length > 1 ? `${titulo} · ${archivo.name}` : titulo);
+    cuerpo.append("archivo", archivo, archivo.name);
+    const res = await fetchAuth(`${API}/api/tiquetes-sinac`, { method: "POST", body: cuerpo });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      avisar(err.detail || `No se pudo subir ${archivo.name}`, true);
+      break;
+    }
+    subidos++;
+  }
+  if (!subidos) return;
+  avisar(subidos === 1 ? "Tiquete guardado" : `${subidos} tiquetes guardados`);
+  await recargarConTiquetesAbiertos();
+}
+
+// Se recarga la pantalla entera y se vuelve a abrir el panel donde estaba: así el
+// comprobante recién subido aparece en su día y la marca 🎟 sale en la fila que le toca,
+// sin que recepción tenga que volver a buscar el botón.
+async function recargarConTiquetesAbiertos() {
+  await loadEntradas();
+  window._sinacAbierto = null;
+  const tarjeta = document.getElementById("tarjeta-tiquetes");
+  if (tarjeta) tarjeta.click();
+}
+
+async function quitarTiquete(id) {
+  if (!confirm("¿Borrar este comprobante? No se puede deshacer.")) return;
+  const res = await fetchAuth(`${API}/api/tiquetes-sinac/${id}`, { method: "DELETE" });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    avisar(e.detail || "No se pudo borrar", true);
+    return;
+  }
+  avisar("Comprobante borrado");
+  await recargarConTiquetesAbiertos();
+}
+
+// El archivo se pide con la sesión puesta, no con <img src> ni <iframe src>: una
+// dirección que se abra sola serviría el comprobante a quien tenga el enlace.
+async function verTiquete(id) {
+  const t = (window._sinacTiquetes || []).find(x => x.id === id) || {};
+  const titulo = t.titulo || `Tiquete ${t.tour_codigo || ""} ${t.fecha || ""}`.trim();
+  const modal = document.createElement("div");
+  modal.className = "modal-fondo";
+  modal.onclick = (ev) => { if (ev.target === modal) cerrarTiquete(modal); };
+  modal.innerHTML = `
+    <div class="modal-caja" style="max-width:980px;">
+      <button class="modal-cerrar" onclick="cerrarTiquete(this.closest('.modal-fondo'))">×</button>
+      <p style="font-weight:600;font-size:17px;margin:0;">${escaparHTML(titulo)}</p>
+      <p style="font-size:13px;color:var(--muted);margin:2px 0 10px;">
+        ${escaparHTML(t.fecha || "")}${t.conf_entrada ? ` · conf. ${escaparHTML(t.conf_entrada)}` : ""}${t.pax ? ` · ${t.pax} entradas` : ""}
+      </p>
+      <div id="tq-vista" style="text-align:center;min-height:120px;">
+        <p class="empty" style="padding:30px 0;">Abriendo el tiquete…</p>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  try {
+    const res = await fetchAuth(`${API}/api/tiquetes-sinac/${id}/archivo`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    modal._url = url;
+    // El PDF va en un marco, pero NO en todos los teléfonos se dibuja ahí dentro —en
+    // iPhone a menudo sale en blanco—. Por eso el botón de abrirlo entero no es un
+    // adorno: es la salida cuando el marco no muestra nada. No es una descarga: es la
+    // misma copia que ya está en el teléfono, abierta a pantalla completa.
+    modal.querySelector("#tq-vista").innerHTML = (blob.type === "application/pdf")
+      ? `<iframe src="${url}" style="width:100%;height:68vh;border:1px solid var(--border);border-radius:var(--r-sm);"></iframe>
+         <p style="margin:8px 0 0;"><button class="btn" onclick="window.open('${url}','_blank')">Abrir a pantalla completa</button>
+         <span style="font-size:11.5px;color:var(--muted);margin-left:6px;">si el recuadro sale en blanco</span></p>`
+      : `<img src="${url}" alt="" style="max-width:100%;border-radius:var(--r-sm);">`;
+  } catch (e) {
+    modal.querySelector("#tq-vista").innerHTML =
+      `<p class="empty" style="padding:24px 0;">No se pudo abrir el tiquete.
+        <small>${escaparHTML(String(e.message || e))}<br>
+        Si estás sin señal, el comprobante no quedó guardado en este teléfono.</small></p>`;
+  }
+}
+
+function cerrarTiquete(modal) {
+  if (modal._url) URL.revokeObjectURL(modal._url);
+  modal.remove();
+}
+
+// LO QUE HACE QUE ESTO SIRVA EN EL PARQUE. Se piden los archivos una vez, en silencio,
+// mientras hay señal; el programa de servicio los guarda y después los sirve del
+// teléfono. Igual que con los pasaportes, y por la misma razón.
+//
+// SOLO LOS DE LOS PRÓXIMOS DÍAS. El rango de esta pantalla son meses —recepción mira qué
+// falta comprar— y bajar cincuenta PDF con el internet del lodge para que el guía use
+// uno sería gastar la mañana. Lo que hace falta llevar al muelle es lo de hoy y lo de
+// pasado mañana.
+async function precargarTiquetes(lista) {
+  // hoyISO() y shiftDate(), no toISOString() sobre la hora actual: eso da la fecha en
+  // UTC, y el lodge va seis horas por detrás. Después de las 6 de la tarde el «hoy» de
+  // UTC ya es mañana, y la precarga se saltaría justo los tiquetes del día siguiente —
+  // los que el guía necesita— la tarde en que se preparan.
+  const desde = hoyISO();
+  const tope = shiftDate(desde, 3);
+  for (const t of (lista || [])) {
+    if (t.fecha < desde || t.fecha > tope) continue;
+    try {
+      const res = await fetchAuth(`${API}/api/tiquetes-sinac/${t.id}/archivo`);
+      if (res.ok) await res.blob();
+    } catch (e) { /* sin señal: ya habrá otra vuelta con red */ }
+  }
 }
 
 async function marcarEntrada(id) {
@@ -6656,20 +6923,22 @@ async function loadUsuarios() {
 
     <div class="card">
       <div class="header">
-        <p class="title">Respaldo de las fotos de pasaporte</p>
+        <p class="title">Respaldo de los archivos (pasaportes y tiquetes)</p>
         <button class="btn" id="btn-respaldo-pas" onclick="bajarRespaldoPasaportes()">
-          Descargar fotos
+          Descargar archivos
         </button>
       </div>
       <!-- Va en una tarjeta aparte y lo dice en letra grande a propósito: el respaldo de
-           arriba NO incluye las fotos. Dejarlo implícito sería construir una pérdida de
-           datos con fecha — alguien respalda, cree que respaldó todo, y no. -->
+           arriba NO incluye estos archivos. Dejarlo implícito sería construir una pérdida
+           de datos con fecha — alguien respalda, cree que respaldó todo, y no. -->
       <p style="font-size:12.5px;color:var(--muted);margin:0;">
-        <strong>El respaldo de la base NO incluye las fotos.</strong> Van aparte porque
-        crecen mucho más rápido: metidas en el mismo archivo, el respaldo entero se
-        volvería una descarga que por el internet del lodge no termina.
-        <br>Las fotos se guardan indefinidamente y solo se borran a mano, una por una,
-        desde la columna de Pasaportes en Reservas.
+        <strong>El respaldo de la base NO incluye las fotos de pasaporte ni los tiquetes
+        del SINAC.</strong> Van aparte porque crecen mucho más rápido: metidos en el mismo
+        archivo, el respaldo entero se volvería una descarga que por el internet del lodge
+        no termina. Los dos vienen en el mismo ZIP, en carpetas separadas.
+        <br>Se guardan indefinidamente y solo se borran a mano: las fotos desde la columna
+        de Pasaportes en Reservas, los tiquetes desde «Tiquets adquiridos» en Entradas
+        SINAC.
       </p>
       <p id="respaldo-pas-estado" style="font-size:12.5px;margin:10px 0 0;"></p>
     </div>
@@ -6681,12 +6950,24 @@ async function mostrarUsoDePasaportes() {
   const donde = document.getElementById("respaldo-pas-estado");
   if (!donde) return;
   try {
-    const d = await (await fetchAuth(`${API}/api/pasaportes/uso`)).json();
+    const [d, t] = await Promise.all([
+      (await fetchAuth(`${API}/api/pasaportes/uso`)).json(),
+      fetchAuth(`${API}/api/tiquetes-sinac/uso`).then(r => r.ok ? r.json() : null)
+        .catch(() => null),
+    ]);
     const mb = (d.bytes / (1024 * 1024)).toFixed(1);
-    donde.innerHTML = d.fotos
+    // Se enseñan las dos cuentas porque el ZIP lleva las dos cosas: decir solo las fotos
+    // haría creer que los tiquetes no se están respaldando.
+    const linea = d.fotos
       ? `Hay <strong>${d.fotos}</strong> foto${d.fotos === 1 ? "" : "s"} de
          ${d.reservas} reserva${d.reservas === 1 ? "" : "s"} · ${mb} MB.`
       : "Todavía no hay ninguna foto guardada.";
+    const lineaT = (t && t.tiquetes)
+      ? `<br>Y <strong>${t.tiquetes}</strong> tiquete${t.tiquetes === 1 ? "" : "s"} del
+         SINAC de ${t.dias} día${t.dias === 1 ? "" : "s"} ·
+         ${(t.bytes / (1024 * 1024)).toFixed(1)} MB.`
+      : (t ? "<br>Todavía no hay ningún tiquete del SINAC subido." : "");
+    donde.innerHTML = linea + lineaT;
   } catch (e) { /* sin permiso o sin red: la tarjeta se lee igual */ }
 }
 
@@ -6695,13 +6976,13 @@ async function bajarRespaldoPasaportes() {
   const aviso = document.getElementById("respaldo-pas-estado");
   boton.disabled = true;
   boton.textContent = "Preparando…";
-  aviso.textContent = "Armando el ZIP con las fotos. Puede tardar.";
+  aviso.textContent = "Armando el ZIP con las fotos y los tiquetes. Puede tardar.";
   aviso.style.color = "var(--muted)";
   try {
-    const res = await fetchAuth(`${API}/api/respaldo/pasaportes`);
+    const res = await fetchAuth(`${API}/api/respaldo/archivos`);
     if (!res.ok) throw new Error(`el servidor respondió ${res.status}`);
     const blob = await res.blob();
-    let nombre = "corcovado_pasaportes.zip";
+    let nombre = "corcovado_archivos.zip";
     const m = (res.headers.get("content-disposition") || "").match(/filename="?([^";]+)"?/);
     if (m) nombre = m[1];
     const url = URL.createObjectURL(blob);

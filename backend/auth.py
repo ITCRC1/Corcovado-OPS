@@ -267,8 +267,12 @@ PERFILES = {
     # huésped y quien la enseña en el puesto del parque. Que la tenga en escribir no le
     # abre la operación entera: la pantalla le muestra solo la gente de SUS salidas, y
     # eso lo decide el nombre de guía enlazado a su cuenta, no el permiso.
+    # 'sinac' en VER —no en escribir— porque el guía tiene que poder abrir el tiquete de
+    # la entrada en el puesto del parque, donde no hay señal y donde el guardaparques lo
+    # pide. Comprarlas y subir el comprobante sigue siendo de recepción: ver no deja
+    # marcar una entrada como comprada ni subir ni borrar un tiquete.
     "Guías": {"agenda": "escribir", "transporte": "ver", "resumen": "ver",
-              "pasaportes": "escribir"},
+              "pasaportes": "escribir", "sinac": "ver"},
     # La terapeuta del spa: su agenda y poco más. Necesita ver Reservas para saber quién
     # está en casa, y el resumen del día. Tiene 'spa' en escribir, que es además lo que
     # hace que le lleguen los avisos de citas nuevas.
