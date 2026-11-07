@@ -26,6 +26,14 @@ costo de sacarlos es que el respaldo de la base NO los incluye; por eso hay un r
 de fotos aparte, y la pantalla de administración dice en letra grande que son dos cosas.
 El lodge eligió guardarlas indefinidamente, así que no hay borrado automático: solo el
 botón de borrar una por una.
+
+SIN SEÑAL. En el puesto del parque no hay internet, y una foto solo se puede enseñar si
+sus bytes ya están en el teléfono: no hay forma de esquivar eso. Lo que sí se puede
+quitar es el PASO que había que acordarse de dar. La imagen se sirve por una dirección
+que no cambia nunca —volver a tomarla crea otra fila con otro número—, el programa de
+servicio la guarda y la sirve del teléfono sin preguntarle a la red, y la Agenda las pide
+calladamente al abrirse con señal. Para cuando el guía llega al muelle ya están, sin que
+nadie haya tocado ningún botón de descarga.
 """
 import datetime
 import os
@@ -238,33 +246,21 @@ def _resumen(fila):
             "bytes": fila["bytes"]}
 
 
-def _ddmmyy(iso):
-    return f"{iso[8:10]}-{iso[5:7]}-{iso[2:4]}"
-
-
-def salidas_del_dia(conn, fecha, guia=None):
-    """Las salidas de un día con su gente, para la pantalla del guía.
-
-    Si se pasa `guia`, SOLO las suyas: lo pidió el lodge así. Tiene una consecuencia que
-    la pantalla tiene que saber decir —si a alguien no le asignaron la salida, no ve
-    nada— y por eso se devuelve también para quién se filtró.
+def salidas_del_dia(conn, fecha):
+    """Las salidas de un día con su gente, para el botón de la Agenda de tours.
 
     Las canceladas no entran: no van a ningún tour.
     """
-    condicion, params = "", [fecha]
-    if guia:
-        condicion = " AND ta.guia_nombre = ?"
-        params.append(guia)
     filas = [dict(r) for r in conn.execute(
-        f"""SELECT ta.id, ta.tour_codigo, ta.grupo_operativo, ta.guia_nombre, ta.pax,
-                   ta.conf_no, r.room_no, r.nombre_principal,
-                   tc.horario_inicio, tc.requiere_entrada_sinac
-              FROM tour_asignado ta
-              JOIN reserva r ON r.conf_no = ta.conf_no
-              LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
-             WHERE ta.fecha = ? AND r.res_status != 'CANCELADA'{condicion}
-             ORDER BY tc.horario_inicio, ta.tour_codigo,
-                      CAST(r.room_no AS INTEGER)""", params)]
+        """SELECT ta.id, ta.tour_codigo, ta.grupo_operativo, ta.guia_nombre, ta.pax,
+                  ta.conf_no, r.room_no, r.nombre_principal,
+                  tc.horario_inicio, tc.requiere_entrada_sinac
+             FROM tour_asignado ta
+             JOIN reserva r ON r.conf_no = ta.conf_no
+             LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
+            WHERE ta.fecha = ? AND r.res_status != 'CANCELADA'
+            ORDER BY tc.horario_inicio, ta.tour_codigo,
+                     CAST(r.room_no AS INTEGER)""", (fecha,))]
 
     salidas = {}
     for f in filas:
@@ -292,29 +288,6 @@ def salidas_del_dia(conn, fecha, guia=None):
         s["sin_foto"] = sum(1 for h in s["habitaciones"] for g in h["gente"]
                             if not g["fotos"])
     return lista
-
-
-def en_casa(conn, fecha):
-    """Las reservas alojadas ese día, para que recepción fotografíe al ingresar.
-
-    Es la MISMA regla de «en casa» del dashboard, con una diferencia a propósito: aquí
-    el día de salida SÍ cuenta. Al que se va hoy todavía se le puede estar tomando la
-    foto del tour de la mañana.
-    """
-    yy = f"{fecha[2:4]}-{fecha[5:7]}-{fecha[8:10]}"
-    iso = ("(substr({c},7,2)||'-'||substr({c},4,2)||'-'||substr({c},1,2))")
-    filas = [dict(r) for r in conn.execute(
-        f"""SELECT conf_no, room_no, nombre_principal, adl, chl, arr_date, dep_date
-              FROM reserva
-             WHERE res_status != 'CANCELADA'
-               AND {iso.format(c='arr_date')} <= ?
-               AND (dep_date IS NULL OR {iso.format(c='dep_date')} >= ?)
-             ORDER BY CAST(room_no AS INTEGER)""", (yy, yy))]
-    for f in filas:
-        f["gente"] = de_la_reserva(conn, f["conf_no"])
-        f["con_foto"] = sum(1 for g in f["gente"] if g["fotos"])
-        f["sin_foto"] = sum(1 for g in f["gente"] if not g["fotos"])
-    return filas
 
 
 def uso(conn):

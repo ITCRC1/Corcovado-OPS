@@ -1842,35 +1842,10 @@ def listar_usuarios(user: dict = Depends(exige("usuarios"))):
     # el editor de permisos precarga. Sin esta columna el editor abría siempre en
     # blanco y, al guardar, borraba lo que el usuario ya tenía configurado.
     rows = conn.execute(
-        """SELECT id, username, nombre_completo, rol, activo, permisos_json, guia_nombre
+        """SELECT id, username, nombre_completo, rol, activo, permisos_json
            FROM usuario ORDER BY username""").fetchall()
     conn.close()
     return [dict(r) for r in rows]
-
-
-@app.post("/api/usuarios/{usuario_id}/guia")
-def enlazar_guia(usuario_id: int, payload: dict,
-                 user: dict = Depends(exige("usuarios", escribir=True))):
-    """Dice qué guía del catálogo es esta cuenta. Vacío la desenlaza.
-
-    De esto depende QUÉ pasaportes ve: un guía ve los de SUS salidas, y sin el enlace el
-    sistema no sabe cuáles son las suyas. La pantalla de Pasaportes lo dice cuando falta,
-    porque si no la persona ve una lista vacía y no hay forma de adivinar por qué.
-    """
-    nombre = (payload.get("guia_nombre") or "").strip() or None
-    conn = get_connection()
-    try:
-        if nombre and not conn.execute(
-                "SELECT 1 FROM guia WHERE nombre = ?", (nombre,)).fetchone():
-            raise HTTPException(
-                status_code=400,
-                detail=f"«{nombre}» no está en el catálogo de guías.")
-        conn.execute("UPDATE usuario SET guia_nombre = ? WHERE id = ?",
-                     (nombre, usuario_id))
-        conn.commit()
-        return {"status": "ok", "guia_nombre": nombre}
-    finally:
-        conn.close()
 
 
 @app.post("/api/usuarios")
@@ -6233,50 +6208,32 @@ def restaurantes_avisos(dias: int = 30, user: dict = Depends(exige("restaurantes
 # hasta ahora eso significaba que el huésped se llevara el pasaporte a la selva o a un
 # bote. Se fotografía una vez y el guía lo enseña desde el teléfono.
 #
-# QUIÉN VE QUÉ, que es lo que el lodge definió: un guía ve SOLO la gente de sus propias
-# salidas. Quien no es guía —recepción, gerencia— ve la operación entera, y para eso
-# basta con tener el permiso, que no se reparte solo (ver auth.POR_ROL).
+# NO HAY PANTALLA DE PASAPORTES. Se entra por los dos sitios donde la gente ya está:
 #
-# La consecuencia, que la pantalla tiene que saber decir: un guía solo puede fotografiar
-# a los huéspedes de sus salidas. A los demás los fotografía recepción al ingresar, que
-# es el otro camino que pidió el lodge.
+#   · la columna de Reservas, donde recepción —o el guía— toma la foto al recibir;
+#   · un botón por salida en la Agenda de tours, que es lo que el guía abre en el muelle.
+#
+# 'pasaportes' sigue siendo un PERMISO propio aunque no sea una pantalla: es un documento
+# de identidad y no se reparte solo (ver auth.POR_ROL). Quien lo tiene, lo tiene para los
+# dos sitios; el recorte lo pone el sitio, no el usuario — en una salida se ve la gente
+# de esa salida, en una reserva la de esa reserva.
 import pasaportes as _pass
-
-
-def _guia_de(user):
-    return (user.get("guia_nombre") or "").strip() or None
-
-
-def _reserva_al_alcance(conn, user, conf_no):
-    """Si este usuario puede tocar los pasaportes de esa reserva.
-
-    Se comprueba en el SERVIDOR y no solo escondiendo botones: la pantalla de un guía no
-    le ofrece reservas ajenas, pero la dirección se puede escribir a mano y un documento
-    de identidad no se protege con un botón oculto.
-    """
-    guia = _guia_de(user)
-    if not guia:
-        return True
-    return bool(conn.execute(
-        "SELECT 1 FROM tour_asignado WHERE conf_no = ? AND guia_nombre = ? LIMIT 1",
-        (str(conf_no), guia)).fetchone())
 
 
 @app.get("/api/pasaportes/dia")
 def pasaportes_del_dia(fecha: str = None, user: dict = Depends(exige("pasaportes"))):
-    """Lo que la pantalla de Pasaportes necesita para un día."""
+    """Las salidas de un día con su gente y sus fotos.
+
+    Una sola petición para todo el día, no una por salida: la Agenda ya dibuja todas las
+    salidas juntas, y es la misma respuesta que usa la carga silenciosa para dejar las
+    fotos en el teléfono antes de que el guía salga del lodge.
+    """
     fecha = fecha or datetime.date.today().isoformat()
     conn = get_connection()
     try:
-        guia = _guia_de(user)
-        salidas = _pass.salidas_del_dia(conn, fecha, guia=guia)
         return {
             "fecha": fecha,
-            "guia": guia,
-            "salidas": salidas,
-            # Los alojados solo para quien no es guía: es la lista de recepción, para
-            # fotografiar al ingresar a quien todavía no tiene ninguna salida.
-            "en_casa": [] if guia else _pass.en_casa(conn, fecha),
+            "salidas": _pass.salidas_del_dia(conn, fecha),
             "puede_tomar": auth.puede(user, "pasaportes", escribir=True),
         }
     finally:
@@ -6315,9 +6272,6 @@ def estados_de_pasaportes(user: dict = Depends(exige("pasaportes"))):
 def pasaportes_de_reserva(conf_no: str, user: dict = Depends(exige("pasaportes"))):
     conn = get_connection()
     try:
-        if not _reserva_al_alcance(conn, user, conf_no):
-            raise HTTPException(status_code=403,
-                                detail="Esa reserva no va en ninguna de tus salidas.")
         return {"conf_no": conf_no, "gente": _pass.de_la_reserva(conn, conf_no)}
     finally:
         conn.close()
@@ -6333,15 +6287,14 @@ async def subir_pasaporte(conf_no: str, nombre: str = Form(...),
         if not conn.execute("SELECT 1 FROM reserva WHERE conf_no = ?",
                             (str(conf_no),)).fetchone():
             raise HTTPException(status_code=404, detail="Esa reserva no existe.")
-        if not _reserva_al_alcance(conn, user, conf_no):
-            raise HTTPException(status_code=403,
-                                detail="Esa reserva no va en ninguna de tus salidas.")
         datos = await foto.read()
         try:
+            # El rol queda anotado en la foto: sirve para saber quién la tomó y desde
+            # dónde, que es lo primero que se pregunta si algún día hay que revisarlo.
             fila = _pass.guardar(
                 conn, conf_no, nombre, datos, quien=user.get("username"),
                 pasaporte=pasaporte, nota=nota,
-                origen="GUIA" if _guia_de(user) else "RECEPCION")
+                origen="RECEPCION" if user.get("rol") == "recepcion" else "GUIA")
         except _pass.FotoInvalida as e:
             raise HTTPException(status_code=400, detail=str(e))
         return {"status": "ok", "id": fila["id"],
@@ -6365,9 +6318,6 @@ def ver_pasaporte(foto_id: int, user: dict = Depends(exige("pasaportes"))):
                             (foto_id,)).fetchone()
         if not fila:
             raise HTTPException(status_code=404, detail="Esa foto ya no está.")
-        if not _reserva_al_alcance(conn, user, fila["conf_no"]):
-            raise HTTPException(status_code=403,
-                                detail="Esa reserva no va en ninguna de tus salidas.")
         ruta = _pass.ruta_de(fila)
         if not ruta:
             raise HTTPException(
@@ -6389,9 +6339,6 @@ def borrar_pasaporte(foto_id: int,
                             (foto_id,)).fetchone()
         if not fila:
             return {"status": "ok", "borrada": False}
-        if not _reserva_al_alcance(conn, user, fila["conf_no"]):
-            raise HTTPException(status_code=403,
-                                detail="Esa reserva no va en ninguna de tus salidas.")
         return {"status": "ok", "borrada": _pass.borrar(conn, foto_id),
                 "gente": _pass.de_la_reserva(conn, fila["conf_no"])}
     finally:

@@ -21,7 +21,10 @@
 // activarse, borra todas las copias guardadas que no empiecen por esta versión. Se subió
 // a v2 al agregarle el manejo de avisos, para que ningún teléfono se quede con la copia
 // anterior de la pantalla.
-const VERSION = "cwl-v2";
+// Se sube a v3 al agregar las fotos de pasaporte: cambia la ESTRATEGIA —pasan a servirse
+// del teléfono primero— y un teléfono que se quedara con la copia anterior del programa
+// las seguiría pidiendo a la red, que es justo lo que no sirve en el puesto del parque.
+const VERSION = "cwl-v3";
 const CACHE_ESTATICO = `${VERSION}-estatico`;   // fuentes, imágenes, iconos
 const CACHE_PAGINAS = `${VERSION}-paginas`;     // el HTML y las respuestas de datos
 
@@ -46,7 +49,19 @@ self.addEventListener("activate", (evento) => {
 });
 
 function esEstatico(url) {
-  return url.pathname.startsWith("/assets/");
+  return url.pathname.startsWith("/assets/") || esFotoDePasaporte(url);
+}
+
+// LA FOTO DE UN PASAPORTE NO CAMBIA NUNCA. Al volver a tomarla se guarda como otra foto,
+// con otro número y otra dirección, así que esta se sirve del teléfono sin preguntarle a
+// la red — igual que las fuentes y las imágenes.
+//
+// No es una optimización: es lo que hace que el guía pueda enseñar el pasaporte en el
+// puesto del parque. La pantalla las pide calladamente mientras hay señal en el lodge;
+// con la estrategia normal —red primero— se volverían a bajar en cada vuelta y gastarían
+// los megas del lodge para acabar con la misma copia.
+function esFotoDePasaporte(url) {
+  return /^\/api\/pasaportes\/\d+\/imagen$/.test(url.pathname);
 }
 
 // No tiene sentido guardar estas: son de un momento concreto.

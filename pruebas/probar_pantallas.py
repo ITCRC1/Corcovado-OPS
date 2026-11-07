@@ -698,6 +698,15 @@ def cada_pantalla_tiene_su_filtro_por_defecto(c):
             "toda pantalla nombrada en FILTRO_DE_PANTALLA necesita su DEFECTOS_FILTRO")
 
 
+# Permisos que el servidor conoce y que NO son una pantalla del menu. Hoy solo
+# 'pasaportes': las fotos se toman desde la columna de Reservas y se ensenan desde el
+# boton de cada tour en la Agenda, asi que tiene permiso propio pero no boton.
+#
+# Esta lista tiene que quedarse CORTA. Cada entrada es un permiso que no se encuentra
+# navegando, y si crece, el menu deja de ser el mapa de lo que hace el sistema.
+SIN_PANTALLA = ["pasaportes"]
+
+
 def el_menu_y_los_permisos_del_servidor_dicen_lo_mismo(c):
     """Si el servidor no conoce la pantalla, sus rutas responden 403 y el boton no sale.
 
@@ -705,9 +714,15 @@ def el_menu_y_los_permisos_del_servidor_dicen_lo_mismo(c):
     """
     import auth
     claves_ui = _lista(_html(), "const CLAVE_PANTALLA") or []
-    claves_servidor = [k for k, _ in auth.PANTALLAS]
+    claves_servidor = [k for k, _ in auth.PANTALLAS if k not in SIN_PANTALLA]
     c.igual(claves_ui, claves_servidor,
             "CLAVE_PANTALLA y auth.PANTALLAS tienen que ser la MISMA lista en el mismo orden")
+    # Y al reves: lo que no tiene pantalla NO puede colarse en las listas por posicion.
+    for clave in SIN_PANTALLA:
+        c.cierto(clave not in claves_ui,
+                 f"«{clave}» es un permiso, no una pantalla: no va en CLAVE_PANTALLA")
+        c.cierto(clave in [k for k, _ in auth.PANTALLAS],
+                 f"pero el servidor si tiene que conocer el permiso «{clave}»")
 
 
 def las_que_se_refrescan_solas_existen(c):

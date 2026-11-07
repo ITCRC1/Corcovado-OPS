@@ -232,11 +232,6 @@ COLUMNAS_NUEVAS = [
     ("tour_asignado", "ayudante_nombre", "TEXT"),
     # La reserva de un aviso regenerado por una fuente. Ver el comentario en schema.sql.
     ("alerta", "referencia_texto", "TEXT"),
-    # A QUÉ GUÍA corresponde esta cuenta. Hace falta porque el lodge pidió que cada guía
-    # vea los pasaportes SOLO de sus propias salidas, y hasta ahora el guía era un nombre
-    # del catálogo y el usuario era otra cosa, sin nada que los uniera. Vacío para todos
-    # los demás: recepción y gerencia no son guías y ven la operación entera.
-    ("usuario", "guia_nombre", "TEXT"),
     # La modalidad privada de CADA salida. La siembra recupera lo que ya estaba guardado
     # de otra forma: las importaciones de PDF escribían el código «PNC PRIVADO», que el
     # catálogo marca como privado. Sin esta línea esas filas seguirían contándose con las

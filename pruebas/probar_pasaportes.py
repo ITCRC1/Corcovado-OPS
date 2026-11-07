@@ -136,45 +136,40 @@ def se_puede_fotografiar_a_quien_no_esta_en_el_rooming(c):
 # Quien ve que
 # ---------------------------------------------------------------------------
 
-def un_guia_ve_solo_sus_salidas(c):
+def cada_salida_trae_su_gente_y_lo_que_le_falta(c):
+    """Es lo que dibuja el boton de la tarjeta del tour: cuantas listas y cuantas no."""
     conn = comun.base_limpia()
-    mio, ajeno = _un_guia(conn, 0), _un_guia(conn, 1)
+    uno, otro = _un_guia(conn, 0), _un_guia(conn, 1)
     _reserva(conn, "960010", room="12")
     _reserva(conn, "960011", room="14")
-    _rooming(conn, "960010", [("Ana Uno", "A1")])
-    _rooming(conn, "960011", [("Beto Dos", "B1")])
-    _tour(conn, "960010", "2027-01-02", "PNC", mio)
-    _tour(conn, "960011", "2027-01-02", "SNORKEL", ajeno)
+    _rooming(conn, "960010", [("Ana Uno", "A1"), ("Bea Dos", "A2")])
+    _rooming(conn, "960011", [("Beto Tres", "B1")])
+    _tour(conn, "960010", "2027-01-02", "PNC", uno)
+    _tour(conn, "960011", "2027-01-02", "SNORKEL", otro)
+    P.guardar(conn, "960010", "Ana Uno", JPEG)
 
-    suyas = P.salidas_del_dia(conn, "2027-01-02", guia=mio)
-    c.igual([s["tour_codigo"] for s in suyas], ["PNC"], "solo la suya")
-    c.igual([h["room_no"] for h in suyas[0]["habitaciones"]], ["12"],
-            "y solo la habitacion de esa salida")
-
-    todas = P.salidas_del_dia(conn, "2027-01-02")
-    c.igual(sorted(s["tour_codigo"] for s in todas), ["PNC", "SNORKEL"],
-            "sin filtrar salen las dos, que es lo que ve recepcion")
+    salidas = {s["tour_codigo"]: s for s in P.salidas_del_dia(conn, "2027-01-02")}
+    c.igual(sorted(salidas), ["PNC", "SNORKEL"], "salen las dos del dia")
+    c.igual((salidas["PNC"]["con_foto"], salidas["PNC"]["sin_foto"]), (1, 1),
+            "una lista y una pendiente")
+    c.igual(salidas["PNC"]["requiere_entrada_sinac"], True,
+            "y PNC viene marcado como que entra al parque")
+    c.igual([h["room_no"] for h in salidas["PNC"]["habitaciones"]], ["12"],
+            "cada salida trae solo SU habitacion")
     conn.close()
 
 
-def un_guia_no_puede_tocar_una_reserva_ajena(c):
-    """Esconder el boton no es protegerlo: la direccion se escribe a mano."""
-    import main
+def una_salida_de_otro_dia_no_se_cuela(c):
+    """El boton sigue el filtro de fechas de la Agenda, asi que lo que decide es el dia."""
     conn = comun.base_limpia()
-    mio, ajeno = _un_guia(conn, 0), _un_guia(conn, 1)
-    _reserva(conn, "960020", room="12")
-    _reserva(conn, "960021", room="14")
-    _tour(conn, "960020", "2027-01-02", "PNC", mio)
-    _tour(conn, "960021", "2027-01-02", "SNORKEL", ajeno)
+    guia = _un_guia(conn, 0)
+    _reserva(conn, "960012", room="12")
+    _rooming(conn, "960012", [("Ana Uno", "A1")])
+    _tour(conn, "960012", "2027-01-02", "PNC", guia)
 
-    guia = {"id": 9, "username": "g", "rol": "staff", "guia_nombre": mio,
-            "permisos_json": '{"pasaportes":"escribir"}'}
-    recepcion = {"id": 1, "username": "r", "rol": "recepcion", "guia_nombre": None,
-                 "permisos_json": None}
-    c.igual(main._reserva_al_alcance(conn, guia, "960020"), True, "la suya si")
-    c.igual(main._reserva_al_alcance(conn, guia, "960021"), False, "la ajena no")
-    c.igual(main._reserva_al_alcance(conn, recepcion, "960021"), True,
-            "recepcion no es guia y llega a todas")
+    c.igual([s["tour_codigo"] for s in P.salidas_del_dia(conn, "2027-01-02")], ["PNC"],
+            "el dia del tour si")
+    c.igual(P.salidas_del_dia(conn, "2027-01-03"), [], "el dia siguiente no")
     conn.close()
 
 
@@ -258,40 +253,37 @@ def _html():
         return f.read()
 
 
-def la_pantalla_nueva_quedo_alineada(c):
-    """EL FALLO QUE NO DA ERROR: abre la pantalla equivocada.
+def pasaportes_es_un_permiso_y_no_una_pantalla(c):
+    """Lo pidio el lodge asi: nada de una pantalla aparte. Se entra por la columna de
+    Reservas y por el boton de cada tour en la Agenda, que son los sitios donde la gente
+    ya esta.
 
-    El menu resuelve cada pantalla por POSICION en cuatro listas paralelas —los botones,
-    los cargadores, las claves de permiso y los filtros— y ademas tiene que coincidir con
-    auth.PANTALLAS del servidor. Ya paso con el Spa: se desplego bien y el boton no le
-    aparecia a nadie.
+    Y DE PASO VIGILA LA ALINEACION, que es el fallo que no da error. El menu resuelve
+    cada pantalla por POSICION en cuatro listas paralelas —los botones, los cargadores,
+    las claves de permiso y los filtros—. Pasaportes NO entra en esas listas por no tener
+    boton, asi que lo que hay que comprobar es que las cuatro siguen midiendo lo mismo y
+    que ninguna se quedo con la entrada vieja. Ya paso con el Spa: se desplego bien y el
+    boton no le aparecia a nadie.
     """
     html = _html()
-    indice_servidor = [k for k, _ in auth.PANTALLAS].index("pasaportes")
+    c.cierto("pasaportes" in [k for k, _ in auth.PANTALLAS],
+             "sigue siendo un permiso que se puede dar")
 
     claves = html.split("const CLAVE_PANTALLA = ", 1)[1].split("];", 1)[0]
     lista_claves = [t.strip(' "\n') for t in claves.replace("[", "").split(",") if t.strip()]
-    c.igual(lista_claves.index("pasaportes"), indice_servidor,
-            "la clave de permiso esta en la MISMA posicion que en el servidor")
+    c.cierto("pasaportes" not in lista_claves, "pero no es una pantalla del menu")
 
     filtros = html.split("const FILTRO_DE_PANTALLA = ", 1)[1].split("];", 1)[0]
     lista_filtros = [t.strip(' "\n') for t in filtros.replace("[", "").split(",") if t.strip()]
-    c.igual(len(lista_filtros), len(lista_claves), "las dos listas miden lo mismo")
-    c.igual(lista_filtros[indice_servidor], "pasaportes", "y el filtro cae en su sitio")
-
     cargadores = html.split("function cargadoresPantalla()", 1)[1].split("];", 1)[0]
     lista_carg = [t.strip() for t in cargadores.split("[", 1)[1].split(",") if t.strip()]
-    c.igual(len(lista_carg), len(lista_claves), "y los cargadores tambien")
-    c.igual(lista_carg[indice_servidor], "loadPasaportes", "el cargador es el que toca")
-
-    # Solo los del MENU: hay otros «irAPantalla» sueltos por la aplicacion —el boton de
-    # «Ver Entradas SINAC» del dashboard, por ejemplo— y contarlos todos haria que esta
-    # prueba fallara cada vez que alguien agrega un atajo.
     menu = html.split("<nav>", 1)[1].split("</nav>", 1)[0]
+
+    c.igual(len(lista_filtros), len(lista_claves), "las claves y los filtros miden lo mismo")
+    c.igual(len(lista_carg), len(lista_claves), "y los cargadores tambien")
     c.igual(menu.count('onclick="irAPantalla('), len(lista_claves),
             "hay un boton de menu por pantalla, ni uno mas ni uno menos")
-    c.cierto(f'irAPantalla({indice_servidor})' in menu,
-             "y el boton de Pasaportes lleva a su indice")
+    c.cierto("loadPasaportes" not in html, "no quedo ningun resto del cargador viejo")
 
 
 def la_pantalla_no_ensena_el_documento_en_la_lista(c):
@@ -311,20 +303,34 @@ def la_pantalla_no_ensena_el_documento_en_la_lista(c):
     c.cierto("createObjectURL" in visor, "y la dibuja desde la respuesta")
 
 
-def se_puede_bajar_para_usar_sin_senal(c):
-    """En el puesto del parque no hay internet. Sin esto la pantalla funciona en el lodge
-    y falla justo donde hace falta."""
+def las_fotos_quedan_en_el_telefono_sin_botones(c):
+    """EN EL PUESTO DEL PARQUE NO HAY INTERNET, y una foto solo se enseña si sus bytes ya
+    estan en el telefono: eso no se puede esquivar. Lo que si se quita es el PASO que
+    habia que acordarse de dar.
+
+    Tres piezas tienen que estar las tres, o no sirve de nada:
+      · la Agenda las pide calladamente al abrirse con señal,
+      · el programa de servicio las guarda,
+      · y las sirve del TELEFONO, no de la red — con la estrategia normal se volverian a
+        bajar en cada vuelta y gastarian los megas del lodge para acabar con la misma
+        copia.
+    """
     html = _html()
-    f = html.split("async function bajarParaSinSenal(", 1)[1].split("\n// ---", 1)[0]
-    c.cierto("/imagen" in f, "pide cada foto una vez, para que el telefono la guarde")
-    c.cierto("de ${ids.length}" in f, "y dice cuantas van")
-    # El programa de servicio tiene que poder guardarlas: si estuvieran en la lista de
-    # «no guardar», el boton no serviria de nada.
+    c.cierto("async function precargarPasaportes(" in html, "existe la carga silenciosa")
+    agenda = html.split("async function loadAgenda(", 1)[1].split("\n// ---", 1)[0]
+    c.cierto("precargarPasaportes(" in agenda, "y la Agenda la dispara")
+    c.cierto("await precargarPasaportes" not in agenda,
+             "sin esperarla: la Agenda no puede quedarse colgada bajando fotos")
+    c.cierto("bajarParaSinSenal" not in html, "y no quedo ningun boton de descarga")
+
     with open(os.path.join(RAIZ, "frontend", "sw.js"), encoding="utf-8") as x:
         sw = x.read()
+    c.cierto("esFotoDePasaporte" in sw, "el programa de servicio las reconoce")
+    estatico = sw.split("function esEstatico(", 1)[1].split("}", 1)[0]
+    c.cierto("esFotoDePasaporte" in estatico,
+             "y las sirve del telefono primero, como las fuentes y las fotos")
     no_guardar = sw.split("function noGuardar(", 1)[1].split("}", 1)[0]
-    c.cierto("pasaportes" not in no_guardar,
-             "y el programa de servicio NO las excluye de la copia")
+    c.cierto("pasaportes" not in no_guardar, "nunca en la lista de «no guardar»")
 
 
 def el_respaldo_dice_que_las_fotos_van_aparte(c):
@@ -335,20 +341,40 @@ def el_respaldo_dice_que_las_fotos_van_aparte(c):
     c.cierto("NO incluye las fotos" in html, "y la pantalla lo dice")
 
 
+def se_entra_por_reservas_y_por_la_agenda(c):
+    """Los dos sitios donde la gente ya esta: recepcion toma la foto desde la columna de
+    Reservas, el guia la ensena desde el boton de su tour en la Agenda."""
+    html = _html()
+    # La columna de Reservas, al lado de la del itinerario.
+    c.cierto("<th>Pasaportes</th>" in html, "hay columna en la tabla de Reservas")
+    c.cierto("botonPasaportes(r.conf_no" in html, "con su boton por reserva")
+    c.cierto("abrirPasaportesReserva(" in html, "que abre la ficha de esa reserva")
+    # El boton de cada tarjeta del resumen de tours.
+    resumen = html.split("function resumenPorTour(", 1)[1].split("\n// '2026-09-12'", 1)[0]
+    c.cierto("botonPasaportesTour(" in resumen,
+             "y hay un boton en la tarjeta de cada tour del resumen")
+    boton = html.split("function botonPasaportesTour(", 1)[1].split("\nfunction ", 1)[0]
+    c.cierto("event.stopPropagation()" in boton,
+             "que no abre ademas el detalle del tour: la tarjeta entera ya es un boton")
+    c.cierto('puedeVer("pasaportes")' in boton,
+             "y no se le ensena a quien no tiene el permiso")
+
+
 PRUEBAS = [
     la_foto_sobrevive_a_que_se_regenere_el_rooming,
     el_nombre_se_empareja_aunque_se_escriba_distinto,
     se_puede_fotografiar_a_quien_no_esta_en_el_rooming,
-    un_guia_ve_solo_sus_salidas,
-    un_guia_no_puede_tocar_una_reserva_ajena,
+    cada_salida_trae_su_gente_y_lo_que_le_falta,
+    una_salida_de_otro_dia_no_se_cuela,
     el_permiso_de_pasaportes_no_se_reparte_solo,
     lo_que_no_es_una_foto_se_rechaza,
     la_ruta_no_se_escapa_del_volumen,
     borrar_quita_la_fila_y_el_archivo,
     una_fila_sin_archivo_no_miente,
-    la_pantalla_nueva_quedo_alineada,
+    pasaportes_es_un_permiso_y_no_una_pantalla,
+    se_entra_por_reservas_y_por_la_agenda,
     la_pantalla_no_ensena_el_documento_en_la_lista,
-    se_puede_bajar_para_usar_sin_senal,
+    las_fotos_quedan_en_el_telefono_sin_botones,
     el_respaldo_dice_que_las_fotos_van_aparte,
 ]
 

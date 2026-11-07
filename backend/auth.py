@@ -127,12 +127,8 @@ def crear_sesion(conn, usuario_id):
 # decidir qué puede hacer el usuario. Sin esta columna, permisos_de() no encontraba nada
 # y caía en los permisos del rol, así que lo configurado en la pantalla de Usuarios se
 # guardaba pero no se aplicaba nunca.
-# 'guia_nombre' viaja con el usuario en cada petición porque de él depende QUÉ ve: los
-# pasaportes de un guía son los de SUS salidas. Ir a buscarlo aparte en cada endpoint
-# sería una consulta más por petición y, peor, un sitio más donde olvidarse de mirarlo.
 _SQL_SESION = (
-    "SELECT u.id, u.username, u.nombre_completo, u.rol, u.permisos_json, u.guia_nombre"
-    " FROM sesion s"
+    "SELECT u.id, u.username, u.nombre_completo, u.rol, u.permisos_json FROM sesion s"
     " JOIN usuario u ON u.id = s.usuario_id WHERE s.token = ? AND u.activo = 1")
 
 
@@ -229,12 +225,20 @@ PANTALLAS = [
     # el índice de todas las de abajo, y una desalineación ahí no da error, abre la
     # pantalla equivocada.
     ("housekeeping", "Housekeeping"),
-    # Las fotos de los pasaportes. Permiso PROPIO, no colgado del de Agenda: es un
-    # documento de identidad, y quien reparte guías no tiene por qué poder abrirlos.
+    # PASAPORTES NO ES UNA PANTALLA: es solo un permiso, y por eso va al final de todo.
     #
-    # También va al FINAL, y por lo mismo que housekeeping: el menú resuelve la pantalla
-    # por POSICIÓN. Meterla en medio abriría la pantalla equivocada sin dar error.
-    ("pasaportes", "Pasaportes"),
+    # Las fotos se toman desde la columna de Reservas y se enseñan desde un botón de la
+    # Agenda de tours, que son los dos sitios donde la gente ya está. Una pantalla aparte
+    # era una cosa más que abrir y un sitio más donde buscar.
+    #
+    # Pero el PERMISO sí es propio y no cuelga del de Agenda ni del de Reservas: es un
+    # documento de identidad, y quien reparte guías o mira la lista de llegadas no tiene
+    # por qué poder abrirlos.
+    #
+    # Al no tener botón de menú, esta entrada NO va en las listas por posición de la
+    # interfaz (CLAVE_PANTALLA y compañía). Va al final para que, si algún día se le
+    # quiere dar pantalla, no haya que mover el índice de ninguna otra.
+    ("pasaportes", "Pasaportes (permiso para ver y tomar las fotos)"),
 ]
 
 # Permisos que se aplican cuando el usuario no tiene una configuración propia.
