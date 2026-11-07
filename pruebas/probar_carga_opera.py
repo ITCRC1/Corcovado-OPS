@@ -231,6 +231,63 @@ def el_nucleo_de_opera_no_borra_el_trabajo_de_recepcion(c):
     conn.close()
 
 
+def la_reserva_sin_detalle_no_pierde_lo_que_ya_sabia(c):
+    """PASO EN PRODUCCION, en una sincronizacion real.
+
+    De 375 reservas fallo el detalle de UNA —un error pasajero de la API— y esa reserva
+    perdio de golpe el punto de embarque, la hora del vuelo, el regimen de comidas y sus
+    tres notas. Todo eso vive en las Reservation Notes, que llegan SOLO por la consulta
+    individual; el listado no las trae. Sin detalle esos campos valen None, y el cargador
+    los escribia encima de lo que habia.
+
+    Y el ciclo decia «OK, 1 detalle con error» y seguia. La reserva quedaba ahi, con su
+    nombre y sus fechas correctos, y el resto en blanco — la forma de fallar que este
+    cargador existe para evitar.
+    """
+    conn = base_limpia()
+    r = reserva(670050, "01", LLEGADA, SALIDA)
+    cargar([r], vistas=[r])
+    conn.execute(
+        """UPDATE reserva SET regimen='PENSION_COMPLETA', nota_ingreso='Llega en bote 6pm',
+                              punto_salida='Drake', hora_vuelo_salida='2:45 p.m.',
+                              vuelo_salida='RZ1069'
+           WHERE conf_no='670050'""")
+    conn.commit()
+
+    # El ciclo siguiente: la reserva cambio de cuarto y su detalle NO llego.
+    sin_detalle = dict(r, room_no="09", opera_modificado_en="2026-09-08T12:00:00Z")
+    sin_detalle["_sin_detalle"] = True
+    cargar([sin_detalle], vistas=[sin_detalle])
+
+    f = dict(conn.execute(
+        """SELECT room_no, regimen, nota_ingreso, punto_salida, hora_vuelo_salida
+             FROM reserva WHERE conf_no='670050'""").fetchone())
+    c.igual(f["room_no"], "09", "el nucleo SI se pone al dia: eso si llego")
+    c.igual(f["regimen"], "PENSION_COMPLETA", "el regimen no se borra")
+    c.igual(f["nota_ingreso"], "Llega en bote 6pm", "las notas no se borran")
+    c.igual(f["punto_salida"], "Drake", "el punto de embarque no se borra")
+    c.igual(f["hora_vuelo_salida"], "2:45 p.m.", "ni la hora del vuelo")
+    conn.close()
+
+
+def con_detalle_la_reserva_si_se_actualiza_entera(c):
+    """La contraparte, que es la que evita pasarse: cuando el detalle SI llega, lo que
+    diga manda. Sin esto, «no borrar nunca» congelaria la reserva para siempre."""
+    conn = base_limpia()
+    r = reserva(670051, "01", LLEGADA, SALIDA)
+    cargar([r], vistas=[r])
+    conn.execute("UPDATE reserva SET punto_salida='Drake' WHERE conf_no='670051'")
+    conn.commit()
+
+    # Ahora Opera dice que ya no va por Drake, y su detalle SI llego.
+    cambiada = dict(r, punto_salida=None, opera_modificado_en="2026-09-09T12:00:00Z")
+    cargar([cambiada], vistas=[cambiada])
+    c.igual(dict(conn.execute(
+        "SELECT punto_salida FROM reserva WHERE conf_no='670051'").fetchone())["punto_salida"],
+        None, "lo que Opera dice hoy manda cuando su detalle llego")
+    conn.close()
+
+
 def la_hoja_del_restaurante_solo_cuenta_las_reservas_vivas(c):
     """De punta a punta: es la pantalla donde el hotel vio el problema.
 
@@ -531,6 +588,8 @@ PRUEBAS = [
     una_reserva_que_revive_recupera_su_estado_y_retira_el_aviso,
     se_recarga_la_cancelada_que_opera_reporta_viva_aunque_no_haya_cambiado,
     el_nucleo_de_opera_no_borra_el_trabajo_de_recepcion,
+    la_reserva_sin_detalle_no_pierde_lo_que_ya_sabia,
+    con_detalle_la_reserva_si_se_actualiza_entera,
     la_hoja_del_restaurante_solo_cuenta_las_reservas_vivas,
     una_cancelada_sale_de_la_operacion,
     una_cancelada_no_se_lleva_el_trabajo_ya_hecho,

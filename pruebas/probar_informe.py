@@ -465,6 +465,79 @@ def la_hoja_del_dia_enseña_los_DOS_tours_del_mismo_dia(c):
         c.cierto(esperado in texto, f"el PDF trae «{esperado}»")
 
 
+def _resumen_de_un_dia(conf_sale, conf_entra, hab):
+    """Un dia con una habitacion que CAMBIA DE HUESPED: uno sale por Drake y otro entra
+    por Sierpe, los dos en el mismo cuarto. Es el caso del 8 de noviembre."""
+    return {
+        "ingresos": [{"conf_no": conf_entra, "room_no": hab,
+                      "nombre_principal": "Llega/Marta", "adl": 2, "chl": 0}],
+        "salidas": [{"conf_no": conf_sale, "room_no": hab,
+                     "nombre_principal": "SeVa/Pedro", "adl": 2, "chl": 0}],
+        "en_casa": [], "tours": [],
+        "puntos": [
+            {"punto": "Drake", "detalle": [
+                {"tipo": "Salida", "conf_no": conf_sale, "room_no": hab, "pax": 2,
+                 # La hora del VUELO es las 9:10; el bote sale DOS HORAS antes.
+                 "hora": "9:10 a.m.", "hora_traslado": "7:10 a.m.",
+                 "vuelo": "RZ5759", "guia": None, "bote": None}]},
+            {"punto": "Sierpe", "detalle": [
+                {"tipo": "Entrada", "conf_no": conf_entra, "room_no": hab, "pax": 2,
+                 "hora": None, "hora_traslado": "11:30 a.m.",
+                 "vuelo": None, "guia": None, "bote": None}]},
+        ],
+        "total_ingresos": 1, "pax_ingresos": 2, "total_salidas": 1, "pax_salidas": 2,
+        "total_en_casa": 0, "pax_en_casa": 0, "pax_desayunos": 2,
+    }
+
+
+def el_horario_de_la_hoja_es_el_del_traslado_no_el_del_vuelo(c):
+    """Lo pidio el lodge y lo vio en la hoja del 8 de noviembre.
+
+    HORARIO es la hora a la que el huesped SE MUEVE, que es lo unico que el staff puede
+    ejecutar: por Sierpe el bote sale a su hora fija y por Drake sale DOS HORAS ANTES del
+    vuelo. Poniendo la del vuelo, la hoja mandaba al muelle a las 9:10 a gente cuyo bote
+    salia a las 7:10 — y no daba ningun error, daba una hora creible y equivocada.
+    """
+    import hoja_dia
+    conn = comun.base_limpia()
+    d = hoja_dia.definicion(conn, HOY.isoformat(),
+                            _resumen_de_un_dia("820001", "820002", "04"))
+    conn.close()
+    sale = next(f for f in d["filas"] if f["estado"] == "SALE")
+    c.igual(sale["horario"], "7:10 a.m.", "el horario es el del bote")
+    c.cierto("9:10 a.m." in sale["notas"], "y el vuelo no se pierde: va en las notas")
+    c.cierto("RZ5759" in sale["notas"], "con su numero")
+
+
+def una_habitacion_que_cambia_de_huesped_no_mezcla_sus_horas(c):
+    """EL FALLO QUE EL LODGE VIO: la habitacion 04 del 8 de noviembre salia con su vuelo
+    de las 9:10 en las notas y las 11:30 del OTRO huesped en el horario.
+
+    La hoja emparejaba cada movimiento de muelle con su fila por numero de HABITACION, y
+    el numero de habitacion se reutiliza: el dia que un cuarto cambia de huesped, el que
+    se va y el que llega tienen el mismo, y la fila del que se va era la ultima en
+    quedarse con el cuarto. Se queda con los datos de los dos y el otro renglon, vacio.
+    Ninguna de las dos mitades da error.
+    """
+    import hoja_dia
+    conn = comun.base_limpia()
+    d = hoja_dia.definicion(conn, HOY.isoformat(),
+                            _resumen_de_un_dia("820010", "820011", "04"))
+    conn.close()
+    por_conf = {f["conf_no"]: f for f in d["filas"]}
+    c.igual(len(d["filas"]), 2, "son DOS renglones, uno por reserva")
+
+    sale = por_conf["820010"]
+    entra = por_conf["820011"]
+    c.igual(sale["horario"], "7:10 a.m.", "el que sale lleva su propia hora")
+    c.igual(sale["drake"], 2, "y su propio muelle")
+    c.igual(sale["sierpe"], "", "no el del otro")
+    c.igual(entra["horario"], "11:30 a.m.", "el que entra lleva la suya")
+    c.igual(entra["sierpe"], 2, "y su muelle")
+    c.igual(entra["notas"], "", "sin el vuelo del que se va pegado")
+    c.cierto("RZ5759" in sale["notas"], "el vuelo queda en el renglon de quien vuela")
+
+
 def la_hoja_del_dia_deja_fuera_las_notas_de_plata(c):
     """«En la parte de notas solo colocar notas relevantes (no tarifas, no upgrades, no
     negociaciones)». La columna corta a 110 caracteres, asi que la factura por delante se
@@ -521,6 +594,8 @@ PRUEBAS = [
     la_hoja_del_dia_cabe_en_el_ancho,
     la_hoja_del_dia_sale_en_pdf_y_en_excel,
     la_hoja_del_dia_enseña_los_DOS_tours_del_mismo_dia,
+    el_horario_de_la_hoja_es_el_del_traslado_no_el_del_vuelo,
+    una_habitacion_que_cambia_de_huesped_no_mezcla_sus_horas,
     la_hoja_del_dia_deja_fuera_las_notas_de_plata,
     un_area_inventada_se_rechaza,
 ]

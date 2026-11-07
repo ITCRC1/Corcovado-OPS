@@ -519,8 +519,19 @@ def _traer_detalles(reservas):
     reservas que cambiaron, en régimen normal son unas pocas por ciclo.
 
     Un fallo en una reserva NO detiene el ciclo: se cuenta y se sigue. Esa reserva
-    entra con su núcleo al día y sin tocar sus tours, que es exactamente lo que
+    entra con su núcleo al día y sin tocar nada más, que es exactamente lo que
     corresponde cuando no se pudo averiguar nada nuevo de ella.
+
+    ESA PROMESA HAY QUE MARCARLA, NO SOLO ESCRIBIRLA. Pasó en una sincronización real:
+    de 375 reservas falló el detalle de UNA, y esa reserva perdió de golpe el punto de
+    embarque, la hora del vuelo, el régimen y sus tres notas. Todo eso vive en las
+    Reservation Notes, que llegan SOLO por esta consulta; el listado no las trae. Sin
+    detalle esos campos valen None, y el cargador los escribía encima de lo que había.
+    El ciclo decía «OK, 1 detalle con error» y seguía.
+
+    Por eso se marca `_sin_detalle`: el cargador lo mira y para esa reserva solo escribe
+    el núcleo. Es una llave que empieza por guion bajo porque no es una columna — el
+    cargador ignora las llaves que no conoce.
     """
     import opera_cloud as oc
     import opera_mapeo as om
@@ -531,12 +542,21 @@ def _traer_detalles(reservas):
     for r in reservas:
         ident = r.get("opera_id") or r.get("conf_no")
         if not ident:
+            r["_sin_detalle"] = True
             continue
         try:
             detalle = oc.traer_detalle(ident)
         except Exception as e:
             errores += 1
+            r["_sin_detalle"] = True
             _anotar(detalle=f"detalle de {ident}: {str(e).splitlines()[0][:120]}")
+            continue
+        if not detalle:
+            # Llegó una respuesta pero sin reserva dentro. Es lo mismo que no haber
+            # preguntado, y tratarlo como «vino vacío» borraría lo que ya se sabía.
+            errores += 1
+            r["_sin_detalle"] = True
+            _anotar(detalle=f"detalle de {ident}: la respuesta no traía la reserva")
             continue
         pedidos += 1
         try:

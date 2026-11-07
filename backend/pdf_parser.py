@@ -88,8 +88,36 @@ VUELO_RE = re.compile(r"\b(?:RZ|SANSA)\s?(\d{3,4})\b", re.IGNORECASE)
 
 # Las horas vienen escritas de muchas formas: "13:00", "3:00 p.m.", "3:00PM",
 # "08:35", "2:20 PM". Se capturan todas y se normalizan a "3:00 p.m." / "8:35 a.m."
-HORA_RE = re.compile(r"(\d{1,2}):(\d{2})\s*([ap])\.?\s?m\.?", re.IGNORECASE)
-HORA_SIMPLE_RE = re.compile(r"\b(\d{1,2}):(\d{2})\b")
+#
+# SE TOLERAN LOS ESPACIOS Y EL PUNTO ALREDEDOR DEL SEPARADOR, y eso no es cosmético.
+# La nota de una reserva real decía «Salida: Via Drake Sansa RZ1069 @2: 45 PM» —con un
+# espacio después de los dos puntos— y el sistema leía el punto de embarque y el número
+# de vuelo pero devolvía None en la hora. SIN DAR NINGÚN ERROR: la reserva quedaba con
+# su vuelo y sin hora, el traslado no se podía calcular, y en la hoja del día salía una
+# casilla vacía que nadie sabía a qué atribuir. Medido sobre la base: once reservas
+# vivas tienen número de vuelo y ninguna hora.
+#
+# El punto se admite solo cuando detrás viene «am/pm»: en una nota suelta, «1.50» es un
+# precio mucho más a menudo que la una y media.
+#
+# Los espacios son [ \t] y no \s a propósito: con \s, una hora cortada al final de una
+# línea se uniría con el número de la siguiente y se inventaría una hora que nadie
+# escribió.
+HORA_RE = re.compile(
+    r"(\d{1,2})[ \t]*[:.][ \t]*(\d{2})[ \t]*([ap])\.?[ \t]?m\.?", re.IGNORECASE)
+HORA_SIMPLE_RE = re.compile(r"(?<!\d)(\d{1,2})[ \t]*:[ \t]*(\d{2})(?!\d)")
+
+# LA HORA EN PUNTO, SIN MINUTOS. Medido sobre las notas reales del lodge: de once
+# reservas que tenían vuelo y ninguna hora, SEIS la traían escrita así — «9am»,
+# «1 pm», «1PM», «13hrs», «13h». Son horas perfectamente claras para quien las lee y
+# el sistema las tiraba enteras.
+#
+# Van DESPUÉS de las dos de arriba a propósito: «12:50hrs» tiene que leerse como las
+# 12:50, no como las 12 en punto. El orden de los intentos es el que decide eso.
+HORA_EN_PUNTO_RE = re.compile(r"(?<!\d)(\d{1,2})[ \t]*([ap])\.?[ \t]?m\.?", re.IGNORECASE)
+# «13hrs», «13 h». La 'h' tiene que cerrar palabra: así «3 hours» o «2 HOURS TOUR» —que
+# son duraciones y están por todo el itinerario— no se confunden con una hora del día.
+HORA_24_RE = re.compile(r"(?<!\d)(\d{1,2})[ \t]*h(?:rs?|s)?\b", re.IGNORECASE)
 
 # Código de bloque del PMS: identifica reservas que viajan juntas (un grupo, una
 # agencia). Aparece como "2608RUSSTI" o "2608CR2608". Es la única señal de grupo
@@ -135,6 +163,23 @@ def normalizar_hora(texto):
         # Sin indicador: los vuelos de la mañana son de madrugada/mañana temprano y
         # los de la tarde pasan del mediodía, así que 1-7 sin marca se asume p.m.
         return f"{h}:{mm} {'a' if h >= 8 else 'p'}.m."
+    # La hora en punto, que es como la escribe media nota del lodge.
+    m = HORA_EN_PUNTO_RE.search(texto)
+    if m:
+        h, ap = int(m.group(1)), m.group(2).lower()
+        if h > 12:
+            h -= 12
+        if 1 <= h <= 12:
+            return f"{h}:00 {ap}.m."
+    m = HORA_24_RE.search(texto)
+    if m:
+        h = int(m.group(1))
+        if 0 <= h <= 23:
+            if h == 0:
+                return "12:00 a.m."
+            if h == 12:
+                return "12:00 p.m."
+            return f"{h - 12}:00 p.m." if h > 12 else f"{h}:00 a.m."
     return None
 
 

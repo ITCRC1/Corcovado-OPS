@@ -140,7 +140,13 @@ def definicion(conn, fecha, resumen):
                                           origen.get("nombre_principal"))
 
     # --- El movimiento por muelle ---
-    # 'tipo' llega como «Entrada»/«Salida» y el detalle empareja por HABITACIÓN.
+    #
+    # SE EMPAREJA POR RESERVA, NO POR HABITACIÓN. El número de habitación se reutiliza: el
+    # día que un cuarto cambia de huésped, el que SE VA y el que LLEGA tienen el mismo, y
+    # la fila del que se va era la última en quedarse con el cuarto. El 8 de noviembre la
+    # habitación 13 salía con el vuelo del huésped que ENTRABA pegado en sus notas y con
+    # la hora de otro en su horario, mientras el renglón del que entraba quedaba vacío.
+    # Es la misma lección que ya está escrita aquí mismo para los tours.
     totales = {"Sierpe": {"ENTRA": 0, "SALE": 0}, "Drake": {"ENTRA": 0, "SALE": 0}}
     for punto in resumen.get("puntos", []):
         nombre_punto = punto["punto"]
@@ -148,12 +154,19 @@ def definicion(conn, fecha, resumen):
             es_entrada = str(det.get("tipo") or "").lower().startswith("entrada")
             if nombre_punto in totales:
                 totales[nombre_punto]["ENTRA" if es_entrada else "SALE"] += det.get("pax") or 0
-            fila = por_hab.get(str(det.get("room_no")))
+            fila = por_conf.get(str(det.get("conf_no") or "")) \
+                or por_hab.get(str(det.get("room_no")))
             if not fila:
                 continue
             col = "sierpe" if nombre_punto.lower().startswith("sierpe") else "drake"
             fila[col] = det.get("pax") or ""
-            fila["horario"] = det.get("hora") or det.get("hora_traslado") or ""
+            # EL HORARIO ES EL DEL TRASLADO, NO EL DEL VUELO. Es la hora a la que el
+            # huésped se mueve, que es lo único que el staff puede ejecutar: por Sierpe
+            # el bote sale a su hora fija, y por Drake sale DOS HORAS ANTES del vuelo —la
+            # regla que dio el lodge—. Poniendo la del vuelo, la hoja del 8 de noviembre
+            # mandaba al muelle a las 9:25 a gente cuyo bote salía a las 7:25. El vuelo
+            # no se pierde: va en la columna de notas, con su número.
+            fila["horario"] = det.get("hora_traslado") or det.get("hora") or ""
             fila["guia_t"] = det.get("guia") or ""
             fila["bote_t"] = det.get("bote") or ""
             if det.get("vuelo"):

@@ -207,7 +207,63 @@ def una_linea_de_salida_no_cuenta_como_entrada(c):
     c.igual(d["punto_entrada"], None, "y no se confunde con una entrada")
 
 
+# ---------------------------------------------------------------------------
+# Las formas en que de verdad se escribe una hora
+# ---------------------------------------------------------------------------
+# TODAS ESTAS SON REALES, sacadas de las notas de Opera del lodge. Se midió: de once
+# reservas vivas que tenian numero de vuelo y NINGUNA hora, las once la traian escrita
+# —solo que de once maneras distintas—. Y el fallo era mudo: la reserva se veia completa,
+# el traslado no se podia calcular y en la hoja del dia quedaba una casilla vacia.
+#
+# El que lo destapo: «Salida: Via Drake Sansa RZ1069 @2: 45 PM», con un espacio DENTRO
+# de la hora.
+HORAS_REALES = [
+    ("Salida: Via Drake Sansa RZ1069 @2: 45 PM", "salida", "2:45 p.m."),
+    ("Entrada: Via Drake Sansa RZ1068 @3:50 PM", "entrada", "3:50 p.m."),
+    ("Salida: Via Drake SANSA Flight RZ1118 a las 11: 00 a.m", "salida", "11:00 a.m."),
+    ("ENTRADA: VIA DRAKE RZ1070  12:50hrs", "entrada", "12:50 p.m."),
+    ("Salida: Vía Drake RZ5751 departing at 13:25hrs", "salida", "1:25 p.m."),
+    # La hora EN PUNTO, sin minutos: seis de las once venian asi.
+    ("Entrada: Via Drake RZ1068 9am", "entrada", "9:00 a.m."),
+    ("Salida: Drake rz 1071 1 pm", "salida", "1:00 p.m."),
+    ("SALIDA:  Via Drake RZ1070 1PM", "salida", "1:00 p.m."),
+    ("Salida: Via Drake RZ1071  13hrs", "salida", "1:00 p.m."),
+    ("Salida: Via Drake RZ 1071 13h", "salida", "1:00 p.m."),
+    ("SALIDA: Via Drake Sansa @RZ1071 1PM", "salida", "1:00 p.m."),
+    ("Entrada: RECOGER EN Aguila de Osa Lodge a las 14:30h", "entrada", "2:30 p.m."),
+]
+
+
+def la_hora_se_lee_aunque_este_mal_escrita(c):
+    for texto, lado, esperada in HORAS_REALES:
+        d = _leer(texto + "\n")
+        c.igual(d[f"hora_vuelo_{lado}"], esperada, f"«{texto[-22:]}» -> {esperada}")
+
+
+def con_minutos_manda_la_hora_con_minutos(c):
+    """El orden de los intentos es lo que decide esto: «12:50hrs» son las 12:50, no las
+    12 en punto. Al agregar la hora en punto es justo lo que se puede romper."""
+    c.igual(_leer("ENTRADA: Via Drake RZ1070 12:50hrs\n")["hora_vuelo_entrada"],
+            "12:50 p.m.", "12:50hrs son las 12:50")
+    c.igual(_leer("Salida: Via Drake RZ5751 13:25hrs\n")["hora_vuelo_salida"],
+            "1:25 p.m.", "13:25hrs son la 1:25")
+
+
+def lo_que_NO_es_una_hora_no_se_inventa(c):
+    """La contraparte, que es la que evita pasarse: leer una hora donde no la hay manda
+    un bote a una hora que nadie escribio, y eso es peor que no leerla."""
+    for texto in ("se agrega adicional Sirena $772.92 facturar a la agencia",
+                  "Monto total: $1,556.18",
+                  "Salida: Via Drake RZ1069",
+                  "(5 HOURS TOUR)",
+                  "Hike 3 hours"):
+        c.igual(pp.normalizar_hora(texto), None, f"«{texto[:34]}» no es una hora")
+
+
 PRUEBAS = [
+    la_hora_se_lee_aunque_este_mal_escrita,
+    con_minutos_manda_la_hora_con_minutos,
+    lo_que_NO_es_una_hora_no_se_inventa,
     los_dos_puntos_se_leen_de_la_nota,
     la_entrada_y_la_salida_pueden_ser_distintas,
     cada_hora_es_la_de_su_propio_campo,

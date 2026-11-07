@@ -374,6 +374,91 @@ def _sacar_de_la_operacion(cur, conf_no):
     return quitado
 
 
+def _avisos_de_transporte(cur, r):
+    """Lo que hay que decir de cómo viaja esta reserva, cuando el texto no alcanzó.
+
+    SE LLAMA DESDE LOS DOS CAMINOS DE ESCRITURA, y ese es el motivo de que sea una
+    función. El cargador escribe de dos formas —el INSERT OR REPLACE del PDF y la
+    actualización por áreas que usa Opera— y casi todas las reservas del lodge entran por
+    la segunda. Un aviso puesto solo en el primero no se dispara NUNCA en producción, que
+    es exactamente lo que ya pasó con el guardia de las canceladas y está escrito ahí al
+    lado. Este aviso llevaba así desde que existe: solo saltaba al importar un PDF.
+    """
+    # 1. Un ingreso o salida sin un punto reconocido (Sierpe/Drake): lo confirma
+    #    recepción, porque adivinarlo manda un bote al muelle equivocado.
+    for tipo, texto in (("entrada", r.get("punto_entrada_sin_confirmar")),
+                        ("salida", r.get("punto_salida_sin_confirmar"))):
+        mensaje = None
+        if texto:
+            mensaje = (
+                f"Confirmar punto de {tipo} de {r['nombre_principal']} "
+                f"(hab. {r['room_no']}, {r['arr_date']}): la reserva dice \"{texto}\" "
+                f"— no indica Sierpe ni Drake.")
+        # SE RETIRA LO ANTERIOR DE ESTA RESERVA Y DE ESTE LADO, diga lo que diga.
+        #
+        # El aviso se regenera en cada carga y se deduplicaba comparando el TEXTO: si la
+        # nota cambia una coma —o si cambia la redacción del propio aviso— el viejo se
+        # queda abierto y el nuevo se suma. Medido al cambiar una palabra de este
+        # mensaje: 48 reservas pasaron a tener 165 avisos. Un aviso que se multiplica
+        # solo es un aviso que nadie vuelve a leer.
+        cur.execute(
+            "UPDATE alerta SET resuelto = 1 WHERE tipo = 'TRANSPORTE_SIN_CONFIRMAR' "
+            "AND resuelto = 0 AND referencia_texto = ? AND mensaje LIKE ? "
+            "AND mensaje IS NOT ?",
+            (str(r["conf_no"]), f"%punto de {tipo} de%", mensaje))
+        if not mensaje:
+            continue
+        ya = cur.execute(
+            "SELECT 1 FROM alerta WHERE tipo = 'TRANSPORTE_SIN_CONFIRMAR' "
+            "AND mensaje = ? AND resuelto = 0", (mensaje,)).fetchone()
+        if not ya:
+            cur.execute(
+                "INSERT INTO alerta (tipo, referencia_id, referencia_texto, mensaje) "
+                "VALUES ('TRANSPORTE_SIN_CONFIRMAR', NULL, ?, ?)",
+                (str(r["conf_no"]), mensaje))
+
+    # 2. HAY VUELO Y NO HAY HORA: la nota lo dice y el sistema no lo entendió.
+    #
+    # Pasó de verdad: una nota decía «Salida: Via Drake Sansa RZ1069 @2: 45 PM» —con un
+    # espacio DENTRO de la hora— y el sistema se quedó con el punto y el número de vuelo
+    # pero sin la hora. Sin error, sin rastro y sin forma de notarlo: la reserva se veía
+    # completa, el traslado no se podía calcular, y en la hoja del día quedaba una casilla
+    # vacía que nadie sabía a qué atribuir. Medido: once reservas vivas estaban así.
+    #
+    # El lector ahora aguanta esa forma y unas cuantas más. Esto es para la SIGUIENTE
+    # manera rara de escribir una hora, que llegará.
+    #
+    # SOLO POR DRAKE. Por Sierpe el bote sale a la misma hora todos los días y la nota no
+    # la repite: avisar ahí sería un aviso que salta siempre, y uno así se deja de mirar.
+    for tipo, punto, vuelo, hora in (
+            ("entrada", r.get("punto_entrada"), r.get("vuelo_entrada"),
+             r.get("hora_vuelo_entrada")),
+            ("salida", r.get("punto_salida"), r.get("vuelo_salida"),
+             r.get("hora_vuelo_salida"))):
+        if str(punto or "").lower() != "drake" or not vuelo or hora:
+            # Si la hora ya se lee —porque alguien la corrigió en Opera o porque el
+            # lector aprendió esa forma— el aviso se retira. Uno que no se apaga nunca se
+            # deja de mirar, y entonces tampoco se mira el que sí importaba.
+            cur.execute(
+                "UPDATE alerta SET resuelto = 1 WHERE tipo = 'HORA_DE_VUELO_SIN_LEER' "
+                "AND resuelto = 0 AND referencia_texto = ? AND mensaje LIKE ?",
+                (str(r["conf_no"]), f"%la {tipo} por Drake%"))
+            continue
+        mensaje = (
+            f"Hab. {r.get('room_no') or '—'} · {r.get('nombre_principal') or ''} "
+            f"(reserva {r['conf_no']}): la {tipo} por Drake dice el vuelo {vuelo} pero no "
+            f"se entendió la hora. Sin ella no se puede calcular el traslado. Revisar "
+            f"cómo está escrita en Opera.")
+        ya = cur.execute(
+            "SELECT 1 FROM alerta WHERE tipo = 'HORA_DE_VUELO_SIN_LEER' "
+            "AND mensaje = ? AND resuelto = 0", (mensaje,)).fetchone()
+        if not ya:
+            cur.execute(
+                "INSERT INTO alerta (tipo, referencia_id, referencia_texto, mensaje) "
+                "VALUES ('HORA_DE_VUELO_SIN_LEER', NULL, ?, ?)",
+                (str(r["conf_no"]), mensaje))
+
+
 def _guardar_rooming(cur, r):
     """Los acompañantes de la reserva. Se regeneran enteros en cada importación."""
     cur.execute("DELETE FROM huesped WHERE conf_no = ?", (r["conf_no"],))
@@ -776,6 +861,26 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
         grupo_id = previo["gid"] if previo and previo["confirmado"] else None
         _retirar_aviso_de_cancelacion(cur, r, previo)
 
+        # LA RESERVA CUYO DETALLE NO LLEGÓ SOLO MANDA EN SU NÚCLEO.
+        #
+        # Pasó en una sincronización real: de 375 reservas falló el detalle de UNA —un
+        # error pasajero de la API— y esa reserva perdió de golpe el punto de embarque, la
+        # hora del vuelo, el régimen de comidas y sus tres notas. Todo eso vive en las
+        # Reservation Notes, que llegan SOLO por la consulta individual; el listado no las
+        # trae. Sin detalle esos campos valen None, y el camino por áreas los escribía
+        # como None encima de lo que había.
+        #
+        # Y no daba ningún error: el ciclo decía «OK, 1 detalle con error» y seguía. La
+        # reserva quedaba ahí, con su nombre y sus fechas correctos, y el resto en blanco
+        # —que es exactamente la forma de fallar que este cargador existe para evitar y
+        # que su propia documentación ya prometía—.
+        #
+        # Lo marca opera_sync al no poder traerlo. Con el núcleo se queda al día lo que SÍ
+        # llegó: huésped, fechas, habitación, pax, estado.
+        manda_r = manda
+        if r.get("_sin_detalle"):
+            manda_r = manda & {"nucleo"}
+
         if por_areas:
             # Se escriben SOLO las columnas de las áreas que esta fuente manda. Si la
             # reserva es nueva se inserta; si ya existía se actualiza dejando el resto
@@ -786,7 +891,7 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
             # que no se nombre queda en su valor por omisión.
             propias = []
             for area, columnas_area in COLUMNAS_POR_AREA.items():
-                if area in manda:
+                if area in manda_r:
                     propias.extend(columnas_area)
             columnas = ", ".join(propias)
             marcas = ", ".join("?" * len(propias))
@@ -811,19 +916,23 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
             if str(r.get("res_status") or "").upper() == "CANCELADA":
                 _sacar_de_la_operacion(cur, r["conf_no"])
                 continue
-            if "rooming" in manda and r.get("rooming"):
+            if "rooming" in manda_r and r.get("rooming"):
                 _guardar_rooming(cur, r)
-            if "amenidades" in manda:
+            if "amenidades" in manda_r:
                 _guardar_amenidades(cur, r, _iso_de_ddmmyy(r.get("arr_date")),
                                     origen=origen_parcial)
             # El BT va con el transporte, que es lo que es: un viaje de bote.
-            if "transporte" in manda:
+            if "transporte" in manda_r:
                 _guardar_traslados_extra(cur, r, origen=origen_parcial)
             # Las alertas van con el núcleo: no son una amenidad ni un tour, son lo que
             # alguien tiene que leer al abrir la reserva.
-            if "nucleo" in manda:
+            if "nucleo" in manda_r:
                 _guardar_alertas_de_opera(cur, r)
-            if "tours" in manda:
+            # Los avisos de cómo viaja: solo si esta fuente manda en el transporte. Si no
+            # lo manda, no leyó nada de eso y no tiene nada que decir.
+            if "transporte" in manda_r:
+                _avisos_de_transporte(cur, r)
+            if "tours" in manda_r:
                 # Solo se borran los tours si la fuente LEYÓ el itinerario y estaba
                 # vacío. Si ni siquiera pudo leerlo, no sabe nada y no debe borrar.
                 _guardar_tours(cur, r,
@@ -854,24 +963,7 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
             ),
         )
 
-        # Si el PDF menciona un ingreso o salida sin un punto reconocido (Sierpe/Drake),
-        # se crea una alerta para que recepción lo confirme manualmente.
-        for tipo, texto in (("entrada", r.get("punto_entrada_sin_confirmar")),
-                            ("salida", r.get("punto_salida_sin_confirmar"))):
-            if texto:
-                mensaje = (
-                    f"Confirmar punto de {tipo} de {r['nombre_principal']} (hab. {r['room_no']}, "
-                    f"{r['arr_date']}): el PDF dice \"{texto}\" — no indica Sierpe ni Drake."
-                )
-                ya = cur.execute(
-                    "SELECT 1 FROM alerta WHERE tipo='TRANSPORTE_SIN_CONFIRMAR' AND mensaje=? AND resuelto=0",
-                    (mensaje,),
-                ).fetchone()
-                if not ya:
-                    cur.execute(
-                        "INSERT INTO alerta (tipo, referencia_id, mensaje) VALUES ('TRANSPORTE_SIN_CONFIRMAR', NULL, ?)",
-                        (mensaje,),
-                    )
+        _avisos_de_transporte(cur, r)
 
         # Al reimportar un PDF (algo normal: primero el mes completo, luego
         # actualizaciones diarias), estos registros se vuelven a generar. Las tres

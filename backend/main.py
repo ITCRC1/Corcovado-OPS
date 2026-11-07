@@ -451,6 +451,12 @@ def _datos_del_resumen(fecha):
 
             k["detalle"].append({
                 "tipo": "Entrada" if es_entrada else "Salida",
+                # EL NÚMERO DE RESERVA, no solo la habitación. La hoja del día empareja
+                # cada movimiento con su fila, y el número de habitación se reutiliza: el
+                # día que un cuarto cambia de huésped, el que SE VA y el que LLEGA tienen
+                # el mismo. Sin esto, la hora de vuelo de uno aparecía en el renglón del
+                # otro — que es justo lo que el lodge vio en la hoja del 8 de noviembre.
+                "conf_no": f["conf_no"],
                 "room_no": f["room_no"], "nombre": f["nombre_principal"],
                 "pax": (f["adl"] or 0) + (f["chl"] or 0),
                 "hora": hora, "vuelo": vuelo,

@@ -1232,7 +1232,64 @@ def el_BT_de_una_cancelada_no_pide_bote(c):
     conn.close()
 
 
+def un_vuelo_sin_hora_legible_se_avisa(c):
+    """EL FALLO MUDO QUE ESTE AVISO EXISTE PARA QUE NO SE REPITA.
+
+    Una nota real decia «Salida: Via Drake Sansa RZ1069 @2: 45 PM» —con un espacio
+    DENTRO de la hora— y el sistema se quedaba con el punto y el numero de vuelo pero sin
+    la hora. Sin error y sin rastro: la reserva se veia completa, el traslado no se podia
+    calcular, y en la hoja del dia quedaba una casilla vacia que nadie sabia a que
+    atribuir. Se midio: once reservas vivas estaban asi.
+
+    El lector ahora aguanta esa forma y unas cuantas mas. Esto es para la SIGUIENTE forma
+    rara, que seguro llegara.
+    """
+    limpiar()
+    # Hay vuelo y no hay hora: el lector no pudo con la forma en que estaba escrita.
+    r = dict(reserva(720200, "12", ddmmyy(HOY),
+                     ddmmyy(HOY + datetime.timedelta(days=3)), adl=2),
+             punto_salida="Drake", vuelo_salida="RZ1069", hora_vuelo_salida=None)
+    cargar([r], vistas=[r])
+    conn = conexion()
+    try:
+        avisos = comun.alertas(conn, "HORA_DE_VUELO_SIN_LEER")
+        c.igual(len(avisos), 1, "se avisa una vez")
+        if avisos:
+            c.cierto("RZ1069" in avisos[0], "y el aviso dice de que vuelo habla")
+            c.cierto("720200" in avisos[0], "y de que reserva")
+    finally:
+        conn.close()
+
+    # Y se RETIRA solo cuando la hora aparece: un aviso que no se apaga nunca se deja de
+    # mirar, y entonces tampoco se mira el que si importaba.
+    r2 = dict(r, hora_vuelo_salida="2:45 p.m.")
+    cargar([r2], vistas=[r2])
+    conn = conexion()
+    try:
+        c.igual(len(comun.alertas(conn, "HORA_DE_VUELO_SIN_LEER")), 0,
+                "con la hora puesta, el aviso se retira")
+    finally:
+        conn.close()
+
+
+def por_sierpe_no_se_avisa_de_la_hora(c):
+    """Por Sierpe el bote sale a la misma hora todos los dias y la nota no la repite.
+    Avisar ahi seria un aviso que salta siempre, y uno asi se deja de mirar."""
+    limpiar()
+    r = dict(reserva(720201, "14", ddmmyy(HOY),
+                     ddmmyy(HOY + datetime.timedelta(days=3)), adl=2),
+             punto_salida="Sierpe", vuelo_salida=None, hora_vuelo_salida=None)
+    cargar([r], vistas=[r])
+    conn = conexion()
+    try:
+        c.igual(len(comun.alertas(conn, "HORA_DE_VUELO_SIN_LEER")), 0, "por Sierpe, nada")
+    finally:
+        conn.close()
+
+
 PRUEBAS = [
+    un_vuelo_sin_hora_legible_se_avisa,
+    por_sierpe_no_se_avisa_de_la_hora,
     los_que_van_a_la_misma_hora_van_juntos,
     horas_distintas_son_corridas_distintas,
     sierpe_y_drake_no_se_mezclan,

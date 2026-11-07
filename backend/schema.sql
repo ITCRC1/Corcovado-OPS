@@ -574,6 +574,7 @@ CREATE TABLE IF NOT EXISTS alerta (
     tipo TEXT NOT NULL, -- 'CAMBIO_ULTIMO_MOMENTO' | 'CAPACIDAD_BOTE' | 'CAPACIDAD_GUIA' | 'ENTRADA_SINAC_VENCE'
                         -- | 'RESERVA_CANCELADA' | 'CANCELACION_SOSPECHOSA' | 'CUARTO_DOBLE'
                         -- | 'TRANSPORTE_SIN_CONFIRMAR' | 'TOUR_FUERA_DE_ESTADIA'
+                        -- | 'TOUR_EL_DIA_QUE_SE_VA' | 'HORA_DE_VUELO_SIN_LEER'
     referencia_id INTEGER,
     -- La reserva a la que pertenece el aviso, cuando lo regenera una fuente. Las
     -- alertas de Opera se vuelven a leer en cada ciclo, así que hay que poder borrar
