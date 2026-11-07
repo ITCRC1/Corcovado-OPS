@@ -123,13 +123,9 @@ TOURS_ITINERARIO = {
         "detalles": "What to wear: Long pants, closed shoes, and a long-sleeve shirt.\n"
                     "What to bring: Sunscreen, sun hat, refillable water bottle, and bug spray.",
     },
-    "GTT": {
-        "nombre": "Garden to Table",
-        "duracion": "",
-        "horario": "Be at the guide house at ___",   # hora variable, la completa recepción
-        "detalles": f"{VESTIR_COMODO}\n{LLEVAR_COMODO}",
-        "hora_manual": True,
-    },
+    # GARDEN TO TABLE NO TIENE FICHA PROPIA: es el mismo tour que Claro del Bosque —lo
+    # confirmó el lodge— y entra por el código CLARO, que está más abajo. Las dos fichas
+    # decían exactamente lo mismo salvo el nombre, así que no se pierde nada.
     # Tours que están en el catálogo del huésped pero aún no como código del sistema.
     # Se dejan listos para cuando se agreguen desde la pantalla de Catálogo.
     "SAN JOSECITO": {

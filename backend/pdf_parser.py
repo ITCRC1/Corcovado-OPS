@@ -187,10 +187,14 @@ def normalizar_vuelo(match):
     return f"RZ{match.group(1)}"
 
 
+# GTT NO ESTÁ AQUÍ, y es deliberado: es el mismo tour que CLARO y entra por la tabla de
+# alias (ver TOUR_ALIASES). Tenerlo en las dos listas duplicaba la salida — esta lista se
+# recorre primero y deja «GTT», y después el alias añade «CLARO» como si fuera otro tour
+# distinto, así que la misma reserva salía dos veces el mismo día.
 TOUR_CODES = [
     "CLARO", "SPA",
     "PNC", "SIRENA", "BUCEO", "ISLA", "SNORKEL", "PAJAREO", "MANGLAR",
-    "BALLENAS", "CABALGATA", "TREENET", "GTT", "NW", "PESCA",
+    "BALLENAS", "CABALGATA", "TREENET", "NW", "PESCA",
 ]
 
 # Nombres alternativos que el PDF puede usar para un tour ya existente en el catálogo
@@ -223,7 +227,18 @@ TOUR_ALIASES = {
     "DIVING": "BUCEO",
     "SCUBA": "BUCEO",
     "TREE NET": "TREENET",
-    "GARDEN TO TABLE": "GTT",
+    # Garden to Table es el mismo tour que Claro del Bosque. Lo confirmó el lodge, y son
+    # tres formas de escribir lo mismo: GTT y GTE entran por la tabla de equivalencias de
+    # los paquetes, y el nombre largo por aquí.
+    #
+    # GTE se nombra explícitamente porque vive en opera_paquetes.TOURS_POR_RAIZ y NO en
+    # CATALOGO_2027, que es de donde sale _alias_2027(): escrito en el comentario de una
+    # reserva no lo reconocía nadie. Es un hueco general de esa lista —hay más códigos
+    # ahí que aquí no llegan— pero traerlos todos de golpe crearía tours donde hoy no se
+    # crea ninguno, y eso se mira aparte.
+    "GARDEN TO TABLE": "CLARO",
+    "GARDEN-TO-TABLE": "CLARO",
+    "GTE": "CLARO",
     "SAN PEDRILLO": "PNC",
     "CANO ISLAND": "ISLA",
     "CAÑO ISLAND": "ISLA",

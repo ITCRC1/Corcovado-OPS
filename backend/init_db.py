@@ -47,7 +47,9 @@ TOURS = [
     ("BUCEO", "Buceo", "07:15", "12:30", None, None, 6, 1, 1, 0, None),
     ("BUCEO PRIVADO", "Buceo privado", "07:15", "12:30", None, None, 6, 1, 1, 1, "BUCEO"),
     ("CABALGATA", "Cabalgata", "07:30", "11:30", "14:00", "16:30", 6, 0, 0, 0, None),
-    ("GTT", "GTT", "15:00", "17:00", None, None, 6, 0, 0, 0, None),
+    # GTT YA NO ESTÁ AQUÍ: es el mismo tour que CLARO —lo confirmó el lodge— y estaba
+    # partiendo el mismo tour en dos filas de la agenda. En una base que ya lo tenga, la
+    # unificación del arranque le mueve las salidas a CLARO y borra la fila.
     ("ISLA", "Isla", "07:15", "12:30", None, None, 8, 1, 1, 0, None),
     ("ISLA PRIVADO", "Isla privado", "07:15", "12:30", None, None, 8, 1, 1, 1, "ISLA"),
     ("MANGLAR", "Manglar", "06:30", "13:00", None, None, 7, 0, 1, 0, None),
@@ -567,6 +569,30 @@ def _unificar_tours_de_la_nomenclatura(conn):
             conn.execute("DELETE FROM entrada_sinac WHERE id = ?", (vieja["id"],))
         conn.execute("UPDATE entrada_sinac SET tour_codigo = ? WHERE tour_codigo = ?",
                      (equivalente, cod))
+
+        # Los tiquetes del SINAC NO tienen clave foránea —se anclan a la fecha a
+        # propósito, ver schema.sql— así que nadie los arrastra solo. Un comprobante que
+        # se quedara con el código retirado dejaría de emparejar con su entrada sin dar
+        # ningún error: el botón del guía saldría vacío en el puesto del parque.
+        if {r[1] for r in conn.execute("PRAGMA table_info(tiquete_sinac)")}:
+            conn.execute("UPDATE tiquete_sinac SET tour_codigo = ? WHERE tour_codigo = ?",
+                         (equivalente, cod))
+        # Y si alguna variante privada lo tenía como tour base, se queda apuntando a un
+        # código que ya no existe.
+        conn.execute("UPDATE tour_catalogo SET tour_base = ? WHERE tour_base = ?",
+                     (equivalente, cod))
+        # LO QUE EL RETIRADO SABÍA Y EL BUENO NO, dicho en voz alta antes de borrarlo.
+        # Su fila del catálogo desaparece con todo lo que llevara configurado —horario,
+        # cupo por guía, si pide bote o entrada—, y si el tour bueno tiene otra cosa, la
+        # que manda a partir de ahora es la del bueno. No se copia nada: el tour que
+        # sobrevive es el que el hotel configuró, y pisarle el horario con el del código
+        # retirado cambiaría en silencio todas sus salidas. Pero sí queda escrito, para
+        # que no se descubra dentro de un mes mirando una hoja del día rara.
+        diferencias = _lo_que_se_queda_atras(conn, cod, equivalente)
+        if diferencias:
+            print(f"AVISO: al unificar {cod} en {equivalente}, {cod} tenía "
+                  f"{diferencias} y {equivalente} no. Manda lo de {equivalente}; "
+                  f"se cambia desde la pantalla de Catálogo si hace falta.")
         conn.execute("DELETE FROM tour_catalogo WHERE codigo = ?", (cod,))
         del_catalogo.discard(cod)
         retirados.append(f"{cod}->{equivalente}")
@@ -581,6 +607,34 @@ def _unificar_tours_de_la_nomenclatura(conn):
     conn.commit()
     print(f"Tours unificados ({', '.join(retirados)}): {movidas} salidas movidas, "
           f"{quitadas} duplicadas quitadas, {rehacer} itinerarios a rehacer.")
+
+
+def _lo_que_se_queda_atras(conn, retirado, bueno):
+    """Qué traía configurado el tour que se retira y el que se queda no tiene.
+
+    Existe para que una unificación no borre un dato sin que nadie se entere. El caso
+    real: GTT llevaba horario 15:00–17:00 y Claro del Bosque va SIN hora fija a
+    propósito —la coordina recepción— así que al unificarlos ese horario desaparece. Es
+    lo correcto, pero tiene que quedar dicho.
+    """
+    campos = [("horario_inicio", "horario"), ("horario_fin", None),
+              ("max_pax_guia", "cupo por guía"),
+              ("requiere_entrada_sinac", "entrada del SINAC"),
+              ("requiere_bote", "bote")]
+    columnas = {r[1] for r in conn.execute("PRAGMA table_info(tour_catalogo)")}
+    a = conn.execute("SELECT * FROM tour_catalogo WHERE codigo = ?", (retirado,)).fetchone()
+    b = conn.execute("SELECT * FROM tour_catalogo WHERE codigo = ?", (bueno,)).fetchone()
+    if not a or not b:
+        return ""
+    a, b = dict(a), dict(b)
+    dichas = []
+    for col, etiqueta in campos:
+        if col not in columnas or not etiqueta:
+            continue
+        if a.get(col) and a.get(col) != b.get(col):
+            dichas.append(f"{etiqueta} {a[col]}"
+                          + (f" (y {bueno}, {b[col]})" if b.get(col) else ""))
+    return ", ".join(dichas)
 
 
 def _limpiar_grupos_sueltos(conn):

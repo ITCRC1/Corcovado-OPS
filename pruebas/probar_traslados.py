@@ -919,7 +919,11 @@ def la_pesca_es_privada_aunque_llegue_por_la_nota(c):
 # PRV-SIR tampoco: es el codigo de Opera del Sirena privado, que se guarda como SIRENA
 # con la marca de privado. Queda fuera de esta lista a proposito — ver el comentario de
 # TOURS_QUE_VAN_POR_TIERRA.
-TERRESTRES = ["CABALGATA", "CLARO", "CLW", "GTT", "HDA", "NGW", "NW", "PAJAREO",
+# GTT TAMPOCO, desde que el lodge confirmo que es el MISMO tour que CLARO: ya no es un
+# codigo del catalogo, entra como alias y la salida se guarda como CLARO. Que CLARO no
+# pida bote es lo que cubre el caso; que GTT siga sin pedirlo se comprueba abajo, leyendo
+# lo que de verdad importa — que escribirlo acabe en un tour terrestre.
+TERRESTRES = ["CABALGATA", "CLARO", "CLW", "HDA", "NGW", "NW", "PAJAREO",
               "PNC", "PNC PRIVADO", "TREENET"]
 
 

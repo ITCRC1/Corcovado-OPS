@@ -54,8 +54,12 @@ TOURS_POR_RAIZ = {
     "CNP": "PNC",
     # La estación Sirena es otra cosa y tiene su propio código.
     "TSMC": "SIRENA",
+    # Claro del Bosque y Garden to Table son EL MISMO TOUR. Lo confirmó el lodge. GTE ya
+    # apuntaba aquí desde el principio; GTT se quedó fuera y por eso el mismo tour salía
+    # en dos filas distintas de la agenda, con dos guías y dos cupos.
     "CBE": "CLARO",
     "GTE": "CLARO",
+    "GTT": "CLARO",
     "NWP": "NW",
     # 'Early bird tour' es el avistamiento de aves de las 6 de la mañana.
     "CEBT": "PAJAREO",
@@ -105,7 +109,10 @@ CATALOGO_2027 = [
     ("CBE", "CLARO",     "Expedición a Claro del Bosque", "Claro del Bosque Expedition"),
     ("TNE", "TREENET",   "Experiencia Tree Net", "Tree Net Experience"),
     ("NW",  "NW",        "Caminata nocturna", "Night Walk"),
-    ("GTT", "GTT",       "Experiencia Garden to Table", "Garden to Table Experience"),
+    # GTT es el MISMO tour que Claro del Bosque, igual que GTE. Lo confirmó el lodge.
+    # Al apuntar aquí a CLARO, la unificación del arranque se lleva solas las salidas,
+    # las entradas del SINAC y el catálogo que ya estaban guardados con el código viejo.
+    ("GTT", "CLARO",     "Experiencia Garden to Table", "Garden to Table Experience"),
     ("SFH", "PESCA",     "Pesca deportiva · medio día", "Sportfishing · Half Day"),
 
     # KSJ es el San Josecito que el lodge YA hace: mismo destino y mismo tour, con el

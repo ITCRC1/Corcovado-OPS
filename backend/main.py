@@ -835,8 +835,8 @@ def agenda(fecha: str = None, desde: str = None, hasta: str = None, user: dict =
     conn = get_connection()
     # arr_date y dep_date vienen para poder acotar el selector de fecha de cada tour a la
     # estadía del huésped, y para señalar los que quedaron fuera de ella. Pasa con las
-    # actividades que el reporte no fecha —NW, pajareo, GTT— donde el día se deduce y
-    # puede caer en un día en que el huésped ni siquiera está en el lodge.
+    # actividades que el reporte no fecha —NW, pajareo, Claro del Bosque— donde el día se
+    # deduce y puede caer en un día en que el huésped ni siquiera está en el lodge.
     # adl y chl vienen para poder decir cuánta gente hay en la habitación: es el tope de
     # lo que se puede escribir en el pax del tour, y el número al que vuelve si se borra.
     query = """SELECT ta.*, r.nombre_principal, r.room_no, r.arr_date, r.dep_date,
@@ -4981,8 +4981,8 @@ def cambiar_fecha_tour(tour_id: int, fecha: str, user: dict = Depends(exige("age
     ta = dict(ta)
 
     # El tour tiene que caer dentro de la estadía. Antes no se comprobaba, y con las
-    # actividades que el reporte no fecha —NW, pajareo, GTT— el día se deduce y puede
-    # quedar fuera: un tour agendado para un día en que el huésped no está no lo puede
+    # actividades que el reporte no fecha —NW, pajareo, Claro del Bosque— el día se deduce
+    # y puede quedar fuera: un tour agendado para un día en que el huésped no está no lo puede
     # hacer nadie, y no se descubre hasta que llega ese día.
     #
     # Se permite MOVERLO SIEMPRE QUE ENTRE en la estadía, aunque hoy esté fuera: así uno
