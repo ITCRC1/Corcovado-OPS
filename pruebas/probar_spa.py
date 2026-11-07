@@ -15,7 +15,9 @@ minutos ocupando el hueco de 40: la agenda dice que cabe, el aviso de choque NO 
 —porque mira los minutos viejos— y el spa lo descubre con la huesped en la camilla.
 Ese fallo no da error: da una agenda que miente.
 """
+import contextlib
 import datetime
+import io
 import os
 import sys
 
@@ -182,12 +184,76 @@ def el_choque_se_mira_con_la_duracion_NUEVA(c):
 
 
 def las_terapeutas_tienen_nombre(c):
-    """Lo pidio el lodge: «cambiar los nombres de terapeuta 1 a Hellen y terapeuta 2 a
-    Rocio». Se sembraron sin nombre y se editaban desde el Catalogo."""
+    """El equipo del spa, con nombre y no «Terapeuta 1». Lo fue dando el lodge: primero
+    Hellen y Rocio, despues Ivania y Xinia."""
     conn = comun.base_limpia()
     nombres = sorted(r[0] for r in conn.execute(
         "SELECT nombre FROM spa_terapeuta WHERE activo = 1"))
-    c.igual(nombres, ["Hellen", "Rocío"], "las dos terapeutas del lodge")
+    c.igual(nombres, ["Hellen", "Ivania", "Rocío", "Xinia"],
+            "las cuatro terapeutas del lodge")
+    conn.close()
+
+
+def agregar_una_terapeuta_sube_cuantas_citas_caben(c):
+    """CUANTAS SON NO ES SOLO UNA LISTA. El aviso de choques cuenta las terapeutas
+    ACTIVAS para saber cuantas citas caben a la misma hora: con dos, dos; con cuatro,
+    cuatro.
+
+    Por eso esta prueba no se conforma con contar nombres. Un nombre de mas en la
+    siembra no da ningun error — abre un hueco a la misma hora que nadie puede atender,
+    y eso se descubre con dos huespedes en la puerta del spa.
+    """
+    conn = comun.base_limpia()
+    cfg = _spa.cargar_config()
+    minutos = conn.execute(
+        "SELECT minutos FROM spa_servicio WHERE codigo = 'JUNGLE'").fetchone()[0]
+
+    def choca_con(cuantas_citas, cuantas_terapeutas):
+        citas = [{"id": i, "hora": "10:00", "minutos": minutos, "estado": "CONFIRMADA"}
+                 for i in range(cuantas_citas)]
+        return bool(_spa.revisar_choque(
+            citas, "10:00", minutos, ["T%d" % i for i in range(cuantas_terapeutas)], cfg))
+
+    c.igual(choca_con(3, 4), False, "con cuatro terapeutas caben cuatro a las 10:00")
+    c.igual(choca_con(4, 4), True, "la quinta ya choca")
+    c.igual(choca_con(2, 2), True, "y con dos, la tercera chocaba igual que antes")
+
+    # Y las apagadas NO cuentan: apagar a una tiene que cerrar un hueco, no dejarlo.
+    conn.execute("UPDATE spa_terapeuta SET activo = 0 WHERE nombre = 'Xinia'")
+    conn.commit()
+    activas = [r[0] for r in conn.execute(
+        "SELECT nombre FROM spa_terapeuta WHERE activo = 1 ORDER BY nombre")]
+    c.igual(activas, ["Hellen", "Ivania", "Rocío"], "la apagada sale del reparto")
+    conn.close()
+
+
+def a_la_base_ya_instalada_le_entran_las_nuevas(c):
+    """EL CAMINO DE PRODUCCION. La siembra es un INSERT OR IGNORE, asi que agregar un
+    nombre a la lista alcanza: entran las que faltan y no se toca a las que ya estan.
+
+    Lo que hay que comprobar de verdad es lo segundo: que a una terapeuta APAGADA desde
+    el Catalogo no se le vuelva a encender el interruptor en el siguiente arranque. Eso
+    no daria error — le devolveria citas a alguien que ya no trabaja ahi.
+    """
+    import init_db
+    conn = comun.base_limpia()
+    # Se simula la base instalada: solo las dos primeras, y una de ellas apagada.
+    conn.execute("DELETE FROM spa_terapeuta")
+    conn.executemany("INSERT INTO spa_terapeuta (nombre, activo) VALUES (?,?)",
+                     [("Hellen", 1), ("Rocío", 0)])
+    conn.commit()
+    conn.close()
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        init_db.init_db(reset=False)
+
+    conn = comun.conexion()
+    estado = {r[0]: r[1] for r in conn.execute(
+        "SELECT nombre, activo FROM spa_terapeuta")}
+    c.igual(sorted(estado), ["Hellen", "Ivania", "Rocío", "Xinia"],
+            "las nuevas entran en la base que ya existia")
+    c.igual(estado["Rocío"], 0, "y la que estaba apagada sigue apagada")
+    c.igual(estado["Ivania"], 1, "las nuevas entran encendidas")
     conn.close()
 
 
@@ -392,6 +458,8 @@ PRUEBAS = [
     sin_duracion_en_el_catalogo_se_conserva_la_que_tenia,
     el_choque_se_mira_con_la_duracion_NUEVA,
     las_terapeutas_tienen_nombre,
+    agregar_una_terapeuta_sube_cuantas_citas_caben,
+    a_la_base_ya_instalada_le_entran_las_nuevas,
     renombrar_una_terapeuta_arrastra_sus_citas,
     la_pantalla_deja_cambiar_el_tratamiento,
     el_nombre_escrito_manda_sobre_el_titular,

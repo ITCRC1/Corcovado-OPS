@@ -174,9 +174,18 @@ SERVICIOS_SPA = [
     ("PROMO",   "Promo of the week",  60, "OTRO",   9),
 ]
 
-# Las dos terapeutas. Sin nombre todavía: se editan desde el Catálogo. Se siembran para
-# que la agenda pueda repartir citas desde el primer día sin tener que configurar nada.
-TERAPEUTAS_SPA = [("Hellen",), ("Rocío",)]
+# El equipo del spa. Se siembra para que la agenda pueda repartir citas desde el primer
+# día sin tener que configurar nada, y se edita desde el Catálogo.
+#
+# VA CON «OR IGNORE», NO CON «REPLACE», y eso es lo que hace que agregar un nombre aquí
+# alcance: en la base ya instalada entran solo las que faltan, y a las que el lodge haya
+# apagado desde el Catálogo no se les toca el interruptor — la fila sigue existiendo, así
+# que el arranque siguiente la salta.
+#
+# CUÁNTAS SON NO ES SOLO UNA LISTA: el aviso de choques del spa cuenta las terapeutas
+# activas para saber cuántas citas caben a la misma hora. Con dos, dos; con cuatro,
+# cuatro. Agregar un nombre de más aquí abriría huecos que nadie puede atender.
+TERAPEUTAS_SPA = [("Hellen",), ("Rocío",), ("Ivania",), ("Xinia",)]
 
 # Las que se sembraron sin nombre antes de que el lodge los diera. Se renombran una sola
 # vez al arrancar, arrastrando sus citas: el nombre es la llave y 'spa_cita.terapeuta'
