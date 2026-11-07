@@ -420,6 +420,77 @@ def la_hoja_del_dia_sale_en_pdf_y_en_excel(c):
             "el Excel lleva las MISMAS columnas que el PDF, en el mismo orden")
 
 
+def la_hoja_del_dia_enseña_los_DOS_tours_del_mismo_dia(c):
+    """Lo pidio el lodge: «cuando un cliente tiene 2 tours el mismo dia, ejemplo EBT y
+    NW, solo se refleja un tour, hay que corregir el resto porque perdemos informacion».
+
+    Es la combinacion normal: el pajareo de las 6 de la manana y la caminata nocturna de
+    las 17:45. Quedarse con el primero no da error — da una hoja en la que el segundo
+    guia no existe. Medido sobre la base real: nueve reservas con dos tours el mismo dia.
+
+    Y los tres renglones tienen que leerse EN PARALELO: la primera linea de GUIA es la
+    del primer tour. Si no, con un guia asignado y otro no, no habria forma de saber a
+    cual de los dos le falta.
+    """
+    import hoja_dia
+    conn = comun.base_limpia()
+    resumen = {
+        "ingresos": [], "salidas": [], "puntos": [],
+        "en_casa": [{"conf_no": "810001", "room_no": "08",
+                     "nombre_principal": "Johnson/Derek", "adl": 2, "chl": 0}],
+        "tours": [
+            {"tour_codigo": "NW", "horario_inicio": "17:45", "reservas": "810001",
+             "habitaciones": "08", "guia_nombre": "Marvin", "bote_nombre": None},
+            {"tour_codigo": "PAJAREO", "horario_inicio": "06:00", "reservas": "810001",
+             "habitaciones": "08", "guia_nombre": None, "bote_nombre": None},
+        ],
+        "total_ingresos": 0, "pax_ingresos": 0, "total_salidas": 0, "pax_salidas": 0,
+        "total_en_casa": 1, "pax_en_casa": 2, "pax_desayunos": 2,
+    }
+    d = hoja_dia.definicion(conn, HOY.isoformat(), resumen)
+    conn.close()
+
+    fila = d["filas"][0]
+    c.igual(fila["tour"], "PAJAREO\nNW", "salen los dos, y en el orden de la jornada")
+    c.igual(fila["tour_guia"], "—\nMarvin",
+            "el guia va en el renglon de SU tour, con el hueco marcado")
+    c.igual(fila["tour_bote"], "",
+            "y sin ningun bote puesto la casilla va vacia, no una columna de guiones")
+
+    # Y que el PDF los dibuje los dos: una celda de texto suelto no parte la linea, asi
+    # que el segundo tour se saldria de la casilla sin dar error.
+    paginas, texto = _paginas(hoja_dia.pdf(d))
+    c.igual(paginas, 1, "sigue siendo de una hoja")
+    for esperado in ("PAJAREO", "NW", "Marvin"):
+        c.cierto(esperado in texto, f"el PDF trae «{esperado}»")
+
+
+def la_hoja_del_dia_deja_fuera_las_notas_de_plata(c):
+    """«En la parte de notas solo colocar notas relevantes (no tarifas, no upgrades, no
+    negociaciones)». La columna corta a 110 caracteres, asi que la factura por delante se
+    come el renglon y tapa lo que habia que hacer."""
+    import hoja_dia
+    conn = comun.base_limpia()
+    resumen = {
+        "ingresos": [], "salidas": [
+            {"conf_no": "810002", "room_no": "18", "nombre_principal": "Grimm/Ann",
+             "adl": 2, "chl": 0,
+             "nota_salida": ("se agrega adicional Sirena $772.92 facturar a la agencia "
+                             "Para el vuelo de salida deben estar registrando a las "
+                             "13:45 PM, favor indicar salida del Lodge.")}],
+        "en_casa": [], "tours": [], "puntos": [],
+        "total_ingresos": 0, "pax_ingresos": 0, "total_salidas": 1, "pax_salidas": 2,
+        "total_en_casa": 0, "pax_en_casa": 0, "pax_desayunos": 2,
+    }
+    d = hoja_dia.definicion(conn, HOY.isoformat(), resumen)
+    conn.close()
+
+    notas = d["filas"][0]["notas"]
+    c.cierto("772.92" not in notas and "facturar" not in notas, "la factura no sale")
+    c.cierto("13:45" in notas,
+             "pero la hora a la que tiene que registrarse para el vuelo SI")
+
+
 def un_area_inventada_se_rechaza(c):
     conn = comun.base_limpia()
     try:
@@ -449,6 +520,8 @@ PRUEBAS = [
     el_spa_si_entra_en_el_informe,
     la_hoja_del_dia_cabe_en_el_ancho,
     la_hoja_del_dia_sale_en_pdf_y_en_excel,
+    la_hoja_del_dia_enseña_los_DOS_tours_del_mismo_dia,
+    la_hoja_del_dia_deja_fuera_las_notas_de_plata,
     un_area_inventada_se_rechaza,
 ]
 

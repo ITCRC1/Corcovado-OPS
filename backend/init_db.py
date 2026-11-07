@@ -76,7 +76,11 @@ TOURS = [
     # El horario es el que ya dice su propia ficha de itinerario, no uno inventado. El
     # bote y la entrada del SINAC quedan sin marcar: eso no está escrito en ninguna
     # parte y se completa desde la pantalla de Catálogo.
-    ("SAN JOSECITO", "San Josecito", "07:30", "11:30", None, None, 8, 0, 0, 0, None),
+    # EL KAYAK VA EN BOTE. Lo corrigió el lodge. Entró sin bote porque el comunicado de
+    # la nomenclatura 2027 da el nombre y nada más, y aquí se prefirió no inventar; pero
+    # a San Josecito se llega por mar, así que la salida necesita bote, capitán y
+    # ayudante como cualquier otra. Sin la marca no salía siquiera en Transporte.
+    ("SAN JOSECITO", "San Josecito", "07:30", "11:30", None, None, 8, 0, 1, 0, None),
 ]
 
 # Los tours del catálogo de abreviaturas 2027 que NO tienen equivalente en la lista de
@@ -392,6 +396,7 @@ def _migrar(conn):
         print("Base actualizada, columnas agregadas: " + ", ".join(agregadas))
     _renombrar_restaurante(conn, "Vitrales", "Bar el Bosque")
     _corregir_tours_por_tierra(conn)
+    _corregir_tours_en_bote(conn)
     _poner_nombre_a_las_terapeutas(conn)
     _materializar_permisos(conn)
     # Después de materializar: primero se le da rejilla a quien no la tenga, y luego se
@@ -813,6 +818,12 @@ CAMPOS_CON_RESTAURANTE = [
 TOURS_QUE_VAN_POR_TIERRA = ["PNC", "PNC PRIVADO"]
 _MARCA_TIERRA = "tours_por_tierra_v1"
 
+# Y al revés: los que entraron sin bote y sí lo llevan. Mismo trato —una vez y anotado—
+# por el mismo motivo: el catálogo se edita desde la pantalla y nadie quiere que el
+# sistema le deshaga un cambio al reiniciar.
+TOURS_QUE_VAN_EN_BOTE = ["SAN JOSECITO"]
+_MARCA_BOTE = "tours_en_bote_v1"
+
 
 def _corregir_tours_por_tierra(conn):
     """Les quita el bote a los tours terrestres, una sola vez.
@@ -835,6 +846,35 @@ def _corregir_tours_por_tierra(conn):
     if cambiados:
         print(f"Catálogo corregido: {cambiados} tour(s) pasan a ir por tierra "
               f"({', '.join(TOURS_QUE_VAN_POR_TIERRA)}).")
+    return cambiados
+
+
+def _corregir_tours_en_bote(conn):
+    """Le pone el bote al kayak de San Josecito, una sola vez.
+
+    POR QUÉ ESTABA MAL: San Josecito entró al catálogo con la nomenclatura 2027 (KSJ,
+    «Kayak a San Josecito»), y ese comunicado da el nombre y la modalidad, no la
+    operación. Se dejó sin bote para no inventar nada. Pero a San Josecito se va por mar,
+    así que sin la marca el tour no aparecía en Transporte: no había dónde asignarle
+    bote, capitán ni ayudante, y nadie lo echaba de menos porque un tour que no sale en
+    la pantalla no deja hueco donde mirar.
+
+    Una sola vez y anotado: el catálogo se edita desde la pantalla y un cambio hecho a
+    mano no se deshace al reiniciar.
+    """
+    if _meta(conn, _MARCA_BOTE):
+        return 0
+    marcadores = ",".join("?" for _ in TOURS_QUE_VAN_EN_BOTE)
+    cur = conn.execute(
+        f"UPDATE tour_catalogo SET requiere_bote = 1 "
+        f"WHERE codigo IN ({marcadores}) AND requiere_bote = 0",
+        TOURS_QUE_VAN_EN_BOTE)
+    cambiados = cur.rowcount or 0
+    conn.commit()
+    _meta(conn, _MARCA_BOTE, "hecho")
+    if cambiados:
+        print(f"Catálogo corregido: {cambiados} tour(s) pasan a ir en bote "
+              f"({', '.join(TOURS_QUE_VAN_EN_BOTE)}).")
     return cambiados
 
 

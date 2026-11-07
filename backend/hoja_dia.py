@@ -18,6 +18,8 @@ a la vez.
 import datetime
 import io
 
+import notas as _notas
+
 # Los colores del Excel del lodge. Se copian tal cual: el staff ya asocia el verde con
 # «se queda», el rojo con «se va» y el amarillo con «llega», y eso se lee antes que el
 # texto de la fila.
@@ -113,7 +115,9 @@ def definicion(conn, fecha, resumen):
             "conf_no": clave,
             "pax": (r.get("adl") or 0) + (r.get("chl") or 0),
             "sierpe": "", "drake": "", "horario": "", "guia_t": "", "bote_t": "",
-            "notas": (r.get("nota_salida") or r.get("nota_ingreso") or "").strip(),
+            "notas": _notas.solo_lo_operativo(
+                r.get("nota_salida") or r.get("nota_ingreso")),
+            "tours": [],
             "tour": "", "tour_guia": "", "tour_bote": "",
         }
         por_conf[clave] = fila
@@ -182,14 +186,49 @@ def definicion(conn, fecha, resumen):
     # próximos cuatro meses— la fila de quien SE VA es la última que se queda con el
     # cuarto, así que el tour del que LLEGA se habría pintado en el renglón del que se
     # va. Y al revés: el que llega se quedaba sin su tour. Las dos mitades en silencio.
+    # TODOS LOS DEL DÍA, NO EL PRIMERO. Lo pidió el lodge: «cuando un cliente tiene 2
+    # tours el mismo día, ejemplo EBT y NW, solo se refleja un tour, hay que corregir el
+    # resto porque perdemos información ahí». Pasa de verdad y es la combinación normal:
+    # el pajareo de las 6 de la mañana y la caminata nocturna de las 17:45 son el mismo
+    # día y los dos necesitan guía. Quedarse con el primero no daba error — daba una hoja
+    # en la que el segundo guía no existía.
+    #
+    # Cada tour en su propio renglón DENTRO de la casilla, y el guía y el bote en el
+    # suyo, para que las tres columnas se lean en paralelo: la primera línea de GUÍA es
+    # la del primer tour. Con los tres pegados en una sola línea no habría forma de saber
+    # cuál guía es de cuál salida.
     tours = resumen.get("tours", [])
     for t in tours:
         for conf in str(t.get("reservas") or "").split(","):
             fila = por_conf.get(conf.strip())
-            if fila and t.get("tour_codigo") and not fila["tour"]:
-                fila["tour"] = t["tour_codigo"]
-                fila["tour_guia"] = t.get("guia_nombre") or ""
-                fila["tour_bote"] = t.get("bote_nombre") or ""
+            if not fila or not t.get("tour_codigo"):
+                continue
+            fila["tours"].append({
+                "codigo": t["tour_codigo"],
+                "guia": t.get("guia_nombre") or "",
+                "bote": t.get("bote_nombre") or "",
+            })
+    for fila in por_conf.values():
+        # Ordenados como la jornada, que es como se lee la hoja.
+        orden = {t.get("tour_codigo"): (t.get("horario_inicio") or "99:99") for t in tours}
+        fila["tours"].sort(key=lambda x: orden.get(x["codigo"], "99:99"))
+        fila["tour"] = "\n".join(x["codigo"] for x in fila["tours"])
+
+        def columna(campo):
+            """Un renglón por tour, alineado con el de la casilla TOUR.
+
+            El guion solo aparece cuando hay algo con qué confundirlo: con dos tours y
+            un solo guía asignado, sin el hueco marcado no se sabría de cuál de los dos
+            es. Si no hay ninguno asignado la casilla va vacía, que es lo que ya decía
+            antes y se lee mejor que una columna de guiones.
+            """
+            valores = [x[campo] for x in fila["tours"]]
+            if not any(valores):
+                return ""
+            return "\n".join(v or "—" for v in valores)
+
+        fila["tour_guia"] = columna("guia")
+        fila["tour_bote"] = columna("bote")
 
     filas = sorted(por_conf.values(),
                    key=lambda x: int(x["hab"]) if str(x["hab"]).isdigit() else 999)
@@ -373,6 +412,13 @@ def pdf(d):
         grupo_fila += [""] * (cuantas - 1)
         i += cuantas
     datos = [grupo_fila, [c[1] for c in COLUMNAS]]
+    def renglones(texto):
+        """Un párrafo con un renglón por tour. Sin esto el segundo tour se saldría de la
+        casilla: una celda de texto suelto no parte la línea, y el PDF se genera igual."""
+        from xml.sax.saxutils import escape
+        return Paragraph("<br/>".join(escape(x) for x in str(texto or "").split("\n")),
+                         chico)
+
     for f in d["filas"]:
         datos.append([
             f["estado"], f["hab"],
@@ -380,7 +426,7 @@ def pdf(d):
             f["pax"], f["sierpe"], f["drake"], f["horario"],
             Paragraph(f["guia_t"], chico), Paragraph(f["bote_t"], chico),
             Paragraph((f["notas"] or "")[:110], chico),
-            f["tour"], Paragraph(f["tour_guia"], chico), Paragraph(f["tour_bote"], chico),
+            renglones(f["tour"]), renglones(f["tour_guia"]), renglones(f["tour_bote"]),
         ])
     if not d["filas"]:
         datos.append(["Sin movimiento este día"] + [""] * (len(COLUMNAS) - 1))
@@ -522,6 +568,10 @@ def excel(d):
                 c.font = Font(bold=True)
             if clave in ("hab", "pax", "sierpe", "drake", "horario"):
                 c.alignment = centrado
+            # Las de actividades llevan un tour por renglón. Sin ajuste de texto Excel
+            # enseña solo el primero y el resto se queda escondido dentro de la celda.
+            if clave in ("tour", "tour_guia", "tour_bote", "huesped", "notas"):
+                c.alignment = Alignment(vertical="top", wrap_text=True)
 
     for i, (_, titulo, ancho) in enumerate(COLUMNAS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = max(ancho * 0.52, len(titulo) + 2)

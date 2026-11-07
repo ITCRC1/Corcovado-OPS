@@ -987,6 +987,64 @@ def un_tour_terrestre_no_sale_en_transporte(c):
     conn.close()
 
 
+def el_kayak_de_san_josecito_va_en_bote(c):
+    """Lo corrigio el lodge: «el tour de kayak es un tour de bote y lo estas tomando como
+    terrestre».
+
+    Entro al catalogo con la nomenclatura 2027 (KSJ, «Kayak a San Josecito») y ahi se
+    dejo sin bote a proposito: ese comunicado da el nombre y la modalidad, no la
+    operacion, y se prefirio no inventar. Pero a San Josecito se va por mar, y sin la
+    marca el tour NO SALIA en Transporte: no habia donde asignarle bote, capitan ni
+    ayudante. Un tour que no aparece en la pantalla no deja hueco donde mirar — es la
+    forma de faltar que nadie reporta.
+    """
+    conn = base_limpia()
+    c.igual(conn.execute(
+        "SELECT requiere_bote FROM tour_catalogo WHERE codigo = 'SAN JOSECITO'"
+    ).fetchone()[0], 1, "el catalogo nuevo ya lo trae con bote")
+    conn.close()
+
+    # Y de punta a punta: que aparezca en Transporte, que es para lo que sirve la marca.
+    limpiar()
+    cargar([_con_tour("810082", "SAN JOSECITO"),
+            _con_tour("810083", "PNC")])             # terrestre, para no pasarse
+    conn = conexion()
+    fechas = [f["fecha"] for f in conn.execute(
+        "SELECT DISTINCT fecha FROM tour_asignado ORDER BY fecha")]
+    lista = tr.salidas_de_tour(conn, min(fechas), max(fechas))
+    c.igual(sorted(t["tour_codigo"] for t in lista), ["SAN JOSECITO"],
+            "sale en Transporte, y la caminata sigue sin salir")
+    conn.close()
+
+
+def la_base_ya_instalada_tambien_recibe_el_bote_del_kayak(c):
+    """EL CAMINO DE PRODUCCION. Cambiar la tupla del catalogo solo sirve para una base
+    NUEVA: el sembrado es un INSERT OR IGNORE, asi que en la base del lodge —que ya tiene
+    San Josecito sin bote— no cambiaria nada."""
+    import init_db
+    conn = base_limpia()
+    # Se simula la base instalada: sin bote y sin la marca de correccion.
+    conn.execute("UPDATE tour_catalogo SET requiere_bote = 0 "
+                 "WHERE codigo = 'SAN JOSECITO'")
+    conn.execute("DELETE FROM sistema_meta WHERE clave = ?", (init_db._MARCA_BOTE,))
+    conn.commit()
+
+    init_db._corregir_tours_en_bote(conn)
+    c.igual(conn.execute(
+        "SELECT requiere_bote FROM tour_catalogo WHERE codigo = 'SAN JOSECITO'"
+    ).fetchone()[0], 1, "la base instalada queda corregida")
+
+    # Y si el lodge lo quita a mano, no se le vuelve a poner al reiniciar.
+    conn.execute("UPDATE tour_catalogo SET requiere_bote = 0 "
+                 "WHERE codigo = 'SAN JOSECITO'")
+    conn.commit()
+    init_db._corregir_tours_en_bote(conn)
+    c.igual(conn.execute(
+        "SELECT requiere_bote FROM tour_catalogo WHERE codigo = 'SAN JOSECITO'"
+    ).fetchone()[0], 0, "lo que el lodge cambie a mano se respeta")
+    conn.close()
+
+
 def la_pared_de_escalada_se_reconoce_por_su_nombre(c):
     """«PARED» es como se le dice en el lodge a CLW. Sin el alias, una reserva que lo
     escriba asi no encuentra codigo y la actividad no llega a la agenda: se avisa como
@@ -1205,6 +1263,8 @@ PRUEBAS = [
     los_tours_terrestres_no_piden_bote,
     la_base_ya_instalada_tambien_se_corrige,
     un_tour_terrestre_no_sale_en_transporte,
+    el_kayak_de_san_josecito_va_en_bote,
+    la_base_ya_instalada_tambien_recibe_el_bote_del_kayak,
     la_pared_de_escalada_se_reconoce_por_su_nombre,
     el_dia_del_BT_sale_del_itinerario_no_del_texto,
     el_parser_recoge_el_BT_del_itinerario,
