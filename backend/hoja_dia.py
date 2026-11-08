@@ -60,11 +60,16 @@ COLUMNAS = [
     ("guia_t", "GUÍA T", 19),
     ("bote_t", "BOTE / CAPITÁN", 25),
     ("notas", "NOTAS", 46),
-    ("tour", "TOUR", 17),
+    # TOUR se lleva 22 y no 17 del hueco que sobraba: «CABALGATA» no entraba en 17 mm y
+    # se partía en «CABALGAT / A». Un código de tour partido se lee como otro código.
+    ("tour", "TOUR", 22),
     ("tour_guia", "GUÍA", 18),
     ("tour_bote", "BOTE", 18),
 ]
 ANCHO_UTIL_MM = 283
+
+# Los anchos de la caja de tours de arriba, en el mismo orden que sus columnas.
+CAJA_TOURS_MM = (34, 12, 24, 24)
 
 # Los tres grupos de la cabecera superior, con cuántas columnas abarca cada uno.
 GRUPOS = [("HUÉSPEDES", 4), ("INGRESOS Y SALIDAS", 6), ("ACTIVIDADES", 3)]
@@ -321,31 +326,164 @@ def _dmy(iso):
 
 
 # ---------------------------------------------------------------------------
-# El PDF, apaisado y de una hoja: es lo que se fotografía y se manda al grupo
+# El PDF, apaisado y de UNA hoja: es lo que se fotografía y se manda al grupo
 # ---------------------------------------------------------------------------
+#
+# LA LETRA NO ES FIJA, LA PÁGINA SÍ. Lo pidió el lodge: «hay días que están quedando en
+# 2 páginas y me gustaría ver todo en una página siempre, tal vez que el formato sea
+# flexible a eso». Con el tamaño fijo de antes, 27 de los 73 días con operación —el 37%—
+# se partían en dos, y la parte de abajo es justo la que se pierde: la hoja se fotografía
+# para mandarla al grupo y nadie manda dos fotos.
+#
+# Así que la hoja se dibuja varias veces, se MIDE cada vez, y se queda con la letra más
+# grande que quepa entera. Eso también la hace crecer: un día de seis habitaciones ya no
+# sale con letra de hormiga en el tercio de arriba de un folio en blanco, que para un
+# pantallazo en un teléfono importa tanto como lo otro.
+FUENTE = 6.4
+INTERLINEA = 7.6
+RELLENO = 1.5            # lo que respira cada renglón por arriba y por abajo
+HUECO = 5                # el aire entre las cajas de arriba, la franja y la tabla
 
-def pdf(d):
+# El margen de cada casilla contra su raya. ReportLab trae 6 pt de fábrica, que en una
+# columna de 17 mm son la cuarta parte del ancho: «SNORKEL» no cabía y se partía en
+# «SNORKE / L». Con 3 pt entra entero, los nombres largos parten en menos renglones y la
+# hoja completa encoge lo bastante como para que la letra pueda ser más grande.
+MARGEN_CELDA = 3.0
+
+# Hasta dónde se estira y hasta dónde se encoge.
+#
+# ARRIBA manda el ancho de las columnas, que es fijo: con letra mucho más grande los
+# nombres empiezan a partirse en dos renglones y la hoja gana menos alto del que gasta.
+# En la práctica el tope de verdad lo pone `_techo_por_las_palabras` y queda más abajo
+# —medido, 1.15— porque las cabeceras «SIERPE» y «DRAKE» viven en columnas de 12 mm que
+# solo llevan un número. Este 1.25 es el freno de mano, no el que suele frenar.
+# ABAJO manda el ojo de quien la lee en el muelle a las seis de la mañana.
+MAS_GRANDE = 1.25
+MAS_CHICA = 0.72
+PASO = 0.01
+AIRE_MAXIMO = 4.5        # cuánto se pueden separar los renglones cuando sobra hoja
+
+
+def _escalas():
+    cuantas = int(round((MAS_GRANDE - MAS_CHICA) / PASO)) + 1
+    return [round(MAS_CHICA + i * PASO, 2) for i in range(cuantas)]
+
+
+def _alto_de(piezas, ancho):
+    """Lo que mide la hoja armada, en puntos. Es la misma cuenta que hace el marco."""
+    return sum(pieza.wrap(ancho, 0x7FFFFFFF)[1] for pieza in piezas)
+
+
+def _techo_por_las_palabras(d):
+    """Hasta dónde puede crecer la letra sin que una palabra se parta por la mitad.
+
+    Al crecer, «SNORKEL» dejaba de caber en su columna y ReportLab lo partía en
+    «SNORKE / L» sin avisar. Un código de tour partido no es un código ilegible: es otro
+    código, y quien lee la hoja en el muelle no tiene con qué contrastarlo.
+
+    La cuenta sale cerrada y por eso no hay que dibujar nada para saberla. Si `a` es el
+    ancho de la columna y `w` lo que mide la palabra con la letra de tamaño natural, al
+    crecer por `k` la palabra mide `w·k` y el hueco se queda en `a − 2·MARGEN·k`, así
+    que `k ≤ a / (w + 2·MARGEN)`. Manda la palabra más apretada de toda la hoja.
+
+    Se calcula sobre el contenido de VERDAD y no sobre una lista de códigos: el día que
+    el lodge añada un tour con un nombre más largo, la hoja crece un poco menos sola, en
+    vez de partirlo.
+    """
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    techo = MAS_GRANDE
+
+    def mirar(valor, ancho_mm, negrita=False):
+        nonlocal techo
+        fuente = "Helvetica-Bold" if negrita else "Helvetica"
+        for palabra in str(valor or "").replace("\n", " ").split():
+            ancho_palabra = stringWidth(palabra, fuente, FUENTE)
+            if ancho_palabra > 0:
+                techo = min(techo, (ancho_mm * mm) / (ancho_palabra + 2 * MARGEN_CELDA))
+
+    for clave, titulo, ancho in COLUMNAS:
+        mirar(titulo, ancho, negrita=True)
+        for fila in d["filas"]:
+            mirar(fila.get(clave), ancho, negrita=clave in ("estado", "hab"))
+
+    # Y la caja de tours de arriba, que es donde viven los nombres de guía y de bote.
+    for t in d["tours"]:
+        for valor, ancho in zip(
+                (etiqueta_tour(t), t.get("pax_total"),
+                 t.get("guia_nombre") or "SIN ASIGNAR", t.get("bote_nombre") or "—"),
+                CAJA_TOURS_MM):
+            mirar(valor, ancho)
+
+    # Nunca por debajo del suelo: si una palabra no cabe ni con la letra más chica, lo
+    # que hay que arreglar es el ancho de esa columna, no encoger la hoja entera.
+    return max(MAS_CHICA, techo)
+
+
+def _la_letra_que_cabe(d, ancho, alto):
+    """(escala, lo que sobra) con la letra más grande que entra en una sola página.
+
+    Se busca por mitades y no probando una por una porque la hoja crece con la letra sin
+    volver atrás: si con un tamaño no cabe, con ninguno mayor va a caber. Siete medidas
+    bastan para las 54 escalas posibles.
+
+    Si ni con la más chica entra, lo que sobra sale negativo y manda: la decide `pdf()`
+    alargando el papel. Encoger la letra sin fondo convierte la hoja en algo que no se
+    lee, y partirla en dos es justo lo que se vino a arreglar.
+    """
+    techo = _techo_por_las_palabras(d)
+    pasos = [p for p in _escalas() if p <= techo] or [MAS_CHICA]
+    medido = {}
+
+    def cabe(i):
+        if i not in medido:
+            medido[i] = _alto_de(_historia(d, pasos[i]), ancho)
+        return medido[i] <= alto
+
+    if not cabe(0):
+        return pasos[0], alto - medido[0]
+    bajo, tope = 0, len(pasos) - 1
+    while bajo < tope:
+        medio = (bajo + tope + 1) // 2
+        if cabe(medio):
+            bajo = medio
+        else:
+            tope = medio - 1
+    return pasos[bajo], alto - medido[bajo]
+
+
+def _historia(d, k, aire=0.0):
+    """Las piezas de la hoja dibujadas a escala `k`, con `aire` extra en cada renglón.
+
+    Vive aparte de `pdf()` porque la hoja se arma varias veces: una por cada tamaño de
+    letra que se prueba y otra para el documento de verdad. Si el dibujo estuviera dentro
+    de `pdf()` habría que medir una cosa y dibujar otra, que es exactamente como se cuela
+    una fila a la segunda página sin que nadie se entere.
+    """
+    from xml.sax.saxutils import escape
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import mm
-    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
-                                    TableStyle)
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 
     verde = colors.HexColor("#" + VERDE_CAB)
     verde2 = colors.HexColor("#" + VERDE_SUB)
     linea = colors.HexColor("#" + LINEA)
     rojo = colors.HexColor("#" + ROJO)
 
-    chico = ParagraphStyle("c", fontName="Helvetica", fontSize=6.4, leading=7.6)
+    fuente = FUENTE * k
+    relleno = RELLENO * k
+    hueco = HUECO * k
+    margen = MARGEN_CELDA * k
+    chico = ParagraphStyle("c", fontName="Helvetica", fontSize=fuente,
+                           leading=INTERLINEA * k)
     chico_b = ParagraphStyle("cb", parent=chico, fontName="Helvetica-Bold")
 
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=landscape(A4),
-        topMargin=8 * mm, bottomMargin=8 * mm,
-        leftMargin=7 * mm, rightMargin=7 * mm,
-        title=f"Operación {_dmy(d['fecha'])}")
+    def texto(valor, estilo=chico):
+        """Una casilla de texto. Se escapa: un apellido con & rompía el dibujo entero."""
+        return Paragraph(escape(str(valor or "")), estilo)
+
     e = []
 
     def cabecera_verde(tabla, hasta_col=-1):
@@ -354,29 +492,40 @@ def pdf(d):
             ("TEXTCOLOR", (0, 0), (hasta_col, 0), colors.white),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("GRID", (0, 0), (-1, -1), 0.4, linea),
-            ("FONTSIZE", (0, 0), (-1, -1), 6.4),
+            ("FONTSIZE", (0, 0), (-1, -1), fuente),
+            ("LEADING", (0, 0), (-1, -1), INTERLINEA * k),
             ("ALIGN", (0, 0), (-1, 0), "CENTER"),
-            ("TOPPADDING", (0, 0), (-1, -1), 1.5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+            ("TOPPADDING", (0, 0), (-1, -1), relleno),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), relleno),
+            ("LEFTPADDING", (0, 0), (-1, -1), margen),
+            ("RIGHTPADDING", (0, 0), (-1, -1), margen),
         ]))
 
     # ---- Las tres cajas de arriba ----
+    def casilla(valor, falta=False):
+        """En párrafo, no en texto suelto: una casilla de texto suelto no parte renglón.
+
+        Con la letra creciendo, «Wilberth Villalobos» en una columna de 24 mm se montaba
+        encima de la de al lado y las dos quedaban ilegibles. Un párrafo baja de línea.
+        """
+        t = escape(str(valor or ""))
+        if falta:
+            t = f'<font color="#{ROJO}">{t}</font>'
+        return Paragraph(t, chico)
+
     t_tours = [["Tour", "Pax", "Guía", "Bote"]]
     for t in d["tours"]:
-        t_tours.append([etiqueta_tour(t),
+        t_tours.append([casilla(etiqueta_tour(t)),
                         t.get("pax_total") or "",
-                        t.get("guia_nombre") or "SIN ASIGNAR",
-                        t.get("bote_nombre") or "—"])
+                        casilla(t.get("guia_nombre") or "SIN ASIGNAR",
+                                falta=not t.get("guia_nombre")),
+                        casilla(t.get("bote_nombre") or "—",
+                                falta=not t.get("bote_nombre"))])
     if len(t_tours) == 1:
         t_tours.append(["Sin tours este día", "", "", ""])
     tabla_tours = Table(t_tours, colWidths=[34 * mm, 12 * mm, 24 * mm, 24 * mm],
                         hAlign="LEFT")
     cabecera_verde(tabla_tours)
-    for i, t in enumerate(d["tours"], start=1):
-        if not t.get("guia_nombre"):
-            tabla_tours.setStyle(TableStyle([("TEXTCOLOR", (2, i), (2, i), rojo)]))
-        if not t.get("bote_nombre"):
-            tabla_tours.setStyle(TableStyle([("TEXTCOLOR", (3, i), (3, i), rojo)]))
 
     t_mov = [["Estado", "Habs.", "Pax"]]
     for estado, habs, pax in d["movimientos"]:
@@ -410,8 +559,8 @@ def pdf(d):
         ("BACKGROUND", (0, 0), (-1, -1), verde),
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("TOPPADDING", (0, 0), (-1, -1), 1.5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+        ("TOPPADDING", (0, 0), (-1, -1), relleno),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), relleno),
     ]))
     arriba = Table([[tabla_tours, tabla_mov, tabla_al]],
                    colWidths=[98 * mm, 60 * mm, 74 * mm], hAlign="LEFT")
@@ -420,7 +569,7 @@ def pdf(d):
         ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
         ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
     ]))
-    e += [titulos, arriba, Spacer(1, 5)]
+    e += [titulos, arriba, Spacer(1, hueco)]
 
     # ---- La franja de la fecha y los muelles ----
     s = d["totales_punto"]["Sierpe"]
@@ -434,7 +583,8 @@ def pdf(d):
         colWidths=[16 * mm, 24 * mm, 24 * mm, 14 * mm, 8 * mm,
                    16 * mm, 16 * mm, 16 * mm, 16 * mm], hAlign="LEFT")
     franja.setStyle(TableStyle([
-        ("FONTSIZE", (0, 0), (-1, -1), 6.4),
+        ("FONTSIZE", (0, 0), (-1, -1), fuente),
+        ("LEADING", (0, 0), (-1, -1), INTERLINEA * k),
         ("GRID", (0, 0), (3, 0), 0.4, linea),
         ("GRID", (5, 0), (-1, -1), 0.4, linea),
         ("SPAN", (5, 0), (6, 0)), ("SPAN", (7, 0), (8, 0)),
@@ -449,10 +599,12 @@ def pdf(d):
         ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
         ("ALIGN", (1, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 1.5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+        ("TOPPADDING", (0, 0), (-1, -1), relleno),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), relleno),
+        ("LEFTPADDING", (0, 0), (-1, -1), margen),
+        ("RIGHTPADDING", (0, 0), (-1, -1), margen),
     ]))
-    e += [franja, Spacer(1, 5)]
+    e += [franja, Spacer(1, hueco)]
 
     # ---- La tabla ancha ----
     anchos = [c[2] * mm for c in COLUMNAS]
@@ -462,20 +614,20 @@ def pdf(d):
         grupo_fila += [""] * (cuantas - 1)
         i += cuantas
     datos = [grupo_fila, [c[1] for c in COLUMNAS]]
-    def renglones(texto):
+
+    def renglones(valor):
         """Un párrafo con un renglón por tour. Sin esto el segundo tour se saldría de la
         casilla: una celda de texto suelto no parte la línea, y el PDF se genera igual."""
-        from xml.sax.saxutils import escape
-        return Paragraph("<br/>".join(escape(x) for x in str(texto or "").split("\n")),
-                         chico)
+        return Paragraph(
+            "<br/>".join(escape(x) for x in str(valor or "").split("\n")), chico)
 
     for f in d["filas"]:
         datos.append([
             f["estado"], f["hab"],
-            Paragraph(f["huesped"], chico),
+            texto(f["huesped"]),
             f["pax"], f["sierpe"], f["drake"], f["horario"],
-            Paragraph(f["guia_t"], chico), Paragraph(f["bote_t"], chico),
-            Paragraph((f["notas"] or "")[:110], chico),
+            texto(f["guia_t"]), texto(f["bote_t"]),
+            texto((f["notas"] or "")[:110]),
             renglones(f["tour"]), renglones(f["tour_guia"]), renglones(f["tour_bote"]),
         ])
     if not d["filas"]:
@@ -487,14 +639,25 @@ def pdf(d):
         ("TEXTCOLOR", (0, 0), (-1, 1), colors.white),
         ("BACKGROUND", (0, 1), (-1, 1), verde2),
         ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 6.4),
+        ("FONTSIZE", (0, 0), (-1, -1), fuente),
+        # SIN ESTO LA LETRA ENCOGE PERO EL RENGLÓN NO. `FONTSIZE` en una tabla de
+        # ReportLab no toca la interlínea, que se queda en los 12 pt de fábrica: cada
+        # fila medía 5 mm aunque su texto ocupara la mitad, y la hoja se iba a la segunda
+        # página por un hueco que nadie había pedido. Es el mismo motivo por el que la
+        # caja de alertas, con seis renglones de nada, se comía 30 mm de hoja.
+        ("LEADING", (0, 0), (-1, -1), INTERLINEA * k),
         ("GRID", (0, 0), (-1, -1), 0.4, linea),
         ("ALIGN", (0, 0), (-1, 1), "CENTER"),
         ("ALIGN", (1, 2), (1, -1), "CENTER"),
         ("ALIGN", (3, 2), (6, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 1.5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+        # El aire sobrante se reparte AQUÍ y no en la letra: cuando el día es flojo y
+        # queda media hoja en blanco, separar los renglones llena la página sin tocar un
+        # tamaño de letra que ya es el mayor que cabe.
+        ("TOPPADDING", (0, 0), (-1, -1), relleno + aire),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), relleno + aire),
+        ("LEFTPADDING", (0, 0), (-1, -1), margen),
+        ("RIGHTPADDING", (0, 0), (-1, -1), margen),
         ("FONTNAME", (0, 2), (1, -1), "Helvetica-Bold"),
     ]
     col = 0
@@ -507,8 +670,45 @@ def pdf(d):
             estilo.append(("BACKGROUND", (0, n), (-1, n), colors.HexColor("#" + fondo)))
     tabla.setStyle(TableStyle(estilo))
     e.append(tabla)
+    return e
 
-    doc.build(e)
+
+def pdf(d):
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate
+
+    ancho_hoja, alto_hoja = landscape(A4)
+    margen_v, margen_h = 8 * mm, 7 * mm
+    # SE MIDE CONTRA EL MARCO, NO CONTRA EL PAPEL. El marco de `SimpleDocTemplate` se
+    # queda 6 pt de relleno por cada lado, y midiendo contra el alto de la página esos
+    # 12 pt son justo la última fila cayéndose a la hoja 2 sin que nada avise.
+    ancho = ancho_hoja - 2 * margen_h - 12
+    alto = alto_hoja - 2 * margen_v - 12
+
+    k, sobra = _la_letra_que_cabe(d, ancho, alto)
+    if sobra < 0:
+        # NI CON LA LETRA MÁS CHICA. Antes que partirla en dos, se alarga el papel: sigue
+        # siendo UNA página, que es lo que se fotografía y lo que se imprime (la
+        # impresora la ajusta sola al folio). Un día así no se ha visto todavía —el peor
+        # de los próximos cuatro meses tiene 34 habitaciones y entra— pero si llega, que
+        # llegue entero.
+        alto_hoja += -sobra + 1
+        sobra = 0
+
+    # Lo que sobre se reparte entre los renglones de la tabla ancha. La cuenta es exacta:
+    # cada renglón crece `aire` por arriba y por abajo, así que entre todos suman como
+    # mucho lo que sobraba. No hace falta volver a medir.
+    cuantas = max(1, len(d["filas"])) + 2
+    aire = max(0.0, min(AIRE_MAXIMO, sobra / (2 * cuantas)))
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=(ancho_hoja, alto_hoja),
+        topMargin=margen_v, bottomMargin=margen_v,
+        leftMargin=margen_h, rightMargin=margen_h,
+        title=f"Operación {_dmy(d['fecha'])}")
+    doc.build(_historia(d, k, aire))
     buf.seek(0)
     return buf
 
@@ -521,6 +721,7 @@ def excel(d):
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.properties import PageSetupProperties
 
     wb = Workbook()
     ws = wb.active
@@ -624,6 +825,14 @@ def excel(d):
 
     for i, (_, titulo, ancho) in enumerate(COLUMNAS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = max(ancho * 0.52, len(titulo) + 2)
+
+    # UNA PÁGINA TAMBIÉN AL IMPRIMIRLO, igual que el PDF. Quien abre el Excel y le da a
+    # imprimir sin mirar la vista previa sacaba tres folios con las columnas repartidas
+    # entre ellos; con esto sale la misma hoja apaisada que el PDF.
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
 
     buf = io.BytesIO()
     wb.save(buf)

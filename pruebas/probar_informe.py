@@ -370,6 +370,209 @@ def la_hoja_del_dia_cabe_en_el_ancho(c):
             "los grupos de la cabecera cubren todas las columnas")
 
 
+def _hoja_falsa(cuantas, tours=0, pesadas=0):
+    """Una definicion de hoja con el volumen que se le pida.
+
+    Se arma a mano y no desde `definicion()` porque lo que se esta probando aqui es el
+    DIBUJO: cuanta hoja ocupa y si cabe. Montar 40 reservas de verdad en la base para
+    medir un PDF seria probar el cargador otra vez y tardar veinte veces mas.
+
+    `pesadas` son las filas que llevan el nombre y la nota mas largos vistos en Opera
+    —tres renglones cada una—. Se cuentan aparte porque son LA variable: lo que hace
+    crecer la hoja no es cuantas filas hay sino cuantos renglones ocupa cada una. En el
+    dia mas cargado de los proximos cuatro meses, 2 de 34 son asi.
+    """
+    largo = ("MARIA GUADALUPE FERNANDEZ DE LA TORRE Y JUAN SEBASTIAN ECHEVERRIA "
+             "MONTOYA Y ANA CRISTINA ECHEVERRIA FERNANDEZ")
+    nota = ("CLIENTES SE HIPER CUIDAN CON EL COVID Y POR ESO RESERVARON TODO PRIVADO, "
+            "DE MOMENTO EL TRANSPORTE DE SALIDA ESTA PENDIENTE DE CONFIRMAR")
+    filas = []
+    for i in range(cuantas):
+        estado = ("ENTRA", "SALE", "EN CASA")[i % 3]
+        pesada = i < pesadas
+        filas.append({
+            "estado": estado,
+            "hab": f"{i + 1:02d}",
+            "huesped": largo if pesada else "DEREK JOHNSON Y ANDREA OGG",
+            "conf_no": f"90{i:04d}",
+            "pax": 2,
+            "sierpe": 2 if estado == "ENTRA" else "",
+            "drake": 2 if estado == "SALE" else "",
+            "horario": "7:10 a.m." if estado != "EN CASA" else "",
+            "guia_t": "", "bote_t": "",
+            "notas": nota if pesada else "VUELO RZ1116",
+            "tours": [],
+            "tour": "SNORKEL", "tour_guia": "", "tour_bote": "",
+        })
+    return {
+        "fecha": HOY.isoformat(),
+        "filas": filas,
+        "tours": [{"tour_codigo": "SNORKEL", "grupo_operativo": "A", "es_privado": 0,
+                   "pax_total": 4, "guia_nombre": None, "bote_nombre": None,
+                   "horario_inicio": "08:00"} for _ in range(tours)],
+        "totales_punto": {"Sierpe": {"ENTRA": 4, "SALE": 0},
+                          "Drake": {"ENTRA": 0, "SALE": 4}},
+        "movimientos": [("ENTRA", 2, 4), ("SALE", 2, 4), ("EN CASA", 8, 16)],
+        "pax_desayunos": 20, "pax_en_casa": 16,
+        "alertas": [("Tours sin guia", tours, "Agenda de tours"),
+                    ("Tours sin bote", tours, "Transporte"),
+                    ("Habs. sin asignar", 0, "Reservas"),
+                    ("Corridas sin cubrir", 0, "Transporte"),
+                    ("Tours el dia que se va", 0, "Agenda de tours")],
+    }
+
+
+def la_hoja_del_dia_cabe_SIEMPRE_en_una_pagina(c):
+    """El fallo que esta prueba evita tampoco da error: PARTE.
+
+    Lo pidio el lodge —«hay dias que estan quedando en 2 paginas y me gustaria ver todo
+    en una pagina siempre»— y la segunda pagina es la que se pierde: la hoja se
+    fotografia para mandarla al grupo y nadie manda dos fotos. Con la letra fija de
+    antes, 27 de los 73 dias con operacion se partian.
+
+    Se prueban volumenes de 1 a 40 habitaciones y, encima, con UN TERCIO de las filas
+    llevando el nombre y la nota mas largos de Opera — un dia bastante peor que
+    cualquiera de los proximos cuatro meses.
+    """
+    import hoja_dia
+    for cuantas in (1, 8, 18, 28, 34, 40):
+        d = _hoja_falsa(cuantas, tours=4, pesadas=cuantas // 3)
+        paginas, texto = _paginas(hoja_dia.pdf(d))
+        c.igual(paginas, 1, f"con {cuantas} habitaciones la hoja es UNA")
+        # Caber no puede significar perder filas por el camino: la primera y la ultima
+        # habitacion tienen que estar las dos en el papel.
+        c.cierto("01" in texto and f"{cuantas:02d}" in texto,
+                 f"con {cuantas} habitaciones no se queda ninguna fuera")
+
+
+def la_letra_de_la_hoja_se_adapta_al_dia(c):
+    """Un dia flojo se lee mas grande, uno cargado mas chico, y los dos en una hoja.
+
+    No es cosmetica: la hoja se mira en un telefono. Dejar la letra de un dia de 34
+    habitaciones en un dia de 3 es mandar un pantallazo con el tercio de arriba escrito
+    y dos tercios en blanco.
+    """
+    import hoja_dia
+    import pdfplumber
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.units import mm
+    ancho_hoja, alto_hoja = landscape(A4)
+    ancho, alto = ancho_hoja - 14 * mm - 12, alto_hoja - 16 * mm - 12
+
+    # 34 habitaciones con 2 filas pesadas es, medido, el peor dia de los proximos cuatro
+    # meses en la base de verdad.
+    peor = _hoja_falsa(34, tours=4, pesadas=2)
+    flojo, _ = hoja_dia._la_letra_que_cabe(_hoja_falsa(3, tours=1), ancho, alto)
+    cargado, _ = hoja_dia._la_letra_que_cabe(peor, ancho, alto)
+    c.cierto(flojo > cargado,
+             f"el dia flojo se escribe mas grande que el cargado ({flojo} vs {cargado})")
+    c.cierto(flojo <= hoja_dia.MAS_GRANDE and cargado >= hoja_dia.MAS_CHICA,
+             "los dos se quedan dentro de los limites de tamaño")
+    # Y el peor dia real no se encoge de mas: tiene que seguir leyendose en el muelle.
+    c.cierto(hoja_dia.FUENTE * cargado >= 5.5,
+             f"el peor dia no baja de 5,5 pt (sale a {hoja_dia.FUENTE * cargado:.2f})")
+
+    buf = hoja_dia.pdf(peor)
+    buf.seek(0)
+    with pdfplumber.open(buf) as pdf:
+        c.cierto(abs(pdf.pages[0].width - ancho_hoja) < 1
+                 and abs(pdf.pages[0].height - alto_hoja) < 1,
+                 "y cabe en A4 apaisado, que es el papel que hay en la oficina")
+
+
+def el_renglon_de_la_hoja_encoge_con_la_letra(c):
+    """La trampa que hacia que la hoja se partiera aun con letra chica.
+
+    `FONTSIZE` en una tabla de ReportLab NO toca la interlinea, que se queda en los
+    12 pt de fabrica. Sin poner `LEADING` a mano, la letra encogia y el renglon no: cada
+    fila seguia midiendo lo mismo y encoger la letra no servia de nada.
+
+    Se mide el bloque de verdad: a mitad de tamaño, la tabla tiene que ocupar mas o
+    menos la mitad. Con el fallo puesto ocupaba el 85%.
+    """
+    import hoja_dia
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.units import mm
+    ancho = landscape(A4)[0] - 14 * mm - 12
+    d = _hoja_falsa(20)
+    entera = hoja_dia._historia(d, 1.0)[-1].wrap(ancho, 0x7FFFFFFF)[1]
+    mitad = hoja_dia._historia(d, 0.5)[-1].wrap(ancho, 0x7FFFFFFF)[1]
+    c.cierto(mitad / entera < 0.62,
+             f"a media letra la tabla ocupa media hoja (salio {mitad / entera:.0%})")
+
+
+def la_hoja_no_parte_las_palabras_por_la_mitad(c):
+    """«SNORKE / L» en la columna de TOUR.
+
+    Pasaba al crecer la letra: ReportLab parte la palabra sin avisar y un codigo de tour
+    partido no es un codigo ilegible, es OTRO codigo. Se comprueba la regla y no el
+    sintoma: a la escala que la hoja elige, ninguna palabra de ninguna columna puede
+    medir mas que su casilla. Con los codigos de verdad del catalogo, que es donde
+    viven «CABALGATA» y «SAN JOSECITO».
+    """
+    import hoja_dia
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    from reportlab.lib.pagesizes import A4, landscape
+    ancho_hoja, alto_hoja = landscape(A4)
+
+    conn = comun.base_limpia()
+    codigos = [f["codigo"] for f in conn.execute(
+        "SELECT codigo FROM tour_catalogo ORDER BY codigo")]
+    conn.close()
+    c.cierto(len(codigos) > 10, "el catalogo trae los codigos de verdad")
+
+    d = _hoja_falsa(len(codigos), tours=0)
+    for fila, codigo in zip(d["filas"], codigos):
+        fila["tour"] = codigo
+        fila["tour_bote"] = "TAMANDUA"
+        fila["tour_guia"] = "EXTERNO"
+    k, _ = hoja_dia._la_letra_que_cabe(
+        d, ancho_hoja - 14 * mm - 12, alto_hoja - 16 * mm - 12)
+
+    for clave, titulo, ancho in hoja_dia.COLUMNAS:
+        hueco = ancho * mm - 2 * hoja_dia.MARGEN_CELDA * k
+        for fila in d["filas"]:
+            for palabra in str(fila.get(clave) or "").split():
+                mide = stringWidth(palabra, "Helvetica", hoja_dia.FUENTE * k)
+                c.cierto(mide <= hueco,
+                         f"«{palabra}» cabe entero en la columna {titulo} "
+                         f"({mide:.1f} pt de {hueco:.1f})")
+
+
+def un_nombre_larguisimo_encoge_la_hoja_en_vez_de_partirlo(c):
+    """El techo tiene que MORDER, no solo existir.
+
+    El dia que el lodge invente un tour con un nombre mas largo que la columna, la hoja
+    tiene que crecer menos — no partir la palabra. Es lo que convierte la regla en algo
+    que se mantiene solo.
+    """
+    import hoja_dia
+    normal = hoja_dia._techo_por_las_palabras(_hoja_falsa(4, tours=1))
+    d = _hoja_falsa(4, tours=1)
+    d["filas"][0]["tour"] = "CONTRACORRIENTE"
+    apretado = hoja_dia._techo_por_las_palabras(d)
+    c.cierto(apretado < normal,
+             f"un codigo larguisimo baja el techo ({apretado:.2f} vs {normal:.2f})")
+    c.cierto(apretado >= hoja_dia.MAS_CHICA,
+             "pero nunca por debajo del suelo: eso seria arreglar la columna, no la hoja")
+
+
+def un_dia_imposible_alarga_el_papel_pero_no_lo_parte(c):
+    """El ultimo recurso. No se ha visto un dia asi —el peor de los proximos cuatro
+    meses tiene 34 habitaciones— pero si llega, que llegue entero: antes que partir la
+    hoja en dos se alarga el papel, que la impresora ajusta sola al folio."""
+    import hoja_dia
+    import pdfplumber
+    from reportlab.lib.pagesizes import A4, landscape
+    buf = hoja_dia.pdf(_hoja_falsa(120, tours=10, pesadas=60))
+    buf.seek(0)
+    with pdfplumber.open(buf) as pdf:
+        c.igual(len(pdf.pages), 1, "120 habitaciones siguen siendo UNA pagina")
+        c.cierto(pdf.pages[0].height > landscape(A4)[1],
+                 "el papel se alarga en vez de partirse")
+
+
 def la_hoja_del_dia_sale_en_pdf_y_en_excel(c):
     """De punta a punta, con datos de verdad. Y los DOS formatos de la MISMA definicion:
     el pantallazo que circula por WhatsApp es el que nadie contrasta, asi que no puede
@@ -598,6 +801,12 @@ PRUEBAS = [
     la_ocupacion_usa_el_mismo_total_que_la_pantalla,
     el_spa_si_entra_en_el_informe,
     la_hoja_del_dia_cabe_en_el_ancho,
+    la_hoja_del_dia_cabe_SIEMPRE_en_una_pagina,
+    la_letra_de_la_hoja_se_adapta_al_dia,
+    el_renglon_de_la_hoja_encoge_con_la_letra,
+    la_hoja_no_parte_las_palabras_por_la_mitad,
+    un_nombre_larguisimo_encoge_la_hoja_en_vez_de_partirlo,
+    un_dia_imposible_alarga_el_papel_pero_no_lo_parte,
     la_hoja_del_dia_sale_en_pdf_y_en_excel,
     la_hoja_del_dia_enseña_los_DOS_tours_del_mismo_dia,
     el_horario_de_la_hoja_es_el_del_traslado_no_el_del_vuelo,
