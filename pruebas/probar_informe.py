@@ -505,8 +505,14 @@ def el_horario_de_la_hoja_es_el_del_traslado_no_el_del_vuelo(c):
     conn.close()
     sale = next(f for f in d["filas"] if f["estado"] == "SALE")
     c.igual(sale["horario"], "7:10 a.m.", "el horario es el del bote")
-    c.cierto("9:10 a.m." in sale["notas"], "y el vuelo no se pierde: va en las notas")
-    c.cierto("RZ5759" in sale["notas"], "con su numero")
+    c.cierto("RZ5759" in sale["notas"], "el numero del vuelo no se pierde: va en notas")
+    # LA HORA DEL VUELO YA NO VA EN NOTAS. Lo pidio el lodge: «colocar el numero del
+    # vuelo pero no la hora, ya que la hora fue designada en otra columna y no crear
+    # confusion». Y era justo esa confusion: en HORARIO va la del BOTE (7:10) y al lado,
+    # en notas, aparecia la del AVION (9:10). Dos horas distintas en el mismo renglon,
+    # y la que hay que ejecutar es la de la columna.
+    c.cierto("9:10" not in sale["notas"],
+             "y la hora del avion NO, que la del bote ya esta en su columna")
 
 
 def una_habitacion_que_cambia_de_huesped_no_mezcla_sus_horas(c):

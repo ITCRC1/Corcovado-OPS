@@ -82,8 +82,14 @@ COLUMNAS_POR_AREA = {
     # por el primer camino y se queda en NULL por el segundo —sin dar ningún error—, que
     # es exactamente lo que pasó con estas dos.
     "regimen": ("regimen", "bebidas_incluidas", "cortesia"),
+    # 'tours_vendidos' va con los textos y NO con los tours, y la distinción importa:
+    # no es una salida de la agenda, es la lista de lo que el huésped COMPRÓ. Su fecha
+    # —la del paquete de Opera— es la de facturación, así que poner un bote con ella
+    # sería mandarlo el día equivocado; eso ya está medido en opera_mapeo. Lo que sí
+    # resuelve es la otra mitad: que se vea que a una reserva le quedan tours por
+    # repartir aunque su itinerario ya tenga alguno.
     "textos": ("nota_ingreso", "nota_en_casa", "nota_salida", "notas_operacion",
-               "notas_libres", "guia_sugerido"),
+               "notas_libres", "guia_sugerido", "tours_vendidos"),
     "transporte": ("punto_entrada", "punto_salida", "punto_entrada_sin_confirmar",
                    "punto_salida_sin_confirmar", "hora_vuelo_entrada",
                    "hora_vuelo_salida", "vuelo_entrada", "vuelo_salida"),
@@ -105,6 +111,10 @@ def _valor_de_columna(r, columna):
         return r.get("notas")
     if columna == "notas_operacion":
         return " · ".join(r.get("notas_operacion") or []) or None
+    if columna == "tours_vendidos":
+        # Llega como lista de códigos y se guarda como texto, igual que las notas.
+        v = r.get("tours_vendidos")
+        return ", ".join(v) if isinstance(v, (list, tuple)) else (v or None)
     return r.get(columna)
 
 # El PDF trae la hoja completa, así que manda en todo. Es el comportamiento de siempre.

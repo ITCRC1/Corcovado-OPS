@@ -150,7 +150,63 @@ def sin_nota_no_pasa_nada(c):
         c.igual(N.solo_lo_operativo(vacio), "", f"«{vacio}» no revienta")
 
 
+# ---------------------------------------------------------------------------
+# Solo la solicitud, sin quien la apuntó
+# ---------------------------------------------------------------------------
+#
+# Lo pidió el lodge: «colocar solo la solicitud sin las notas no necesarias — ejemplo,
+# solicitan extra pillow pero no colocar "solicitado por K.S"». En una columna que corta
+# a 110 caracteres, el nombre de quien atendió la llamada desplaza a lo que hay que
+# hacer.
+
+def quien_lo_pidio_no_es_la_peticion(c):
+    """EL EJEMPLO DEL LODGE, copiado de una nota real de la base."""
+    c.igual(N.solo_lo_operativo("06/11 EXTRA PILLOWS CONTACTADO POR K.S"),
+            "EXTRA PILLOWS", "queda la peticion y nada mas")
+    c.igual(N.solo_lo_operativo("Poner cuna solicitado por Katiana"), "Poner cuna",
+            "en minusculas igual")
+    c.igual(N.solo_lo_operativo("Mesa en la terraza coordinado por Front Desk"),
+            "Mesa en la terraza", "y con dos palabras de nombre tambien")
+
+
+def la_peticion_no_se_va_con_la_atribucion(c):
+    """LA MITAD QUE IMPORTA: se quita QUIÉN, no QUÉ. Una nota real que empieza por el
+    nombre del huésped y lleva «solicita» dentro tiene que quedarse entera."""
+    larga = ("Andrea solicita amablemente poder reunirse con el gerente del alojamiento "
+             "al momento de su llegada")
+    c.igual(N.solo_lo_operativo(larga), larga,
+            "«Andrea solicita...» es la peticion, no la firma")
+    c.igual(N.solo_lo_operativo("Transporte reservado por la agencia, confirmar hora"),
+            "Transporte, confirmar hora",
+            "se quita quien lo reservo y se deja que hay que confirmar la hora")
+
+
+def la_firma_del_final_se_va(c):
+    """«DAYA 20/04/26» al final: iniciales y la fecha en que alguien lo apuntó."""
+    c.igual(N.solo_lo_operativo("EL TRANSPORTE DE SALIDA ES COMPARTIDO, DAYA 20/04/26."),
+            "EL TRANSPORTE DE SALIDA ES COMPARTIDO", "la firma no dice nada al que opera")
+    # Y una fecha que SÍ es parte de la instrucción no se toca.
+    c.igual(N.solo_lo_operativo("Confirmar el traslado para el 20/04/26"),
+            "Confirmar el traslado para el 20/04/26", "la fecha de una instruccion se queda")
+
+
+def lo_que_ya_es_una_columna_no_se_repite(c):
+    """«SALIDA: VIA DRAKE RZ111 11:00 a.» son tres columnas de la hoja: el muelle, el
+    vuelo y la hora. Repetirlo pone AL LADO de la hora del bote otra hora distinta."""
+    c.igual(N.solo_lo_operativo("SALIDA: VIA DRAKE RZ111 11:00 a."), "",
+            "el muelle, el vuelo y la hora ya tienen su columna")
+    c.igual(N.solo_lo_operativo("ENTRADA: Via Sierpe"), "", "y el muelle solo tambien")
+    # Pero si dice algo MÁS, se queda entero: eso no está en ninguna columna.
+    c.cierto("salir antes" in N.solo_lo_operativo(
+        "SALIDA: VIA DRAKE, el cliente pide salir antes"),
+        "con una instruccion detras se queda entera")
+
+
 PRUEBAS = [
+    quien_lo_pidio_no_es_la_peticion,
+    la_peticion_no_se_va_con_la_atribucion,
+    la_firma_del_final_se_va,
+    lo_que_ya_es_una_columna_no_se_repite,
     una_cifra_suelta_no_tira_la_instruccion,
     la_factura_pegada_a_una_hora_no_se_lleva_la_hora,
     una_instruccion_corta_delante_de_un_cobro_se_queda,

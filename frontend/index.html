@@ -1871,7 +1871,7 @@ function seccionToursItinerario(d) {
          <tr><th style="width:110px;">Fecha</th><th>Tour</th><th style="width:60px;">Pax</th><th style="width:80px;"></th></tr>
          ${tours.map(t => `<tr${fuera(t.fecha) ? ' style="background:var(--warn-bg);"' : ""}>
            <td>${t.fecha}${fuera(t.fecha) ? ' <span title="Fuera de la estadía">⚠</span>' : ""}</td>
-           <td>${(t.nombre || t.tour_codigo).replace(/\n/g, " ")}</td>
+           <td>${(t.nombre || t.tour_codigo).replace(/\n/g, " ")}${t.es_privado ? ` ${insigniaPrivado()}` : ""}</td>
            <td>${t.pax}</td>
            <td><button class="btn" onclick="quitarTourReserva(${t.id}, '${d.conf_no}')">Quitar</button></td>
          </tr>`).join("")}
@@ -2146,6 +2146,14 @@ async function verDetalleReserva(confNo) {
             <td>${t.conf_entrada_sinac || "—"}</td>
           </tr>`).join("")}
         </table>` : `<p class="modal-dato" style="color:var(--muted);">Sin tours registrados.</p>`}
+        ${(r.vendidos_sin_repartir || []).length ? `
+          <p style="background:var(--warn-bg);color:var(--warn-text);border-radius:4px;
+                    padding:7px 9px;margin:8px 0 0;font-size:12.5px;">
+            <strong>Vendidos y sin repartir:</strong>
+            ${r.vendidos_sin_repartir.map(escaparHTML).join(" · ")}
+            <br><span style="font-size:11.5px;">Opera dice que están comprados pero el
+            itinerario todavía no les puso día. Ponles fecha desde el itinerario o desde
+            la Agenda.</span></p>` : ""}
       </div>
 
       <div class="modal-seccion">
@@ -6147,13 +6155,29 @@ async function loadResumenOperacion(fecha) {
         <tr><th>Hora</th><th>Tour</th><th>Habitaciones</th><th>Guía</th><th>Bote</th><th>Pax</th></tr>
         ${d.tours.map(t => `<tr>
           <td>${t.horario_inicio || '—'}</td>
-          <td>${t.tour_codigo}${t.grupo_operativo !== 'A' ? ` <span class="badge badge-tour">grupo ${t.grupo_operativo}</span>` : ''}</td>
+          <td>${t.tour_codigo}${t.grupo_operativo !== 'A' ? ` <span class="badge badge-tour">grupo ${t.grupo_operativo}</span>` : ''}${t.es_privado ? ` ${insigniaPrivado()}` : ''}</td>
           <td style="font-size:12px;">${(t.habitaciones || '').split(',').join(' · ')}</td>
           <td>${t.guia_nombre || '<span style="color:var(--warn-text);">sin asignar</span>'}</td>
           <td>${t.bote_nombre || '<span style="color:var(--warn-text);">sin asignar</span>'}</td>
           <td><strong>${t.pax_total}</strong></td>
         </tr>`).join("")}
       </table>` : `<p class="empty">No hay tours para esta fecha.<small>Se cargan al importar el PDF de reservas.</small></p>`}
+      ${(d.bts || []).length ? `
+        <p style="font-weight:600;font-size:13px;margin:16px 0 2px;">Botes extra (BT) · ${d.bts.length}</p>
+        <p style="font-size:11.5px;color:var(--muted);margin:0 0 6px;">
+          Viajes de bote que pidió una habitación aparte de su llegada y su salida.
+          Necesitan capitán como cualquier otra corrida.</p>
+        <table>
+          <tr><th>Hora</th><th>Habitación</th><th>Pax</th><th>Bote / capitán</th><th>Nota</th></tr>
+          ${d.bts.map(b => `<tr>
+            <td>${escaparHTML(b.hora) || '<span style="color:var(--warn-text);">sin hora</span>'}</td>
+            <td>Hab. ${escaparHTML(b.room_no || '—')} · ${escaparHTML(b.nombre || '')}</td>
+            <td>${b.pax}</td>
+            <td>${[b.bote, b.capitan].filter(Boolean).map(escaparHTML).join(' / ')
+                 || '<span style="color:var(--warn-text);">sin asignar</span>'}</td>
+            <td style="font-size:12px;">${escaparHTML(b.nota || '')}</td>
+          </tr>`).join("")}
+        </table>` : ""}
       ${(d.tours_fuera_por_salida || []).length ? `
         <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);padding:11px 13px;margin-top:14px;font-size:13px;">
           <p style="margin:0 0 4px;font-weight:600;">No se cuentan: caen el día que el huésped se va (${d.tours_fuera_por_salida.length})</p>

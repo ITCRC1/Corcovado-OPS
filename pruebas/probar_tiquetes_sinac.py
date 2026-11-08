@@ -290,10 +290,13 @@ def el_guia_lo_abre_y_no_lo_sube(c):
                  "permisos_json": json.dumps(auth.PERFILES["Recepción"],
                                              ensure_ascii=False)}
     c.cierto(auth.puede(recepcion, "sinac", escribir=True), "recepcion si")
-    # Y lo que ya tenia sigue igual: esto solo AGREGA.
-    c.igual(auth.PERFILES["Guías"].get("agenda"), "escribir", "la agenda no cambio")
+    # Y lo que el guia TIENE que seguir pudiendo hacer no se toca. La agenda la lleva en
+    # 'ver' desde que el lodge pidio que el reparto de guias y grupos quede en recepcion
+    # —ver probar_permisos_de_guia— pero los pasaportes siguen en escribir: es quien toma
+    # la foto al recibir al huesped.
+    c.igual(auth.PERFILES["Guías"].get("agenda"), "ver", "la agenda, en solo lectura")
     c.igual(auth.PERFILES["Guías"].get("pasaportes"), "escribir",
-            "ni los pasaportes")
+            "y los pasaportes en escribir, que es quien toma la foto")
 
 
 def la_migracion_se_lo_da_a_los_guias_que_ya_existen(c):

@@ -218,6 +218,11 @@ PRENDAS_HK = [
 # NO aparecen solas: hay que agregarlas explícitamente. Sin esto fallan al importar
 # el PDF, al abrir Restaurantes y al guardar permisos.
 COLUMNAS_NUEVAS = [
+    # Lo que el huésped COMPRÓ, según los paquetes de Opera. No son salidas de la agenda
+    # —la fecha del paquete es la de facturación— pero sí es lo que permite ver que a una
+    # reserva le quedan tours por repartir aunque su itinerario ya tenga alguno. Ver
+    # loader.COLUMNAS_POR_AREA.
+    ("reserva", "tours_vendidos", "TEXT"),
     ("reserva", "block_code", "TEXT"),
     ("reserva", "forzar_restaurante", "TEXT"),
     ("usuario", "permisos_json", "TEXT"),
@@ -420,9 +425,11 @@ def _migrar(conn):
     # pasa dos veces por lo mismo.
     _pantallas_nuevas_a_las_rejillas(conn)
     _sembrar_perfiles(conn)
-    # Después de sembrar los perfiles: este paso CORRIGE el de «Guías», que ya existe en
-    # la base y que la siembra no toca.
+    # Después de sembrar los perfiles: estos dos CORRIGEN el de «Guías», que ya existe
+    # en la base y que la siembra no toca. En este orden: primero se completa lo que le
+    # falta, después se le baja lo que el lodge pidió bajar.
     _tiquetes_del_sinac_a_los_guias(conn)
+    _el_guia_no_reparte_la_operacion(conn)
     _arreglar_entradas_sinac(conn)
     _sembrar_areas_de_amenidades(conn)
     _limpiar_grupos_sueltos(conn)
@@ -843,6 +850,73 @@ def _pantallas_nuevas_a_las_rejillas(conn):
         print(f"Pantallas nuevas agregadas a la rejilla de {tocados} usuario(s): "
               f"{', '.join(nuevas)}")
     _meta(conn, "pantallas_conocidas", _json.dumps(actuales))
+    return tocados
+
+
+def _el_guia_no_reparte_la_operacion(conn):
+    """Le baja 'agenda' de escribir a VER a los guías. Lo pidió el lodge.
+
+    QUÉ CAMBIA EN LA PANTALLA: el guía sigue abriendo la Agenda entera —el resumen por
+    tour, la tabla, las horas, el botón de pasaportes— pero el selector de guía, el de
+    grupo, la fecha del tour y el pax salen como texto. Quién lleva cada tour y cómo se
+    reparten los grupos lo decide recepción.
+
+    ESTE PASO QUITA UN PERMISO, que es lo contrario de lo que suelen hacer estos
+    arreglos, así que la condición es estrecha a propósito: solo se toca a quien tenga
+    'agenda' en escribir Y NO tenga ninguna de las pantallas de oficina —Reservas,
+    Usuarios, Importar PDF—. Eso es un guía y nadie más: recepción y gerencia las llevan
+    todas, y quien atiende el spa o housekeeping no tiene 'agenda'.
+
+    Corre UNA SOLA VEZ: si mañana el lodge decide que un guía sí reparta, se lo da desde
+    la pantalla de Usuarios y el siguiente arranque no se lo deshace.
+    """
+    import json as _json
+    if _meta(conn, "el_guia_no_reparte"):
+        return 0
+    try:
+        import auth
+    except ImportError:
+        return 0
+
+    fila = conn.execute(
+        "SELECT permisos_json FROM perfil_permisos WHERE nombre = 'Guías'").fetchone()
+    if fila:
+        try:
+            rejilla = _json.loads(dict(fila)["permisos_json"])
+        except ValueError:
+            rejilla = None
+        if isinstance(rejilla, dict) and rejilla.get("agenda") == "escribir":
+            rejilla["agenda"] = "ver"
+            conn.execute(
+                "UPDATE perfil_permisos SET permisos_json = ? WHERE nombre = 'Guías'",
+                (_json.dumps(rejilla, ensure_ascii=False),))
+            print("Perfil «Guías»: la Agenda pasa a solo lectura")
+
+    DE_OFICINA = ("reservas", "usuarios", "importar")
+    tocados = 0
+    for u in conn.execute(
+            "SELECT id, username, permisos_json FROM usuario "
+            "WHERE permisos_json IS NOT NULL AND permisos_json != ''").fetchall():
+        try:
+            rejilla = _json.loads(dict(u)["permisos_json"])
+        except ValueError:
+            continue
+        if not isinstance(rejilla, dict):
+            continue
+        if rejilla.get("agenda") != "escribir":
+            continue
+        if any(rejilla.get(p) for p in DE_OFICINA):
+            continue              # recepción o gerencia: no se toca
+        rejilla["agenda"] = "ver"
+        conn.execute("UPDATE usuario SET permisos_json = ? WHERE id = ?",
+                     (_json.dumps(rejilla, ensure_ascii=False), u["id"]))
+        tocados += 1
+
+    conn.commit()
+    _meta(conn, "el_guia_no_reparte", "1")
+    if tocados:
+        print(f"Agenda en solo lectura para {tocados} guía(s): el reparto de guías y "
+              f"grupos queda en recepción")
     return tocados
 
 

@@ -53,7 +53,10 @@ _COMERCIAL = re.compile(
   | \bpag(?:o|os|ar|ado|aron|arle)\b | \bdep[oó]sito\b | \banticipo\b | \bsaldo\b
   | \bcr[eé]ditos?\b | \breembols\w* | \bpenalidad\w*
   | \w*upgrades?\b                # «freeupgrade» viene pegado en las notas reales
-  | \bdescuentos?\b | \bcomisi[oó]n\w*\b | \bnegocia\w*
+  | \bdescuentos?\b | \bdiscounts?\b | \bcomisi[oó]n\w*\b | \bnegocia\w*
+    # «PAQUETE 4N/5D+BREAKFAST» es la descripción de lo vendido, no una instrucción: los
+    # tours tienen su propia columna y el régimen el suyo.
+  | \bpaquete\s+\d+\s*[nd]\s*/\s*\d+\s*[nd]\b
   | \bmontos?\b | \btotal\s+booking\b | \bfixed\s+charges\b
   | \bpostear\b | \bcotiz\w*
   | \bhonor(?:ar|ó|o|aron)\s+(?:precio|tarifa|las\s+tarifa)
@@ -169,6 +172,59 @@ def _es_arranque_colgado(pedazo):
             and pedazo[-1:] not in ".!?")
 
 
+# QUIÉN LO PIDIÓ NO ES LA PETICIÓN. Lo pidió el lodge: «colocar solo la solicitud, sin
+# las notas no necesarias — ejemplo, solicitan extra pillow pero no colocar "solicitado
+# por K.S"». En la columna de notas, que corta a 110 caracteres, el nombre de quien
+# atendió la llamada desplaza a lo que hay que hacer.
+#
+# Se quita la ATRIBUCIÓN, no la instrucción: de «EXTRA PILLOWS CONTACTADO POR K.S» queda
+# «EXTRA PILLOWS». Y el nombre se acota a unas pocas palabras para que no se lleve por
+# delante media frase si alguien escribe «coordinado por la agencia que viaja con ellos».
+_ATRIBUCION = re.compile(
+    r"\s*\b(?:contactad[oa]|solicitad[oa]|coordinad[oa]|autorizad[oa]|aprobad[oa]|"
+    r"gestionad[oa]|confirmad[oa]|revisad[oa]|reservad[oa])\s+por\s+"
+    r"(?:[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ.]*\.?(?:\s+(?=[A-ZÁÉÍÓÚÑ]))?){1,3}",
+    re.IGNORECASE)
+
+# La firma de quien escribió la nota, al final: «DAYA 20/04/26». Son iniciales o un
+# nombre corto en mayúsculas seguidos de una fecha, y no le dicen nada a quien opera.
+_FIRMA = re.compile(
+    r"[\s,;·|-]*\b[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ.]{1,11}\s+\d{1,2}/\d{1,2}/\d{2,4}\.?\s*$")
+
+# Una fecha suelta al principio del pedazo, sin nada que la explique: «06/11 EXTRA
+# PILLOWS». La hoja del día ya tiene su propia columna de fecha y la nota es de ESE día,
+# así que repetirla ahí solo gasta renglón. Se exige que detrás venga texto de verdad
+# para no vaciar un pedazo que fuera solo la fecha.
+_FECHA_AL_FRENTE = re.compile(r"^\d{1,2}\s*/\s*\d{1,2}(?:\s*/\s*\d{2,4})?\s+(?=\S)")
+
+
+# «SALIDA: VIA DRAKE RZ111 11:00 a.» — el muelle, el vuelo y la hora, que son
+# exactamente tres columnas de la hoja: SIERPE/DRAKE, VUELO (que la hoja añade sola) y
+# HORARIO. Repetirlo en notas gasta el renglón y, peor, pone una hora distinta de la de
+# la columna —ahí va la del BOTE, no la del avión— al lado de la buena.
+#
+# Solo se va si el pedazo NO dice nada más: con «VIA DRAKE, el cliente pide salir antes»
+# se queda entero, porque esa segunda mitad no está en ninguna columna.
+_SOLO_EMBARQUE = re.compile(
+    r"^(?:salida|entrada|llegada)?\s*:?\s*v[ií]a\s+(?:sierpe|drake)\b"
+    r"(?:[\s,.:-]*(?:[A-Z]{2}\s?\d{2,5}|\d{1,2}\s*:\s*\d{2}|[ap]\.?\s*m?\.?|hrs?\.?))*"
+    r"[\s.,]*$", re.IGNORECASE)
+
+
+def sin_atribucion(pedazo):
+    """El pedazo sin «contactado por X», sin la firma del final y sin lo que ya es una
+    columna de la hoja."""
+    limpio = _ATRIBUCION.sub(" ", pedazo or "")
+    limpio = _FIRMA.sub("", limpio)
+    limpio = _FECHA_AL_FRENTE.sub("", limpio)
+    # Al sacar la atribución de en medio queda el hueco delante de la coma: «Transporte
+    # , confirmar hora». Se cierra aquí y no al final porque es puntuación interior, no
+    # de los extremos.
+    limpio = re.sub(r"\s+([,;.])", r"\1", re.sub(r"\s{2,}", " ", limpio))
+    limpio = limpio.strip(" \t-–—:;,·")
+    return "" if _SOLO_EMBARQUE.match(limpio) else limpio
+
+
 def es_comercial(pedazo):
     """Si este pedazo habla de plata: tarifas, cobros, upgrades, negociaciones."""
     return bool(_COMERCIAL.search(pedazo or ""))
@@ -198,6 +254,8 @@ def solo_lo_operativo(texto):
                 continue
             tenia_cifra = bool(_IMPORTE.search(pedazo))
             pedazo = sin_importes(pedazo) if tenia_cifra else pedazo
+            # Quién lo pidió y cuándo lo apuntaron se van; la petición se queda.
+            pedazo = sin_atribucion(pedazo)
             palabras = _PALABRA.findall(pedazo)
             if not palabras:
                 continue

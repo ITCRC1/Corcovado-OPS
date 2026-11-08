@@ -29,6 +29,19 @@ FONDO = {"EN CASA": "DFF0D8", "SALE": "F8C9C9", "ENTRA": "FDF3A6"}
 LINEA = "9B9B9B"
 ROJO = "C0392B"
 
+
+def etiqueta_tour(t):
+    """Cómo se nombra una salida en la hoja: «PNC gr.B · PRIVADO».
+
+    En UNA función porque la hoja la escribe en tres sitios —la casilla de cada
+    habitación, la caja de tours del PDF y la del Excel— y los tres tienen que decir lo
+    mismo. Si uno marcara el privado y otro no, la misma salida parecería dos cosas
+    distintas en la misma página.
+    """
+    grupo = "" if (t.get("grupo_operativo") or "A") == "A" else f" gr.{t['grupo_operativo']}"
+    privado = " · PRIVADO" if t.get("es_privado") else ""
+    return f"{t.get('tour_codigo') or ''}{grupo}{privado}"
+
 # Las columnas de la tabla ancha, en el orden del Excel del lodge.
 # (clave, título, ancho en mm para el PDF)
 #
@@ -170,9 +183,11 @@ def definicion(conn, fecha, resumen):
             fila["guia_t"] = det.get("guia") or ""
             fila["bote_t"] = det.get("bote") or ""
             if det.get("vuelo"):
+                # EL NÚMERO DEL VUELO SÍ, LA HORA NO. Lo pidió el lodge: la hora ya tiene
+                # su columna —HORARIO, que además es la del BOTE, no la del avión— y
+                # repetirla aquí con otro valor es la receta para que alguien lea la que
+                # no era. En notas queda lo único que esa columna no dice: qué vuelo es.
                 vuelo = f"VUELO {det['vuelo']}"
-                if det.get("hora"):
-                    vuelo += f" · {det['hora']}"
                 fila["notas"] = f"{fila['notas']} · {vuelo}".strip(" ·") if fila["notas"] else vuelo
 
     # --- La tripulación de cada corrida ---
@@ -189,6 +204,25 @@ def definicion(conn, fecha, resumen):
                     x for x in (c.get("bote_nombre"), c.get("capitan_nombre")) if x)
             if not fila["guia_t"]:
                 fila["guia_t"] = c.get("guia_nombre") or ""
+
+    # --- El BT de la habitación que lo pidió ---
+    #
+    # Lo pidió el lodge: «cuando una reserva necesite BT indicar en el resumen que hay BT
+    # para esa reserva y la hora». El BT es un bote EXTRA, apartado para una habitación
+    # concreta, y hasta ahora solo salía en la pantalla de Transporte: quien lee la hoja
+    # del día no tenía forma de saber que ese cuarto tiene un viaje reservado.
+    #
+    # Va en NOTAS y no en una columna nueva porque es la excepción, no la norma: con una
+    # columna, 24 habitaciones llevarían una casilla vacía para que una la tenga llena.
+    for b in resumen.get("bts", []):
+        fila = por_conf.get(str(b.get("conf_no")))
+        if not fila:
+            continue
+        texto = "BT" + (f" {b['hora']}" if b.get("hora") else " (sin hora)")
+        quien = " / ".join(x for x in (b.get("bote"), b.get("capitan")) if x)
+        if quien:
+            texto += f" · {quien}"
+        fila["notas"] = f"{fila['notas']} · {texto}".strip(" ·") if fila["notas"] else texto
 
     # --- Los tours de cada habitación ---
     #
@@ -217,13 +251,17 @@ def definicion(conn, fecha, resumen):
             if not fila or not t.get("tour_codigo"):
                 continue
             fila["tours"].append({
-                "codigo": t["tour_codigo"],
+                # El PRIVADO va pegado al código, no en una columna aparte: es lo que
+                # hay que ver de un vistazo al leer la casilla. Un tour privado lleva su
+                # propio bote y su propio guía, y quien arma la mañana necesita saberlo
+                # sin cruzar la hoja con otra pantalla.
+                "codigo": etiqueta_tour(t),
                 "guia": t.get("guia_nombre") or "",
                 "bote": t.get("bote_nombre") or "",
             })
     for fila in por_conf.values():
         # Ordenados como la jornada, que es como se lee la hoja.
-        orden = {t.get("tour_codigo"): (t.get("horario_inicio") or "99:99") for t in tours}
+        orden = {etiqueta_tour(t): (t.get("horario_inicio") or "99:99") for t in tours}
         fila["tours"].sort(key=lambda x: orden.get(x["codigo"], "99:99"))
         fila["tour"] = "\n".join(x["codigo"] for x in fila["tours"])
 
@@ -325,8 +363,7 @@ def pdf(d):
     # ---- Las tres cajas de arriba ----
     t_tours = [["Tour", "Pax", "Guía", "Bote"]]
     for t in d["tours"]:
-        grupo = "" if (t.get("grupo_operativo") or "A") == "A" else f" gr.{t['grupo_operativo']}"
-        t_tours.append([f"{t.get('tour_codigo') or ''}{grupo}",
+        t_tours.append([etiqueta_tour(t),
                         t.get("pax_total") or "",
                         t.get("guia_nombre") or "SIN ASIGNAR",
                         t.get("bote_nombre") or "—"])
@@ -510,8 +547,7 @@ def excel(d):
     fila = 2
     for t in d["tours"]:
         fila += 1
-        grupo = "" if (t.get("grupo_operativo") or "A") == "A" else f" gr.{t['grupo_operativo']}"
-        poner(fila, 1, f"{t.get('tour_codigo') or ''}{grupo}")
+        poner(fila, 1, etiqueta_tour(t))
         poner(fila, 2, t.get("pax_total"), alignment=centrado)
         poner(fila, 3, t.get("guia_nombre") or "SIN ASIGNAR")
         poner(fila, 4, t.get("bote_nombre") or "—")

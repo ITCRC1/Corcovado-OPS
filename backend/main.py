@@ -430,6 +430,16 @@ def _datos_del_resumen(fecha):
     import traslados as _tras
     puestas = _tras.asignaciones(conn, [fecha])
 
+    # Dos vuelos a menos de 45 minutos comparten bote y por lo tanto comparten hora. Se
+    # resuelve con el día entero delante y con la misma función que arma las corridas.
+    acordadas = _tras.horas_acordadas(
+        [(fecha, "entrada" if t == "entradas" else "salida",
+          _tras.normalizar_punto(f.get(c)),
+          _tras.hora_de_traslado(f, t == "entradas")[0])
+         for t, filas, c in (("entradas", ingresos, "punto_entrada"),
+                             ("salidas", salidas, "punto_salida"))
+         for f in filas])
+
     puntos = {}
     for tipo, filas, campo in (("entradas", ingresos, "punto_entrada"),
                                ("salidas", salidas, "punto_salida")):
@@ -445,8 +455,12 @@ def _datos_del_resumen(fecha):
 
             es_entrada = tipo == "entradas"
             hora_corrida, _ = _tras.hora_de_traslado(f, es_entrada)
-            puesta = puestas.get((fecha, "entrada" if es_entrada else "salida",
-                                  _tras.normalizar_punto(f.get(campo)),
+            clave_tipo = "entrada" if es_entrada else "salida"
+            punto_norm = _tras.normalizar_punto(f.get(campo))
+            junta = acordadas.get((fecha, clave_tipo, punto_norm, hora_corrida))
+            if junta:
+                hora_corrida = junta
+            puesta = puestas.get((fecha, clave_tipo, punto_norm,
                                   hora_corrida or _tras.SIN_HORA)) or {}
 
             k["detalle"].append({
@@ -479,7 +493,12 @@ def _datos_del_resumen(fecha):
     if no_caben:
         sin_contar = f" AND ta.id NOT IN ({','.join('?' for _ in no_caben)})"
     tours = lista(
+        # 'es_privado' va en el SELECT **y en el GROUP BY**, y las dos cosas hacen falta.
+        # Sin él en el GROUP BY, un PNC privado y un PNC compartido del mismo día caían
+        # en la misma fila y se sumaban: la hoja decía una salida de 6 pax donde hay dos
+        # botes, dos guías y dos entradas del parque. Un tour privado es otra salida.
         f"""SELECT ta.tour_codigo, ta.grupo_operativo, ta.guia_nombre, ta.bote_nombre,
+                  COALESCE(ta.es_privado, 0) es_privado,
                   SUM(ta.pax) pax_total, tc.horario_inicio, tc.horario_fin,
                   GROUP_CONCAT(r.room_no) habitaciones,
                   GROUP_CONCAT(ta.conf_no) reservas
@@ -487,7 +506,8 @@ def _datos_del_resumen(fecha):
            JOIN reserva r ON r.conf_no = ta.conf_no
            LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
            WHERE ta.fecha = ? AND r.res_status != 'CANCELADA'{sin_contar}
-           GROUP BY ta.tour_codigo, ta.grupo_operativo, ta.guia_nombre, ta.bote_nombre
+           GROUP BY ta.tour_codigo, ta.grupo_operativo, ta.guia_nombre, ta.bote_nombre,
+                    COALESCE(ta.es_privado, 0)
            ORDER BY tc.horario_inicio""", (fecha, *no_caben))
 
     # Lo descartado se devuelve, no se traga. Esconder sin decirlo es justo lo que hace
@@ -608,9 +628,40 @@ def _datos_del_resumen(fecha):
     # None sin decir nada: el bloque de restaurantes de esta hoja nunca se mostró.
     resumen_restaurantes = _restaurantes_resumen(conn, fecha)
 
+    # --- Los BT del día ---
+    #
+    # El «boat transfer» es un viaje de bote EXTRA que pide una reserva a mitad de
+    # estadía, normalmente para engancharse con otro operador a una hora concreta.
+    # Hasta ahora solo salía en la pantalla de Transporte, y el resumen —que es el papel
+    # que circula por WhatsApp la noche antes— no lo mencionaba: quien lee la hoja no
+    # tenía forma de saber que esa habitación tiene un bote apartado, ni a qué hora.
+    bts = [{
+        "conf_no": str(b["conf_no"]), "room_no": b["room_no"],
+        "nombre": b["nombre_principal"],
+        "pax": (b["adl"] or 0) + (b["chl"] or 0),
+        "hora": b["hora"] or "",
+        "nota": b["nota"] or "",
+        "guia": None, "bote": None, "capitan": None,
+    } for b in conn.execute(
+        """SELECT e.conf_no, e.fecha, e.hora, e.nota,
+                  r.room_no, r.nombre_principal, r.adl, r.chl
+           FROM traslado_extra e JOIN reserva r ON r.conf_no = e.conf_no
+           WHERE e.fecha = ? AND r.res_status != 'CANCELADA'
+           ORDER BY IFNULL(e.hora,'zz'), CAST(r.room_no AS INTEGER)""", (fecha,))]
+    # Quién lo lleva, con la misma clave que usa Transporte: el BT se guarda con la
+    # habitación como «punto», porque es un viaje de esa reserva y no de todos los que
+    # coinciden en hora.
+    for b in bts:
+        puesta = puestas.get((fecha, "extra", str(b["room_no"] or b["conf_no"]),
+                              b["hora"] or _tras.SIN_HORA)) or {}
+        b["guia"] = puesta.get("guia_nombre")
+        b["bote"] = puesta.get("bote_nombre")
+        b["capitan"] = puesta.get("capitan_nombre")
+
     conn.close()
     return {
         "fecha": fecha,
+        "bts": bts,
         "total_ingresos": len(ingresos), "pax_ingresos": pax(ingresos),
         "total_salidas": len(salidas), "pax_salidas": pax(salidas),
         "total_desayunos": len(desayunos), "pax_desayunos": pax(desayunos),
@@ -960,14 +1011,29 @@ def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: di
         for f in filas:
             d = dict(f)
             d["hora_efectiva"], d["hora_origen"] = _hora_traslado(d, es_entrada)
-            punto = _tras.normalizar_punto(
+            d["_punto"] = _tras.normalizar_punto(
                 d.get("punto_entrada") if es_entrada else d.get("punto_salida"))
-            fecha_iso = _tras._iso(d.get("arr_date") if es_entrada else d.get("dep_date"))
-            clave = (fecha_iso, tipo, punto, d["hora_efectiva"] or _tras.SIN_HORA)
+            d["_fecha"] = _tras._iso(
+                d.get("arr_date") if es_entrada else d.get("dep_date"))
+            salida.append(d)
+        # Dos vuelos a menos de 45 minutos viajan en el mismo bote, así que comparten
+        # hora. Se resuelve con el día entero delante —no se puede saber mirando una
+        # reserva— y con la MISMA función que arma las corridas: si esta pantalla dijera
+        # una hora y la corrida se armara con otra, alguien se quedaría fuera del bote.
+        acordadas = _tras.horas_acordadas(
+            [(d["_fecha"], tipo, d["_punto"], d["hora_efectiva"]) for d in salida])
+        for d in salida:
+            nueva = acordadas.get((d["_fecha"], tipo, d["_punto"], d["hora_efectiva"]))
+            if nueva:
+                d["hora_propia"] = d["hora_efectiva"]
+                d["hora_efectiva"] = nueva
+                d["hora_origen"] = (f"{d['hora_origen']} · con el vuelo de las "
+                                    f"{d['hora_propia']}")
+            clave = (d["_fecha"], tipo, d["_punto"],
+                     d["hora_efectiva"] or _tras.SIN_HORA)
             puesta = puestas.get(clave) or {}
             d["guia_traslado"] = puesta.get("guia_nombre")
             d["bote_traslado"] = puesta.get("bote_nombre")
-            salida.append(d)
         return salida
 
     return {
@@ -3943,6 +4009,22 @@ def detalle_reserva(conf_no: str, user: dict = Depends(exige("reservas"))):
     d["amenidades"] = [dict(a) for a in amenidades]
     d["grupo_reservas"] = [dict(g) for g in grupo_reservas]
     d["alertas_opera"] = alertas_reserva
+
+    # LO VENDIDO QUE TODAVÍA NO ESTÁ REPARTIDO.
+    #
+    # El huésped compra tres tours y el itinerario coloca uno: los otros dos no estaban
+    # en ninguna pantalla. La reserva 592199719 lo enseña entero — su nota dice
+    # «CEBT+SIR+NW» en la cabecera y el itinerario solo tiene «19: SIR», con los días 18
+    # y 20 en blanco.
+    #
+    # NO se les pone fecha. La del paquete de Opera es la de FACTURACIÓN —medido: en 15
+    # reservas no coincidió NUNCA con la del itinerario— así que inventar una salida con
+    # ella mandaría el bote el día equivocado. Lo que falta no es la fecha: es que se
+    # vea que hay trabajo pendiente.
+    vendidos = [x.strip() for x in str(d.get("tours_vendidos") or "").split(",")
+                if x.strip()]
+    ya_repartidos = {t["tour_codigo"] for t in d["tours"]}
+    d["vendidos_sin_repartir"] = [v for v in vendidos if v not in ya_repartidos]
     return d
 
 
@@ -5146,7 +5228,8 @@ def obtener_itinerario(conf_no: str, user: dict = Depends(exige("reservas"))):
                      (conf_no,)).fetchone()
     estadia_desde, estadia_hasta = _noches_de_estadia(r) if r else ("", "")
     ya_tiene = [dict(x) for x in conn.execute(
-        """SELECT ta.id, ta.tour_codigo, ta.fecha, ta.pax, tc.nombre
+        """SELECT ta.id, ta.tour_codigo, ta.fecha, ta.pax,
+                  COALESCE(ta.es_privado, 0) es_privado, tc.nombre
            FROM tour_asignado ta
            LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
            WHERE ta.conf_no = ? ORDER BY ta.fecha, ta.tour_codigo""", (conf_no,))]

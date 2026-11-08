@@ -155,6 +155,79 @@ def hora_de_traslado(fila, es_entrada):
 # La asignación guardada
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Dos vuelos seguidos, un solo bote
+# ---------------------------------------------------------------------------
+#
+# LA REGLA, tal como la dio el lodge: «cuando se detecte que 2 vuelos ingresan o salen
+# con una diferencia de 45 minutos... utilizar la salida del que sale primero para
+# ambas». Su ejemplo: vuelo a las 11:00 (bote 9:00) y vuelo a las 11:30 (bote 9:30) —
+# los dos botes salen a las 9:00.
+#
+# POR QUÉ: la pista de Drake está a la misma distancia para todos. Dos corridas con
+# media hora de diferencia son dos viajes del mismo bote por el mismo sitio, dos
+# capitanes apartados y dos líneas en la hoja del día para lo que en realidad es un
+# viaje. Juntándolos, el bote hace uno.
+#
+# Y POR QUÉ LA SALIDA TOMA LA PRIMERA Y LA ENTRADA LA ÚLTIMA. No es simetría, es lo
+# único que funciona en cada caso:
+#
+#   · SALIDA: el huésped tiene que estar en la pista ANTES de su vuelo. Si los dos se
+#     van a las 9:30, el del vuelo de las 11:00 lo pierde. Manda la hora más temprana.
+#   · ENTRADA: el bote RECOGE en la pista, así que tiene que llegar cuando ya aterrizó
+#     el último. Si los dos se recogen a las 11:00, el del vuelo de las 11:30 se queda
+#     en la pista. Manda la hora más tardía.
+#
+# Aplicar la del lodge tal cual a las entradas —«el que sale primero»— dejaría gente
+# tirada en el aeródromo, así que ahí se toma la otra punta por la misma razón que la
+# regla existe: que ninguno de los dos se quede fuera.
+MINUTOS_PARA_JUNTAR = 45
+
+
+def horas_acordadas(movimientos):
+    """{(fecha, tipo, punto, hora): hora_acordada} para los que viajan juntos.
+
+    'movimientos' es una lista de (fecha, tipo, punto, hora). Solo salen en el
+    resultado los que CAMBIAN, así que quien llama puede hacer
+    `acordadas.get(clave, hora)` sin mirar nada más.
+
+    EL RACIMO SE MIDE CONTRA SU PRIMERA HORA, no contra la anterior. Con vuelos a las
+    11:00, 11:40 y 12:20, encadenar pondría los tres juntos y el primero esperaría 80
+    minutos en la pista: cada racimo abarca 45 minutos y no más.
+
+    Los BT no se juntan con nadie: cada uno es un viaje de SU reserva, pedido para
+    engancharse con otro operador a una hora concreta.
+    """
+    por_grupo = {}
+    for fecha, tipo, punto, hora in movimientos:
+        if tipo == "extra" or not hora:
+            continue
+        minutos = minutos_de(hora)
+        if minutos is None:
+            continue
+        por_grupo.setdefault((fecha, tipo, punto), []).append((minutos, hora))
+
+    acordadas = {}
+    for (fecha, tipo, punto), lista in por_grupo.items():
+        distintas = sorted(set(lista))
+        if len(distintas) < 2:
+            continue
+        i = 0
+        while i < len(distintas):
+            ancla = distintas[i][0]
+            j = i + 1
+            while j < len(distintas) and distintas[j][0] - ancla <= MINUTOS_PARA_JUNTAR:
+                j += 1
+            racimo = distintas[i:j]
+            if len(racimo) > 1:
+                elegida = racimo[0][1] if tipo == "salida" else racimo[-1][1]
+                for _m, hora in racimo:
+                    if hora != elegida:
+                        acordadas[(fecha, tipo, punto, hora)] = elegida
+            i = j
+    return acordadas
+
+
 def asignaciones(conn, fechas=None):
     """Lo asignado, indexado por (fecha, tipo, punto, hora)."""
     if fechas:
@@ -277,7 +350,10 @@ def corridas(conn, desde, hasta, capacidades=None):
            FROM reserva
            WHERE punto_salida IS NOT NULL AND res_status != 'CANCELADA'""").fetchall()
 
-    grupos = {}
+    # PRIMERA VUELTA: la hora propia de cada uno. Hace falta tenerlas TODAS antes de
+    # agrupar, porque dos vuelos a menos de 45 minutos viajan en el mismo bote y eso no
+    # se puede saber mirando una reserva sola. Ver horas_acordadas().
+    movimientos = []
     for filas, tipo in ((filas_e, "entrada"), (filas_s, "salida")):
         for f in filas:
             d = dict(f)
@@ -289,18 +365,40 @@ def corridas(conn, desde, hasta, capacidades=None):
             if not punto:
                 continue
             hora, origen = hora_de_traslado(d, tipo == "entrada")
-            clave = (fecha, tipo, punto, hora or SIN_HORA)
-            g = grupos.setdefault(clave, {
-                "fecha": fecha, "tipo": tipo, "punto": punto,
-                "hora": hora or SIN_HORA, "hora_origen": origen,
-                "huespedes": [], "pax": 0,
-            })
-            g["huespedes"].append({
-                "conf_no": d["conf_no"], "room_no": d["room_no"],
-                "nombre": d["nombre_principal"],
-                "pax": (d["adl"] or 0) + (d["chl"] or 0),
-            })
-            g["pax"] += (d["adl"] or 0) + (d["chl"] or 0)
+            movimientos.append((d, tipo, fecha, punto, hora, origen))
+    acordadas = horas_acordadas(
+        [(fecha, tipo, punto, hora) for _d, tipo, fecha, punto, hora, _o in movimientos])
+
+    # SEGUNDA VUELTA: ya con la hora acordada, que es la que decide en qué bote va cada
+    # quien.
+    grupos = {}
+    for d, tipo, fecha, punto, hora, origen in movimientos:
+        acordada = acordadas.get((fecha, tipo, punto, hora))
+        hora_propia = hora if acordada else None
+        if acordada:
+            hora = acordada
+        clave = (fecha, tipo, punto, hora or SIN_HORA)
+        g = grupos.setdefault(clave, {
+            "fecha": fecha, "tipo": tipo, "punto": punto,
+            "hora": hora or SIN_HORA, "hora_origen": origen,
+            "huespedes": [], "pax": 0, "se_juntan": [],
+        })
+        # DE DÓNDE SALE LA HORA, cuando la decidió otro vuelo. Se anota en el GRUPO y no
+        # en el movimiento: el que no se mueve es el que suele crear la corrida, así que
+        # apuntándolo solo en el que se desplaza el aviso se perdía justo cuando hace
+        # falta. Quien lee «sale a las 9:00» tiene que poder ver por qué.
+        if hora_propia and hora_propia not in g["se_juntan"]:
+            g["se_juntan"].append(hora_propia)
+            juntos = ", ".join(g["se_juntan"])
+            base = g["hora_origen"] or ""
+            g["hora_origen"] = (f"{base} · se junta con el vuelo de las {juntos}"
+                                if base else f"se junta con el vuelo de las {juntos}")
+        g["huespedes"].append({
+            "conf_no": d["conf_no"], "room_no": d["room_no"],
+            "nombre": d["nombre_principal"],
+            "pax": (d["adl"] or 0) + (d["chl"] or 0),
+        })
+        g["pax"] += (d["adl"] or 0) + (d["chl"] or 0)
 
     # --- Los BT: viajes de bote EXTRA que pide una reserva ---
     #

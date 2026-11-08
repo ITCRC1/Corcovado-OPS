@@ -291,15 +291,34 @@ def una_frase_suma_a_los_paquetes_y_no_los_borra(c):
     c.igual(reserva["operacion"][0]["privado"], True, "y queda privada")
 
 
-def con_itinerario_de_verdad_sigue_mandando_la_nota(c):
-    """La regla de siempre no cambia: un itinerario escrito reemplaza a los paquetes."""
+def el_itinerario_manda_pero_no_borra_lo_que_no_nombra(c):
+    """EL OTRO FALLO QUE ESTO EVITA, medido: 162 paquetes de tour en 94 reservas se
+    estaban tirando.
+
+    El caso que lo explica es la reserva 592199719: la cabecera de su nota dice
+    «CEBT+SIR+NW», el itinerario solo coloca «19: SIR» —los dias 18 y 20 estan en
+    blanco— y Opera declara el CEBT con su fecha. El huesped tiene tres tours y al lodge
+    le llegaba uno.
+
+    La regla queda en dos mitades, y las dos importan:
+      · un tour que el itinerario SI nombra manda tal cual (ahi recepcion corrigio el
+        dia o la modalidad);
+      · uno que no aparece en ninguna linea no es una correccion: es que todavia no se
+        ha repartido, y no se borra.
+    """
     import opera_mapeo
-    reserva = {"operacion": [{"dia": "21", "tour": "PNC", "privado": False},
-                             {"dia": "23", "tour": "SNORKEL", "privado": False}]}
-    opera_mapeo.incorporar_texto_de_nota(
-        reserva, "Operacion:\n22: ISLA\n23: NW")
-    c.igual(sorted(o["tour"] for o in reserva["operacion"]), ["ISLA", "NW"],
-            "el itinerario de la nota reemplaza a los paquetes, como siempre")
+    reserva = {"operacion": [
+        {"dia": "21", "tour": "PNC", "privado": False},        # lo nombra el itinerario
+        {"dia": "23", "tour": "SNORKEL", "privado": False},    # NO lo nombra
+    ]}
+    opera_mapeo.incorporar_texto_de_nota(reserva, "Operacion:\n22: PNC\n23: NW")
+    por_tour = {o["tour"]: o for o in reserva["operacion"]}
+    c.igual(sorted(por_tour), ["NW", "PNC", "SNORKEL"],
+            "el SNORKEL que el itinerario no nombra NO se pierde")
+    c.igual(por_tour["PNC"]["dia"], "22",
+            "y el PNC se queda con el dia del itinerario, no con el del paquete")
+    c.igual(len([o for o in reserva["operacion"] if o["tour"] == "PNC"]), 1,
+            "sin duplicarlo")
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +408,7 @@ PRUEBAS = [
     una_hora_no_es_un_dia,
     el_itinerario_manda_sobre_la_frase,
     una_frase_suma_a_los_paquetes_y_no_los_borra,
-    con_itinerario_de_verdad_sigue_mandando_la_nota,
+    el_itinerario_manda_pero_no_borra_lo_que_no_nombra,
     el_mes_escrito_manda_sobre_el_deducido,
     un_tour_fuera_de_la_estadia_no_entra,
     el_camino_completo_de_una_nota_real,

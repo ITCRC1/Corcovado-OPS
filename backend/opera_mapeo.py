@@ -798,7 +798,20 @@ def incorporar_texto_de_nota(reserva, texto):
         if solo_de_prosa and reserva.get("operacion"):
             reserva["operacion"] = _sumar_sin_perder(reserva["operacion"], tours_de_nota)
         else:
-            reserva["operacion"] = tours_de_nota
+            # EL ITINERARIO MANDA, PERO NO BORRA UN TOUR QUE NO NOMBRA.
+            #
+            # Antes reemplazaba la lista entera, y eso tiraba tours vendidos. Medido
+            # sobre las reservas reales: 162 paquetes de tour en 94 reservas se perdían
+            # así. El caso que lo explica, la 592199719: la cabecera de la nota dice
+            # «CEBT+SIR+NW», el itinerario solo coloca «19: SIR» —los días 18 y 20 están
+            # en blanco— y Opera declara el CEBT para el 20. El huésped tiene tres tours
+            # y al lodge le llegaba uno.
+            #
+            # Un tour que el itinerario SÍ nombra se respeta tal cual: ahí recepción
+            # corrigió el día o la modalidad y eso manda. Uno que no aparece en ninguna
+            # línea no es una corrección, es que todavía no se ha repartido.
+            reserva["operacion"] = _sumar_sin_perder(
+                tours_de_nota, reserva.get("operacion") or [])
         # 'adicionales_raw' es lo que las pantallas muestran como "adicionales" y
         # de donde el importador cruza los tours. Tiene que decir lo MISMO que el
         # itinerario: si dijera lo que traen los paquetes, mostraría SNORKEL para
