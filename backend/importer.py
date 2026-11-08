@@ -546,8 +546,33 @@ def detallar_amenidades(reserva):
     return salida
 
 
-def to_iso_date(arr_date_ddmmyy, dia_num):
+def _dentro_de_la_estadia(reserva, fecha_iso):
+    """¿Esa fecha cae entre la llegada y la salida? Sin fechas claras, no se descarta.
+
+    Se usa solo para los tours que se leen de una frase. Los del itinerario ya vienen
+    con el día dentro de la estadía por construcción, y hay un aviso aparte
+    —TOUR_FUERA_DE_ESTADIA— para cuando el día deducido se sale.
+    """
+    try:
+        ad, am, ay = (int(x) for x in str(reserva.get("arr_date")).split("-"))
+        dd, dm, dy = (int(x) for x in str(reserva.get("dep_date")).split("-"))
+        llegada = date(2000 + ay, am, ad)
+        salida = date(2000 + dy, dm, dd)
+    except (ValueError, AttributeError, TypeError):
+        return True
+    try:
+        cuando = date.fromisoformat(fecha_iso)
+    except (ValueError, TypeError):
+        return True
+    return llegada <= cuando <= salida
+
+
+def to_iso_date(arr_date_ddmmyy, dia_num, mes_num=None):
     """El día del itinerario ('11') convertido a fecha, usando la llegada de referencia.
+
+    'mes_num' es para cuando la nota SÍ dice el mes —«PRV-CID 26/11»—. Entonces el mes
+    no se deduce: manda lo que está escrito. Deducirlo teniendo el dato delante es como
+    se acaba poniendo el tour en el mes que no era cuando la estadía cruza de mes.
 
     Devuelve None si no se puede formar una fecha, y eso NO es un caso raro: el
     itinerario lo escribe recepción a mano, así que aparecen días que no existen en ese
@@ -565,6 +590,20 @@ def to_iso_date(arr_date_ddmmyy, dia_num):
         year, month, arr_day, dia_num = 2000 + int(yy), int(mm), int(dd), int(dia_num)
     except (ValueError, AttributeError, TypeError):
         return None
+    if mes_num:
+        # El mes viene escrito. Solo queda el año, que la nota nunca dice: es el de la
+        # llegada, salvo que la estadía cruce el fin de año (llega el 29/12 y la nota
+        # dice 01/01).
+        try:
+            mes_num = int(mes_num)
+        except (TypeError, ValueError):
+            return None
+        if mes_num < month:
+            year += 1
+        try:
+            return date(year, mes_num, dia_num).isoformat()
+        except ValueError:
+            return None
     # Si el día de "Operacion" es menor que el día de llegada, la estadía cruzó de mes
     # (ej. llega el 29 de julio, día "1" de Operacion es en realidad 1 de agosto).
     if dia_num < arr_day:
@@ -702,7 +741,7 @@ def build_review_batch_desde_reservas(reservas):
         for op in r["operacion"]:
             if "tour" not in op:
                 continue
-            fecha_iso = to_iso_date(r["arr_date"], op["dia"])
+            fecha_iso = to_iso_date(r["arr_date"], op["dia"], op.get("mes"))
             if not fecha_iso:
                 # El día del itinerario no forma una fecha válida (un 31 en un mes de
                 # 30, una errata). No se descarta en silencio: se guarda para revisión,
@@ -711,6 +750,17 @@ def build_review_batch_desde_reservas(reservas):
                 r.setdefault("actividades_no_reconocidas", []).append(
                     {"dia": op["dia"], "texto": f"{op['tour']} — el día "
                      f"{op['dia']} no existe en ese mes, revisar la nota"})
+                continue
+            # EL FILTRO QUE PROTEGE A LOS QUE SE LEEN DE UNA FRASE. El itinerario lleva
+            # el día suelto y el mes se deduce de la estadía, así que siempre cae dentro;
+            # una nota en prosa trae la fecha entera y puede estar escrita al revés —en
+            # la base hay un «PNC E INSPECCIÓN 11/08» para una estadía de noviembre— o
+            # hablar de otro viaje. Un tour fuera de la estadía no lo puede hacer nadie.
+            if op.get("de_prosa") and not _dentro_de_la_estadia(r, fecha_iso):
+                r.setdefault("actividades_no_reconocidas", []).append(
+                    {"dia": op["dia"], "texto":
+                     f"{op['tour']} — una nota lo pone el {fecha_iso}, y el huésped no "
+                     f"está en el lodge ese día. Revisar la nota."})
                 continue
             contradiccion = detect_contradiction(r, op["tour"])
             agenda.append({

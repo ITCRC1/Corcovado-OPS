@@ -269,14 +269,41 @@ def _alias_2027():
 
 TOUR_ALIASES.update(_alias_2027())
 
+# Y LAS RAÍCES DE LOS PAQUETES DE OPERA, que hasta ahora solo valían leyendo el paquete.
+#
+# EL HUECO QUE TAPA, medido sobre las reservas de verdad: «CEBT Y PNC 09/12» perdía el
+# CEBT, porque CEBT vivía en opera_paquetes.TOURS_POR_RAIZ y esa tabla no llegaba aquí.
+# Lo mismo con SPS (el Sirena privado), SCI, TSP, HCN, HCNP, CNP, PNWALK, NQ, CNW, WWE,
+# SDPS, NWP y EBTP: todos son formas que el lodge escribe de verdad en el comentario, y
+# ninguna se reconocía al leer texto.
+#
+# Van DESPUÉS de las de arriba a propósito: si un código estuviera en las dos tablas,
+# manda la de los paquetes, que es la que la operación confirmó una por una.
+def _alias_de_los_paquetes():
+    from opera_paquetes import TOURS_POR_RAIZ
+    return dict(TOURS_POR_RAIZ)
+
+
+TOUR_ALIASES.update(_alias_de_los_paquetes())
+
 # El prefijo de modalidad, para anotarlo en la salida. 'C-CIS' ya se reconoce como CIS
 # —el guion es límite de palabra— pero sin esto se perdería que era una cortesía.
 # Ojo con los nombres de los grupos: la cortesía del caso 'PRV|C-' estaba en un grupo SIN
 # nombre, así que un servicio privado de cortesía —la forma canónica del comunicado para
 # «privado + CPL»— se leía como privado y NADA MÁS, y no se marcaba como cortesía a la
 # hora de cobrar. El de 'C-' solo sí estaba bien, que es por lo que no saltaba a la vista.
+#
+# 'PRIV' SE ACEPTA ADEMÁS DE 'PRV'. El documento dice PRV, pero en la base del lodge
+# está escrito «PRIV-SIR 03/12», «PRIV-EBT 27/12» y «PRIV|CPLEBT 14/12». Rechazarlo por
+# no ser la forma canónica no hace que recepción escriba mejor: hace que un tour privado
+# entre como compartido, y entonces sale en un bote con otra gente.
+#
+# Y EL GUION ES OPCIONAL DESPUÉS DE 'CPL': el propio catálogo del lodge imprime la
+# columna como «PRV|CPLPNC», sin guion, y así se copia.
 _MODALIDAD = re.compile(
-    r"(?:(?P<prv>PRV)\s*\|\s*(?P<cpl1>CPL|C)-?|(?P<prv2>PRV)-|(?P<cpl2>CPL|C)-)\s*$",
+    r"(?:(?P<prv>PRV|PRIV)\s*\|\s*(?P<cpl1>CPL|C)\s*-?"
+    r"|(?P<prv2>PRV|PRIV)\s*-"
+    r"|(?P<cpl2>CPL|C)\s*-)\s*$",
     re.IGNORECASE)
 
 
@@ -286,11 +313,178 @@ def modalidad_antes_de(texto, posicion):
     Se mira solo lo pegado al código: 'C-CIS' es una cortesía, pero un 'CPL' suelto tres
     palabras antes puede estar hablando de otra cosa de la reserva.
     """
-    m = _MODALIDAD.search(texto[max(0, posicion - 12):posicion])
+    m = _MODALIDAD.search(texto[max(0, posicion - 14):posicion])
     if not m:
         return False, False
     return (bool(m.group("prv") or m.group("prv2")),
             bool(m.group("cpl1") or m.group("cpl2")))
+
+
+# ===========================================================================
+# El itinerario escrito en prosa
+# ===========================================================================
+#
+# POR QUÉ EXISTE. La sección de «Operación» tiene un formato —«10: PNC»— y el lector lo
+# entiende. Pero recepción también escribe el itinerario en frases: «PRV-CID 26/11»,
+# «A solicitud del cliente PNC 17/12 - CIS 18/12», «KATIANA SOLICITA - 07/12: C-EBT +
+# CLW | 08/12: CIS». Todo eso se tiraba: el lector veía una fecha DD/MM en la línea y la
+# apartaba entera como nota.
+#
+# Medido sobre las 376 reservas de la base: 71 líneas nombraban un tour con su fecha y
+# NO producían ninguno. Ahí estaban los privados que el lodge echó en falta —PRV-CID,
+# PRV-PNC, PRIV-SIR, «25/11 PRIVADO SIRENA»— y días enteros de itinerario.
+#
+# POR QUÉ SE TIRABAN, Y POR QUÉ ESO ERA RAZONABLE: después del itinerario vienen notas
+# en texto libre que también nombran tours y fechas, y leerlas a lo bruto pone salidas
+# que nadie pidió el día que no es. El comentario del lector lo decía con un ejemplo
+# real. La respuesta no es leerlo todo ni tirarlo todo, es saber distinguirlo.
+#
+# LO QUE LO DISTINGUE ES LA ADYACENCIA. En una instrucción, el código y su fecha van
+# pegados: entre los dos no hay más que separadores y, como mucho, otros códigos. En una
+# frase hay palabras por medio. Medido contra la base real, esa sola regla separa
+#
+#     «PNC 22/11 - NW 23/11»                      -> dos tours, bien
+#     «PNC E INSPECCIÓN 11/08»                    -> nada (y menos mal: 11/08 ni
+#                                                    siquiera cae en la estadía)
+#     «...un bote de unos amigos que van a Sirena» -> nada
+#     «SE LE COBRA MGS POR 4 PAX»                 -> nada
+#     «INTERESADOS EN RESERVAR CIS»               -> nada
+#
+# Y LO QUE NO SE PUEDE REPARTIR, NO SE REPARTE. Con una sola fecha en el trozo, es de
+# todos los códigos pegados a ella; con tantas fechas como códigos, van en orden; con
+# cualquier otra combinación se devuelve como no reconocido para que recepción lo mire.
+
+# Los códigos más largos primero: así «PNWALK» gana a «PNC» y no se corta a medias.
+def _codigos_conocidos():
+    return sorted(set(list(TOUR_CODES) + list(TOUR_ALIASES)), key=len, reverse=True)
+
+
+# Un prefijo de modalidad pegado al código, en todas las formas que el lodge escribe.
+_PREFIJO = r"(?:PRV|PRIV)\s*(?:\|\s*(?:CPL|C))?\s*-?\s*|(?:CPL|C)\s*-\s*"
+
+# Lo único que puede haber entre una fecha y su código sin que se rompa la unión.
+_CONECTORES = {"EL", "LA", "DIA", "DÍA", "PARA", "LOS", "LAS", "Y", "DEL", "DE", "AND"}
+
+# Transporte, no tours. Tienen su propio camino (traslados_extra) y meterlos aquí
+# pondría una salida de bote en la agenda de guías.
+_NO_SON_TOURS = {"TT", "BT", "TRB", "MGX"}
+
+_RE_DIA_TRAS_CODIGO = re.compile(r":\s*(\d{1,2})\b(?!\s*[/:%\d])")
+
+
+def _re_tokens():
+    return re.compile(
+        r"(?P<fecha>\b\d{1,2}\s*/\s*\d{1,2}(?:\s*/\s*\d{2,4})?\b)"
+        # «el 9», «el día 18». El (?![/%]) es para que «el 01/03» siga siendo una fecha
+        # entera y no el día 1, y para que «el 15%» no sea el día 15.
+        r"|(?P<dia>\bel\s+(?:d[ií]a\s+)?\d{1,2}\b(?!\s*[/%]))"
+        r"|(?P<codigo>\b(?:" + _PREFIJO + r")?(?:"
+        + "|".join(re.escape(x) for x in _codigos_conocidos()) + r")\b)"
+        # «PRIVADO SIRENA» es como el lodge lo escribe de palabra. Cuenta como marca de
+        # modalidad del código de al lado, no como una palabra que corte el paso.
+        r"|(?P<privado>\bPRIVADOS?\b|\bPRIVADAS?\b|\bPRIVATE\b)"
+        r"|(?P<palabra>[A-Za-zÁÉÍÓÚÑáéíóúñ]{2,})",
+        re.IGNORECASE)
+
+
+def _trozos_de_la_linea(linea):
+    """Parte la línea en grupos por «|» y «;», sin romper el prefijo PRV|CPL.
+
+    El «|» hace de separador de días —«07/12: A + B | 08/12: C»— y a la vez va dentro
+    del prefijo del catálogo. Se protege el segundo antes de partir por el primero.
+    """
+    # El reemplazo NO va en cadena cruda: hace falta el carácter NUL de verdad, y en
+    # cruda «\x00» son cuatro caracteres que re.sub rechaza como escape inválido.
+    protegida = re.sub(r"\b(PRV|PRIV)\s*\|\s*(CPL|C)", "\\1\x00\\2", linea,
+                       flags=re.IGNORECASE)
+    return [t.replace("\x00", "|") for t in re.split(r"[|;]", protegida)]
+
+
+def _leer_tokens(trozo):
+    # «NW: 18» -> el número suelto detrás de los dos puntos es un día.
+    trozo = _RE_DIA_TRAS_CODIGO.sub(lambda m: f" el {m.group(1)} ", trozo)
+    tokens = []
+    for m in _re_tokens().finditer(trozo):
+        grupo = m.lastgroup
+        if grupo == "fecha":
+            dia, mes = re.findall(r"\d{1,2}", m.group(0))[:2]
+            tokens.append({"t": "FECHA", "dia": int(dia), "mes": int(mes)})
+        elif grupo == "dia":
+            tokens.append({"t": "FECHA",
+                           "dia": int(re.findall(r"\d{1,2}", m.group(0))[0]), "mes": None})
+        elif grupo == "codigo":
+            bruto = m.group(0).upper()
+            pref = re.match(r"^(?:" + _PREFIJO + r")", bruto, re.IGNORECASE)
+            nombre = bruto[pref.end():] if pref else bruto
+            real = TOUR_ALIASES.get(nombre, nombre)
+            if real in _NO_SON_TOURS:
+                continue
+            privado = cortesia = False
+            if pref:
+                sin_espacios = re.sub(r"[\s|]", "", pref.group(0)).upper()
+                privado = sin_espacios.startswith(("PRV", "PRIV"))
+                cortesia = bool(re.search(r"(?:CPL|C)-?$", sin_espacios))
+            tokens.append({"t": "CODIGO", "tour": real,
+                           "privado": privado, "cortesia": cortesia})
+        elif grupo == "privado":
+            tokens.append({"t": "PRIVADO"})
+        elif m.group(0).upper() not in _CONECTORES:
+            tokens.append({"t": "PALABRA"})
+    # La palabra «privado» marca al código que tiene al lado y después desaparece, para
+    # que no corte el camino entre el código y su fecha.
+    for i, tok in enumerate(tokens):
+        if tok["t"] != "PRIVADO":
+            continue
+        for j in (i + 1, i - 1):
+            if 0 <= j < len(tokens) and tokens[j]["t"] == "CODIGO":
+                tokens[j]["privado"] = True
+                break
+    return [t for t in tokens if t["t"] != "PRIVADO"]
+
+
+def _tiene_fecha_pegada(tokens, i):
+    """¿Hay una fecha al alcance del código, sin cruzar ninguna palabra?"""
+    for paso in (-1, 1):
+        j = i + paso
+        while 0 <= j < len(tokens) and tokens[j]["t"] == "CODIGO":
+            j += paso
+        if 0 <= j < len(tokens) and tokens[j]["t"] == "FECHA":
+            return True
+    return False
+
+
+def tours_en_prosa(texto):
+    """Los tours que una nota en texto libre coloca en un día, sin adivinar ninguno.
+
+    Devuelve [{'dia', 'mes', 'tour', 'privado', 'cortesia'}]. 'mes' puede ser None
+    cuando la nota solo dice el día («C-EBT el 09»), igual que el itinerario.
+    """
+    encontrados = []
+    for linea in re.split(r"[·\n]", texto or ""):
+        for trozo in _trozos_de_la_linea(linea):
+            tokens = _leer_tokens(trozo)
+            codigos = [t for i, t in enumerate(tokens)
+                       if t["t"] == "CODIGO" and _tiene_fecha_pegada(tokens, i)]
+            if not codigos:
+                continue
+            fechas = [t for t in tokens if t["t"] == "FECHA"]
+            if len(fechas) == 1:
+                parejas = [(fechas[0], c) for c in codigos]
+            elif len(fechas) == len(codigos):
+                parejas = list(zip(fechas, codigos))
+            else:
+                continue          # no se reparte lo que no cuadra
+            for f, c in parejas:
+                encontrados.append({"dia": f["dia"], "mes": f["mes"], "tour": c["tour"],
+                                    "privado": c["privado"], "cortesia": c["cortesia"]})
+    # Sin repetir: la misma nota puede nombrar el tour dos veces.
+    vistos, limpio = set(), []
+    for t in encontrados:
+        clave = (t["dia"], t["mes"], t["tour"])
+        if clave not in vistos:
+            vistos.add(clave)
+            limpio.append(t)
+    return limpio
 
 
 def manglar_es_solo_del_traslado(texto):
@@ -559,7 +753,52 @@ def leer_texto_de_reserva(texto, current=None):
         if not linea.strip():
             continue
         section = procesar_linea(linea, current, section)
+    _sumar_los_de_prosa(current, texto)
     return current
+
+
+def _sumar_los_de_prosa(current, texto):
+    """Añade los tours que recepción escribió en prosa, sin pisar el itinerario.
+
+    EL ITINERARIO MANDA. Si la sección de operación ya colocó ese tour, la frase no
+    añade nada: lo más que puede hacer es decir que es privado o de cortesía, que es un
+    dato que el itinerario a veces no trae.
+
+    Y SI LOS DOS LO COLOCAN EN DÍAS DISTINTOS, no se elige: se deja el del itinerario y
+    se avisa. Son dos personas escribiendo en la misma reserva y solo recepción sabe
+    cuál es la buena; adivinar aquí pondría al guía en el muelle el día que no es.
+    """
+    en_prosa = tours_en_prosa(texto)
+    if not en_prosa:
+        return
+    del_itinerario = {}
+    for o in current.get("operacion") or []:
+        if o.get("tour"):
+            del_itinerario.setdefault(o["tour"], []).append(o)
+
+    for t in en_prosa:
+        ya = del_itinerario.get(t["tour"])
+        if ya:
+            mismo_dia = [o for o in ya if str(o.get("dia")) == str(t["dia"])]
+            if mismo_dia:
+                # La frase solo aporta la modalidad. 'or' y no '=': que el itinerario
+                # diga PRV-PNC y la nota diga PNC no quita el privado.
+                for o in mismo_dia:
+                    o["privado"] = bool(o.get("privado")) or t["privado"]
+                    o["cortesia"] = bool(o.get("cortesia")) or t["cortesia"]
+            else:
+                current.setdefault("actividades_no_reconocidas", []).append(
+                    {"dia": t["dia"], "texto":
+                     f"{t['tour']} — el itinerario lo pone el día "
+                     f"{', '.join(str(o.get('dia')) for o in ya)} y una nota dice el día "
+                     f"{t['dia']}. Revisar cuál es el bueno."})
+            continue
+        nuevo = {"dia": str(t["dia"]), "tour": t["tour"], "conf_entrada": None,
+                 "privado": t["privado"], "cortesia": t["cortesia"], "de_prosa": True}
+        if t["mes"]:
+            nuevo["mes"] = t["mes"]
+        current["operacion"].append(nuevo)
+        del_itinerario.setdefault(t["tour"], []).append(nuevo)
 
 
 def procesar_linea(line, current, section):
@@ -709,7 +948,15 @@ def procesar_linea(line, current, section):
                 # reconocen por el patrón DD/MM y se guardan aparte, para no crear tours
                 # fantasma con el día equivocado.
                 parece_nota_con_fechas = bool(re.search(r"\d{1,2}\s*[/]\s*\d{1,2}", line))
-                m_dia = None if parece_nota_con_fechas else re.match(r"(\d{1,2}):?\s+(.+)", line)
+                # «09:CIS» y «09: CIS» y «09 CIS». Lo primero se escribe de verdad —en
+                # la base hay «09:C-EBT» y «09:CIS»— y se perdía entero porque el patrón
+                # exigía un espacio detrás de los dos puntos.
+                #
+                # El (?=[^\d]) después de los dos puntos es lo que deja fuera una HORA:
+                # sin él, «14:30» se leería como el día 14, y el 30 que viene detrás
+                # acabaría buscándose como número de entrada del parque.
+                m_dia = None if parece_nota_con_fechas else re.match(
+                    r"(\d{1,2})(?::\s*(?=[^\d])|\s+)(.+)", line)
                 if not m_dia:
                     texto_nota = line.strip()
                     # Se ignoran los días vacíos del itinerario (ej. "07:") y separadores

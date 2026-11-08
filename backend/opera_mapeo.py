@@ -783,17 +783,56 @@ def incorporar_texto_de_nota(reserva, texto):
     reserva["itinerario_leido"] = bool(leido_nota.get("operacion"))
     tours_de_nota = [o for o in (leido_nota.get("operacion") or []) if o.get("tour")]
     if tours_de_nota:
-        reserva["operacion"] = tours_de_nota
+        # UNA FRASE SUMA; UN ITINERARIO MANDA. Y la diferencia importa mucho.
+        #
+        # El itinerario escrito —«10: PNC 123456»— reemplaza a los paquetes a propósito:
+        # es lo que recepción corrigió a mano y lleva el día bueno y el número de entrada
+        # del parque. Pero una frase suelta al final de la nota —«NW 11/11»— NO es un
+        # itinerario: es un añadido. Si reemplazara, una reserva con tres tours en sus
+        # paquetes y un «NW 11/11» escrito de paso se quedaría con el NW y PERDERÍA los
+        # otros tres, sin dar ningún error.
+        #
+        # Así que cuando lo único que trae la nota viene de una frase, se SUMA a lo que
+        # ya había; cuando hay itinerario de verdad, sigue mandando como siempre.
+        solo_de_prosa = all(o.get("de_prosa") for o in tours_de_nota)
+        if solo_de_prosa and reserva.get("operacion"):
+            reserva["operacion"] = _sumar_sin_perder(reserva["operacion"], tours_de_nota)
+        else:
+            reserva["operacion"] = tours_de_nota
         # 'adicionales_raw' es lo que las pantallas muestran como "adicionales" y
         # de donde el importador cruza los tours. Tiene que decir lo MISMO que el
         # itinerario: si dijera lo que traen los paquetes, mostraría SNORKEL para
         # una reserva cuyo itinerario dice PNC e ISLA.
         if not leido_nota.get("adicionales_raw"):
             reserva["adicionales_raw"] = ", ".join(
-                sorted({o["tour"] for o in tours_de_nota}))
+                sorted({o["tour"] for o in reserva["operacion"] if o.get("tour")}))
     # Todo el texto, que es de donde el importador detecta amenidades y alergias.
     reserva["texto_nota"] = texto
     return leido_nota
+
+
+def _sumar_sin_perder(de_los_paquetes, de_la_prosa):
+    """Los tours de los paquetes, más los que una frase añade. Sin perder ninguno.
+
+    Si el paquete y la frase hablan del MISMO tour, manda el paquete en el día —Opera lo
+    trae con su fecha de consumo, que es un dato y no una lectura— y la frase solo le
+    añade lo que el paquete no sabe: que es privado.
+    """
+    salida = [dict(o) for o in de_los_paquetes]
+    por_tour = {}
+    for o in salida:
+        if o.get("tour"):
+            por_tour.setdefault(o["tour"], []).append(o)
+    for t in de_la_prosa:
+        ya = por_tour.get(t.get("tour"))
+        if ya:
+            if t.get("privado"):
+                for o in ya:
+                    o["privado"] = True
+            continue
+        salida.append(dict(t))
+        por_tour.setdefault(t["tour"], []).append(salida[-1])
+    return salida
 
 
 def bloque_de(cruda):
