@@ -169,18 +169,15 @@ def hora_de_traslado(fila, es_entrada):
 # capitanes apartados y dos líneas en la hoja del día para lo que en realidad es un
 # viaje. Juntándolos, el bote hace uno.
 #
-# Y POR QUÉ LA SALIDA TOMA LA PRIMERA Y LA ENTRADA LA ÚLTIMA. No es simetría, es lo
-# único que funciona en cada caso:
+# SOLO LAS SALIDAS. Lo precisó el lodge: «en las entradas tómalas normales como indique
+# la reserva, ya que en ese punto no aplica el tema de las 2 horas».
 #
-#   · SALIDA: el huésped tiene que estar en la pista ANTES de su vuelo. Si los dos se
-#     van a las 9:30, el del vuelo de las 11:00 lo pierde. Manda la hora más temprana.
-#   · ENTRADA: el bote RECOGE en la pista, así que tiene que llegar cuando ya aterrizó
-#     el último. Si los dos se recogen a las 11:00, el del vuelo de las 11:30 se queda
-#     en la pista. Manda la hora más tardía.
-#
-# Aplicar la del lodge tal cual a las entradas —«el que sale primero»— dejaría gente
-# tirada en el aeródromo, así que ahí se toma la otra punta por la misma razón que la
-# regla existe: que ninguno de los dos se quede fuera.
+# Y es por donde sale la cuenta: en la SALIDA la hora del bote se CALCULA —dos horas
+# antes del vuelo— así que dos vuelos cercanos dan dos horas calculadas distintas para
+# el mismo viaje, y hay que decidir cuál vale. En la ENTRADA no se calcula nada: la hora
+# es la del vuelo, tal como viene en la reserva, porque el bote espera al avión. Ahí no
+# hay dos versiones de lo mismo que reconciliar, hay dos vuelos que llegan cuando
+# llegan.
 MINUTOS_PARA_JUNTAR = 45
 
 
@@ -192,15 +189,16 @@ def horas_acordadas(movimientos):
     `acordadas.get(clave, hora)` sin mirar nada más.
 
     EL RACIMO SE MIDE CONTRA SU PRIMERA HORA, no contra la anterior. Con vuelos a las
-    11:00, 11:40 y 12:20, encadenar pondría los tres juntos y el primero esperaría 80
-    minutos en la pista: cada racimo abarca 45 minutos y no más.
+    11:00, 11:40 y 12:20, encadenar pondría los tres juntos y el primero saldría del
+    lodge 80 minutos antes de lo que le toca: cada racimo abarca 45 minutos y no más.
 
-    Los BT no se juntan con nadie: cada uno es un viaje de SU reserva, pedido para
-    engancharse con otro operador a una hora concreta.
+    Solo toca las SALIDAS. Las entradas van con su hora tal cual —ver la cabecera de
+    arriba— y los BT no se juntan con nadie: cada uno es un viaje de SU reserva, pedido
+    para engancharse con otro operador a una hora concreta.
     """
     por_grupo = {}
     for fecha, tipo, punto, hora in movimientos:
-        if tipo == "extra" or not hora:
+        if tipo != "salida" or not hora:
             continue
         minutos = minutos_de(hora)
         if minutos is None:
@@ -220,7 +218,10 @@ def horas_acordadas(movimientos):
                 j += 1
             racimo = distintas[i:j]
             if len(racimo) > 1:
-                elegida = racimo[0][1] if tipo == "salida" else racimo[-1][1]
+                # La más temprana: el huésped tiene que estar en la pista ANTES de su
+                # vuelo. Si los dos salieran a las 9:30, el del vuelo de las 11:00 lo
+                # pierde.
+                elegida = racimo[0][1]
                 for _m, hora in racimo:
                     if hora != elegida:
                         acordadas[(fecha, tipo, punto, hora)] = elegida

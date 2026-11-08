@@ -60,21 +60,24 @@ def en_la_salida_manda_la_hora_mas_temprana(c):
     c.igual(acordadas.get(("2026-11-20", "salida", "Drake", "08:30")), "08:15", "idem")
 
 
-def en_la_entrada_manda_la_hora_mas_tardia(c):
-    """LA OTRA PUNTA, y no es simetría: el bote RECOGE en la pista. Si los dos se
-    recogen a las 11:00, el del vuelo de las 11:30 se queda tirado en el aeródromo.
+def las_entradas_van_con_su_hora_tal_cual(c):
+    """LO PRECISÓ EL LODGE: «en las entradas tómalas normales como indique la reserva,
+    ya que en ese punto no aplica el tema de las 2 horas».
 
-    La regla del lodge dice «el que sale primero», pero esa frase es de las salidas; en
-    las entradas lo que la cumple —que ninguno de los dos se quede fuera— es esperar al
-    último."""
+    Y por ahí sale la cuenta: en la SALIDA la hora del bote se CALCULA —dos horas antes
+    del vuelo— así que dos vuelos cercanos dan dos horas distintas para el mismo viaje y
+    hay que decidir cual vale. En la ENTRADA no se calcula nada: la hora es la del
+    vuelo, tal como viene en la reserva, porque el bote espera al avion."""
     acordadas = T.horas_acordadas([
         ("2026-11-20", "entrada", "Drake", "11:00 a.m."),
         ("2026-11-20", "entrada", "Drake", "11:30 a.m."),
     ])
-    c.igual(acordadas.get(("2026-11-20", "entrada", "Drake", "11:00 a.m.")),
-            "11:30 a.m.", "el bote espera al vuelo que aterriza despues")
-    c.igual(acordadas.get(("2026-11-20", "entrada", "Drake", "11:30 a.m.")), None,
-            "y el ultimo no se mueve")
+    c.igual(acordadas, {}, "dos entradas cercanas NO se tocan")
+    # Ni aunque sean cuatro y casi a la misma hora.
+    c.igual(T.horas_acordadas([("2026-11-20", "entrada", "Drake", "11:00"),
+                               ("2026-11-20", "entrada", "Drake", "11:05"),
+                               ("2026-11-20", "entrada", "Drake", "11:10")]), {},
+            "cada entrada se queda con la hora que diga su reserva")
 
 
 def mas_de_45_minutos_son_dos_viajes(c):
@@ -110,7 +113,7 @@ def no_se_juntan_los_que_no_viajan_juntos(c):
             "puntos distintos no se juntan")
     c.igual(T.horas_acordadas([("2026-11-20", "salida", "Drake", "08:00"),
                                ("2026-11-20", "entrada", "Drake", "08:10")]), {},
-            "una entrada y una salida tampoco")
+            "una entrada y una salida tampoco (y la entrada nunca se junta)")
     c.igual(T.horas_acordadas([("2026-11-20", "salida", "Drake", "08:00"),
                                ("2026-11-21", "salida", "Drake", "08:10")]), {},
             "ni dos dias distintos")
@@ -358,7 +361,7 @@ def la_pantalla_dibuja_el_bt(c):
 PRUEBAS = [
     dos_salidas_a_menos_de_45_minutos_salen_juntas,
     en_la_salida_manda_la_hora_mas_temprana,
-    en_la_entrada_manda_la_hora_mas_tardia,
+    las_entradas_van_con_su_hora_tal_cual,
     mas_de_45_minutos_son_dos_viajes,
     el_racimo_no_se_encadena,
     no_se_juntan_los_que_no_viajan_juntos,
