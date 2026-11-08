@@ -338,6 +338,137 @@ def el_garden_to_table_ya_guardado_pasa_a_claro(c):
     conn.close()
 
 
+def la_isla_y_el_snorkel_son_uno_solo(c):
+    """Lo pidio el lodge: «esta duplicando ISLA y SNORKEL».
+
+    Son el mismo tour —el snorkel en la Isla del Caño, a las 7:15, con el mismo bote y la
+    misma entrada del parque— y el sistema ya lo sabia A MEDIAS: el paquete de Opera
+    («CIS») entraba como SNORKEL y el itinerario escrito a mano entraba como ISLA. La
+    reserva que traia las dos cosas salia DOS VECES el mismo dia.
+
+    SOBREVIVE SNORKEL. Medido sobre la base del lodge: 147 salidas contra 4, 61 entradas
+    del SINAC contra 2, y es a donde ya apuntaban CIS y SCI.
+    """
+    import pdf_parser
+    for texto in ("ISLA", "SNORKEL", "CIS", "SNK", "Cano Island", "Caño Island",
+                  "Snorkeling"):
+        c.igual(pdf_parser.cross_reference_tours(texto), ["SNORKEL"],
+                f"«{texto}» es el snorkel de Isla del Caño, y uno solo")
+    c.igual(op.TOURS_POR_RAIZ.get("CIS"), "SNORKEL", "y el paquete de Opera tambien")
+    c.cierto("ISLA" not in pdf_parser.TOUR_CODES,
+             "ISLA ya no es un codigo propio: entra por la tabla de equivalencias")
+    # La reserva que trae las DOS formas en el mismo renglon tiene que dar UN tour, no
+    # dos: es el caso que el lodge vio en pantalla.
+    c.igual(pdf_parser.cross_reference_tours("PNC e ISLA, tambien CIS"),
+            ["PNC", "SNORKEL"], "las dos formas juntas siguen siendo una sola salida")
+
+
+def la_isla_ya_guardada_pasa_a_snorkel(c):
+    """EL CAMINO DE PRODUCCION: cambiar la tabla no arregla lo YA guardado.
+
+    Se comprueba sobre una base que ya tiene ISLA como tour propio —con su variante
+    privada, su salida, su entrada del parque y su tiquete—, que es como esta la del
+    lodge.
+    """
+    import init_db
+    conn = comun.base_limpia()
+    for cod, base, priv in (("ISLA", None, 0), ("ISLA PRIVADO", "ISLA", 1)):
+        conn.execute(
+            """INSERT OR IGNORE INTO tour_catalogo
+                 (codigo, nombre, horario_inicio, horario_fin, max_pax_guia,
+                  requiere_entrada_sinac, requiere_bote, es_privado, tour_base, activo)
+               VALUES (?, ?, '07:15','12:30',8,1,1,?,?,1)""", (cod, cod, priv, base))
+    conn.execute("INSERT INTO reserva (conf_no, adl, chl, res_status, arr_date, dep_date) "
+                 "VALUES ('R7',2,0,'EN CASA','01-05-26','06-05-26')")
+    for cod, fecha, privado in (("ISLA", "2026-05-02", 0),
+                                ("SNORKEL", "2026-05-03", 0),
+                                # y una que CHOCA: el mismo dia que su SNORKEL.
+                                ("ISLA", "2026-05-03", 0),
+                                # la privada, que NO es la misma salida que la compartida
+                                ("ISLA PRIVADO", "2026-05-04", 0)):
+        conn.execute("INSERT INTO tour_asignado (conf_no, fecha, tour_codigo, pax, "
+                     "es_privado) VALUES ('R7',?,?,2,?)", (fecha, cod, privado))
+    conn.execute("INSERT INTO entrada_sinac (tour_codigo, fecha, pax_total_grupo) "
+                 "VALUES ('ISLA','2026-05-02',3)")
+    conn.execute("INSERT INTO tiquete_sinac (fecha, tour_codigo, archivo) "
+                 "VALUES ('2026-05-02','ISLA','x/y.pdf')")
+    conn.commit()
+    conn.close()
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        init_db.init_db()                      # el arranque, que es donde se unifica
+
+    conn = comun.conexion()
+    por_tour = {r["t"]: r["n"] for r in conn.execute(
+        "SELECT tour_codigo t, COUNT(*) n FROM tour_asignado GROUP BY t")}
+    c.igual(por_tour.get("ISLA"), None, "no queda ninguna salida con el codigo viejo")
+    c.igual(por_tour.get("ISLA PRIVADO"), None, "ni con el de su variante privada")
+    c.igual(por_tour.get("SNORKEL"), 3,
+            "SNORKEL suma la suya, la de ISLA y la privada, sin la duplicada del mismo dia")
+    # LA MARCA DE PRIVADO NO SE PIERDE. Moverla a secas convertiria una salida privada en
+    # una compartida: un bote y un guia menos, sin un solo error en pantalla.
+    c.igual(conn.execute("SELECT es_privado FROM tour_asignado WHERE fecha = '2026-05-04'"
+                         ).fetchone()[0], 1,
+            "la salida que era «ISLA PRIVADO» sigue siendo privada")
+    c.igual({r["codigo"] for r in conn.execute(
+        "SELECT codigo FROM tour_catalogo WHERE codigo LIKE 'ISLA%'")}, set(),
+        "ISLA y su privada se retiraron del catalogo, para que no se vuelvan a usar")
+
+    c.igual(conn.execute("SELECT tour_codigo FROM entrada_sinac").fetchone()[0], "SNORKEL",
+            "la entrada del parque se va con el")
+    c.igual(conn.execute("SELECT tour_codigo FROM tiquete_sinac").fetchone()[0], "SNORKEL",
+            "y el comprobante del SINAC tambien")
+    conn.close()
+
+
+def al_unificar_se_recalcula_la_entrada_del_parque(c):
+    """La entrada del SINAC se compra POR CABEZA, y unificar cambia cuánta gente va.
+
+    La entrada que sobrevive se quedaba con el pax que tenía ANTES de recibir las salidas
+    del otro codigo: sobre la base del lodge decia 7 el 23 de diciembre cuando ya eran 15.
+    Eso no da ningun error — se descubre en la taquilla del parque, con el plazo de 15
+    dias encima.
+
+    Dos reservas distintas, el mismo dia, una escrita ISLA y la otra SNORKEL: son la
+    misma salida y el total tiene que cubrirlas a las dos, mas el guia.
+    """
+    import init_db
+    conn = comun.base_limpia()
+    conn.execute(
+        """INSERT OR IGNORE INTO tour_catalogo
+             (codigo, nombre, horario_inicio, horario_fin, max_pax_guia,
+              requiere_entrada_sinac, requiere_bote, es_privado, activo)
+           VALUES ('ISLA','Isla','07:15','12:30',8,1,1,0,1)""")
+    for conf, pax in (("R1", 4), ("R2", 3)):
+        conn.execute("INSERT INTO reserva (conf_no, adl, chl, res_status, arr_date, "
+                     "dep_date) VALUES (?,?,0,'EN CASA','01-05-26','06-05-26')",
+                     (conf, pax))
+    conn.execute("INSERT INTO tour_asignado (conf_no, fecha, tour_codigo, pax) "
+                 "VALUES ('R1','2026-05-05','ISLA',4)")
+    conn.execute("INSERT INTO tour_asignado (conf_no, fecha, tour_codigo, pax) "
+                 "VALUES ('R2','2026-05-05','SNORKEL',3)")
+    # Cada codigo con SU entrada pendiente, como las tiene la base del lodge.
+    for cod, pax in (("ISLA", 5), ("SNORKEL", 4)):
+        conn.execute("""INSERT INTO entrada_sinac
+                          (tour_codigo, fecha, conf_entrada, pax_total_grupo, estado)
+                        VALUES (?, '2026-05-05', NULL, ?, 'SIN_COMPRAR')""", (cod, pax))
+    conn.commit()
+    conn.close()
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        init_db.init_db()
+
+    conn = comun.conexion()
+    entradas = [dict(r) for r in conn.execute(
+        "SELECT tour_codigo, pax_total_grupo FROM entrada_sinac WHERE fecha='2026-05-05'")]
+    c.igual(len(entradas), 1, "las dos entradas del mismo dia quedan en una")
+    c.igual(entradas[0]["tour_codigo"], "SNORKEL", "con el codigo bueno")
+    # 4 + 3 de las dos reservas, mas 1 del guia. Sin el recalculo se quedaba en 4.
+    c.igual(entradas[0]["pax_total_grupo"], 8,
+            "y el total cubre a TODA la gente que va, mas el guia")
+    conn.close()
+
+
 def unificar_no_puede_tumbar_el_arranque(c):
     """ESTO PASO. La unificacion choco contra el UNIQUE de las entradas del parque, la
     excepcion subio por init_db —que corre al arrancar— y el hotel se quedo SIN SISTEMA:
@@ -743,6 +874,9 @@ PRUEBAS = [
     los_tours_ya_guardados_se_unifican_al_arrancar,
     el_claro_del_bosque_y_el_garden_to_table_son_uno_solo,
     el_garden_to_table_ya_guardado_pasa_a_claro,
+    la_isla_y_el_snorkel_son_uno_solo,
+    la_isla_ya_guardada_pasa_a_snorkel,
+    al_unificar_se_recalcula_la_entrada_del_parque,
     unificar_no_puede_tumbar_el_arranque,
     una_entrada_ya_comprada_no_se_pierde_al_unificar,
     un_alias_creado_a_mano_no_vuelve_a_entrar,

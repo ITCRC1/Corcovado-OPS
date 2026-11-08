@@ -3,8 +3,8 @@
 POR QUÉ EXISTE. En el puesto del parque —San Pedrillo, Sirena, Isla del Caño— el
 guardaparques pide identificación, y hoy eso significa que el huésped se lleve el
 pasaporte a la selva o en un bote. El lodge pidió fotografiarlo una vez y que el guía lo
-pueda enseñar desde el teléfono en los tours de los días siguientes. Los ocho tours que
-requieren entrada del SINAC son justo PNC, SIRENA, SNORKEL, ISLA y BUCEO.
+pueda enseñar desde el teléfono en los tours de los días siguientes. Los tours que
+requieren entrada del SINAC son justo PNC, SIRENA, SNORKEL y BUCEO, con sus privados.
 
 LA DECISIÓN QUE SOSTIENE TODO LO DEMÁS: la foto NO se cuelga de `huesped.id`.
 

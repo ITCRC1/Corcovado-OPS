@@ -50,8 +50,10 @@ TOURS = [
     # GTT YA NO ESTÁ AQUÍ: es el mismo tour que CLARO —lo confirmó el lodge— y estaba
     # partiendo el mismo tour en dos filas de la agenda. En una base que ya lo tenga, la
     # unificación del arranque le mueve las salidas a CLARO y borra la fila.
-    ("ISLA", "Isla", "07:15", "12:30", None, None, 8, 1, 1, 0, None),
-    ("ISLA PRIVADO", "Isla privado", "07:15", "12:30", None, None, 8, 1, 1, 1, "ISLA"),
+    # ISLA NI ISLA PRIVADO ESTÁN AQUÍ: son el mismo tour que SNORKEL —el snorkel en Isla
+    # del Caño, mismo horario, mismo bote, misma entrada del parque— y estaban partiendo
+    # la salida en dos filas de la agenda. En una base que ya los tenga, la unificación
+    # del arranque les mueve las salidas a SNORKEL y borra las filas.
     ("MANGLAR", "Manglar", "06:30", "13:00", None, None, 7, 0, 1, 0, None),
     ("NW", "NW", "17:45", "19:45", None, None, 4, 0, 0, 0, None),
     ("PAJAREO", "Pajareo", "06:00", "08:00", None, None, 6, 0, 0, 0, None),
@@ -511,6 +513,46 @@ def _sin_tumbar_el_arranque(conn, limpieza):
               f"datos quedan como estaban.")
 
 
+def _parejas_que_se_unifican(conn, del_catalogo):
+    """Los pares (código retirado, código bueno, si el retirado era la variante privada).
+
+    Salen de las MISMAS tablas de equivalencias que usa la importación, y son DOS porque
+    hay dos formas de que un tour entre al sistema: el código del paquete de Opera
+    (`CATALOGO_2027`) y el nombre que el lodge escribe a mano en el itinerario
+    (`TOUR_ALIASES`). GTT llegó por la primera; ISLA por la segunda, que nunca fue un
+    código de paquete. Mirar solo una dejaba la mitad de los casos sin arreglar.
+
+    Solo cuentan los que llegaron a existir como tour propio en el catálogo: los demás
+    siempre fueron alias y nunca tuvieron fila que arreglar.
+
+    Y la VARIANTE PRIVADA se va con su tour. «ISLA PRIVADO» se quedaría en el catálogo
+    apuntando a un tour que ya no existe con ese nombre, y en la pantalla seguiría
+    leyéndose la palabra que acabamos de retirar.
+    """
+    import opera_paquetes as op
+    import pdf_parser
+
+    equivalencias = {}
+    for cod, equivalente, _es, _en in op.CATALOGO_2027:
+        if equivalente and equivalente != cod:
+            equivalencias[cod] = equivalente
+    for cod, equivalente in pdf_parser.TOUR_ALIASES.items():
+        if equivalente and equivalente != cod:
+            equivalencias.setdefault(cod, equivalente)
+
+    parejas = []
+    for cod, equivalente in sorted(equivalencias.items()):
+        if cod not in del_catalogo or equivalente not in del_catalogo:
+            continue
+        parejas.append((cod, equivalente, False))
+        for v in conn.execute(
+                "SELECT codigo FROM tour_catalogo WHERE tour_base = ? AND codigo != ?",
+                (cod, cod)).fetchall():
+            if v["codigo"] in del_catalogo:
+                parejas.append((v["codigo"], equivalente, True))
+    return parejas
+
+
 def _unificar_tours_de_la_nomenclatura(conn):
     """Lleva los tours ya guardados con un código retirado al tour que de verdad son.
 
@@ -525,33 +567,37 @@ def _unificar_tours_de_la_nomenclatura(conn):
     que apuntan. Lo único que se elimina es la fila duplicada cuando la misma reserva ya
     tenía el tour bueno el mismo día, que es la única forma de acabar con dos.
 
-    La lista sale de la MISMA tabla de equivalencias que usa la importación, así que un
-    código que se retire mañana se unifica solo al arrancar.
+    La lista sale de las MISMAS tablas de equivalencias que usa la importación, así que
+    un código que se retire mañana se unifica solo al arrancar.
     """
     columnas = {r[1] for r in conn.execute("PRAGMA table_info(tour_catalogo)")}
     if "codigo" not in columnas:
         return
-    import opera_paquetes as op
 
     del_catalogo = {r["codigo"] for r in conn.execute("SELECT codigo FROM tour_catalogo")}
     movidas, quitadas, retirados = 0, 0, []
 
-    for cod, equivalente, _es, _en in op.CATALOGO_2027:
-        if not equivalente or equivalente == cod:
-            continue
-        # Solo los que llegaron a existir como tour propio. Los demás siempre fueron
-        # alias y nunca tuvieron fila que arreglar.
-        if cod not in del_catalogo or equivalente not in del_catalogo:
-            continue
+    for cod, equivalente, privada in _parejas_que_se_unifican(conn, del_catalogo):
+        # LA MARCA DE PRIVADO, ANTES DE MOVER NADA. Al retirar «ISLA PRIVADO» sus salidas
+        # pasan a SNORKEL, y moverlas a secas convertiría una salida privada en una
+        # compartida: un bote y un guía menos, sin un solo error en pantalla.
+        if privada:
+            conn.execute("UPDATE tour_asignado SET es_privado = 1 WHERE tour_codigo = ?",
+                         (cod,))
 
         # Primero las que chocarían: la reserva ya tiene el tour bueno ese día, así que
-        # la del código viejo es la MISMA salida contada dos veces.
+        # la del código viejo es la MISMA salida contada dos veces. Se compara TAMBIÉN
+        # por es_privado, porque una salida privada y una compartida del mismo tour el
+        # mismo día son dos salidas de verdad —dos botes, dos guías, dos entradas— y
+        # juntarlas sería el error contrario.
         quitadas += conn.execute(
             """DELETE FROM tour_asignado WHERE tour_codigo = ? AND EXISTS (
                    SELECT 1 FROM tour_asignado b
                    WHERE b.conf_no = tour_asignado.conf_no
                      AND b.fecha = tour_asignado.fecha
-                     AND b.tour_codigo = ?)""", (cod, equivalente)).rowcount
+                     AND b.tour_codigo = ?
+                     AND IFNULL(b.es_privado, 0) = IFNULL(tour_asignado.es_privado, 0))""",
+            (cod, equivalente)).rowcount
         movidas += conn.execute(
             "UPDATE tour_asignado SET tour_codigo = ? WHERE tour_codigo = ?",
             (equivalente, cod)).rowcount
@@ -606,6 +652,24 @@ def _unificar_tours_de_la_nomenclatura(conn):
 
     if not retirados:
         return
+
+    # LA ENTRADA DEL PARQUE SE COMPRA POR CABEZA, y acaba de cambiar cuánta gente va.
+    # Al juntar dos códigos en uno, la entrada que sobrevive se queda con el pax que
+    # tenía ANTES de recibir las salidas del otro: el 23 de diciembre decía 7 cuando ya
+    # eran 15. Eso no da ningún error —se descubre en la taquilla del parque, con el
+    # plazo de 15 días encima— así que se recalcula aquí, con la MISMA función que usan
+    # la agenda y la importación para que las cuatro vías digan lo mismo.
+    import tours_pax
+    recalculadas = 0
+    for e in conn.execute(
+            """SELECT id, tour_codigo, fecha FROM entrada_sinac
+               WHERE estado != 'COMPRADA' AND IFNULL(conf_entrada,'') = ''""").fetchall():
+        total = tours_pax.pax_sinac_pendiente(conn, e["tour_codigo"], e["fecha"])
+        recalculadas += conn.execute(
+            "UPDATE entrada_sinac SET pax_total_grupo = ? WHERE id = ? "
+            "AND IFNULL(pax_total_grupo, -1) != ?",
+            (total, e["id"], total)).rowcount
+
     # El itinerario del huésped se guarda escrito. El que nadie editó a mano se borra
     # para que se vuelva a generar con el nombre bueno; el editado NO se toca, que ahí
     # hay texto de una persona.
@@ -613,7 +677,8 @@ def _unificar_tours_de_la_nomenclatura(conn):
         "DELETE FROM itinerario WHERE IFNULL(editado, 0) = 0").rowcount
     conn.commit()
     print(f"Tours unificados ({', '.join(retirados)}): {movidas} salidas movidas, "
-          f"{quitadas} duplicadas quitadas, {rehacer} itinerarios a rehacer.")
+          f"{quitadas} duplicadas quitadas, {recalculadas} entradas del SINAC "
+          f"recalculadas, {rehacer} itinerarios a rehacer.")
 
 
 def _lo_que_se_queda_atras(conn, retirado, bueno):

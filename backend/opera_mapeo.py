@@ -814,8 +814,8 @@ def incorporar_texto_de_nota(reserva, texto):
                 tours_de_nota, reserva.get("operacion") or [])
         # 'adicionales_raw' es lo que las pantallas muestran como "adicionales" y
         # de donde el importador cruza los tours. Tiene que decir lo MISMO que el
-        # itinerario: si dijera lo que traen los paquetes, mostraría SNORKEL para
-        # una reserva cuyo itinerario dice PNC e ISLA.
+        # itinerario: si dijera lo que traen los paquetes, mostraría CBE y CIS para
+        # una reserva cuyo itinerario dice CLARO y SNORKEL.
         if not leido_nota.get("adicionales_raw"):
             reserva["adicionales_raw"] = ", ".join(
                 sorted({o["tour"] for o in reserva["operacion"] if o.get("tour")}))
@@ -976,7 +976,9 @@ def incorporar_detalle(reserva, detalle):
 
     La `consumptionDate` del paquete es la fecha de FACTURACIÓN —cae el día de llegada
     o el último de la estadía—, no el día en que se hace el tour. Y el paquete tampoco
-    usa los códigos del lodge: llama SNORKEL a lo que el itinerario llama ISLA.
+    usa los códigos del lodge: llama «CIS» a lo que la hoja del día llama SNORKEL. (El
+    itinerario llegó a escribirlo «ISLA», que era el mismo tour con otro nombre y partía
+    la salida en dos; hoy ISLA entra por la tabla de alias y sale como SNORKEL.)
 
     Los paquetes sirven para otras dos cosas, y ahí sí son la mejor fuente: el RÉGIMEN
     de comidas y las amenidades que Opera registra como servicio (la cena privada, el

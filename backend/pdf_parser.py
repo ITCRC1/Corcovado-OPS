@@ -187,13 +187,14 @@ def normalizar_vuelo(match):
     return f"RZ{match.group(1)}"
 
 
-# GTT NO ESTÁ AQUÍ, y es deliberado: es el mismo tour que CLARO y entra por la tabla de
-# alias (ver TOUR_ALIASES). Tenerlo en las dos listas duplicaba la salida — esta lista se
-# recorre primero y deja «GTT», y después el alias añade «CLARO» como si fuera otro tour
-# distinto, así que la misma reserva salía dos veces el mismo día.
+# GTT NI ISLA ESTÁN AQUÍ, y es deliberado: cada uno es el mismo tour que otro que sí está
+# —GTT es CLARO, ISLA es SNORKEL— y entran por la tabla de alias (ver TOUR_ALIASES).
+# Tenerlos en las dos listas duplicaba la salida: esta lista se recorre primero y deja
+# «ISLA», y después el alias añade «SNORKEL» como si fuera otro tour distinto, así que la
+# misma reserva salía dos veces el mismo día.
 TOUR_CODES = [
     "CLARO", "SPA",
-    "PNC", "SIRENA", "BUCEO", "ISLA", "SNORKEL", "PAJAREO", "MANGLAR",
+    "PNC", "SIRENA", "BUCEO", "SNORKEL", "PAJAREO", "MANGLAR",
     "BALLENAS", "CABALGATA", "TREENET", "NW", "PESCA",
 ]
 
@@ -240,8 +241,16 @@ TOUR_ALIASES = {
     "GARDEN-TO-TABLE": "CLARO",
     "GTE": "CLARO",
     "SAN PEDRILLO": "PNC",
-    "CANO ISLAND": "ISLA",
-    "CAÑO ISLAND": "ISLA",
+    # ISLA ES SNORKEL. Son el mismo tour y el sistema ya lo sabía a medias: el paquete de
+    # Opera («CIS», Caño Island Snorkeling) entraba como SNORKEL y el itinerario escrito a
+    # mano entraba como ISLA, así que la reserva que traía las dos cosas salía DOS VECES el
+    # mismo día — dos filas en la agenda, dos guías, dos botes y dos entradas del parque
+    # para una sola salida a las 7:15. Sobrevive SNORKEL: medido sobre la base del lodge,
+    # 147 salidas contra 4 y 61 entradas del SINAC contra 2, y es el código al que ya
+    # apuntaban CIS y SCI.
+    "ISLA": "SNORKEL",
+    "CANO ISLAND": "SNORKEL",
+    "CAÑO ISLAND": "SNORKEL",
     "CLARO DEL BOSQUE": "CLARO",
     "CB": "CLARO",
     "MASAJES": "SPA",

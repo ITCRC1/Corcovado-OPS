@@ -53,12 +53,9 @@ TOURS_ITINERARIO = {
         "detalles": "What to wear: Long pants or shorts, water shoes, closed shoes or boots.\n"
                     f"{LLEVAR_SELVA}",
     },
-    "ISLA": {
-        "nombre": "Snorkeling at\nCaño Island",
-        "duracion": "(5 HOURS TOUR)",
-        "horario": "Be at the dive center at 7:15 a.m.\nLunch will be around 1:30 p.m.",
-        "detalles": f"{VESTIR_AGUA}\n{LLEVAR_AGUA}",
-    },
+    # ISLA NO TIENE FICHA PROPIA: es el mismo tour que SNORKEL —el snorkel en Isla del
+    # Caño— y entra por el código SNORKEL. Las dos fichas decían exactamente lo mismo,
+    # palabra por palabra, así que no se pierde nada.
     "SNORKEL": {
         "nombre": "Snorkeling at\nCaño Island",
         "duracion": "(5 HOURS TOUR)",

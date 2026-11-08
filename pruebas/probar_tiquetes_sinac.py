@@ -122,17 +122,17 @@ def la_regla_de_a_quien_cubre_esta_escrita_una_vez(c):
     """
     conn = comun.base_limpia()
     pnc = _fila(conn, _entrada(conn, "PNC", "2026-12-20", conf="A-1"))
-    isla = _fila(conn, _entrada(conn, "ISLA", "2026-12-20", conf="B-2"))
+    snorkel = _fila(conn, _entrada(conn, "SNORKEL", "2026-12-20", conf="B-2"))
     otro_dia = _fila(conn, _entrada(conn, "PNC", "2026-12-21", conf="A-1"))
 
     del_dia = {"fecha": "2026-12-20", "tour_codigo": None, "conf_entrada": None}
     c.cierto(T.cubre(del_dia, pnc), "el de todo el dia cubre el PNC")
-    c.cierto(T.cubre(del_dia, isla), "y tambien la Isla")
+    c.cierto(T.cubre(del_dia, snorkel), "y tambien el snorkel de Isla del Caño")
     c.cierto(not T.cubre(del_dia, otro_dia), "pero no el dia siguiente")
 
     solo_pnc = {"fecha": "2026-12-20", "tour_codigo": "PNC", "conf_entrada": None}
     c.cierto(T.cubre(solo_pnc, pnc), "el del PNC cubre el PNC")
-    c.cierto(not T.cubre(solo_pnc, isla), "y no la Isla")
+    c.cierto(not T.cubre(solo_pnc, snorkel), "y no el snorkel")
 
     con_numero = {"fecha": "2026-12-20", "tour_codigo": "PNC", "conf_entrada": "A-1"}
     c.cierto(T.cubre(con_numero, pnc), "con numero, cubre la entrada de ese numero")

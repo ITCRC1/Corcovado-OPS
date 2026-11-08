@@ -11,7 +11,8 @@ from pdf_parser import parse_reservations, cross_reference_tours
 
 # Tours que requieren comprar entrada al SINAC con anticipación (incluye sus
 # versiones privadas). Debe coincidir con requiere_entrada_sinac del catálogo.
-TOURS_CON_ENTRADA_SINAC = {"PNC", "SIRENA", "ISLA", "SNORKEL", "BUCEO"}
+# ISLA no está porque ya no existe como código: es SNORKEL, el snorkel en Isla del Caño.
+TOURS_CON_ENTRADA_SINAC = {"PNC", "SIRENA", "SNORKEL", "BUCEO"}
 
 CONTRADICTION_KEYWORDS = [
     "deciden en el hotel", "si desean agregar", "por confirmar",

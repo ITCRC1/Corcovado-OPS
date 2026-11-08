@@ -937,7 +937,7 @@ def los_tours_terrestres_no_piden_bote(c):
         c.igual(piden.get(codigo), 0, f"{codigo} no pide bote")
     # Y la contraparte, que es la que evita pasarse: los que SI van en bote siguen
     # pidiendolo. Una lista que apaga todo no se distingue de una bien hecha.
-    for codigo in ("SNORKEL", "ISLA", "MANGLAR", "BALLENAS", "PESCA"):
+    for codigo in ("SNORKEL", "BUCEO", "MANGLAR", "BALLENAS", "PESCA"):
         c.igual(piden.get(codigo), 1, f"{codigo} sigue pidiendo bote")
     conn.close()
 
