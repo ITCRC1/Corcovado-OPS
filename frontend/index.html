@@ -86,6 +86,20 @@
      se confunda con "guardado" (verde) ni con un error (rojo), y se va enseguida. */
   .aviso-flotante.ajeno { background:#1D4ED8; }
 
+  /* SIN SEÑAL. La franja va ARRIBA y ocupa todo el ancho, no un avisito que se va solo:
+     mientras no hay internet TODO lo que se vea es lo último que se bajó, y eso hay que
+     poder leerlo en cualquier momento, no solo en el segundo en que aparece. */
+  #franja-sin-senal { display:none; background:#8A5A00; color:#fff; font-size:12.5px;
+    padding:7px 14px; text-align:center; font-weight:600; letter-spacing:.2px; }
+  body.sin-senal #franja-sin-senal { display:block; }
+
+  /* UN PASAPORTE NO SE GUARDA EN EL TELÉFONO. Se mira y se cierra.
+     Esto apaga el menú de «guardar imagen» que sale al dejar el dedo encima, y el
+     arrastrar-para-guardar del escritorio. No impide un pantallazo —nada lo impide— pero
+     sí que el documento acabe en la galería del teléfono sin que nadie se lo proponga. */
+  img.solo-ver { -webkit-touch-callout:none; -webkit-user-select:none; user-select:none;
+    pointer-events:none; }
+
   /* Sello de versión: discreto mientras todo está al día, ámbar y pulsable cuando el
      servidor ya tiene una versión más nueva que la que está abierta. */
   #sello-version { font-size:11px; opacity:.55; letter-spacing:.3px; white-space:nowrap; }
@@ -469,6 +483,10 @@
       <button onclick="doLogout()">Cerrar sesión</button>
     </div>
   </div>
+  <div id="franja-sin-senal">
+    Sin señal · se ve lo último que se descargó. No se puede guardar nada hasta que vuelva
+    el internet.
+  </div>
   <div class="container">
     <nav>
       <!-- Cada botón abre su pantalla en el día de hoy: irAPantalla reinicia el filtro
@@ -587,10 +605,85 @@ function _irAPantalla(indice) {
   if (cargar) cargar();
 }
 
+// ---------- Sin señal ----------
+//
+// EN EL LODGE EL INTERNET SE CAE, y el guía que está en el puesto del parque con el
+// guardaparques delante es justo quien no puede quedarse mirando una pantalla de entrada.
+// Lo reportaron así: «si no tienen internet la app se cierra y no los deja ingresar».
+//
+// La regla que ordena todo lo de abajo: NO CONTESTAR NO ES DECIR QUE NO. Que el servidor
+// responda 401 significa que la sesión se cerró y hay que salir; que no responda nadie
+// significa que no hay señal, y entonces la sesión sigue valiendo — el que manda sobre
+// los permisos es el servidor, y sin red no se le puede pedir nada que haga daño.
+const LLAVE_USUARIO = "hotel_usuario";
+
+function recordarSesion(user) {
+  // El perfil se guarda para poder ENTRAR sin red. No es un permiso: es una copia de lo
+  // que el servidor ya dijo, y sirve solo para dibujar la pantalla. Cada escritura
+  // sigue pasando por el servidor, que la rechaza si no corresponde.
+  try { localStorage.setItem(LLAVE_USUARIO, JSON.stringify(user || null)); } catch (e) {}
+}
+
+function olvidarSesion() {
+  localStorage.removeItem("hotel_token");
+  try { localStorage.removeItem(LLAVE_USUARIO); } catch (e) {}
+}
+
+function sesionGuardada() {
+  try { return JSON.parse(localStorage.getItem(LLAVE_USUARIO) || "null"); } catch (e) { return null; }
+}
+
+function marcarConexion(hay) {
+  // El estado vive en una clase del <body> y no en una variable: así la franja, y
+  // cualquier cosa que mañana quiera cambiar sin señal, se resuelven con CSS y no hay
+  // dos verdades que se puedan desincronizar.
+  document.body.classList.toggle("sin-senal", !hay);
+}
+
+// QUE UNA PETICIÓN FUNCIONE NO QUIERE DECIR QUE HAYA INTERNET. Sin señal el programa de
+// servicio contesta desde el teléfono y la respuesta llega igual de bien: si se diera por
+// buena, la franja de «sin señal» se apagaría sola justo cuando más falta hace.
+//
+// Así que el estado de la conexión lo deciden SOLO las dos rutas que nunca se guardan
+// —/api/cambios y /api/auth/me, ver la lista 'noGuardar' del programa de servicio— más el
+// fallo de red de cualquier otra. Esas sí llegan al servidor o no llegan.
+function marcarConexionPorRespuesta(res) {
+  marcarConexion(!!res);
+}
+
+// Un fallo de RED, no una respuesta del servidor. `fetch` solo rechaza cuando no logró
+// hablar con nadie, así que distinguirlo es tan simple como esto — y es la diferencia
+// entre «no hay señal» y «el servidor dijo que no».
+function esFalloDeRed(e) {
+  return e instanceof TypeError || !navigator.onLine;
+}
+
+function avisarSinSenal() {
+  avisar("Sin señal. Se ve lo último que se descargó; para guardar hace falta internet.",
+         true);
+}
+
 async function fetchAuth(url, options) {
   options = options || {};
   options.headers = Object.assign({}, options.headers, { "Authorization": "Bearer " + TOKEN });
-  const res = await fetch(url, options);
+  const metodo = (options.method || "GET").toUpperCase();
+  // GUARDAR SIN SEÑAL NO SE ENCOLA, SE AVISA. Encolar cambios y sincronizarlos después
+  // es otro problema entero, y hacerlo a medias sería peor: el guía creería que quedó
+  // guardado. Así que se dice que no, y se dice por qué.
+  if (metodo !== "GET" && !navigator.onLine) {
+    avisarSinSenal();
+    throw new Error("Sin señal");
+  }
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch (e) {
+    if (esFalloDeRed(e)) {
+      marcarConexion(false);
+      throw new Error("Sin señal");
+    }
+    throw e;
+  }
   if (res.status === 401) { doLogout(); throw new Error("Sesión expirada"); }
   // Lo que cambia uno mismo no debe anunciarse como "alguien más hizo un cambio":
   // se pone al día la referencia del refresco automático sin recargar nada.
@@ -613,17 +706,32 @@ async function doLogin() {
     TOKEN = data.token;
     CURRENT_USER = data;
     localStorage.setItem("hotel_token", TOKEN);
+    recordarSesion(data);
+    marcarConexion(true);
     showApp();
   } catch (e) {
-    errEl.textContent = "No se pudo conectar con el servidor.";
+    // Entrar por primera vez SÍ necesita internet: sin él no hay con qué comprobar la
+    // contraseña. Lo que no lo necesita es seguir dentro, que es lo que importa en el
+    // parque. Se dice la diferencia, para que nadie espere lo que no puede pasar.
+    errEl.textContent = navigator.onLine
+      ? "No se pudo conectar con el servidor."
+      : "Sin señal: para entrar por primera vez hace falta internet. Si ya habías "
+        + "entrado en este teléfono, vuelve a abrir la app sin cerrar sesión.";
   }
 }
 
 function doLogout() {
+  // SIN SEÑAL, CERRAR SESIÓN ES UN VIAJE DE IDA: volver a entrar necesita el servidor, y
+  // en el puesto del parque no lo hay. Un toque sin querer dejaría al guía sin los
+  // pasaportes que lleva a enseñar, así que se pregunta.
+  if (!navigator.onLine && !confirm(
+      "Estás sin señal. Si cierras sesión no vas a poder volver a entrar hasta que haya "
+      + "internet, y perderás el acceso a los pasaportes y tiquetes descargados.\n\n"
+      + "¿Cerrar sesión igual?")) return;
   if (TOKEN) fetch(`${API}/api/auth/logout`, { method: "POST", headers: { "Authorization": "Bearer " + TOKEN } }).catch(() => {});
   detenerRefrescoAutomatico();
   TOKEN = null; CURRENT_USER = null;
-  localStorage.removeItem("hotel_token");
+  olvidarSesion();
   document.getElementById("app-screen").style.display = "none";
   document.getElementById("login-screen").style.display = "flex";
   document.getElementById("login-pass").value = "";
@@ -1054,8 +1162,13 @@ async function ponerAlDiaVersion() {
   if (!TOKEN) return;
   try {
     const res = await fetch(`${API}/api/cambios`, { headers: { "Authorization": "Bearer " + TOKEN } });
+    marcarConexionPorRespuesta(res);
     if (res.ok) _versionDatos = (await res.json()).version;
-  } catch (e) { /* si falla, el próximo turno del reloj lo resuelve */ }
+  } catch (e) {
+    // /api/cambios NUNCA se guarda en el teléfono, así que si no contesta es que de
+    // verdad no hay internet. Es la sonda más honesta que hay, y ya estaba hecha.
+    marcarConexion(false);
+  }
 }
 
 async function revisarCambios() {
@@ -1066,6 +1179,7 @@ async function revisarCambios() {
     // A propósito no se usa fetchAuth: un fallo de red o un token vencido no debe
     // cerrarle la sesión a nadie desde un temporizador de fondo. Se reintenta solo.
     const res = await fetch(`${API}/api/cambios`, { headers: { "Authorization": "Bearer " + TOKEN } });
+    marcarConexionPorRespuesta(res);
     if (!res.ok) return;
     const datos = await res.json();
     version = datos.version;
@@ -1088,7 +1202,13 @@ async function revisarCambios() {
       }
       avisarVersionNueva(datos.version_sistema);
     }
-  } catch (e) { return; }
+  } catch (e) {
+    // Se cayó el internet mientras la app estaba abierta. No se cierra sesión ni se
+    // recarga nada: se enciende la franja y se sigue trabajando con lo que ya está en el
+    // teléfono. Este mismo reloj la apagará solo cuando el servidor vuelva a contestar.
+    marcarConexion(false);
+    return;
+  }
 
   if (_versionDatos === null) { _versionDatos = version; return; }  // primera lectura
   if (version === _versionDatos) return;                            // nadie tocó nada
@@ -1236,12 +1356,60 @@ async function tryAutoLogin() {
   const saved = localStorage.getItem("hotel_token");
   if (!saved) return;
   TOKEN = saved;
+  const guardado = sesionGuardada();
   try {
     const res = await fetch(`${API}/api/auth/me`, { headers: { "Authorization": "Bearer " + TOKEN } });
-    if (res.ok) { CURRENT_USER = await res.json(); showApp(); }
-    else { TOKEN = null; localStorage.removeItem("hotel_token"); }
-  } catch (e) { TOKEN = null; }
+    if (res.ok) {
+      CURRENT_USER = await res.json();
+      recordarSesion(CURRENT_USER);
+      marcarConexion(true);
+      showApp();
+      return;
+    }
+    // EL SERVIDOR CONTESTÓ QUE NO. La sesión se cerró o venció de verdad: se sale.
+    TOKEN = null;
+    olvidarSesion();
+  } catch (e) {
+    // NO CONTESTÓ NADIE. Esto era lo que echaba al guía del sistema: sin señal `fetch`
+    // revienta, se borraba el token y aparecía la pantalla de entrada — que sin internet
+    // no se puede pasar. Justo en el puesto del parque, con el guardaparques esperando.
+    //
+    // La sesión sigue valiendo. Se entra con el perfil que ya se había guardado y la app
+    // trabaja con lo último que se descargó. Lo que NO se puede hacer sin red —guardar—
+    // lo frena `fetchAuth`, y la franja de arriba lo dice todo el tiempo.
+    if (guardado) {
+      CURRENT_USER = guardado;
+      marcarConexion(false);
+      showApp();
+      return;
+    }
+    // Sin perfil guardado no hay con qué dibujar la pantalla: es un teléfono que nunca
+    // entró. Se queda en la pantalla de entrada, que ya explica que hace falta internet.
+    TOKEN = null;
+    marcarConexion(false);
+  }
 }
+
+// Cuando vuelve el internet se revalida la sesión en silencio. Si venció mientras no
+// había señal, el servidor lo dirá AHORA y recién entonces se sale — nunca antes, que es
+// lo que convertía una caída de internet en un cierre de sesión.
+window.addEventListener("online", async () => {
+  marcarConexion(true);
+  if (!TOKEN) return;
+  try {
+    const res = await fetch(`${API}/api/auth/me`, { headers: { "Authorization": "Bearer " + TOKEN } });
+    if (res.ok) {
+      CURRENT_USER = await res.json();
+      recordarSesion(CURRENT_USER);
+      PERMISOS = CURRENT_USER.permisos || {};
+      avisar("Internet de vuelta");
+    } else if (res.status === 401) {
+      doLogout();
+    }
+  } catch (e) { marcarConexion(false); }
+});
+
+window.addEventListener("offline", () => marcarConexion(false));
 
 function ddmmyyFromIso(iso) { const [y,m,d] = iso.split("-"); return `${d}-${m}-${y.slice(2)}`; }
 function shiftDate(iso, days) { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); }
@@ -3499,21 +3667,45 @@ async function verTiquete(id) {
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     modal._url = url;
-    // El PDF va en un marco, pero NO en todos los teléfonos se dibuja ahí dentro —en
-    // iPhone a menudo sale en blanco—. Por eso el botón de abrirlo entero no es un
-    // adorno: es la salida cuando el marco no muestra nada. No es una descarga: es la
-    // misma copia que ya está en el teléfono, abierta a pantalla completa.
+    // El PDF va en un marco. Agrandarlo se hace DENTRO de la app y no con
+    // window.open(blob:…): en Android eso se lo pasa al gestor de descargas y el
+    // comprobante acaba en la carpeta de Descargas del teléfono, que es justo lo que el
+    // lodge pidió evitar. El visor del sistema queda como último recurso, dicho con todas
+    // las letras, porque en iPhone el marco a veces sale en blanco y sin esa salida el
+    // guía se queda sin poder enseñar nada.
     modal.querySelector("#tq-vista").innerHTML = (blob.type === "application/pdf")
-      ? `<iframe src="${url}" style="width:100%;height:68vh;border:1px solid var(--border);border-radius:var(--r-sm);"></iframe>
-         <p style="margin:8px 0 0;"><button class="btn" onclick="window.open('${url}','_blank')">Abrir a pantalla completa</button>
-         <span style="font-size:11.5px;color:var(--muted);margin-left:6px;">si el recuadro sale en blanco</span></p>`
-      : `<img src="${url}" alt="" style="max-width:100%;border-radius:var(--r-sm);">`;
+      ? `<iframe id="tq-marco" src="${url}" style="width:100%;height:68vh;border:1px solid var(--border);border-radius:var(--r-sm);"></iframe>
+         <p style="margin:8px 0 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+           <button class="btn" onclick="tiqueteAPantallaCompleta(this)">Agrandar</button>
+           <span style="font-size:11.5px;color:var(--muted);">
+             ¿sale en blanco? <a href="#" onclick="abrirTiqueteFuera('${url}');return false;"
+             >ábrelo con el visor del teléfono</a> — ojo, así algunos teléfonos lo guardan
+             en Descargas.</span></p>`
+      : `<img class="solo-ver" draggable="false" src="${url}" alt=""
+              style="max-width:100%;border-radius:var(--r-sm);">`;
   } catch (e) {
     modal.querySelector("#tq-vista").innerHTML =
       `<p class="empty" style="padding:24px 0;">No se pudo abrir el tiquete.
         <small>${escaparHTML(String(e.message || e))}<br>
-        Si estás sin señal, el comprobante no quedó guardado en este teléfono.</small></p>`;
+        Sin señal solo se ven los comprobantes que ya se habían descargado. Los de los
+        próximos tres días se descargan solos al abrir la pantalla de SINAC en el
+        lodge.</small></p>`;
   }
+}
+
+// Agrandar DENTRO de la app: el mismo marco ocupando la pantalla. No abre nada fuera, así
+// que no hay forma de que el comprobante caiga en la carpeta de Descargas.
+function tiqueteAPantallaCompleta(boton) {
+  const caja = boton.closest(".modal-caja");
+  const marco = caja.querySelector("#tq-marco");
+  const grande = marco.style.height !== "88vh";
+  marco.style.height = grande ? "88vh" : "68vh";
+  caja.style.maxWidth = grande ? "100%" : "980px";
+  boton.textContent = grande ? "Reducir" : "Agrandar";
+}
+
+function abrirTiqueteFuera(url) {
+  window.open(url, "_blank");
 }
 
 function cerrarTiquete(modal) {
@@ -7749,15 +7941,27 @@ function mostrarFalloPantalla(pantalla, error) {
   aviso.id = "fallo-pantalla";
   aviso.className = "card";
   aviso.style.cssText = "background:var(--warn-bg);color:var(--warn-text);";
-  aviso.innerHTML = `
-    <p class="title" style="color:var(--warn-text);">No se pudo cargar esta pantalla</p>
-    <p style="font-size:13px;margin:6px 0 0;">Casi siempre es que el navegador tiene guardada
-       una versión anterior del sistema. Recarga sin caché y debería quedar bien.</p>
-    <p style="font-size:12px;margin:8px 0 0;color:var(--muted);">Detalle técnico:
-       <span id="fallo-detalle"></span></p>
-    <button class="btn btn-primary" style="margin-top:12px;"
-      onclick="location.replace(location.pathname + '?v=' + Date.now())">Recargar sin caché</button>
-    <span style="font-size:12px;margin-left:8px;">o Ctrl+Shift+R</span>`;
+  // SIN SEÑAL NO SE DICE «RECARGA SIN CACHÉ». Es el consejo contrario al que sirve: la
+  // caché es lo ÚNICO que queda, y borrarla en el puesto del parque deja al guía sin
+  // pasaportes y sin tiquetes. Esta pantalla no se pudo cargar porque nunca se abrió con
+  // internet, y lo que hay que decirle es exactamente eso.
+  const sinSenal = !navigator.onLine
+    || (error && String(error.message || error).includes("Sin señal"));
+  aviso.innerHTML = sinSenal
+    ? `<p class="title" style="color:var(--warn-text);">Esta pantalla no está disponible sin señal</p>
+       <p style="font-size:13px;margin:6px 0 0;">Solo se puede ver lo que ya se había
+          abierto con internet. Lo que el guía necesita en el parque —los pasaportes y los
+          tiquetes del día— se descarga solo al abrir la Agenda en el lodge.</p>
+       <p style="font-size:12px;margin:8px 0 0;color:var(--muted);">Detalle técnico:
+          <span id="fallo-detalle"></span></p>`
+    : `<p class="title" style="color:var(--warn-text);">No se pudo cargar esta pantalla</p>
+       <p style="font-size:13px;margin:6px 0 0;">Casi siempre es que el navegador tiene guardada
+          una versión anterior del sistema. Recarga sin caché y debería quedar bien.</p>
+       <p style="font-size:12px;margin:8px 0 0;color:var(--muted);">Detalle técnico:
+          <span id="fallo-detalle"></span></p>
+       <button class="btn btn-primary" style="margin-top:12px;"
+         onclick="location.replace(location.pathname + '?v=' + Date.now())">Recargar sin caché</button>
+       <span style="font-size:12px;margin-left:8px;">o Ctrl+Shift+R</span>`;
   // El detalle va como texto, no como HTML: un mensaje de error puede traer '<' o
   // comillas y rompería el aviso justo cuando más falta hace que se lea.
   aviso.querySelector("#fallo-detalle").textContent =
@@ -8038,15 +8242,20 @@ async function verPasaporte(id, nombre, pasaporte) {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
     const url = URL.createObjectURL(await res.blob());
     modal._url = url;
+    // SE MIRA, NO SE GUARDA. 'solo-ver' apaga el menú de «guardar imagen» del teléfono;
+    // la copia vive en el almacén de la app y se borra con ella. Un pantallazo nadie lo
+    // puede impedir, pero el documento no acaba en la galería sin querer.
     modal.querySelector("#pas-imagen").innerHTML =
-      `<img src="${url}" alt="" style="max-width:100%;border-radius:var(--r-sm);">`;
+      `<img class="solo-ver" draggable="false" src="${url}" alt=""
+            style="max-width:100%;border-radius:var(--r-sm);">`;
   } catch (e) {
-    // Sin señal Y sin copia guardada. Se dice exactamente eso, porque es accionable:
-    // la próxima vez hay que tocar «Descargar para usar sin señal» antes de salir.
+    // Sin señal Y sin copia guardada. Se dice exactamente eso, porque es accionable: las
+    // fotos del día se guardan solas al abrir la Agenda con internet, antes de salir.
     modal.querySelector("#pas-imagen").innerHTML =
       `<p class="empty" style="padding:24px 0;">No se pudo abrir la foto.
         <small>${escaparHTML(String(e.message || e))}<br>
-        Si estás sin señal, la foto no quedó descargada en este teléfono.</small></p>`;
+        Sin señal solo se ven las fotos que ya se habían descargado. Se descargan solas
+        al abrir la Agenda del día en el lodge.</small></p>`;
   }
 }
 
@@ -8120,6 +8329,7 @@ for (const nombre of ["loadDashboard", "loadReservas", "loadAgenda", "loadTransp
 }
 
 document.getElementById("login-pass").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+marcarConexion(navigator.onLine);
 tryAutoLogin();
 </script>
 </body>

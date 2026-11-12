@@ -755,7 +755,111 @@ def housekeeping_quedo_enganchada_en_las_cinco_listas(c):
              "con un perfil para crear usuarios de housekeeping rapido")
 
 
+# ---------------------------------------------------------------------------
+# Sin señal
+# ---------------------------------------------------------------------------
+
+def no_contestar_no_es_decir_que_no(c):
+    """EL FALLO QUE ECHABA AL GUIA DEL SISTEMA.
+
+    `tryAutoLogin` pedia /api/auth/me al abrir. Sin señal ese fetch REVIENTA —no devuelve
+    401, revienta— y el catch borraba el token: aparecia la pantalla de entrada, que sin
+    internet no se puede pasar. Justo en el puesto del parque, con el guardaparques
+    esperando y el pasaporte del huesped dentro de la app.
+
+    La regla, escrita como prueba: el 401 cierra sesion, el fallo de red NO.
+    """
+    cuerpo = _sin_comentarios(_cuerpo_de_funcion(_html(), "tryAutoLogin"))
+    c.cierto("catch" in cuerpo, "tryAutoLogin sigue atrapando el fallo de red")
+    # En el catch —lo que pasa cuando NO contesta nadie— no se puede borrar la sesion.
+    catch = cuerpo[cuerpo.find("catch"):]
+    c.cierto("olvidarSesion()" not in catch,
+             "sin señal NO se borra la sesion guardada")
+    c.cierto("showApp()" in catch,
+             "sin señal se entra igual, con el perfil que ya estaba guardado")
+    # Y cuando el servidor SI contesta que no, se sale: esa parte no se puede perder.
+    antes = cuerpo[:cuerpo.find("catch")]
+    c.cierto("olvidarSesion()" in antes,
+             "si el servidor contesta que no, la sesion se cierra de verdad")
+
+
+def el_perfil_se_guarda_para_poder_entrar_sin_senal(c):
+    """Sin el perfil guardado no hay con que dibujar la pantalla, y la correccion de
+    arriba no sirve de nada. Se guarda por los DOS caminos que lo traen."""
+    html = _html()
+    for funcion in ("doLogin", "tryAutoLogin"):
+        c.cierto("recordarSesion(" in _sin_comentarios(_cuerpo_de_funcion(html, funcion)),
+                 f"{funcion} guarda el perfil para el proximo arranque sin señal")
+
+
+def sin_senal_no_se_ofrece_borrar_la_cache(c):
+    """Es el consejo CONTRARIO al que sirve. Sin señal la copia guardada es lo unico que
+    le queda al guia: borrarla en el parque lo deja sin pasaportes y sin tiquetes."""
+    cuerpo = _cuerpo_de_funcion(_html(), "mostrarFalloPantalla")
+    c.cierto("navigator.onLine" in cuerpo,
+             "el aviso de pantalla rota mira si hay señal antes de aconsejar nada")
+    i = cuerpo.find("Recargar sin caché")
+    j = cuerpo.find("sin señal")
+    c.cierto(i > 0 and j > 0 and j < i,
+             "el mensaje de sin señal va primero y el de recargar queda para cuando SI hay")
+
+
+def guardar_sin_senal_se_avisa_no_se_simula(c):
+    """Encolar cambios y sincronizarlos despues es otro problema entero. Hacerlo a medias
+    seria peor que no hacerlo: el guia creeria que quedo guardado."""
+    cuerpo = _sin_comentarios(_cuerpo_de_funcion(_html(), "fetchAuth"))
+    c.cierto("navigator.onLine" in cuerpo and "GET" in cuerpo,
+             "fetchAuth frena las escrituras cuando no hay señal")
+    c.cierto("Sin señal" in cuerpo, "y lo dice con esas palabras, no con «Failed to fetch»")
+
+
+def la_conexion_no_se_mide_con_lo_que_sale_de_la_cache(c):
+    """Sin señal el programa de servicio contesta desde el telefono y la respuesta llega
+    igual de bien. Si eso contara como «hay internet», la franja se apagaria sola justo
+    cuando mas falta hace.
+
+    Solo valen las rutas que NUNCA se guardan: /api/cambios y /api/auth/me."""
+    html = _html()
+    cuerpo = _sin_comentarios(_cuerpo_de_funcion(html, "fetchAuth"))
+    c.cierto("marcarConexion(true)" not in cuerpo,
+             "una respuesta cualquiera NO basta para declarar que hay internet")
+    c.cierto("marcarConexion(false)" in cuerpo,
+             "pero un fallo de red si enciende la franja")
+    sonda = _sin_comentarios(_cuerpo_de_funcion(html, "ponerAlDiaVersion"))
+    c.cierto("/api/cambios" in sonda and "marcarConexion" in sonda,
+             "la sonda es /api/cambios, que no se guarda nunca")
+    # Y esa ruta tiene que seguir fuera de la cache, o la sonda empieza a mentir.
+    sw = open(os.path.join(RAIZ, "frontend", "sw.js"), encoding="utf-8").read()
+    c.cierto('"/api/cambios"' in sw and "/api/auth/" in sw,
+             "el programa de servicio sigue sin guardar las dos rutas de la sonda")
+
+
+def el_pasaporte_se_mira_y_no_se_guarda(c):
+    """Lo pidio el lodge: «que no se descarguen las fotos en el telefono, que solo se
+    maneje por vista previa». La foto se enseña en la app y no se ofrece guardarla; la
+    clase 'solo-ver' apaga ademas el menu de «guardar imagen» del telefono."""
+    html = _html()
+    for funcion in ("verPasaporte", "verTiquete"):
+        cuerpo = _cuerpo_de_funcion(html, funcion)
+        c.cierto("solo-ver" in cuerpo, f"{funcion} enseña la imagen en modo solo ver")
+        c.cierto(".download" not in cuerpo,
+                 f"{funcion} no ofrece descargar el documento")
+    c.cierto("img.solo-ver" in html and "-webkit-touch-callout:none" in html,
+             "y el estilo que lo apaga esta definido")
+    # El PDF a pantalla completa se agranda DENTRO de la app: window.open sobre un blob
+    # se lo pasa al gestor de descargas de Android y acaba en la carpeta de Descargas.
+    cuerpo = _sin_comentarios(_cuerpo_de_funcion(html, "verTiquete"))
+    c.cierto("window.open" not in cuerpo,
+             "agrandar el tiquete no sale de la app (eso lo descargaria en Android)")
+
+
 PRUEBAS = [
+    no_contestar_no_es_decir_que_no,
+    el_perfil_se_guarda_para_poder_entrar_sin_senal,
+    sin_senal_no_se_ofrece_borrar_la_cache,
+    guardar_sin_senal_se_avisa_no_se_simula,
+    la_conexion_no_se_mide_con_lo_que_sale_de_la_cache,
+    el_pasaporte_se_mira_y_no_se_guarda,
     los_botones_del_menu_van_numerados_en_orden,
     las_cinco_listas_de_la_interfaz_miden_lo_mismo,
     cada_cargador_existe_de_verdad,
