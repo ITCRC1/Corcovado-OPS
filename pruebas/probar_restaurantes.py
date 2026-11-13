@@ -687,6 +687,105 @@ def la_hoja_de_cocina_dice_si_se_puede_quitar(c):
     conn.close()
 
 
+# ---------------------------------------------------------------------------
+# La tarjeta de alergias que se le manda a cocina
+# ---------------------------------------------------------------------------
+
+def el_color_de_la_etiqueta_dice_de_que_clase_es(c):
+    """ANTE LA DUDA, ROJO. Una preferencia servida como alergia es una molestia; una
+    alergia servida como preferencia es una ambulancia."""
+    import hoja_alergias as HA
+    for texto in ("Ambos vegetarianos, comen pescado", "Vegetarianos", "Vegan",
+                  "Pescatarian", "Vegetariano"):
+        c.igual(HA.clase_de(texto), "dieta", f"«{texto}» es dieta (verde)")
+    for texto in ("Prefiere no comer carne", "No le gusta el culantro",
+                  "Solo come pollo"):
+        c.igual(HA.clase_de(texto), "preferencia", f"«{texto}» es preferencia (ambar)")
+    for texto in ("Gluten Free - Dairy Free", "John: no shrimp, lobster",
+                  "Celiaco", "NO Cilantro", "alergia al maní", "algo que nadie previo"):
+        c.igual(HA.clase_de(texto), "alergia", f"«{texto}» es alergia (rojo)")
+    # Y las tildes no cambian nada: recepcion escribe «alérgico» y el PMS «alergico».
+    c.igual(HA.clase_de("Vegetariáno"), "dieta", "las tildes no despistan")
+
+
+def la_tarjeta_lista_TODAS_las_habitaciones_que_comen(c):
+    """Una lista con solo las cuatro que tienen algo no dice nada de las otras veinte:
+    ¿no tienen nada, o es que nadie lo anoto? El salonero recorre la lista cuarto por
+    cuarto, asi que la lista tiene que ser de todos."""
+    import hoja_alergias as HA
+    conn = comun.base_limpia()
+    llega = ddmmyy(HOY - datetime.timedelta(days=1))
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    lote = [dict(reserva(680300 + i, f"{i + 1:02d}", llega, sale, adl=2),
+                 notas="Alergia al maní" if i == 1 else "")
+            for i in range(4)]
+    cargar(lote, vistas=lote)
+
+    d = HA.definicion(conn, HOY.isoformat())
+    filas = [f for b in d["bloques"] for f in b["filas"]]
+    c.igual(len(filas), 4, "salen las cuatro habitaciones que comen")
+    c.igual(d["cuantas"], 4, "y la cuenta lo dice")
+    con_algo = [f for f in filas if f["texto"]]
+    c.igual(len(con_algo), 1, "solo una lleva etiqueta")
+    if con_algo:
+        c.igual(con_algo[0]["hab"], "02", "la que tiene la alergia")
+        c.igual(con_algo[0]["clase"], "alergia", "pintada de rojo")
+    c.igual(d["con_restriccion"], 1, "y la cuenta de restricciones es la de verdad")
+    conn.close()
+
+
+def la_tarjeta_junta_a_los_que_viajan_juntos(c):
+    """Como la hoja que el lodge arma a mano: primero el grupo, despues el resto.
+
+    Se agrupa con la MISMA clave que usa el comedor para no separarlos, asi que la
+    tarjeta de cocina y el reparto de mesas no pueden decir cosas distintas.
+    """
+    import hoja_alergias as HA
+    conn = comun.base_limpia()
+    grupo = _grupo(3)
+    cargar(grupo, vistas=grupo)
+    llega = ddmmyy(HOY - datetime.timedelta(days=1))
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    suelta = [dict(reserva(680400, "20", llega, sale, adl=2), notas="")]
+    cargar(suelta, vistas=suelta, completo=False)
+
+    d = HA.definicion(conn, HOY.isoformat())
+    c.igual(len(d["bloques"]), 2, "un bloque para el grupo y otro para el resto")
+    if len(d["bloques"]) == 2:
+        c.igual(len(d["bloques"][0]["filas"]), 3, "las tres del grupo van juntas")
+        c.cierto("pax" in d["bloques"][0]["titulo"],
+                 "y el titulo del grupo dice cuanta gente es")
+        c.igual(d["bloques"][1]["titulo"], "Parejas / Otras habitaciones",
+                "el resto va en su propio bloque, como en la hoja del lodge")
+        c.igual(d["bloques"][1]["filas"][0]["hab"], "20", "con la habitacion suelta")
+    conn.close()
+
+
+def la_tarjeta_sale_en_pdf_de_una_sola_pagina(c):
+    """Se mira en un telefono y se reenvia por WhatsApp: pasar de pagina en una lista de
+    habitaciones es perder el hilo, asi que el papel crece en vez de partirse."""
+    import hoja_alergias as HA
+    import pdfplumber
+    conn = comun.base_limpia()
+    llega = ddmmyy(HOY - datetime.timedelta(days=1))
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    lote = [dict(reserva(680500 + i, f"{i + 1:02d}", llega, sale, adl=2),
+                 notas="Vegetarianos" if i % 3 == 0 else "")
+            for i in range(14)]
+    cargar(lote, vistas=lote)
+    d = HA.definicion(conn, HOY.isoformat())
+    conn.close()
+
+    buf = HA.pdf(d)
+    buf.seek(0)
+    with pdfplumber.open(buf) as pdf:
+        c.igual(len(pdf.pages), 1, "la tarjeta es de UNA pagina, por larga que sea")
+        texto = pdf.pages[0].extract_text() or ""
+    for esperado in ("Alergias y Preferencias", "pax Lunch", "pax Dinner", "Hab."):
+        c.cierto(esperado in texto, f"la tarjeta trae «{esperado}»")
+    c.cierto("Vegetarianos" in texto, "y la etiqueta de quien la tiene")
+
+
 PRUEBAS = [
     el_reparto_automatico_no_parte_un_grupo,
     mover_una_habitacion_del_grupo_las_mueve_todas,
@@ -710,6 +809,10 @@ PRUEBAS = [
     una_alergia_quitada_a_mano_no_vuelve_al_sincronizar,
     una_alergia_quitada_se_puede_devolver,
     una_alergia_agregada_a_mano_sale_en_la_hoja,
+    el_color_de_la_etiqueta_dice_de_que_clase_es,
+    la_tarjeta_lista_TODAS_las_habitaciones_que_comen,
+    la_tarjeta_junta_a_los_que_viajan_juntos,
+    la_tarjeta_sale_en_pdf_de_una_sola_pagina,
 ]
 
 

@@ -4053,6 +4053,23 @@ def export_resumen(fecha: str = None, desde: str = None, hasta: str = None,
     return export_response(buf, f"operacion-{fecha}", formato)
 
 
+@app.get("/api/export/alergias-cocina")
+def export_alergias_cocina(fecha: str, user: dict = Depends(exige("restaurantes"))):
+    """La tarjeta de alergias y preferencias que se le manda al grupo de cocina.
+
+    Es un formato aparte del informe de restaurantes a propósito: lo pidió el lodge con
+    el dibujo que ya usa, y lo que se reparte por WhatsApp tiene que verse como lo que
+    la gente de cocina lleva meses leyendo.
+    """
+    import hoja_alergias
+    conn = get_connection()
+    try:
+        d = hoja_alergias.definicion(conn, fecha)
+    finally:
+        conn.close()
+    return export_response(hoja_alergias.pdf(d), f"alergias-{fecha}", "pdf")
+
+
 @app.get("/api/export/restaurantes")
 def export_restaurantes(fecha: str = None, desde: str = None, hasta: str = None,
                         formato: str = "xlsx",

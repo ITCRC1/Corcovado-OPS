@@ -515,21 +515,48 @@ def la_hoja_del_dia_se_puede_ver_antes_de_imprimir(c):
     previa = _cuerpo_de_funcion(html, "vistaPreviaHoja")
     c.cierto("/api/export/resumen-operacion" in previa and "formato=pdf" in previa,
              "que pide el PDF de verdad")
-    c.cierto("<iframe" in previa, "y lo enseña dentro de la pantalla")
-
     # UNA sola generacion para ver, imprimir y descargar: si se pidiera otra vez, lo
     # que se mira y lo que se manda podrian ser archivos distintos. Se cuentan las
     # PETICIONES, no las veces que aparece la direccion: desde que hay vista de periodo
     # la direccion se escribe de dos formas —un dia o un rango— en la misma peticion.
     c.igual(previa.count("fetchAuth("), 1,
             "el PDF se pide una sola vez y se reutiliza")
-    c.cierto("hoja-imprimir" in previa and "hoja-descargar" in previa,
+    c.cierto("mostrarPDF(" in previa, "y se enseña con el visor compartido")
+
+    # EL VISOR ES UNO SOLO para todo lo que se imprime. Lo que se comprueba aqui vale
+    # para la hoja del dia, la del rango y la tarjeta de alergias a la vez: si cada
+    # pantalla armara el suyo, una acabaria sin liberar el objeto o imprimiendo la
+    # pagina en vez del PDF.
+    visor = _cuerpo_de_funcion(html, "mostrarPDF")
+    c.cierto("<iframe" in visor, "el visor lo enseña dentro de la pantalla")
+    c.cierto("hoja-imprimir" in visor and "hoja-descargar" in visor,
              "con imprimir y descargar sobre el mismo archivo")
     # Imprimir tiene que imprimir el PDF, no la pantalla: imprimir la pagina daria el
     # menu, las tarjetas y los botones.
-    c.cierto("contentWindow.print()" in previa, "imprime el PDF, no la pantalla")
+    c.cierto("contentWindow.print()" in visor, "imprime el PDF, no la pantalla")
     # Y el objeto se libera al cerrar: son megabytes por cada vez que se abre.
-    c.cierto("revokeObjectURL" in previa, "y se libera la memoria al cerrar")
+    c.cierto("revokeObjectURL" in visor, "y se libera la memoria al cerrar")
+
+
+def la_tarjeta_de_alergias_se_ve_desde_el_boton_de_alergias(c):
+    """Lo pidio el lodge: «en el boton de alergia, un pequeño boton o signo de descarga,
+    donde las alergias se puedan ver en previsualizacion».
+
+    Es el formato que ya arman a mano y mandan al grupo de cocina, asi que se imita: lo
+    que se reparte por WhatsApp tiene que verse como lo que la gente lleva meses leyendo.
+    """
+    html = _html()
+    rest = _cuerpo_de_funcion(html, "loadRestaurantes")
+    c.cierto("vistaPreviaAlergias(" in rest, "el recuadro de alergias trae el boton")
+    # SIN ESTO SE ABREN LAS DOS COSAS: el recuadro entero ya abre el detalle, y el boton
+    # va dentro. Un clic que hace dos cosas es un clic que no se sabe lo que hace.
+    c.cierto("event.stopPropagation(); vistaPreviaAlergias(" in rest,
+             "y el boton no dispara tambien el detalle del recuadro")
+
+    previa = _cuerpo_de_funcion(html, "vistaPreviaAlergias")
+    c.cierto("/api/export/alergias-cocina" in previa, "pide la tarjeta de verdad")
+    c.igual(previa.count("fetchAuth("), 1, "una sola vez")
+    c.cierto("mostrarPDF(" in previa, "y la enseña con el mismo visor que la hoja")
 
 
 def el_capitan_y_el_ayudante_se_eligen_en_transporte(c):
@@ -916,6 +943,7 @@ PRUEBAS = [
     la_alergia_se_puede_corregir_desde_la_hoja_de_cocina,
     las_canceladas_no_salen_en_ningun_modulo,
     la_hoja_del_dia_se_puede_ver_antes_de_imprimir,
+    la_tarjeta_de_alergias_se_ve_desde_el_boton_de_alergias,
     el_capitan_y_el_ayudante_se_eligen_en_transporte,
     reservas_muestra_los_ingresos_de_la_fecha_elegida,
 ]

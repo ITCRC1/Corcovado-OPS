@@ -86,6 +86,14 @@
      se confunda con "guardado" (verde) ni con un error (rojo), y se va enseguida. */
   .aviso-flotante.ajeno { background:#1D4ED8; }
 
+  /* El botoncito que va DENTRO de un recuadro de estadística. Arriba a la derecha, para
+     que no se confunda con el recuadro entero —que ya es pulsable— y no empuje la
+     cifra, que es lo que se lee de lejos. */
+  .btn-tarjeta { position:absolute; top:8px; right:8px; font-size:11px; line-height:1;
+    padding:4px 8px; border-radius:14px; cursor:pointer; white-space:nowrap;
+    border:1px solid var(--border); background:var(--card); color:var(--forest-dark); }
+  .btn-tarjeta:hover { background:var(--forest); color:#fff; border-color:var(--forest); }
+
   /* SIN SEÑAL. La franja va ARRIBA y ocupa todo el ancho, no un avisito que se va solo:
      mientras no hay internet TODO lo que se vea es lo último que se bajó, y eso hay que
      poder leerlo en cualquier momento, no solo en el segundo en que aparece. */
@@ -3175,21 +3183,33 @@ async function vistaPreviaHoja(fecha, desde, hasta) {
     avisar("No se pudo generar la hoja: " + e.message, true);
     return;
   }
-  const url = URL.createObjectURL(blob);
+  mostrarPDF({
+    blob,
+    titulo: `Hoja de operación ${titulo}`,
+    subtitulo: `Así se va a imprimir. Es el mismo archivo que se descarga.${
+      rango ? " Es la hoja de siempre con una columna de fecha, y lleva "
+              + "<strong>solo las entradas y salidas</strong> del periodo." : ""}`,
+    archivo: rango ? `operacion-${desde}_a_${hasta}.pdf` : `operacion-${fecha}.pdf`,
+  });
+}
 
+// EL VISOR, UNO SOLO para todo lo que se imprime. Lo usan la hoja de operación y la
+// tarjeta de alergias, y lo usará lo próximo: si cada pantalla armara el suyo, una
+// acabaría sin liberar el objeto al cerrar —son megabytes por cada vez que se abre— o
+// imprimiendo la página en vez del PDF.
+function mostrarPDF({ blob, titulo, subtitulo, archivo, ancho }) {
+  const url = URL.createObjectURL(blob);
   const fondo = document.createElement("div");
   fondo.className = "modal-fondo";
   fondo.id = "modal-hoja";
   const cerrar = () => { URL.revokeObjectURL(url); fondo.remove(); };
   fondo.onclick = (e) => { if (e.target === fondo) cerrar(); };
   fondo.innerHTML = `
-    <div class="modal-caja" style="max-width:1180px;">
+    <div class="modal-caja" style="max-width:${ancho || "1180px"};">
       <div class="modal-encabezado">
         <div>
-          <p class="title">Hoja de operación ${titulo}</p>
-          <p class="subtitle">Así se va a imprimir. Es el mismo archivo que se descarga.${
-            rango ? ` Es la hoja de siempre con una columna de fecha, y lleva
-                      <strong>solo las entradas y salidas</strong> del periodo.` : ""}</p>
+          <p class="title">${titulo}</p>
+          <p class="subtitle">${subtitulo || ""}</p>
         </div>
         <button class="modal-cerrar" id="hoja-x" title="Cerrar">×</button>
       </div>
@@ -3223,9 +3243,38 @@ async function vistaPreviaHoja(fecha, desde, hasta) {
   fondo.querySelector("#hoja-descargar").onclick = () => {
     const a = document.createElement("a");
     a.href = url;
-    a.download = rango ? `operacion-${desde}_a_${hasta}.pdf` : `operacion-${fecha}.pdf`;
+    a.download = archivo || "documento.pdf";
     document.body.appendChild(a); a.click(); a.remove();
   };
+}
+
+// ---------- LA TARJETA DE ALERGIAS PARA COCINA ----------
+//
+// Lo pidió el lodge: «en el botón de alergia, un pequeño botón o signo de descarga,
+// donde las alergias se puedan ver en previsualización en el siguiente formato». El
+// formato es la tarjeta que ya arman a mano y mandan al grupo de cocina, así que se
+// imita: quien la recibe lleva meses leyéndola así.
+async function vistaPreviaAlergias(fecha) {
+  avisar("Preparando la tarjeta…");
+  let blob;
+  try {
+    const res = await fetchAuth(`${API}/api/export/alergias-cocina?fecha=${fecha}`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
+    blob = await res.blob();
+  } catch (e) {
+    avisar("No se pudo generar la tarjeta: " + e.message, true);
+    return;
+  }
+  mostrarPDF({
+    blob,
+    titulo: `Alergias y preferencias · ${fecha}`,
+    subtitulo: "Para mandarle a cocina. Salen todas las habitaciones que comen ese día, "
+               + "y el color dice de qué clase es: <strong>rojo</strong> alergia, "
+               + "<strong>verde</strong> vegetariano o vegano, <strong>ámbar</strong> "
+               + "preferencia.",
+    archivo: `alergias-${fecha}.pdf`,
+    ancho: "560px",
+  });
 }
 
 // ---------- TRANSPORTE ----------
@@ -4633,10 +4682,15 @@ async function loadRestaurantes(fecha) {
           <p class="stat-value">${paxFullBoard(d)}</p>
           <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${habsFullBoard(d)} hab. de ${enCasaHoy(d).length}</p></div>
         <div class="stat" onclick="detalleRest('alergias')"
-             style="${(d.restricciones || []).length ? 'border-color:var(--warn-text);' : ''}">
+             style="${(d.restricciones || []).length ? 'border-color:var(--warn-text);' : ''}position:relative;">
           <p class="stat-label">Alergias</p>
           <p class="stat-value" style="${(d.restricciones || []).length ? 'color:var(--warn-text);' : ''}">${(d.restricciones || []).length}</p>
-          <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${(d.restricciones || []).length ? "revisar antes de servir" : "ninguna esta noche"}</p></div>
+          <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${(d.restricciones || []).length ? "revisar antes de servir" : "ninguna esta noche"}</p>
+          <!-- El botón de la tarjeta para cocina. stopPropagation: la tarjeta entera ya
+               abre el detalle, y sin esto tocarlo abriría las dos cosas a la vez. -->
+          <button class="btn-tarjeta" title="Ver la tarjeta de alergias para cocina"
+                  onclick="event.stopPropagation(); vistaPreviaAlergias('${F.fecha}')">⬇ Tarjeta</button>
+        </div>
       </div>
       <div id="rest-detalle"></div>
     </div>
