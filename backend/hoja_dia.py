@@ -731,54 +731,313 @@ def _aire_para(d, k, ancho, alto):
 
 
 def pdf(d):
-    """La hoja de UN día."""
-    return pdf_varios_dias([d])
-
-
-def pdf_varios_dias(dias):
-    """Un PDF con la hoja de cada día, UNA PÁGINA POR DÍA.
-
-    Lo pidió el lodge al ver el resumen por rango: «mantener el mismo formato de
-    previsualización establecido en la fecha única, que aplique este mismo formato al
-    rango de fechas». Así que un rango no es otra hoja: son las hojas de siempre, una
-    detrás de otra, en un solo archivo que se imprime de una vez.
-
-    CADA DÍA SE MIDE POR SU CUENTA. Un lunes de tres habitaciones y un sábado de treinta
-    y cuatro no pueden llevar la misma letra: cada página toma la mayor que le quepa, que
-    es justo lo que hace que todas quepan en una.
-
-    EL PAPEL, EN CAMBIO, ES UNO SOLO para todo el documento —no se puede mezclar tamaños
-    dentro de un PDF— así que si algún día necesita un papel más largo, lo toman todos.
-    No se ha visto ninguno todavía.
-    """
-    from reportlab.platypus import PageBreak, SimpleDocTemplate
+    """La hoja de UN día: apaisada, una sola página, con la letra que quepa."""
+    from reportlab.platypus import SimpleDocTemplate
 
     ancho_hoja, alto_hoja, margen_v, margen_h, ancho = _marco_de_la_hoja()
     alto = alto_hoja - 2 * margen_v - 12
-
-    escalas = []
-    alto_util = alto
-    for d in dias:
-        k, necesario = _escala_y_papel(d, ancho, alto)
-        escalas.append(k)
-        alto_util = max(alto_util, necesario)
+    k, alto_util = _escala_y_papel(d, ancho, alto)
     alto_hoja += alto_util - alto
 
-    piezas = []
-    for i, (d, k) in enumerate(zip(dias, escalas)):
-        if i:
-            piezas.append(PageBreak())
-        piezas += _historia(d, k, _aire_para(d, k, ancho, alto_util))
-
-    primero, ultimo = dias[0].get("fecha"), dias[-1].get("fecha")
-    titulo = (f"Operación {_dmy(primero)}" if len(dias) == 1
-              else f"Operación {_dmy(primero)} a {_dmy(ultimo)}")
     buf = io.BytesIO()
     SimpleDocTemplate(
         buf, pagesize=(ancho_hoja, alto_hoja),
         topMargin=margen_v, bottomMargin=margen_v,
         leftMargin=margen_h, rightMargin=margen_h,
-        title=titulo).build(piezas)
+        title=f"Operación {_dmy(d.get('fecha'))}").build(
+            _historia(d, k, _aire_para(d, k, ancho, alto_util)))
+    buf.seek(0)
+    return buf
+
+
+# ---------------------------------------------------------------------------
+# La hoja del RANGO: el mismo formato, el movimiento de varios días seguido
+# ---------------------------------------------------------------------------
+#
+# Lo pidió el lodge en dos pasos. Primero: «que aplique este mismo formato al rango de
+# fechas». Y cuando le dije que un rango no cabe en una página: «no importa que no quede
+# en una sola página si es por rango de fechas, para que se vea a manera de resumen
+# siguiendo el formato».
+#
+# Así que es la hoja de siempre —mismo verde, mismas columnas, misma letra— con una
+# columna de FECHA delante y tantas páginas como haga falta. La cabecera de la tabla se
+# repite en cada página, que es lo que hace legible una tabla larga en papel.
+#
+# SOLO ENTRADAS Y SALIDAS, y lo eligió el lodge entre tres formas. Es lo que convierte
+# esto en un RESUMEN: quien solo está alojado no aporta nada nuevo cada día, y metiendo
+# sus renglones un mes pasaba de 265 a 608 — de nueve páginas a veinte, para repetir
+# veinte veces la misma habitación. Los días que esa gente tiene tour siguen apareciendo
+# en su hoja del día, que es donde se opera.
+COLUMNAS_RANGO = [
+    ("fecha", "FECHA", 24),
+    ("estado", "ESTADO", 15),
+    ("hab", "HAB.", 11),
+    ("huesped", "HUÉSPED", 46),
+    ("pax", "PAX", 8),
+    ("sierpe", "SIERPE", 12),
+    ("drake", "DRAKE", 12),
+    ("horario", "HORARIO", 17),
+    ("guia_t", "GUÍA T", 17),
+    ("bote_t", "BOTE / CAPITÁN", 22),
+    ("notas", "NOTAS", 40),
+    ("tour", "TOUR", 20),
+    ("tour_guia", "GUÍA", 16),
+    ("tour_bote", "BOTE", 16),
+]
+GRUPOS_RANGO = [("CUÁNDO", 2), ("HUÉSPEDES", 3), ("INGRESOS Y SALIDAS", 6),
+                ("ACTIVIDADES", 3)]
+
+
+def definicion_rango(dias):
+    """Los datos de la hoja del rango, a partir de las definiciones de cada día.
+
+    No vuelve a consultar nada: cada día ya viene calculado con `definicion()`, que es la
+    misma función de la que sale la hoja de un día y la pantalla. Rehacer aquí la cuenta
+    sería abrir la puerta a que el papel del rango y el del día discrepen.
+    """
+    filas, tours, movs, puntos = [], {}, {"ENTRA": [0, 0], "SALE": [0, 0]}, {
+        "Sierpe": {"ENTRA": 0, "SALE": 0}, "Drake": {"ENTRA": 0, "SALE": 0}}
+    habitaciones_noche = pax_noche = pax_desayunos = 0
+
+    for d in dias:
+        for f in d["filas"]:
+            if f["estado"] == "EN CASA":
+                continue
+            filas.append(dict(f, fecha=_dmy(d["fecha"])))
+            movs[f["estado"]][0] += 1
+            movs[f["estado"]][1] += f.get("pax") or 0
+        for t in d["tours"]:
+            fila = tours.setdefault(etiqueta_tour(t), {
+                "tour_codigo": t.get("tour_codigo"),
+                "grupo_operativo": t.get("grupo_operativo"),
+                "es_privado": t.get("es_privado"),
+                "salidas": 0, "pax_total": 0,
+                "sin_guia": 0, "sin_bote": 0})
+            fila["salidas"] += 1
+            fila["pax_total"] += t.get("pax_total") or 0
+            fila["sin_guia"] += 0 if t.get("guia_nombre") else 1
+            fila["sin_bote"] += 0 if t.get("bote_nombre") else 1
+        for nombre, totales in d["totales_punto"].items():
+            for tipo in ("ENTRA", "SALE"):
+                puntos.setdefault(nombre, {"ENTRA": 0, "SALE": 0})[tipo] += totales[tipo]
+        pax_desayunos += d.get("pax_desayunos") or 0
+        pax_noche += d.get("pax_en_casa") or 0
+        habitaciones_noche += sum(1 for f in d["filas"] if f["estado"] == "EN CASA")
+
+    return {
+        "desde": dias[0]["fecha"] if dias else None,
+        "hasta": dias[-1]["fecha"] if dias else None,
+        "dias": len(dias),
+        "filas": filas,
+        "tours": sorted(tours.values(), key=lambda t: (-t["pax_total"],
+                                                       t["tour_codigo"] or "")),
+        "totales_punto": puntos,
+        "movimientos": [("ENTRA", movs["ENTRA"][0], movs["ENTRA"][1]),
+                        ("SALE", movs["SALE"][0], movs["SALE"][1])],
+        # No es «cuánta gente hay»: es cuántas noches de huésped suma el periodo. El
+        # nombre lo dice para que nadie lo lea como lo otro.
+        "habitaciones_noche": habitaciones_noche,
+        "pax_noche": pax_noche,
+        "pax_desayunos": pax_desayunos,
+    }
+
+
+def _historia_rango(d, k=1.0):
+    """Las piezas de la hoja del rango. SIN buscar tamaño de letra: va a la de siempre.
+
+    La del día encoge para caber en una página; esta no tiene que caber, así que se queda
+    con el tamaño que el staff lleva meses leyendo. Lo que se pidió es el FORMATO, y el
+    formato incluye lo grande que se ve.
+    """
+    from xml.sax.saxutils import escape
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+
+    verde = colors.HexColor("#" + VERDE_CAB)
+    verde2 = colors.HexColor("#" + VERDE_SUB)
+    linea = colors.HexColor("#" + LINEA)
+    rojo = colors.HexColor("#" + ROJO)
+
+    fuente, relleno = FUENTE * k, RELLENO * k
+    hueco, margen = HUECO * k, MARGEN_CELDA * k
+    chico = ParagraphStyle("r", fontName="Helvetica", fontSize=fuente,
+                           leading=INTERLINEA * k)
+    chico_b = ParagraphStyle("rb", parent=chico, fontName="Helvetica-Bold")
+
+    def texto(valor, estilo=chico):
+        return Paragraph(escape(str(valor or "")), estilo)
+
+    def casilla(valor, falta=False):
+        t = escape(str(valor if valor not in (None, "") else ""))
+        if falta:
+            t = f'<font color="#{ROJO}">{t}</font>'
+        return Paragraph(t, chico)
+
+    e = []
+
+    # ---- Las dos cajas de arriba, con el periodo entero ----
+    t_tours = [["Tour", "Salidas", "Pax", "Sin guía"]]
+    for t in d["tours"]:
+        t_tours.append([casilla(etiqueta_tour(t)), t["salidas"], t["pax_total"],
+                        casilla(t["sin_guia"] or "—", falta=bool(t["sin_guia"]))])
+    if len(t_tours) == 1:
+        t_tours.append(["Sin tours en el periodo", "", "", ""])
+    tabla_tours = Table(t_tours, colWidths=[x * mm for x in (62, 22, 20, 22)],
+                        hAlign="LEFT")
+    _cabecera_verde(tabla_tours, k)
+    tabla_tours.setStyle(TableStyle([("ALIGN", (1, 0), (-1, -1), "CENTER")]))
+
+    t_mov = [["Movimiento", "Habs.", "Pax"]]
+    for estado, habs, pax in d["movimientos"]:
+        t_mov.append([estado, habs, pax])
+    t_mov.append(["HAB-NOCHE / PAX-NOCHE", d["habitaciones_noche"], d["pax_noche"]])
+    t_mov.append(["TOTAL + BKF", "", d["pax_desayunos"]])
+    tabla_mov = Table(t_mov, colWidths=[x * mm for x in (46, 18, 18)], hAlign="LEFT")
+    _cabecera_verde(tabla_mov, k)
+    tabla_mov.setStyle(TableStyle([
+        ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+    ]))
+
+    ranuras = [x * mm for x in (132, 86)]
+    titulos = Table([[Paragraph("<b>Resumen de Tours del periodo</b>", chico_b),
+                      Paragraph("<b>Resumen de Movimientos</b>", chico_b)]],
+                    colWidths=ranuras, hAlign="LEFT")
+    titulos.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), verde),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), relleno),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), relleno),
+    ]))
+    arriba = Table([[tabla_tours, tabla_mov]], colWidths=ranuras, hAlign="LEFT")
+    arriba.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    e += [titulos, arriba, Spacer(1, hueco)]
+
+    # ---- La franja del periodo y los muelles ----
+    s = d["totales_punto"].get("Sierpe", {"ENTRA": 0, "SALE": 0})
+    dr = d["totales_punto"].get("Drake", {"ENTRA": 0, "SALE": 0})
+    franja = Table(
+        [["Periodo", f"{_dmy(d['desde'])} — {_dmy(d['hasta'])}", "DÍAS", d["dias"], "",
+          "SIERPE", "", "DRAKE", ""],
+         ["", "", "", "", "", "entra", "sale", "entra", "sale"],
+         ["", "", "", "", "", s["ENTRA"] or "", s["SALE"] or "",
+          dr["ENTRA"] or "", dr["SALE"] or ""]],
+        colWidths=[x * mm for x in (20, 48, 16, 14, 8, 16, 16, 16, 16)], hAlign="LEFT")
+    franja.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), fuente),
+        ("LEADING", (0, 0), (-1, -1), INTERLINEA * k),
+        ("GRID", (0, 0), (3, 0), 0.4, linea),
+        ("GRID", (5, 0), (-1, -1), 0.4, linea),
+        ("SPAN", (5, 0), (6, 0)), ("SPAN", (7, 0), (8, 0)),
+        ("SPAN", (0, 0), (0, 2)), ("SPAN", (1, 0), (1, 2)),
+        ("SPAN", (2, 0), (2, 2)), ("SPAN", (3, 0), (3, 2)),
+        ("BACKGROUND", (2, 0), (2, 0), verde),
+        ("TEXTCOLOR", (2, 0), (2, 0), colors.white),
+        ("BACKGROUND", (0, 0), (1, 0), colors.HexColor("#D9EAD3")),
+        ("BACKGROUND", (5, 0), (-1, 1), verde),
+        ("TEXTCOLOR", (5, 0), (-1, 1), colors.white),
+        ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
+        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), relleno),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), relleno),
+        ("LEFTPADDING", (0, 0), (-1, -1), margen),
+        ("RIGHTPADDING", (0, 0), (-1, -1), margen),
+    ]))
+    e += [franja, Spacer(1, relleno),
+          Paragraph("Solo <b>entradas y salidas</b>. Quien está alojado sin entrar ni "
+                    "salir ese día sale en la hoja de su día.", chico),
+          Spacer(1, hueco)]
+
+    # ---- La tabla corrida ----
+    def renglones(valor):
+        return Paragraph(
+            "<br/>".join(escape(x) for x in str(valor or "").split("\n")), chico)
+
+    grupo_fila = []
+    for titulo, cuantas in GRUPOS_RANGO:
+        grupo_fila.append(titulo)
+        grupo_fila += [""] * (cuantas - 1)
+    datos = [grupo_fila, [c[1] for c in COLUMNAS_RANGO]]
+    for f in d["filas"]:
+        datos.append([
+            f["fecha"], f["estado"], f["hab"], texto(f["huesped"]),
+            f["pax"], f["sierpe"], f["drake"], f["horario"],
+            texto(f["guia_t"]), texto(f["bote_t"]),
+            texto((f["notas"] or "")[:110]),
+            renglones(f["tour"]), renglones(f["tour_guia"]), renglones(f["tour_bote"]),
+        ])
+    if not d["filas"]:
+        datos.append(["Sin entradas ni salidas en el periodo"]
+                     + [""] * (len(COLUMNAS_RANGO) - 1))
+
+    # repeatRows=2: la cabecera se repite en CADA página. Sin eso, de la segunda hoja en
+    # adelante hay catorce columnas de cifras sin un título que diga cuál es cuál.
+    tabla = Table(datos, colWidths=[c[2] * mm for c in COLUMNAS_RANGO],
+                  repeatRows=2, hAlign="LEFT")
+    estilo = [
+        ("BACKGROUND", (0, 0), (-1, 1), verde),
+        ("TEXTCOLOR", (0, 0), (-1, 1), colors.white),
+        ("BACKGROUND", (0, 1), (-1, 1), verde2),
+        ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), fuente),
+        ("LEADING", (0, 0), (-1, -1), INTERLINEA * k),
+        ("GRID", (0, 0), (-1, -1), 0.4, linea),
+        ("ALIGN", (0, 0), (-1, 1), "CENTER"),
+        ("ALIGN", (0, 2), (2, -1), "CENTER"),
+        ("ALIGN", (4, 2), (7, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), relleno),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), relleno),
+        ("LEFTPADDING", (0, 0), (-1, -1), margen),
+        ("RIGHTPADDING", (0, 0), (-1, -1), margen),
+        ("FONTNAME", (0, 2), (2, -1), "Helvetica-Bold"),
+    ]
+    col = 0
+    for titulo, cuantas in GRUPOS_RANGO:
+        estilo.append(("SPAN", (col, 0), (col + cuantas - 1, 0)))
+        col += cuantas
+    for n, f in enumerate(d["filas"], start=2):
+        fondo = FONDO.get(f["estado"])
+        if fondo:
+            estilo.append(("BACKGROUND", (0, n), (-1, n), colors.HexColor("#" + fondo)))
+    tabla.setStyle(TableStyle(estilo))
+    e.append(tabla)
+    return e
+
+
+def pdf_rango(d):
+    """La hoja del rango, con las páginas que haga falta y el pie numerado."""
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate
+
+    ancho_hoja, alto_hoja, margen_v, margen_h, _ = _marco_de_la_hoja()
+    titulo = f"Operación {_dmy(d.get('desde'))} a {_dmy(d.get('hasta'))}"
+
+    def pie(canvas, doc):
+        # EN VARIAS PÁGINAS HACE FALTA. Una hoja suelta de la quinta página no dice de
+        # qué periodo es ni si le falta la siguiente.
+        canvas.saveState()
+        canvas.setFont("Helvetica", 6.5)
+        canvas.setFillColorRGB(0.45, 0.45, 0.45)
+        canvas.drawString(margen_h, margen_v / 2, titulo)
+        canvas.drawRightString(ancho_hoja - margen_h, margen_v / 2,
+                               f"página {doc.page}")
+        canvas.restoreState()
+
+    buf = io.BytesIO()
+    SimpleDocTemplate(
+        buf, pagesize=(ancho_hoja, alto_hoja),
+        topMargin=margen_v, bottomMargin=margen_v + 4 * mm,
+        leftMargin=margen_h, rightMargin=margen_h,
+        title=titulo).build(_historia_rango(d), onFirstPage=pie, onLaterPages=pie)
     buf.seek(0)
     return buf
 
@@ -789,31 +1048,125 @@ def pdf_varios_dias(dias):
 
 def excel(d):
     """El Excel de UN día."""
-    return excel_varios_dias([d])
-
-
-def excel_varios_dias(dias):
-    """Un libro con UNA PESTAÑA POR DÍA, cada una igual que la hoja de ese día.
-
-    Lo mismo que hace el PDF con las páginas, y por lo mismo: un rango no es otra hoja,
-    son las hojas de siempre juntas en un archivo. Así el Excel sigue diciendo lo mismo
-    que el PDF, que es la regla de esta pareja desde el principio.
-    """
     from openpyxl import Workbook
 
     wb = Workbook()
-    wb.remove(wb.active)
-    usados = set()
-    for d in dias:
-        # El nombre de la pestaña: la fecha. Excel no admite «/» en un nombre de hoja y
-        # corta a 31 caracteres, así que se usa la fecha ISO tal cual, que además ordena.
-        nombre = str(d.get("fecha") or "Operación")[:31] or "Operación"
-        n, base = 2, nombre
-        while nombre in usados:
-            nombre, n = f"{base[:28]}({n})", n + 1
-        usados.add(nombre)
-        _pintar_excel(wb.create_sheet(nombre), d)
+    wb.active.title = "Operación"
+    _pintar_excel(wb.active, d)
+    return _guardar(wb)
 
+
+def excel_rango(d):
+    """El Excel del rango: UNA hoja con las mismas columnas que el PDF del rango.
+
+    El PDF y el Excel tienen que decir lo mismo, que es la regla de esta pareja desde el
+    principio. Así que aquí tampoco van los días en que alguien solo está alojado.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.properties import PageSetupProperties
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Periodo"
+    borde = Border(*[Side(style="thin", color=LINEA)] * 4)
+    blanco_negrita = Font(bold=True, color="FFFFFF")
+    relleno_verde = PatternFill("solid", fgColor=VERDE_CAB)
+    relleno_verde2 = PatternFill("solid", fgColor=VERDE_SUB)
+    centrado = Alignment(horizontal="center", vertical="center")
+
+    def poner(fila, col, valor, **kw):
+        c = ws.cell(row=fila, column=col, value=valor)
+        c.border = borde
+        for k, v in kw.items():
+            setattr(c, k, v)
+        return c
+
+    poner(1, 1, "Resumen de Tours del periodo", font=blanco_negrita,
+          fill=relleno_verde, alignment=centrado)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+    for i, titulo in enumerate(("Tour", "Salidas", "Pax", "Sin guía"), start=1):
+        poner(2, i, titulo, font=blanco_negrita, fill=relleno_verde2, alignment=centrado)
+    fila = 2
+    for t in d["tours"]:
+        fila += 1
+        poner(fila, 1, etiqueta_tour(t))
+        poner(fila, 2, t["salidas"], alignment=centrado)
+        poner(fila, 3, t["pax_total"], alignment=centrado)
+        poner(fila, 4, t["sin_guia"] or None, alignment=centrado,
+              font=Font(bold=True, color=ROJO) if t["sin_guia"] else Font())
+    if not d["tours"]:
+        poner(fila + 1, 1, "Sin tours en el periodo")
+
+    poner(1, 6, "Resumen de Movimientos", font=blanco_negrita, fill=relleno_verde,
+          alignment=centrado)
+    ws.merge_cells(start_row=1, start_column=6, end_row=1, end_column=8)
+    for i, titulo in enumerate(("Movimiento", "Habs.", "Pax"), start=6):
+        poner(2, i, titulo, font=blanco_negrita, fill=relleno_verde2, alignment=centrado)
+    renglones = list(d["movimientos"]) + [
+        ("HAB-NOCHE / PAX-NOCHE", d["habitaciones_noche"], d["pax_noche"]),
+        ("TOTAL + BKF", None, d["pax_desayunos"])]
+    for n, (etiqueta, habs, pax) in enumerate(renglones, start=3):
+        poner(n, 6, etiqueta, font=Font(bold=True))
+        poner(n, 7, habs, alignment=centrado)
+        poner(n, 8, pax, alignment=centrado)
+
+    poner(8, 1, "Periodo", font=Font(bold=True))
+    poner(8, 2, f"{_dmy(d['desde'])} — {_dmy(d['hasta'])}", alignment=centrado,
+          font=Font(bold=True))
+    poner(8, 3, "DÍAS", font=blanco_negrita, fill=relleno_verde, alignment=centrado)
+    poner(8, 4, d["dias"], alignment=centrado, font=Font(bold=True))
+    s = d["totales_punto"].get("Sierpe", {"ENTRA": 0, "SALE": 0})
+    dr = d["totales_punto"].get("Drake", {"ENTRA": 0, "SALE": 0})
+    for i, (titulo, valor) in enumerate(
+            (("SIERPE entra", s["ENTRA"]), ("SIERPE sale", s["SALE"]),
+             ("DRAKE entra", dr["ENTRA"]), ("DRAKE sale", dr["SALE"])), start=6):
+        poner(8, i, titulo, font=blanco_negrita, fill=relleno_verde2, alignment=centrado)
+        poner(9, i, valor, alignment=centrado)
+
+    inicio = 11
+    col = 1
+    for titulo, cuantas in GRUPOS_RANGO:
+        poner(inicio, col, titulo, font=blanco_negrita, fill=relleno_verde,
+              alignment=centrado)
+        if cuantas > 1:
+            ws.merge_cells(start_row=inicio, start_column=col,
+                           end_row=inicio, end_column=col + cuantas - 1)
+            for x in range(col + 1, col + cuantas):
+                ws.cell(row=inicio, column=x).border = borde
+        col += cuantas
+    for i, (_, titulo, _) in enumerate(COLUMNAS_RANGO, start=1):
+        poner(inicio + 1, i, titulo, font=blanco_negrita, fill=relleno_verde2,
+              alignment=centrado)
+    ws.freeze_panes = ws.cell(row=inicio + 2, column=1)
+
+    for n, f in enumerate(d["filas"], start=inicio + 2):
+        relleno = FONDO.get(f["estado"])
+        for i, (clave, _, _) in enumerate(COLUMNAS_RANGO, start=1):
+            valor = f.get(clave)
+            c = poner(n, i, valor if valor != "" else None)
+            if relleno:
+                c.fill = PatternFill("solid", fgColor=relleno)
+            if clave in ("fecha", "estado", "hab"):
+                c.font = Font(bold=True)
+            if clave in ("fecha", "hab", "pax", "sierpe", "drake", "horario"):
+                c.alignment = centrado
+            if clave in ("tour", "tour_guia", "tour_bote", "huesped", "notas"):
+                c.alignment = Alignment(vertical="top", wrap_text=True)
+
+    for i, (_, titulo, ancho) in enumerate(COLUMNAS_RANGO, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = max(ancho * 0.52,
+                                                               len(titulo) + 2)
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0      # a lo ancho sí, a lo largo las que hagan falta
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.print_title_rows = f"{inicio}:{inicio + 1}"
+    return _guardar(wb)
+
+
+def _guardar(wb):
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)

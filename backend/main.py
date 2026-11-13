@@ -390,10 +390,6 @@ def resumen_operacion(fecha: str = None, desde: str = None, hasta: str = None,
 # incluye las listas de cocina y de spa, y un rango de años no se lee, se descarga.
 TOPE_DIAS_PERIODO = 400
 
-# La hoja impresa lleva UNA PÁGINA POR DÍA, así que su tope es otro: ver la constante y
-# el porqué en `export_resumen`.
-TOPE_DIAS_HOJA = 95
-
 
 def _dias_entre(desde, hasta):
     d0 = datetime.date.fromisoformat(desde)
@@ -4029,41 +4025,32 @@ def export_resumen(fecha: str = None, desde: str = None, hasta: str = None,
     que se ve al abrir la app.
     """
     import hoja_dia
-    # UN RANGO NO ES OTRA HOJA: son las hojas de siempre, una por día, en un solo
-    # archivo. Lo pidió el lodge así —«mantener el mismo formato de previsualización
-    # establecido en la fecha única, que aplique este mismo formato al rango»— y tiene
-    # sentido: la hoja del día es la que el staff lleva meses leyendo, y lo que se pide
-    # de un rango es imprimirlas todas de una vez, no un dibujo nuevo que haya que
-    # aprender a leer.
-    fechas = _dias_entre(desde, hasta) if (desde and hasta) else None
-    if fechas is None:
-        if not fecha:
-            raise HTTPException(status_code=400,
-                                detail="Falta la fecha, o el rango (desde y hasta)")
-        fechas = [fecha]
-    # UN TOPE PROPIO PARA EL PAPEL, más bajo que el de la pantalla. Dibujar una hoja
-    # cuesta lo suyo —cada página se mide varias veces para encontrar la letra que le
-    # cabe— y medido sobre la base del lodge salen unos 140 ms por día: una semana es
-    # medio segundo, un mes cuatro y medio, tres meses doce. Un año serían casi un
-    # minuto de pantalla congelada, y eso no es una hoja que nadie vaya a leer.
-    if len(fechas) > TOPE_DIAS_HOJA:
-        raise HTTPException(
-            status_code=400,
-            detail=f"La hoja sale con una página por día y el rango tiene "
-                   f"{len(fechas)}. Para imprimir, pide como mucho {TOPE_DIAS_HOJA} "
-                   f"días; los totales de un rango más largo sí se ven en pantalla.")
+    # EL RANGO ES LA MISMA HOJA, con una columna de fecha delante y las páginas que haga
+    # falta. Lo pidió el lodge en dos pasos: «que aplique este mismo formato al rango de
+    # fechas» y, al decirle que no cabría en una página, «no importa que no quede en una
+    # sola página si es por rango, para que se vea a manera de resumen siguiendo el
+    # formato». Lleva solo entradas y salidas, que es lo que lo hace un resumen.
+    if desde and hasta:
+        fechas = _dias_entre(desde, hasta)
+        conn = get_connection()
+        try:
+            dias = [hoja_dia.definicion(conn, f, _datos_del_resumen(f)) for f in fechas]
+        finally:
+            conn.close()
+        d = hoja_dia.definicion_rango(dias)
+        buf = hoja_dia.excel_rango(d) if formato == "xlsx" else hoja_dia.pdf_rango(d)
+        return export_response(buf, f"operacion-{fechas[0]}_a_{fechas[-1]}", formato)
 
+    if not fecha:
+        raise HTTPException(status_code=400,
+                            detail="Falta la fecha, o el rango (desde y hasta)")
     conn = get_connection()
     try:
-        dias = [hoja_dia.definicion(conn, f, _datos_del_resumen(f)) for f in fechas]
+        d = hoja_dia.definicion(conn, fecha, _datos_del_resumen(fecha))
     finally:
         conn.close()
-
-    buf = (hoja_dia.excel_varios_dias(dias) if formato == "xlsx"
-           else hoja_dia.pdf_varios_dias(dias))
-    nombre = (f"operacion-{fechas[0]}" if len(fechas) == 1
-              else f"operacion-{fechas[0]}_a_{fechas[-1]}")
-    return export_response(buf, nombre, formato)
+    buf = hoja_dia.excel(d) if formato == "xlsx" else hoja_dia.pdf(d)
+    return export_response(buf, f"operacion-{fecha}", formato)
 
 
 @app.get("/api/export/restaurantes")

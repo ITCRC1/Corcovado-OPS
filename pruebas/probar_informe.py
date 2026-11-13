@@ -646,42 +646,91 @@ def lo_que_se_repite_cada_dia_se_dice_una_vez(c):
                  "y dice entre que dias estuvo")
 
 
-def un_rango_son_las_hojas_de_siempre_una_por_dia(c):
-    """Lo pidio el lodge al ver el resumen por rango: «mantener el mismo formato de
-    previsualizacion establecido en la fecha unica, que aplique este mismo formato al
-    rango de fechas».
+def _dias_de_prueba(cuantos=5):
+    dias = []
+    for i in range(cuantos):
+        d = _hoja_falsa(6 + i, tours=2, pesadas=i % 3)
+        d["fecha"] = (HOY + datetime.timedelta(days=i)).isoformat()
+        dias.append(d)
+    return dias
 
-    Asi que un rango NO es otra hoja: son las hojas de siempre, una detras de otra, en un
-    solo archivo. El formato lo lleva meses leyendo el staff; un dibujo nuevo para el
-    rango seria algo mas que aprender a leer.
 
-    CADA DIA SE MIDE POR SU CUENTA. Un lunes de tres habitaciones y un sabado de treinta
-    no pueden llevar la misma letra: cada pagina toma la mayor que le quepa, que es lo
-    que hace que todas quepan en una.
+def un_rango_es_la_misma_hoja_con_una_columna_de_fecha(c):
+    """Lo pidio el lodge en dos pasos: «que aplique este mismo formato al rango de
+    fechas» y, al decirle que no cabria en una pagina, «no importa que no quede en una
+    sola pagina si es por rango, para que se vea a manera de resumen siguiendo el
+    formato».
+
+    Asi que es la hoja de siempre —mismas columnas, mismos colores— con una columna de
+    FECHA delante y las paginas que hagan falta.
     """
     import hoja_dia
     from openpyxl import load_workbook
-    dias = [_hoja_falsa(n, tours=2, pesadas=n // 4) for n in (3, 12, 28, 6)]
-    for i, d in enumerate(dias):
-        d["fecha"] = (HOY + datetime.timedelta(days=i)).isoformat()
+    dias = _dias_de_prueba(5)
+    d = hoja_dia.definicion_rango(dias)
 
-    paginas, texto = _paginas(hoja_dia.pdf_varios_dias(dias))
-    c.igual(paginas, len(dias), "una pagina por dia, ni una mas")
-    for d in dias:
-        c.cierto(hoja_dia._dmy(d["fecha"]) in texto,
-                 f"la pagina del {d['fecha']} lleva su fecha")
-    # Y es la hoja de siempre, no un resumen: las columnas del dia tienen que estar.
-    for esperado in ("HUÉSPEDES", "INGRESOS Y SALIDAS", "ACTIVIDADES", "IN HOUSE"):
+    c.igual(d["dias"], 5, "el rango sabe cuantos dias abarca")
+    c.igual(d["desde"], dias[0]["fecha"], "y entre que fechas va")
+    c.igual(d["hasta"], dias[-1]["fecha"], "hasta la ultima")
+
+    paginas, texto = _paginas(hoja_dia.pdf_rango(d))
+    c.cierto(paginas >= 1, "sale el PDF")
+    for esperado in ("FECHA", "HUÉSPED", "INGRESOS Y SALIDAS", "ACTIVIDADES",
+                     "Resumen de Movimientos"):
         c.cierto(esperado in texto, f"con «{esperado}», como la hoja de un dia")
+    # Las fechas del rango van DENTRO de la tabla, que es lo que la hace un rango.
+    for dia in dias:
+        c.cierto(hoja_dia._dmy(dia["fecha"]) in texto,
+                 f"el movimiento del {dia['fecha']} esta en la tabla")
 
-    wb = load_workbook(hoja_dia.excel_varios_dias(dias))
-    c.igual(len(wb.sheetnames), len(dias), "y el Excel trae una pestaña por dia")
-    c.igual(wb.sheetnames[0], dias[0]["fecha"], "cada una con su fecha de nombre")
-    ws = wb[wb.sheetnames[0]]
+    ws = load_workbook(hoja_dia.excel_rango(d)).active
     cabeceras = [ws.cell(row=12, column=i).value
-                 for i in range(1, len(hoja_dia.COLUMNAS) + 1)]
-    c.igual(cabeceras, [col[1] for col in hoja_dia.COLUMNAS],
-            "con las MISMAS columnas que la hoja del dia")
+                 for i in range(1, len(hoja_dia.COLUMNAS_RANGO) + 1)]
+    c.igual(cabeceras, [col[1] for col in hoja_dia.COLUMNAS_RANGO],
+            "el Excel lleva las MISMAS columnas que el PDF, en el mismo orden")
+
+
+def el_rango_lleva_solo_entradas_y_salidas(c):
+    """Lo eligio el lodge entre tres formas, y es lo que convierte esto en un RESUMEN.
+
+    Quien solo esta alojado no aporta nada nuevo cada dia: metiendo sus renglones, un mes
+    pasaba de 265 a 608 —de nueve paginas a veinte— para repetir veinte veces la misma
+    habitacion. Los dias en que esa gente tiene tour siguen saliendo en su hoja del dia.
+    """
+    import hoja_dia
+    dias = _dias_de_prueba(4)
+    en_casa = sum(1 for x in dias for f in x["filas"] if f["estado"] == "EN CASA")
+    movimientos = sum(1 for x in dias for f in x["filas"] if f["estado"] != "EN CASA")
+    c.cierto(en_casa > 0 and movimientos > 0,
+             "los dias de prueba traen de las dos clases, o no se prueba nada")
+
+    d = hoja_dia.definicion_rango(dias)
+    c.igual(len(d["filas"]), movimientos, "van todas las entradas y salidas")
+    c.cierto(all(f["estado"] != "EN CASA" for f in d["filas"]),
+             "y ninguna de quien solo esta alojado")
+    c.cierto(all(f.get("fecha") for f in d["filas"]),
+             "cada renglon dice de que dia es")
+    # Y lo que se deja fuera se sigue contando arriba, que es lo que lo hace un resumen y
+    # no un recorte: las noches de huesped no desaparecen.
+    c.igual(d["habitaciones_noche"], en_casa,
+            "las noches de huesped se cuentan en la cabecera, no se pierden")
+
+
+def la_cabecera_del_rango_se_repite_en_cada_pagina(c):
+    """Una tabla larga en papel sin cabecera repetida es, de la segunda hoja en adelante,
+    catorce columnas de cifras sin un titulo que diga cual es cual."""
+    import hoja_dia
+    import pdfplumber
+    # Bastantes dias para que no quepa en una pagina.
+    dias = _dias_de_prueba(14)
+    buf = hoja_dia.pdf_rango(hoja_dia.definicion_rango(dias))
+    buf.seek(0)
+    with pdfplumber.open(buf) as pdf:
+        c.cierto(len(pdf.pages) > 1, "el rango ocupa varias paginas")
+        con_cabecera = sum(1 for p in pdf.pages if "HUÉSPED" in (p.extract_text() or ""))
+        c.igual(con_cabecera, len(pdf.pages), "y todas llevan la cabecera")
+        pies = sum(1 for p in pdf.pages if "página" in (p.extract_text() or ""))
+        c.igual(pies, len(pdf.pages), "y todas van numeradas")
 
 
 def la_hoja_ya_no_lleva_la_caja_de_alertas(c):
@@ -944,7 +993,9 @@ PRUEBAS = [
     el_total_del_periodo_es_la_suma_de_sus_dias,
     en_casa_no_se_suma_como_si_fuera_un_total,
     lo_que_se_repite_cada_dia_se_dice_una_vez,
-    un_rango_son_las_hojas_de_siempre_una_por_dia,
+    un_rango_es_la_misma_hoja_con_una_columna_de_fecha,
+    el_rango_lleva_solo_entradas_y_salidas,
+    la_cabecera_del_rango_se_repite_en_cada_pagina,
     la_hoja_ya_no_lleva_la_caja_de_alertas,
     la_hoja_del_dia_cabe_en_el_ancho,
     la_hoja_del_dia_cabe_SIEMPRE_en_una_pagina,
