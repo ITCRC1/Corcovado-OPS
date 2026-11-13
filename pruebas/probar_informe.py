@@ -414,11 +414,6 @@ def _hoja_falsa(cuantas, tours=0, pesadas=0):
                           "Drake": {"ENTRA": 0, "SALE": 4}},
         "movimientos": [("ENTRA", 2, 4), ("SALE", 2, 4), ("EN CASA", 8, 16)],
         "pax_desayunos": 20, "pax_en_casa": 16,
-        "alertas": [("Tours sin guia", tours, "Agenda de tours"),
-                    ("Tours sin bote", tours, "Transporte"),
-                    ("Habs. sin asignar", 0, "Reservas"),
-                    ("Corridas sin cubrir", 0, "Transporte"),
-                    ("Tours el dia que se va", 0, "Agenda de tours")],
     }
 
 
@@ -651,94 +646,68 @@ def lo_que_se_repite_cada_dia_se_dice_una_vez(c):
                  "y dice entre que dias estuvo")
 
 
-def _periodo_falso(dias, tours=6):
-    """Un periodo con el volumen que se pida, para medir la hoja."""
-    import datetime as dt
-    por_dia = []
-    for i in range(dias):
-        f = (HOY + dt.timedelta(days=i)).isoformat()
-        por_dia.append({
-            "fecha": f,
-            "total_ingresos": 3 + i % 5, "pax_ingresos": 6 + i % 7,
-            "total_salidas": 2 + i % 4, "pax_salidas": 5 + i % 6,
-            "total_en_casa": 18 + i % 9, "pax_en_casa": 38 + i % 13,
-            "total_desayunos": 20, "pax_desayunos": 40 + i % 11,
-            "tours": 3, "pax_tours": 12 + i % 8,
-            "puntos": {"Sierpe": {"entradas": 4, "salidas": 2},
-                       "Drake": {"entradas": 6, "salidas": 5}},
-        })
-    return {
-        "modo": "periodo",
-        "desde": por_dia[0]["fecha"], "hasta": por_dia[-1]["fecha"], "dias": dias,
-        "total_ingresos": sum(x["total_ingresos"] for x in por_dia),
-        "pax_ingresos": sum(x["pax_ingresos"] for x in por_dia),
-        "total_salidas": sum(x["total_salidas"] for x in por_dia),
-        "pax_salidas": sum(x["pax_salidas"] for x in por_dia),
-        "total_desayunos": sum(x["total_desayunos"] for x in por_dia),
-        "pax_desayunos": sum(x["pax_desayunos"] for x in por_dia),
-        "habitaciones_noche": sum(x["total_en_casa"] for x in por_dia),
-        "pax_noche": sum(x["pax_en_casa"] for x in por_dia),
-        "dia_mas_lleno": {"fecha": por_dia[0]["fecha"], "pax": 54, "habitaciones": 26},
-        "puntos": [{"punto": "Drake", "entradas": 20, "salidas": 18,
-                    "pax_entradas": 40, "pax_salidas": 36, "detalle": []},
-                   {"punto": "Sierpe", "entradas": 9, "salidas": 7,
-                    "pax_entradas": 18, "pax_salidas": 14, "detalle": []}],
-        "tours": [{"tour_codigo": ["SNORKEL", "PNC", "SIRENA", "CABALGATA",
-                                   "SAN JOSECITO", "PAJAREO", "BALLENAS", "NW"][i % 8],
-                   "es_privado": i % 4 == 0, "salidas": 14 - i, "pax_total": 70 - 3 * i,
-                   "dias": 10 - i, "sin_guia": i, "sin_bote": i}
-                  for i in range(tours)],
-        "tours_fuera_por_salida": [], "restricciones_cocina": [],
-        "restricciones_cocina_salen": [], "amenidades": [], "restaurantes": None,
-        "spa": [], "bts": [], "por_dia": por_dia,
-    }
+def un_rango_son_las_hojas_de_siempre_una_por_dia(c):
+    """Lo pidio el lodge al ver el resumen por rango: «mantener el mismo formato de
+    previsualizacion establecido en la fecha unica, que aplique este mismo formato al
+    rango de fechas».
 
+    Asi que un rango NO es otra hoja: son las hojas de siempre, una detras de otra, en un
+    solo archivo. El formato lo lleva meses leyendo el staff; un dibujo nuevo para el
+    rango seria algo mas que aprender a leer.
 
-def la_hoja_del_periodo_cabe_SIEMPRE_en_una_pagina(c):
-    """Lo mismo que la hoja del dia, y por lo mismo: se imprime y se fotografia.
-
-    SE PRUEBA 17 DIAS A PROPOSITO. Con ese tamaño la hoja se iba a la segunda pagina
-    teniendo 27 mm libres: el aire sobrante se repartia con una cuenta que daba por
-    supuesta la forma de la hoja del dia —tantos renglones como habitaciones mas dos de
-    cabecera— y la del periodo lleva ademas una fila de TOTAL. Se pasaba por un renglon.
+    CADA DIA SE MIDE POR SU CUENTA. Un lunes de tres habitaciones y un sabado de treinta
+    no pueden llevar la misma letra: cada pagina toma la mayor que le quepa, que es lo
+    que hace que todas quepan en una.
     """
     import hoja_dia
-    for dias in (1, 7, 17, 31, 92, 180):
-        d = hoja_dia.definicion_periodo(_periodo_falso(dias))
-        paginas, texto = _paginas(hoja_dia.pdf_periodo(d))
-        c.igual(paginas, 1, f"con {dias} dias la hoja del periodo es UNA")
-        c.cierto("TOTAL" in texto, f"con {dias} dias el total sigue estando")
+    from openpyxl import load_workbook
+    dias = [_hoja_falsa(n, tours=2, pesadas=n // 4) for n in (3, 12, 28, 6)]
+    for i, d in enumerate(dias):
+        d["fecha"] = (HOY + datetime.timedelta(days=i)).isoformat()
+
+    paginas, texto = _paginas(hoja_dia.pdf_varios_dias(dias))
+    c.igual(paginas, len(dias), "una pagina por dia, ni una mas")
+    for d in dias:
+        c.cierto(hoja_dia._dmy(d["fecha"]) in texto,
+                 f"la pagina del {d['fecha']} lleva su fecha")
+    # Y es la hoja de siempre, no un resumen: las columnas del dia tienen que estar.
+    for esperado in ("HUÉSPEDES", "INGRESOS Y SALIDAS", "ACTIVIDADES", "IN HOUSE"):
+        c.cierto(esperado in texto, f"con «{esperado}», como la hoja de un dia")
+
+    wb = load_workbook(hoja_dia.excel_varios_dias(dias))
+    c.igual(len(wb.sheetnames), len(dias), "y el Excel trae una pestaña por dia")
+    c.igual(wb.sheetnames[0], dias[0]["fecha"], "cada una con su fecha de nombre")
+    ws = wb[wb.sheetnames[0]]
+    cabeceras = [ws.cell(row=12, column=i).value
+                 for i in range(1, len(hoja_dia.COLUMNAS) + 1)]
+    c.igual(cabeceras, [col[1] for col in hoja_dia.COLUMNAS],
+            "con las MISMAS columnas que la hoja del dia")
 
 
-def la_hoja_del_periodo_sale_en_pdf_y_en_excel(c):
-    """Los DOS formatos de la misma definicion, igual que la hoja del dia: el que
-    circula por WhatsApp es el PDF y nadie lo contrasta."""
+def la_hoja_ya_no_lleva_la_caja_de_alertas(c):
+    """La quito el lodge de la hoja que se reparte: es una lista de pendientes que
+    resuelve quien coordina en la app, no quien lee la hoja en el muelle.
+
+    Lo que decia NO se pierde de vista: los tours sin guia y sin bote siguen saliendo en
+    rojo en la caja de tours, y la pantalla de Resumen sigue mostrando los contadores.
+    """
     import hoja_dia
     from openpyxl import load_workbook
-    d = hoja_dia.definicion_periodo(_periodo_falso(12))
-    c.igual(len(d["filas"]), 12, "un renglon por dia")
+    d = _hoja_falsa(6, tours=3)
+    _, texto = _paginas(hoja_dia.pdf(d))
+    for fuera in ("Alertas / pendientes", "Pendiente", "Corridas sin cubrir",
+                  "Habs. sin asignar"):
+        c.cierto(fuera not in texto, f"«{fuera}» ya no sale en el papel")
+    # Las dos cajas que se quedan, si.
+    for queda in ("Resumen de Tours", "Resumen de Movimientos"):
+        c.cierto(queda in texto, f"«{queda}» sigue estando")
+    # Y el aviso que SI importa en el muelle: un tour sin guia, en su propia casilla.
+    c.cierto("SIN ASIGNAR" in texto, "el tour sin guia sigue avisando donde se opera")
 
-    _, texto = _paginas(hoja_dia.pdf_periodo(d))
-    for esperado in ("Tours del periodo", "Totales del periodo", "MOVIMIENTO",
-                     "Pax-noche", "FECHA", "TOTAL"):
-        c.cierto(esperado in texto, f"el PDF del periodo trae «{esperado}»")
-
-    ws = load_workbook(hoja_dia.excel_periodo(d)).active
-    cabeceras = [ws.cell(row=13, column=i).value
-                 for i in range(1, len(hoja_dia.COLUMNAS_PERIODO) + 1)]
-    c.igual(cabeceras, [col[1] for col in hoja_dia.COLUMNAS_PERIODO],
-            "el Excel lleva las MISMAS columnas que el PDF, en el mismo orden")
-
-
-def la_hoja_del_periodo_cabe_en_el_ancho(c):
-    """A4 apaisado son 297 mm y los margenes se comen 14. Pasarse no da error: recorta."""
-    import hoja_dia
-    ancho = sum(col[2] for col in hoja_dia.COLUMNAS_PERIODO)
-    c.cierto(ancho <= hoja_dia.ANCHO_UTIL_MM,
-             f"las columnas del periodo caben ({ancho} mm de {hoja_dia.ANCHO_UTIL_MM})")
-    c.igual(len(hoja_dia.COLUMNAS_PERIODO),
-            sum(n for _, n in hoja_dia.GRUPOS_PERIODO),
-            "los grupos de la cabecera cubren todas las columnas")
+    ws = load_workbook(hoja_dia.excel(d)).active
+    c.cierto(all(ws.cell(row=1, column=col).value != "Alertas / pendientes"
+                 for col in range(1, 15)),
+             "y tampoco en el Excel, que tiene que decir lo mismo que el PDF")
 
 
 def la_hoja_del_dia_sale_en_pdf_y_en_excel(c):
@@ -975,9 +944,8 @@ PRUEBAS = [
     el_total_del_periodo_es_la_suma_de_sus_dias,
     en_casa_no_se_suma_como_si_fuera_un_total,
     lo_que_se_repite_cada_dia_se_dice_una_vez,
-    la_hoja_del_periodo_cabe_SIEMPRE_en_una_pagina,
-    la_hoja_del_periodo_sale_en_pdf_y_en_excel,
-    la_hoja_del_periodo_cabe_en_el_ancho,
+    un_rango_son_las_hojas_de_siempre_una_por_dia,
+    la_hoja_ya_no_lleva_la_caja_de_alertas,
     la_hoja_del_dia_cabe_en_el_ancho,
     la_hoja_del_dia_cabe_SIEMPRE_en_una_pagina,
     la_letra_de_la_hoja_se_adapta_al_dia,

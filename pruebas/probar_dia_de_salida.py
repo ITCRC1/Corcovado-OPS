@@ -212,9 +212,16 @@ def la_hoja_del_dia_no_le_pone_tour_a_quien_se_va(c):
     c.igual(por_hab["30"]["tour"], "", "y se va sin tour")
     c.igual(por_hab["27"]["tour"], "PAJAREO", "la 27 se queda y conserva el suyo")
 
-    cuenta = dict((e, n) for e, n, _ in d["alertas"])
-    c.igual(cuenta["Tours el día que se va"], 1,
-            "la hoja dice cuantos quito: esconder sin decirlo es lo que impide arreglarlo")
+    # ESCONDER SIN DECIRLO ES LO QUE IMPIDE ARREGLARLO, y por eso lo descartado se sigue
+    # contando. Lo que cambio es DONDE se dice: estaba en una caja del papel —«Alertas /
+    # pendientes»— que el lodge quito de la hoja que se reparte, porque es una lista de
+    # pendientes que resuelve quien coordina en la app, no quien lee la hoja en el muelle.
+    # Ahora vive solo en el resumen, que es de donde la pantalla lo toma para enseñarlo
+    # con su explicacion. Lo que no puede pasar es que desaparezca de los dos sitios.
+    c.igual(len(resumen["tours_fuera_por_salida"]), 1,
+            "lo descartado se sigue contando, para que alguien vaya a arreglar la reserva")
+    c.cierto("alertas" not in d,
+             "y la hoja ya no repite la lista de pendientes: la quito el lodge del papel")
 
 
 def el_tour_se_pega_a_la_reserva_no_a_la_habitacion(c):

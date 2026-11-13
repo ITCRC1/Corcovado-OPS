@@ -3187,7 +3187,9 @@ async function vistaPreviaHoja(fecha, desde, hasta) {
       <div class="modal-encabezado">
         <div>
           <p class="title">Hoja de operación ${titulo}</p>
-          <p class="subtitle">Así se va a imprimir. Es el mismo archivo que se descarga.</p>
+          <p class="subtitle">Así se va a imprimir. Es el mismo archivo que se descarga.${
+            rango ? ` <strong>Una página por día</strong> — es la hoja de siempre, repetida
+                      para cada fecha del rango.` : ""}</p>
         </div>
         <button class="modal-cerrar" id="hoja-x" title="Cerrar">×</button>
       </div>

@@ -68,8 +68,13 @@ COLUMNAS = [
 ]
 ANCHO_UTIL_MM = 283
 
-# Los anchos de la caja de tours de arriba, en el mismo orden que sus columnas.
-CAJA_TOURS_MM = (34, 12, 24, 24)
+# Las dos cajas de arriba: la de tours y la de movimientos. Ocupan juntas lo que antes
+# ocupaban tres —la de «Alertas / pendientes» la quitó el lodge de la hoja que se
+# reparte— y el ancho que sobró se fue casi todo a la de tours, que es donde los nombres
+# de guía y de bote vivían apretados en 24 mm.
+CAJA_TOURS_MM = (52, 14, 40, 40)      # tour, pax, guía, bote
+CAJA_MOV_MM = (34, 20, 18)            # estado, habitaciones, pax
+RANURAS_ARRIBA_MM = (150, 78)         # lo que mide cada caja con su aire alrededor
 
 # Los tres grupos de la cabecera superior, con cuántas columnas abarca cada uno.
 GRUPOS = [("HUÉSPEDES", 4), ("INGRESOS Y SALIDAS", 6), ("ACTIVIDADES", 3)]
@@ -294,8 +299,15 @@ def definicion(conn, fecha, resumen):
     filas = sorted(por_conf.values(),
                    key=lambda x: int(x["hab"]) if str(x["hab"]).isdigit() else 999)
 
-    sin_guia = sum(1 for t in tours if not t.get("guia_nombre"))
-    sin_bote = sum(1 for t in tours if not t.get("bote_nombre"))
+    # YA NO SE CALCULAN LAS ALERTAS. Iban en una caja del papel —tours sin guía, corridas
+    # sin cubrir, tours que caen el día de salida— y el lodge la quitó de la hoja que se
+    # reparte: es una lista de pendientes que resuelve quien coordina en la app, no quien
+    # lee la hoja en el muelle.
+    #
+    # NADA DE ESO SE PIERDE DE VISTA: los tours sin guía y sin bote salen en rojo en la
+    # misma caja de tours de arriba, y la pantalla de Resumen sigue mostrando los cuatro
+    # contadores y la caja de «tours el día que se va» con su explicación. Lo único que
+    # cambió es que el papel no los repite.
     return {
         "fecha": fecha,
         "filas": filas,
@@ -308,17 +320,6 @@ def definicion(conn, fecha, resumen):
         ],
         "pax_desayunos": resumen.get("pax_desayunos", 0),
         "pax_en_casa": resumen.get("pax_en_casa", 0),
-        "alertas": [
-            ("Tours sin guía", sin_guia, "Agenda de tours"),
-            ("Tours sin bote", sin_bote, "Transporte"),
-            ("Habs. sin asignar", sum(1 for f in filas if not f["hab"]), "Reservas"),
-            ("Corridas sin cubrir", sum(1 for c in corridas if c.get("falta")),
-             "Transporte"),
-            # Lo que se quitó de la hoja, dicho en la hoja. Si se escondiera sin contarlo,
-            # nadie iría a arreglar la reserva y el tour seguiría mal puesto para siempre.
-            ("Tours el día que se va", len(resumen.get("tours_fuera_por_salida") or []),
-             "Agenda de tours"),
-        ],
     }
 
 
@@ -379,7 +380,7 @@ def _alto_de(piezas, ancho):
     return sum(pieza.wrap(ancho, 0x7FFFFFFF)[1] for pieza in piezas)
 
 
-def _techo_por_las_palabras(d, columnas=COLUMNAS):
+def _techo_por_las_palabras(d, columnas=None):
     """Hasta dónde puede crecer la letra sin que una palabra se parta por la mitad.
 
     Al crecer, «SNORKEL» dejaba de caber en su columna y ReportLab lo partía en
@@ -399,6 +400,7 @@ def _techo_por_las_palabras(d, columnas=COLUMNAS):
     from reportlab.pdfbase.pdfmetrics import stringWidth
 
     techo = MAS_GRANDE
+    columnas = columnas or COLUMNAS
 
     def mirar(valor, ancho_mm, negrita=False):
         nonlocal techo
@@ -426,7 +428,7 @@ def _techo_por_las_palabras(d, columnas=COLUMNAS):
     return max(MAS_CHICA, techo)
 
 
-def _la_letra_que_cabe(d, ancho, alto, historia=None, columnas=COLUMNAS):
+def _la_letra_que_cabe(d, ancho, alto):
     """(escala, lo que sobra) con la letra más grande que entra en una sola página.
 
     Se busca por mitades y no probando una por una porque la hoja crece con la letra sin
@@ -436,19 +438,14 @@ def _la_letra_que_cabe(d, ancho, alto, historia=None, columnas=COLUMNAS):
     Si ni con la más chica entra, lo que sobra sale negativo y manda: la decide `pdf()`
     alargando el papel. Encoger la letra sin fondo convierte la hoja en algo que no se
     lee, y partirla en dos es justo lo que se vino a arreglar.
-
-    `historia` y `columnas` se pasan para que la hoja del PERIODO use esta misma
-    búsqueda: lo que cambia entre las dos hojas es QUÉ se dibuja, no cómo se decide que
-    quepa, y dos copias de esta cuenta acabarían dando dos tamaños distintos.
     """
-    historia = historia or _historia
-    techo = _techo_por_las_palabras(d, columnas)
+    techo = _techo_por_las_palabras(d)
     pasos = [p for p in _escalas() if p <= techo] or [MAS_CHICA]
     medido = {}
 
     def cabe(i):
         if i not in medido:
-            medido[i] = _alto_de(historia(d, pasos[i]), ancho)
+            medido[i] = _alto_de(_historia(d, pasos[i]), ancho)
         return medido[i] <= alto
 
     if not cabe(0):
@@ -524,7 +521,17 @@ def _historia(d, k, aire=0.0):
     def cabecera_verde(tabla, hasta_col=-1):
         _cabecera_verde(tabla, k, hasta_col)
 
-    # ---- Las tres cajas de arriba ----
+    # ---- Las dos cajas de arriba ----
+    #
+    # LA CAJA DE «ALERTAS / PENDIENTES» YA NO VA. La quitó el lodge de la hoja que se
+    # reparte, y tiene sentido: es una lista de lo que falta por hacer —tours sin guía,
+    # corridas sin cubrir— y eso lo resuelve quien coordina en la app, no quien lee la
+    # hoja en el muelle. En el papel ocupaba un cuarto del ancho de arriba para decirle a
+    # todo el mundo algo que le toca a una persona. Lo que decía sigue estando en la
+    # pantalla de Resumen y en los avisos de la Agenda y de Transporte.
+    #
+    # Su ancho se reparte entre las dos que se quedan, que es donde hacía falta: en la de
+    # tours, los nombres de guía y de bote vivían apretados en 24 mm.
     def casilla(valor, falta=False):
         """En párrafo, no en texto suelto: una casilla de texto suelto no parte renglón.
 
@@ -546,7 +553,7 @@ def _historia(d, k, aire=0.0):
                                 falta=not t.get("bote_nombre"))])
     if len(t_tours) == 1:
         t_tours.append(["Sin tours este día", "", "", ""])
-    tabla_tours = Table(t_tours, colWidths=[34 * mm, 12 * mm, 24 * mm, 24 * mm],
+    tabla_tours = Table(t_tours, colWidths=[x * mm for x in CAJA_TOURS_MM],
                         hAlign="LEFT")
     cabecera_verde(tabla_tours)
 
@@ -554,30 +561,17 @@ def _historia(d, k, aire=0.0):
     for estado, habs, pax in d["movimientos"]:
         t_mov.append([estado, habs, pax])
     t_mov.append(["TOTAL + BKF", "", d["pax_desayunos"]])
-    tabla_mov = Table(t_mov, colWidths=[26 * mm, 16 * mm, 14 * mm], hAlign="LEFT")
+    tabla_mov = Table(t_mov, colWidths=[x * mm for x in CAJA_MOV_MM], hAlign="LEFT")
     cabecera_verde(tabla_mov)
     tabla_mov.setStyle(TableStyle([
         ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
         ("ALIGN", (1, 0), (-1, -1), "CENTER"),
     ]))
 
-    t_al = [["Pendiente", "", ""]]
-    for etiqueta, cuantos, donde in d["alertas"]:
-        t_al.append([etiqueta, cuantos, donde])
-    tabla_al = Table(t_al, colWidths=[32 * mm, 10 * mm, 28 * mm], hAlign="LEFT")
-    cabecera_verde(tabla_al)
-    tabla_al.setStyle(TableStyle([("ALIGN", (1, 0), (1, -1), "CENTER")]))
-    for i, (_, cuantos, _) in enumerate(d["alertas"], start=1):
-        if cuantos:
-            tabla_al.setStyle(TableStyle([
-                ("TEXTCOLOR", (1, i), (1, i), rojo),
-                ("FONTNAME", (1, i), (1, i), "Helvetica-Bold")]))
-
     titulos = Table(
         [[Paragraph("<b>Resumen de Tours</b>", chico_b),
-          Paragraph("<b>Resumen de Movimientos</b>", chico_b),
-          Paragraph("<b>Alertas / pendientes</b>", chico_b)]],
-        colWidths=[98 * mm, 60 * mm, 74 * mm], hAlign="LEFT")
+          Paragraph("<b>Resumen de Movimientos</b>", chico_b)]],
+        colWidths=[x * mm for x in RANURAS_ARRIBA_MM], hAlign="LEFT")
     titulos.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), verde),
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
@@ -585,8 +579,8 @@ def _historia(d, k, aire=0.0):
         ("TOPPADDING", (0, 0), (-1, -1), relleno),
         ("BOTTOMPADDING", (0, 0), (-1, -1), relleno),
     ]))
-    arriba = Table([[tabla_tours, tabla_mov, tabla_al]],
-                   colWidths=[98 * mm, 60 * mm, 74 * mm], hAlign="LEFT")
+    arriba = Table([[tabla_tours, tabla_mov]],
+                   colWidths=[x * mm for x in RANURAS_ARRIBA_MM], hAlign="LEFT")
     arriba.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
@@ -696,456 +690,95 @@ def _historia(d, k, aire=0.0):
     return e
 
 
-def pdf(d, historia=None, columnas=COLUMNAS, titulo=None):
-    """La hoja en PDF. `historia` y `columnas` eligen QUÉ hoja: la del día o la del
-    periodo. Todo lo demás —el tamaño de letra que cabe, el aire sobrante, el papel que
-    se alarga antes de partirse— es igual para las dos, y por eso está escrito una vez."""
+def _marco_de_la_hoja():
+    """(ancho de papel, alto de papel, margen vertical, margen horizontal, ancho útil).
+
+    SE MIDE CONTRA EL MARCO, NO CONTRA EL PAPEL. El marco de `SimpleDocTemplate` se queda
+    6 pt de relleno por cada lado, y midiendo contra el alto de la página esos 12 pt son
+    justo la última fila cayéndose a la hoja 2 sin que nada avise.
+    """
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.units import mm
-    from reportlab.platypus import SimpleDocTemplate
 
-    historia = historia or _historia
     ancho_hoja, alto_hoja = landscape(A4)
     margen_v, margen_h = 8 * mm, 7 * mm
-    # SE MIDE CONTRA EL MARCO, NO CONTRA EL PAPEL. El marco de `SimpleDocTemplate` se
-    # queda 6 pt de relleno por cada lado, y midiendo contra el alto de la página esos
-    # 12 pt son justo la última fila cayéndose a la hoja 2 sin que nada avise.
-    ancho = ancho_hoja - 2 * margen_h - 12
+    return ancho_hoja, alto_hoja, margen_v, margen_h, ancho_hoja - 2 * margen_h - 12
+
+
+def _escala_y_papel(d, ancho, alto):
+    """(escala, alto de papel que hace falta) para que la hoja quepa en UNA página.
+
+    Si ni con la letra más chica entra, antes que partirla en dos se alarga el papel:
+    sigue siendo UNA página, que es lo que se fotografía y lo que se imprime (la
+    impresora la ajusta sola al folio).
+    """
+    k, sobra = _la_letra_que_cabe(d, ancho, alto)
+    return k, (alto if sobra >= 0 else alto - sobra + 1)
+
+
+def _aire_para(d, k, ancho, alto):
+    """El aire que se reparte entre los renglones para llenar la hoja. SE MIDE.
+
+    Antes se repartía con una cuenta que daba por supuesto cuántos renglones lleva la
+    tabla, y bastaba una fila de más para que el aire se pasara y la hoja se fuera a la
+    segunda página teniendo sitio de sobra. La hoja crece de forma LINEAL con el aire, de
+    modo que armándola con 0 y con 1 se sabe exactamente cuánto crece por cada punto,
+    tenga las filas que tenga. Dos medidas y ya no hay nada que suponer.
+    """
+    h0 = _alto_de(_historia(d, k, 0.0), ancho)
+    por_punto = max(1e-6, _alto_de(_historia(d, k, 1.0), ancho) - h0)
+    return max(0.0, min(AIRE_MAXIMO, (alto - h0) / por_punto))
+
+
+def pdf(d):
+    """La hoja de UN día."""
+    return pdf_varios_dias([d])
+
+
+def pdf_varios_dias(dias):
+    """Un PDF con la hoja de cada día, UNA PÁGINA POR DÍA.
+
+    Lo pidió el lodge al ver el resumen por rango: «mantener el mismo formato de
+    previsualización establecido en la fecha única, que aplique este mismo formato al
+    rango de fechas». Así que un rango no es otra hoja: son las hojas de siempre, una
+    detrás de otra, en un solo archivo que se imprime de una vez.
+
+    CADA DÍA SE MIDE POR SU CUENTA. Un lunes de tres habitaciones y un sábado de treinta
+    y cuatro no pueden llevar la misma letra: cada página toma la mayor que le quepa, que
+    es justo lo que hace que todas quepan en una.
+
+    EL PAPEL, EN CAMBIO, ES UNO SOLO para todo el documento —no se puede mezclar tamaños
+    dentro de un PDF— así que si algún día necesita un papel más largo, lo toman todos.
+    No se ha visto ninguno todavía.
+    """
+    from reportlab.platypus import PageBreak, SimpleDocTemplate
+
+    ancho_hoja, alto_hoja, margen_v, margen_h, ancho = _marco_de_la_hoja()
     alto = alto_hoja - 2 * margen_v - 12
 
-    k, sobra = _la_letra_que_cabe(d, ancho, alto, historia, columnas)
-    if sobra < 0:
-        # NI CON LA LETRA MÁS CHICA. Antes que partirla en dos, se alarga el papel: sigue
-        # siendo UNA página, que es lo que se fotografía y lo que se imprime (la
-        # impresora la ajusta sola al folio). Un día así no se ha visto todavía —el peor
-        # de los próximos cuatro meses tiene 34 habitaciones y entra— pero si llega, que
-        # llegue entero.
-        alto_hoja += -sobra + 1
-        alto = alto_hoja - 2 * margen_v - 12
+    escalas = []
+    alto_util = alto
+    for d in dias:
+        k, necesario = _escala_y_papel(d, ancho, alto)
+        escalas.append(k)
+        alto_util = max(alto_util, necesario)
+    alto_hoja += alto_util - alto
 
-    # EL AIRE SOBRANTE SE MIDE, NO SE ADIVINA.
-    #
-    # Antes se repartía con una cuenta que daba por supuesta la forma de la hoja del día
-    # —tantos renglones como habitaciones, más dos de cabecera—. La hoja del periodo
-    # lleva además una fila de TOTAL, así que la cuenta se quedaba corta por un renglón,
-    # el aire se pasaba 4 pt y la hoja se iba a la segunda página. Con 27 mm libres.
-    #
-    # Así que se mide: la hoja crece de forma lineal con el aire, de modo que armándola
-    # con 0 y con 1 se sabe exactamente cuánto crece por cada punto, sea cual sea la
-    # hoja y tenga las filas que tenga. Dos medidas y ya no hay nada que suponer.
-    h0 = _alto_de(historia(d, k, 0.0), ancho)
-    por_punto = max(1e-6, _alto_de(historia(d, k, 1.0), ancho) - h0)
-    aire = max(0.0, min(AIRE_MAXIMO, (alto - h0) / por_punto))
+    piezas = []
+    for i, (d, k) in enumerate(zip(dias, escalas)):
+        if i:
+            piezas.append(PageBreak())
+        piezas += _historia(d, k, _aire_para(d, k, ancho, alto_util))
 
+    primero, ultimo = dias[0].get("fecha"), dias[-1].get("fecha")
+    titulo = (f"Operación {_dmy(primero)}" if len(dias) == 1
+              else f"Operación {_dmy(primero)} a {_dmy(ultimo)}")
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(
+    SimpleDocTemplate(
         buf, pagesize=(ancho_hoja, alto_hoja),
         topMargin=margen_v, bottomMargin=margen_v,
         leftMargin=margen_h, rightMargin=margen_h,
-        title=titulo or f"Operación {_dmy(d.get('fecha'))}")
-    doc.build(historia(d, k, aire))
-    buf.seek(0)
-    return buf
-
-
-# ---------------------------------------------------------------------------
-# La hoja del PERIODO: los mismos números, sumados entre dos fechas
-# ---------------------------------------------------------------------------
-#
-# Lo pidió el lodge: «ver la información total entre periodos de fechas, esto incluye la
-# parte de visualización también». Es la misma hoja apaisada y de una página, con el
-# mismo verde y la misma letra que se adapta — lo que cambia es la unidad: en la del día
-# cada renglón es una habitación; aquí cada renglón es un DÍA.
-#
-# Y el día a día va DEBAJO del total a propósito. Un total sin el detalle que lo compone
-# no se puede contrastar, y el primero que no cuadre con lo que recuerda alguien deja de
-# creerse entero. Con los días delante, cualquiera suma la columna.
-COLUMNAS_PERIODO = [
-    ("fecha", "FECHA", 30),
-    ("dia", "DÍA", 22),
-    ("entran", "ENTRAN", 26),
-    ("salen", "SALEN", 26),
-    ("en_casa", "EN CASA", 28),
-    ("desayunos", "DESAYUNOS", 30),
-    ("sierpe", "SIERPE e/s", 30),
-    ("drake", "DRAKE e/s", 30),
-    ("tours", "TOURS", 22),
-    ("pax_tours", "PAX TOUR", 26),
-]
-GRUPOS_PERIODO = [("DÍA", 2), ("MOVIMIENTO DE HUÉSPEDES", 4), ("MUELLES", 2),
-                  ("ACTIVIDADES", 2)]
-
-DIAS_CORTOS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
-
-
-def _dia_corto(iso):
-    try:
-        return DIAS_CORTOS[datetime.date.fromisoformat(iso).weekday()]
-    except ValueError:
-        return ""
-
-
-def definicion_periodo(resumen):
-    """Los datos de la hoja del periodo, a partir de lo que devuelve el resumen de rango.
-
-    No vuelve a consultar nada: `main._resumen_del_periodo` ya sumó día por día con el
-    MISMO cálculo que usa la pantalla, y repetir la suma aquí sería abrir la puerta a que
-    el papel y la pantalla digan cosas distintas — que es justo lo que esta hoja existe
-    para evitar.
-    """
-    filas = []
-    for d in resumen.get("por_dia") or []:
-        puntos = d.get("puntos") or {}
-
-        def muelle(nombre):
-            p = puntos.get(nombre) or {}
-            e, s = p.get("entradas") or 0, p.get("salidas") or 0
-            return f"{e} / {s}" if (e or s) else ""
-
-        filas.append({
-            "fecha": _dmy(d["fecha"]),
-            "dia": _dia_corto(d["fecha"]),
-            "entran": f"{d['total_ingresos']} / {d['pax_ingresos']}",
-            "salen": f"{d['total_salidas']} / {d['pax_salidas']}",
-            "en_casa": f"{d['total_en_casa']} / {d['pax_en_casa']}",
-            "desayunos": str(d["pax_desayunos"]),
-            "sierpe": muelle("Sierpe"),
-            "drake": muelle("Drake"),
-            "tours": str(d["tours"] or ""),
-            "pax_tours": str(d["pax_tours"] or ""),
-        })
-
-    tours = resumen.get("tours") or []
-    sin_guia = sum(t.get("sin_guia") or 0 for t in tours)
-    sin_bote = sum(t.get("sin_bote") or 0 for t in tours)
-    return {
-        "desde": resumen.get("desde"), "hasta": resumen.get("hasta"),
-        "dias": resumen.get("dias") or len(filas),
-        "filas": filas,
-        "tours": tours,
-        "totales": {
-            "entran": f"{resumen.get('total_ingresos', 0)} / {resumen.get('pax_ingresos', 0)}",
-            "salen": f"{resumen.get('total_salidas', 0)} / {resumen.get('pax_salidas', 0)}",
-            "en_casa": f"{resumen.get('habitaciones_noche', 0)} / {resumen.get('pax_noche', 0)}",
-            "desayunos": str(resumen.get("pax_desayunos", 0)),
-            "tours": str(sum(t.get("salidas") or 0 for t in tours)),
-            "pax_tours": str(sum(t.get("pax_total") or 0 for t in tours)),
-        },
-        "dia_mas_lleno": resumen.get("dia_mas_lleno") or {},
-        "puntos": resumen.get("puntos") or [],
-        "alertas": [
-            ("Tours sin guía", sin_guia, "Agenda de tours"),
-            ("Tours sin bote", sin_bote, "Transporte"),
-            ("Botes extra (BT)", len(resumen.get("bts") or []), "Transporte"),
-            ("Citas de spa", len(resumen.get("spa") or []), "Spa"),
-            ("Tours el día que se va", len(resumen.get("tours_fuera_por_salida") or []),
-             "Agenda de tours"),
-        ],
-    }
-
-
-def _historia_periodo(d, k, aire=0.0):
-    """Las piezas de la hoja del periodo, a escala `k`. Misma forma que `_historia`."""
-    from xml.sax.saxutils import escape
-    from reportlab.lib import colors
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
-
-    verde = colors.HexColor("#" + VERDE_CAB)
-    verde2 = colors.HexColor("#" + VERDE_SUB)
-    linea = colors.HexColor("#" + LINEA)
-    rojo = colors.HexColor("#" + ROJO)
-
-    fuente, relleno = FUENTE * k, RELLENO * k
-    hueco, margen = HUECO * k, MARGEN_CELDA * k
-    chico = ParagraphStyle("p", fontName="Helvetica", fontSize=fuente,
-                           leading=INTERLINEA * k)
-    chico_b = ParagraphStyle("pb", parent=chico, fontName="Helvetica-Bold")
-
-    def casilla(valor, falta=False):
-        t = escape(str(valor if valor not in (None, "") else ""))
-        if falta:
-            t = f'<font color="#{ROJO}">{t}</font>'
-        return Paragraph(t, chico)
-
-    e = []
-
-    # ---- Las tres cajas de arriba ----
-    t_tours = [["Tour", "Salidas", "Pax", "Días"]]
-    for t in d["tours"]:
-        t_tours.append([casilla(etiqueta_tour(t)), t.get("salidas") or "",
-                        t.get("pax_total") or "", t.get("dias") or ""])
-    if len(t_tours) == 1:
-        t_tours.append(["Sin tours en el periodo", "", "", ""])
-    tabla_tours = Table(t_tours, colWidths=[40 * mm, 18 * mm, 16 * mm, 16 * mm],
-                        hAlign="LEFT")
-    _cabecera_verde(tabla_tours, k)
-    tabla_tours.setStyle(TableStyle([("ALIGN", (1, 0), (-1, -1), "CENTER")]))
-
-    tot = d["totales"]
-    t_mov = [["Movimiento", "Hab. / Pax"],
-             ["Entran", tot["entran"]],
-             ["Salen", tot["salen"]],
-             # NO es «cuántos hay»: es cuántas noches de huésped suma el periodo. Dicho
-             # con su nombre, porque sumar un stock a lo largo de un mes y llamarlo
-             # «en casa» es el error que convierte un informe en un número inventado.
-             ["Hab-noche / Pax-noche", tot["en_casa"]],
-             ["Desayunos (pax)", tot["desayunos"]],
-             ["Salidas de tour / pax", f"{tot['tours']} / {tot['pax_tours']}"]]
-    tabla_mov = Table(t_mov, colWidths=[42 * mm, 26 * mm], hAlign="LEFT")
-    _cabecera_verde(tabla_mov, k)
-    tabla_mov.setStyle(TableStyle([
-        ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
-        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
-    ]))
-
-    t_al = [["Pendiente", "", ""]]
-    for etiqueta, cuantos, donde in d["alertas"]:
-        t_al.append([etiqueta, cuantos, donde])
-    tabla_al = Table(t_al, colWidths=[38 * mm, 12 * mm, 30 * mm], hAlign="LEFT")
-    _cabecera_verde(tabla_al, k)
-    tabla_al.setStyle(TableStyle([("ALIGN", (1, 0), (1, -1), "CENTER")]))
-    for i, (_, cuantos, _) in enumerate(d["alertas"], start=1):
-        if cuantos:
-            tabla_al.setStyle(TableStyle([
-                ("TEXTCOLOR", (1, i), (1, i), rojo),
-                ("FONTNAME", (1, i), (1, i), "Helvetica-Bold")]))
-
-    anchos_caja = [94 * mm, 72 * mm, 84 * mm]
-    titulos = Table(
-        [[Paragraph("<b>Tours del periodo</b>", chico_b),
-          Paragraph("<b>Totales del periodo</b>", chico_b),
-          Paragraph("<b>Alertas / pendientes</b>", chico_b)]],
-        colWidths=anchos_caja, hAlign="LEFT")
-    titulos.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), verde),
-        ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("TOPPADDING", (0, 0), (-1, -1), relleno),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), relleno),
-    ]))
-    arriba = Table([[tabla_tours, tabla_mov, tabla_al]], colWidths=anchos_caja,
-                   hAlign="LEFT")
-    arriba.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-    ]))
-    e += [titulos, arriba, Spacer(1, hueco)]
-
-    # ---- La franja del periodo ----
-    lleno = d.get("dia_mas_lleno") or {}
-    por_punto = {p["punto"]: p for p in d.get("puntos") or []}
-
-    def muelle(nombre, campo):
-        return (por_punto.get(nombre) or {}).get(campo) or ""
-
-    franja = Table(
-        [["Periodo", f"{_dmy(d['desde'])} — {_dmy(d['hasta'])}", "DÍAS", d["dias"], "",
-          "SIERPE", "", "DRAKE", ""],
-         ["", "", "", "", "", "entra", "sale", "entra", "sale"],
-         ["", "", "", "", "", muelle("Sierpe", "pax_entradas"),
-          muelle("Sierpe", "pax_salidas"), muelle("Drake", "pax_entradas"),
-          muelle("Drake", "pax_salidas")]],
-        colWidths=[20 * mm, 50 * mm, 16 * mm, 14 * mm, 8 * mm,
-                   16 * mm, 16 * mm, 16 * mm, 16 * mm], hAlign="LEFT")
-    franja.setStyle(TableStyle([
-        ("FONTSIZE", (0, 0), (-1, -1), fuente),
-        ("LEADING", (0, 0), (-1, -1), INTERLINEA * k),
-        ("GRID", (0, 0), (3, 0), 0.4, linea),
-        ("GRID", (5, 0), (-1, -1), 0.4, linea),
-        ("SPAN", (5, 0), (6, 0)), ("SPAN", (7, 0), (8, 0)),
-        ("SPAN", (0, 0), (0, 2)), ("SPAN", (1, 0), (1, 2)),
-        ("SPAN", (2, 0), (2, 2)), ("SPAN", (3, 0), (3, 2)),
-        ("BACKGROUND", (2, 0), (2, 0), verde),
-        ("TEXTCOLOR", (2, 0), (2, 0), colors.white),
-        ("BACKGROUND", (0, 0), (1, 0), colors.HexColor("#D9EAD3")),
-        ("BACKGROUND", (5, 0), (-1, 1), verde),
-        ("TEXTCOLOR", (5, 0), (-1, 1), colors.white),
-        ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
-        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), relleno),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), relleno),
-        ("LEFTPADDING", (0, 0), (-1, -1), margen),
-        ("RIGHTPADDING", (0, 0), (-1, -1), margen),
-    ]))
-    e += [franja]
-    if lleno.get("fecha"):
-        e += [Spacer(1, relleno),
-              Paragraph(
-                  f"Día de más ocupación: <b>{escape(_dmy(lleno['fecha']))}</b> con "
-                  f"{lleno.get('pax', 0)} pax en {lleno.get('habitaciones', 0)} "
-                  f"habitaciones. «Entran / Salen / En casa» se leen "
-                  f"<b>habitaciones / pax</b>.", chico)]
-    e += [Spacer(1, hueco)]
-
-    # ---- La tabla del día a día ----
-    grupo_fila = []
-    for titulo, cuantas in GRUPOS_PERIODO:
-        grupo_fila.append(titulo)
-        grupo_fila += [""] * (cuantas - 1)
-    datos = [grupo_fila, [c[1] for c in COLUMNAS_PERIODO]]
-    for f in d["filas"]:
-        datos.append([f.get(c[0]) or "" for c in COLUMNAS_PERIODO])
-    if not d["filas"]:
-        datos.append(["Sin movimiento en el periodo"] + [""] * (len(COLUMNAS_PERIODO) - 1))
-    # El TOTAL cierra la tabla: es la misma cifra de la caja de arriba, al final de la
-    # columna que la compone, para que se pueda sumar con el dedo y cuadrar.
-    datos.append(["TOTAL", "", tot["entran"], tot["salen"], tot["en_casa"],
-                  tot["desayunos"], "", "", tot["tours"], tot["pax_tours"]])
-
-    tabla = Table(datos, colWidths=[c[2] * mm for c in COLUMNAS_PERIODO],
-                  repeatRows=2, hAlign="LEFT")
-    estilo = [
-        ("BACKGROUND", (0, 0), (-1, 1), verde),
-        ("TEXTCOLOR", (0, 0), (-1, 1), colors.white),
-        ("BACKGROUND", (0, 1), (-1, 1), verde2),
-        ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), fuente),
-        ("LEADING", (0, 0), (-1, -1), INTERLINEA * k),
-        ("GRID", (0, 0), (-1, -1), 0.4, linea),
-        ("ALIGN", (0, 0), (-1, 1), "CENTER"),
-        ("ALIGN", (1, 2), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), relleno + aire),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), relleno + aire),
-        ("LEFTPADDING", (0, 0), (-1, -1), margen),
-        ("RIGHTPADDING", (0, 0), (-1, -1), margen),
-        ("FONTNAME", (0, 2), (0, -1), "Helvetica-Bold"),
-        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#D9EAD3")),
-        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
-    ]
-    col = 0
-    for titulo, cuantas in GRUPOS_PERIODO:
-        estilo.append(("SPAN", (col, 0), (col + cuantas - 1, 0)))
-        col += cuantas
-    # El fin de semana con fondo, que es como se lee un calendario de ocupación.
-    for n, f in enumerate(d["filas"], start=2):
-        if f.get("dia") in ("sáb", "dom"):
-            estilo.append(("BACKGROUND", (0, n), (-1, n), colors.HexColor("#F2F5EE")))
-    tabla.setStyle(TableStyle(estilo))
-    e.append(tabla)
-    return e
-
-
-def pdf_periodo(d):
-    return pdf(d, historia=_historia_periodo, columnas=COLUMNAS_PERIODO,
-               titulo=f"Operación {_dmy(d.get('desde'))} a {_dmy(d.get('hasta'))}")
-
-
-def excel_periodo(d):
-    """El mismo periodo en Excel, con las MISMAS columnas que el PDF y en el mismo orden.
-
-    Por lo mismo que la hoja del día: el que circula por WhatsApp es el PDF y nadie lo
-    contrasta, así que el Excel no puede decir otra cosa.
-    """
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-    from openpyxl.utils import get_column_letter
-    from openpyxl.worksheet.properties import PageSetupProperties
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Periodo"
-    borde = Border(*[Side(style="thin", color=LINEA)] * 4)
-    blanco_negrita = Font(bold=True, color="FFFFFF")
-    relleno_verde = PatternFill("solid", fgColor=VERDE_CAB)
-    relleno_verde2 = PatternFill("solid", fgColor=VERDE_SUB)
-    centrado = Alignment(horizontal="center", vertical="center")
-
-    def poner(fila, col, valor, **kw):
-        c = ws.cell(row=fila, column=col, value=valor)
-        c.border = borde
-        for k, v in kw.items():
-            setattr(c, k, v)
-        return c
-
-    poner(1, 1, "Tours del periodo", font=blanco_negrita, fill=relleno_verde,
-          alignment=centrado)
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
-    for i, titulo in enumerate(("Tour", "Salidas", "Pax", "Días"), start=1):
-        poner(2, i, titulo, font=blanco_negrita, fill=relleno_verde2, alignment=centrado)
-    fila = 2
-    for t in d["tours"]:
-        fila += 1
-        poner(fila, 1, etiqueta_tour(t))
-        poner(fila, 2, t.get("salidas"), alignment=centrado)
-        poner(fila, 3, t.get("pax_total"), alignment=centrado)
-        poner(fila, 4, t.get("dias"), alignment=centrado)
-    if not d["tours"]:
-        poner(fila + 1, 1, "Sin tours en el periodo")
-
-    tot = d["totales"]
-    poner(1, 6, "Totales del periodo", font=blanco_negrita, fill=relleno_verde,
-          alignment=centrado)
-    ws.merge_cells(start_row=1, start_column=6, end_row=1, end_column=7)
-    for n, (etiqueta, valor) in enumerate((
-            ("Periodo", f"{_dmy(d['desde'])} — {_dmy(d['hasta'])}"),
-            ("Días", d["dias"]),
-            ("Entran (hab / pax)", tot["entran"]),
-            ("Salen (hab / pax)", tot["salen"]),
-            ("Hab-noche / Pax-noche", tot["en_casa"]),
-            ("Desayunos (pax)", tot["desayunos"]),
-            ("Salidas de tour", tot["tours"]),
-            ("Pax en tours", tot["pax_tours"])), start=2):
-        poner(n, 6, etiqueta, font=Font(bold=True))
-        poner(n, 7, valor, alignment=centrado)
-
-    poner(1, 9, "Alertas / pendientes", font=blanco_negrita, fill=relleno_verde,
-          alignment=centrado)
-    ws.merge_cells(start_row=1, start_column=9, end_row=1, end_column=11)
-    for n, (etiqueta, cuantos, donde) in enumerate(d["alertas"], start=2):
-        poner(n, 9, etiqueta)
-        poner(n, 10, cuantos, alignment=centrado,
-              font=Font(bold=True, color=ROJO) if cuantos else Font())
-        poner(n, 11, donde)
-
-    inicio = 12
-    col = 1
-    for titulo, cuantas in GRUPOS_PERIODO:
-        poner(inicio, col, titulo, font=blanco_negrita, fill=relleno_verde,
-              alignment=centrado)
-        if cuantas > 1:
-            ws.merge_cells(start_row=inicio, start_column=col,
-                           end_row=inicio, end_column=col + cuantas - 1)
-            for x in range(col + 1, col + cuantas):
-                ws.cell(row=inicio, column=x).border = borde
-        col += cuantas
-    for i, (_, titulo, _) in enumerate(COLUMNAS_PERIODO, start=1):
-        poner(inicio + 1, i, titulo, font=blanco_negrita, fill=relleno_verde2,
-              alignment=centrado)
-    ws.freeze_panes = ws.cell(row=inicio + 2, column=1)
-
-    n = inicio + 1
-    for f in d["filas"]:
-        n += 1
-        for i, (clave, _, _) in enumerate(COLUMNAS_PERIODO, start=1):
-            c = poner(n, i, f.get(clave) or None)
-            if i > 1:
-                c.alignment = centrado
-            if i == 1:
-                c.font = Font(bold=True)
-            if f.get("dia") in ("sáb", "dom"):
-                c.fill = PatternFill("solid", fgColor="F2F5EE")
-    n += 1
-    for i, valor in enumerate(["TOTAL", "", tot["entran"], tot["salen"], tot["en_casa"],
-                               tot["desayunos"], "", "", tot["tours"], tot["pax_tours"]],
-                              start=1):
-        poner(n, i, valor or None, font=Font(bold=True), alignment=centrado,
-              fill=PatternFill("solid", fgColor="D9EAD3"))
-
-    for i, (_, titulo, ancho) in enumerate(COLUMNAS_PERIODO, start=1):
-        ws.column_dimensions[get_column_letter(i)].width = max(ancho * 0.52,
-                                                               len(titulo) + 2)
-    ws.page_setup.orientation = "landscape"
-    ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 1
-    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
-
-    buf = io.BytesIO()
-    wb.save(buf)
+        title=titulo).build(piezas)
     buf.seek(0)
     return buf
 
@@ -1155,14 +788,43 @@ def excel_periodo(d):
 # ---------------------------------------------------------------------------
 
 def excel(d):
+    """El Excel de UN día."""
+    return excel_varios_dias([d])
+
+
+def excel_varios_dias(dias):
+    """Un libro con UNA PESTAÑA POR DÍA, cada una igual que la hoja de ese día.
+
+    Lo mismo que hace el PDF con las páginas, y por lo mismo: un rango no es otra hoja,
+    son las hojas de siempre juntas en un archivo. Así el Excel sigue diciendo lo mismo
+    que el PDF, que es la regla de esta pareja desde el principio.
+    """
     from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    usados = set()
+    for d in dias:
+        # El nombre de la pestaña: la fecha. Excel no admite «/» en un nombre de hoja y
+        # corta a 31 caracteres, así que se usa la fecha ISO tal cual, que además ordena.
+        nombre = str(d.get("fecha") or "Operación")[:31] or "Operación"
+        n, base = 2, nombre
+        while nombre in usados:
+            nombre, n = f"{base[:28]}({n})", n + 1
+        usados.add(nombre)
+        _pintar_excel(wb.create_sheet(nombre), d)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def _pintar_excel(ws, d):
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.properties import PageSetupProperties
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Operación"
     borde = Border(*[Side(style="thin", color=LINEA)] * 4)
     blanco_negrita = Font(bold=True, color="FFFFFF")
     relleno_verde = PatternFill("solid", fgColor=VERDE_CAB)
@@ -1206,14 +868,8 @@ def excel(d):
     poner(6, 7, "")
     poner(6, 8, d["pax_desayunos"], alignment=centrado)
 
-    poner(1, 10, "Alertas / pendientes", font=blanco_negrita, fill=relleno_verde,
-          alignment=centrado)
-    ws.merge_cells(start_row=1, start_column=10, end_row=1, end_column=12)
-    for n, (etiqueta, cuantos, donde) in enumerate(d["alertas"], start=2):
-        poner(n, 10, etiqueta)
-        poner(n, 11, cuantos, alignment=centrado,
-              font=Font(bold=True, color=ROJO) if cuantos else Font())
-        poner(n, 12, donde)
+    # La caja de «Alertas / pendientes» ya no va, ni aquí ni en el PDF: la quitó el lodge
+    # de la hoja que se reparte. Lo que decía sigue en la pantalla de Resumen.
 
     # ---- Franja de fecha y muelles ----
     s, dr = d["totales_punto"]["Sierpe"], d["totales_punto"]["Drake"]
@@ -1270,8 +926,4 @@ def excel(d):
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 1
     ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf
+    return ws
