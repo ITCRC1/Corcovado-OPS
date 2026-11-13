@@ -368,10 +368,177 @@ def dashboard(fecha: str, user: dict = Depends(exige("dashboard"))):
 
 
 @app.get("/api/resumen-operacion")
-def resumen_operacion(fecha: str, user: dict = Depends(exige("resumen"))):
-    """Resumen del día pensado para que cada departamento encuentre lo suyo:
-    recepción, cocina, housekeeping, guías y transporte."""
+def resumen_operacion(fecha: str = None, desde: str = None, hasta: str = None,
+                      user: dict = Depends(exige("resumen"))):
+    """Resumen pensado para que cada departamento encuentre lo suyo: recepción, cocina,
+    housekeeping, guías y transporte.
+
+    De UN DÍA con `fecha`, o de un PERIODO con `desde` y `hasta`. Lo pidió el lodge:
+    «necesito activar también la opción de rango de fechas para ver la información total
+    entre periodos».
+    """
+    if desde and hasta:
+        return _resumen_del_periodo(desde, hasta)
+    if not fecha:
+        raise HTTPException(status_code=400,
+                            detail="Falta la fecha, o el rango (desde y hasta)")
     return _datos_del_resumen(fecha)
+
+
+# Cuántos días como mucho. No es una limitación técnica —un día cuesta 7 ms medidos, así
+# que un año entero serían dos segundos y medio— sino de sentido: lo que se devuelve
+# incluye las listas de cocina y de spa, y un rango de años no se lee, se descarga.
+TOPE_DIAS_PERIODO = 400
+
+
+def _dias_entre(desde, hasta):
+    d0 = datetime.date.fromisoformat(desde)
+    d1 = datetime.date.fromisoformat(hasta)
+    if d1 < d0:
+        d0, d1 = d1, d0
+    if (d1 - d0).days + 1 > TOPE_DIAS_PERIODO:
+        raise HTTPException(
+            status_code=400,
+            detail=f"El rango no puede pasar de {TOPE_DIAS_PERIODO} días.")
+    return [(d0 + datetime.timedelta(days=i)).isoformat()
+            for i in range((d1 - d0).days + 1)]
+
+
+def _resumen_del_periodo(desde, hasta):
+    """El resumen de un rango de fechas, sumando DÍA POR DÍA el resumen de cada día.
+
+    SE REUSA EL CÁLCULO DEL DÍA, no se escribe una consulta nueva por periodo. Es la
+    misma razón por la que la hoja del día y la pantalla salen de la misma función: dos
+    cuentas distintas del mismo número acaban discrepando, y entonces nadie sabe cuál
+    creer. Aquí además se puede comprobar: el total del periodo tiene que ser la suma de
+    los días que se enseñan debajo, y se enseñan.
+
+    Y cuesta lo que cuesta sumar: medido sobre la base del lodge, 7 ms por día. Un mes
+    son 0,2 s.
+
+    LO QUE SE SUMA Y LO QUE NO. Entradas, salidas y desayunos son MOVIMIENTO: se suman y
+    el total significa algo. «En casa» no: es cuánta gente hay en un momento dado, y
+    sumarlo a lo largo de un mes no da «cuántos hay», da PAX-NOCHE. Se devuelve con ese
+    nombre para que nadie lo lea como lo otro, y se devuelve además el día de más
+    ocupación, que es el número que de verdad se busca cuando se pregunta «cuánta gente
+    hubo».
+    """
+    fechas = _dias_entre(desde, hasta)
+    dias = [_datos_del_resumen(f) for f in fechas]
+
+    def suma(campo):
+        return sum(d.get(campo) or 0 for d in dias)
+
+    # --- Puntos de embarque ---
+    puntos = {}
+    for d in dias:
+        for p in d["puntos"]:
+            k = puntos.setdefault(p["punto"], {"punto": p["punto"], "entradas": 0,
+                                               "salidas": 0, "pax_entradas": 0,
+                                               "pax_salidas": 0, "detalle": []})
+            for campo in ("entradas", "salidas", "pax_entradas", "pax_salidas"):
+                k[campo] += p.get(campo) or 0
+            # El detalle lleva SU fecha: en un periodo, «hab. 14 a las 7:10» sin el día
+            # no se puede ejecutar ni contrastar.
+            k["detalle"] += [dict(x, fecha=d["fecha"]) for x in p.get("detalle") or []]
+
+    # --- Tours, agrupados por código y modalidad ---
+    # El privado va aparte del compartido por lo mismo que en el día: son dos salidas
+    # distintas, con dos botes, dos guías y dos entradas del parque.
+    tours = {}
+    for d in dias:
+        for t in d["tours"]:
+            k = (t["tour_codigo"], t.get("es_privado") or 0)
+            fila = tours.setdefault(k, {
+                "tour_codigo": t["tour_codigo"], "es_privado": k[1],
+                "salidas": 0, "pax_total": 0, "dias": set(),
+                "sin_guia": 0, "sin_bote": 0})
+            fila["salidas"] += 1
+            fila["pax_total"] += t.get("pax_total") or 0
+            fila["dias"].add(d["fecha"])
+            fila["sin_guia"] += 0 if t.get("guia_nombre") else 1
+            fila["sin_bote"] += 0 if t.get("bote_nombre") else 1
+    lista_tours = sorted(
+        ({**t, "dias": len(t["dias"])} for t in tours.values()),
+        key=lambda t: (-t["pax_total"], t["tour_codigo"]))
+
+    # --- Lo que se repite día tras día se dice UNA vez ---
+    #
+    # Una alergia la trae el huésped mientras está alojado, así que aparece en el resumen
+    # de cada uno de sus días. En un mes, la misma persona saldría cinco veces en la
+    # lista de cocina y la lista dejaría de poder leerse. Se deja la primera y se guarda
+    # entre qué días estuvo.
+    def sin_repetir(campo, llave):
+        vistos = {}
+        for d in dias:
+            for x in d.get(campo) or []:
+                k = tuple(str(x.get(c) or "") for c in llave)
+                if k in vistos:
+                    vistos[k]["hasta"] = d["fecha"]
+                else:
+                    vistos[k] = dict(x, desde=d["fecha"], hasta=d["fecha"])
+        return list(vistos.values())
+
+    llave_cocina = ("conf_no", "amenidad", "detalle", "tarea")
+    restricciones = sin_repetir("restricciones_cocina", llave_cocina)
+    restricciones_salen = sin_repetir("restricciones_cocina_salen", llave_cocina)
+    amenidades = sin_repetir("amenidades", ("conf_no", "amenidad", "detalle", "tarea"))
+
+    # El spa y los BT son EVENTOS con fecha propia: no se deduplican, se listan.
+    spa, bts, fuera = [], [], []
+    for d in dias:
+        spa += [dict(c, fecha=d["fecha"]) for c in d.get("spa") or []]
+        bts += [dict(b, fecha=d["fecha"]) for b in d.get("bts") or []]
+        fuera += [f"{d['fecha']} · {x}" for x in d.get("tours_fuera_por_salida") or []]
+
+    # --- Restaurantes ---
+    rest = None
+    if any(d.get("restaurantes") for d in dias):
+        rest = {"almuerzo_tk": 0, "almuerzo_bosque": 0,
+                "cena_tk": 0, "cena_bosque": 0, "avisos": []}
+        for d in dias:
+            r = d.get("restaurantes") or {}
+            for campo in ("almuerzo_tk", "almuerzo_bosque", "cena_tk", "cena_bosque"):
+                rest[campo] += r.get(campo) or 0
+
+    # --- El día a día, que es lo que hace auditable el total ---
+    por_dia = [{
+        "fecha": d["fecha"],
+        "total_ingresos": d["total_ingresos"], "pax_ingresos": d["pax_ingresos"],
+        "total_salidas": d["total_salidas"], "pax_salidas": d["pax_salidas"],
+        "total_en_casa": d["total_en_casa"], "pax_en_casa": d["pax_en_casa"],
+        "total_desayunos": d["total_desayunos"], "pax_desayunos": d["pax_desayunos"],
+        "tours": len(d["tours"]),
+        "pax_tours": sum(t.get("pax_total") or 0 for t in d["tours"]),
+        "puntos": {p["punto"]: {"entradas": p["pax_entradas"], "salidas": p["pax_salidas"]}
+                   for p in d["puntos"]},
+    } for d in dias]
+
+    lleno = max(por_dia, key=lambda x: x["pax_en_casa"]) if por_dia else {}
+
+    return {
+        "modo": "periodo",
+        "desde": fechas[0], "hasta": fechas[-1], "dias": len(fechas),
+        "total_ingresos": suma("total_ingresos"), "pax_ingresos": suma("pax_ingresos"),
+        "total_salidas": suma("total_salidas"), "pax_salidas": suma("pax_salidas"),
+        "total_desayunos": suma("total_desayunos"),
+        "pax_desayunos": suma("pax_desayunos"),
+        # NO es «cuántos hay»: es cuántas noches de huésped suma el periodo.
+        "habitaciones_noche": suma("total_en_casa"), "pax_noche": suma("pax_en_casa"),
+        "dia_mas_lleno": {"fecha": lleno.get("fecha"),
+                          "pax": lleno.get("pax_en_casa", 0),
+                          "habitaciones": lleno.get("total_en_casa", 0)},
+        "puntos": sorted(puntos.values(), key=lambda x: x["punto"]),
+        "tours": lista_tours,
+        "tours_fuera_por_salida": fuera,
+        "restricciones_cocina": restricciones,
+        "restricciones_cocina_salen": restricciones_salen,
+        "amenidades": amenidades,
+        "restaurantes": rest,
+        "spa": spa,
+        "bts": bts,
+        "por_dia": por_dia,
+    }
 
 
 def _datos_del_resumen(fecha):
@@ -3845,8 +4012,8 @@ def export_entradas(desde: str = None, hasta: str = None, formato: str = "xlsx",
 
 
 @app.get("/api/export/resumen-operacion")
-def export_resumen(fecha: str, formato: str = "xlsx",
-                   user: dict = Depends(exige("resumen"))):
+def export_resumen(fecha: str = None, desde: str = None, hasta: str = None,
+                   formato: str = "xlsx", user: dict = Depends(exige("resumen"))):
     """La hoja del día, con el formato que el lodge ya manda al staff.
 
     No es el informe analítico de las demás áreas: esto se imprime o se fotografía y se
@@ -3858,6 +4025,15 @@ def export_resumen(fecha: str, formato: str = "xlsx",
     que se ve al abrir la app.
     """
     import hoja_dia
+    # EL PERIODO es la misma hoja con otra unidad: cada renglón es un DÍA en vez de una
+    # habitación. Sale de la misma suma que ve la pantalla, no de una consulta aparte.
+    if desde and hasta:
+        d = hoja_dia.definicion_periodo(_resumen_del_periodo(desde, hasta))
+        buf = hoja_dia.excel_periodo(d) if formato == "xlsx" else hoja_dia.pdf_periodo(d)
+        return export_response(buf, f"operacion-{d['desde']}_a_{d['hasta']}", formato)
+    if not fecha:
+        raise HTTPException(status_code=400,
+                            detail="Falta la fecha, o el rango (desde y hasta)")
     datos = _datos_del_resumen(fecha)
     conn = get_connection()
     try:

@@ -566,7 +566,10 @@ const DEFECTOS_FILTRO = {
   sinac:       () => ({ desde: hoyISO(), hasta: masDiasISO(120) }),
   amenidades:  () => ({ fecha: hoyISO(), desde: inicioMesISO(), hasta: finMesISO(), modo: "dia" }),
   analitica:   () => ({ fecha: hoyISO(), desde: inicioMesISO(), hasta: finMesISO(), modo: "dia" }),
-  resumen:     () => ({ fecha: hoyISO() }),
+  // El resumen se trabaja por DÍA —es la hoja que se le manda al staff— pero también se
+  // mira por periodo: «ver la información total entre periodos de fechas». El rango por
+  // defecto es el mes en curso, como en las demás pantallas que tienen las dos vistas.
+  resumen:     () => ({ fecha: hoyISO(), desde: inicioMesISO(), hasta: finMesISO(), modo: "dia" }),
   publicacion: () => ({ fecha: hoyISO(), filtro: "todas" }),
   restaurantes:() => ({ fecha: hoyISO() }),
   // El spa se abre en HOY como las demás, pero su rango por defecto llega a una semana:
@@ -3151,12 +3154,21 @@ async function guardarAsignacion(tourId) {
 //
 // El PDF se pide UNA vez y se reutiliza para ver, imprimir y descargar, así que lo que
 // se mira y lo que se manda son el mismo archivo, no dos generaciones distintas.
-async function vistaPreviaHoja(fecha) {
+// `fecha` para la hoja de UN día; `desde`/`hasta` para la del periodo. Es el mismo
+// visor porque es el mismo documento: cambia la unidad de cada renglón, no el papel.
+async function vistaPreviaHoja(fecha, desde, hasta) {
   avisar("Preparando la hoja…");
+  const rango = !fecha && desde && hasta;
+  // La FECHA, no solo la insignia: `etiquetaFecha` devuelve «Hoy» o nada, y un título
+  // que pone «Hoja de operación» a secas no dice de qué día es el papel que se va a
+  // imprimir. En un rango no dice nada en absoluto.
+  const titulo = rango ? `${desde} — ${hasta}`
+                       : `${fecha} ${etiquetaFecha(fecha)}`;
   let blob;
   try {
     const res = await fetchAuth(
-      `${API}/api/export/resumen-operacion?fecha=${fecha}&formato=pdf`);
+      rango ? `${API}/api/export/resumen-operacion?desde=${desde}&hasta=${hasta}&formato=pdf`
+            : `${API}/api/export/resumen-operacion?fecha=${fecha}&formato=pdf`);
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
     blob = await res.blob();
   } catch (e) {
@@ -3174,7 +3186,7 @@ async function vistaPreviaHoja(fecha) {
     <div class="modal-caja" style="max-width:1180px;">
       <div class="modal-encabezado">
         <div>
-          <p class="title">Hoja de operación ${etiquetaFecha(fecha)}</p>
+          <p class="title">Hoja de operación ${titulo}</p>
           <p class="subtitle">Así se va a imprimir. Es el mismo archivo que se descarga.</p>
         </div>
         <button class="modal-cerrar" id="hoja-x" title="Cerrar">×</button>
@@ -3209,7 +3221,7 @@ async function vistaPreviaHoja(fecha) {
   fondo.querySelector("#hoja-descargar").onclick = () => {
     const a = document.createElement("a");
     a.href = url;
-    a.download = `operacion-${fecha}.pdf`;
+    a.download = rango ? `operacion-${desde}_a_${hasta}.pdf` : `operacion-${fecha}.pdf`;
     document.body.appendChild(a); a.click(); a.remove();
   };
 }
@@ -6265,14 +6277,45 @@ async function mostrarDetalleGuia(nombre, desde, hasta) {
 }
 
 // ---------- RESUMEN OPERACION ----------
-async function loadResumenOperacion(fecha) {
+// El mismo manejo de fechas que Reservas y Agenda: abre en el día de hoy y desde ahí se
+// puede mover de día o pasar a un rango. `fecha` nula significa «ver rango».
+async function loadResumenOperacion(fecha, desde, hasta) {
   setActive(9);
-  if (fecha) FILTROS.resumen.fecha = fecha;
-  fecha = FILTROS.resumen.fecha;
+  const F = FILTROS.resumen;
+  if (fecha) { F.fecha = fecha; F.modo = "dia"; }
+  if (desde) F.desde = desde;
+  if (hasta) F.hasta = hasta;
+  if (fecha === null) F.modo = "rango";
+  if (fecha === undefined) fecha = F.modo === "dia" ? F.fecha : null;
   window._resAbierto = null;
-  const d = await (await fetchAuth(`${API}/api/resumen-operacion?fecha=${fecha}`)).json();
+  const url = fecha
+    ? `${API}/api/resumen-operacion?fecha=${fecha}`
+    : `${API}/api/resumen-operacion?desde=${F.desde}&hasta=${F.hasta}`;
+  const d = await (await fetchAuth(url)).json();
   window._resData = d;
+  document.getElementById("app").innerHTML = d.modo === "periodo"
+    ? vistaResumenPeriodo(d, F) : vistaResumenDia(d, fecha, F);
+}
 
+// Los controles de fecha, iguales en las dos vistas: cambiar de una a otra no puede
+// obligar a buscar los botones en otro sitio.
+function barraFechasResumen(F, fecha) {
+  const r = `document.getElementById('resu-desde').value, document.getElementById('resu-hasta').value`;
+  return `
+    <div class="filterbar">
+      <button class="btn" onclick="loadResumenOperacion(shiftDate('${fecha || F.fecha}',-1))">‹</button>
+      <input type="date" value="${fecha || ""}" onchange="loadResumenOperacion(this.value)">
+      <button class="btn" onclick="loadResumenOperacion(shiftDate('${fecha || F.fecha}',1))">›</button>
+      <button class="btn" onclick="loadResumenOperacion(hoyISO())">Hoy</button>
+      <button class="btn" onclick="loadResumenOperacion(masDiasISO(1))">Mañana</button>
+      <span style="color:var(--muted);">o rango:</span>
+      <input type="date" id="resu-desde" value="${F.desde}">
+      <input type="date" id="resu-hasta" value="${F.hasta}">
+      <button class="btn${fecha ? "" : " btn-primary"}" onclick="loadResumenOperacion(null, ${r})">Ver rango</button>
+    </div>`;
+}
+
+function vistaResumenDia(d, fecha, F) {
   const tarjeta = (campo, etiqueta, valor, pax, color) => `
     <div class="stat" onclick="detalleResumen('${campo}')">
       <p class="stat-label">${etiqueta}</p>
@@ -6280,22 +6323,20 @@ async function loadResumenOperacion(fecha) {
       ${pax !== undefined ? `<p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${pax} pax</p>` : ""}
     </div>`;
 
-  document.getElementById("app").innerHTML = `
+  return `
     <div class="card">
       <div class="header">
         <div>
           <p class="title">Resumen de operación</p>
           <p class="subtitle">${fecha} ${etiquetaFecha(fecha)} · toca cualquier bloque para ver el detalle</p>
         </div>
-        <div class="filterbar">
-          <button class="btn" onclick="loadResumenOperacion(shiftDate('${fecha}',-1))">‹</button>
-          <input type="date" value="${fecha}" onchange="loadResumenOperacion(this.value)">
-          <button class="btn" onclick="loadResumenOperacion(shiftDate('${fecha}',1))">›</button>
-          <button class="btn" onclick="loadResumenOperacion(hoyISO())">Hoy</button>
-          <button class="btn" onclick="loadResumenOperacion(masDiasISO(1))">Mañana</button>
-          <button class="btn btn-primary" onclick="vistaPreviaHoja('${fecha}')">👁 Vista previa</button>
-          <button class="btn" onclick="descargar('resumen-operacion', {fecha:'${fecha}'}, 'xlsx')">⬇ Excel</button>
-          <button class="btn" onclick="descargar('resumen-operacion', {fecha:'${fecha}'}, 'pdf')">⬇ PDF</button>
+        <div>
+          ${barraFechasResumen(F, fecha)}
+          <div class="filterbar" style="margin-top:6px;justify-content:flex-end;">
+            <button class="btn btn-primary" onclick="vistaPreviaHoja('${fecha}')">👁 Vista previa</button>
+            <button class="btn" onclick="descargar('resumen-operacion', {fecha:'${fecha}'}, 'xlsx')">⬇ Excel</button>
+            <button class="btn" onclick="descargar('resumen-operacion', {fecha:'${fecha}'}, 'pdf')">⬇ PDF</button>
+          </div>
         </div>
       </div>
 
@@ -6441,6 +6482,208 @@ async function loadResumenOperacion(fecha) {
           <td><span class="badge badge-tour">${x.amenidad}</span></td>
           <td style="font-size:12px;">${x.detalle || x.tarea}</td>
           <td style="font-size:12px;">${escaparHTML(x.areas || x.area_responsable || "")}</td>
+        </tr>`).join("")}
+      </table>
+    </div>` : ""}
+  `;
+}
+
+// ---------- RESUMEN DE UN PERIODO ----------
+//
+// Lo pidió el lodge: «ver la información total entre periodos de fechas». La vista es la
+// misma pantalla con otra unidad —cada renglón es un DÍA en vez de una habitación— y los
+// totales salen de sumar los días que se enseñan debajo, no de otra consulta.
+//
+// «EN CASA» NO SE SUMA, y por eso aquí no aparece con ese nombre. Cuánta gente hay
+// alojada es una foto de un momento; sumarla a lo largo de un mes no da «cuántos hubo»,
+// da PAX-NOCHE. Llamarlo «total en casa» sería inventar un número que nadie podría
+// cuadrar con nada. Al lado va el día de más ocupación, que es lo que de verdad se busca
+// cuando alguien pregunta cuánta gente hubo.
+function vistaResumenPeriodo(d, F) {
+  const tarjeta = (etiqueta, valor, pie) => `
+    <div class="stat">
+      <p class="stat-label">${etiqueta}</p>
+      <p class="stat-value">${valor}</p>
+      ${pie ? `<p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${pie}</p>` : ""}
+    </div>`;
+
+  const lleno = d.dia_mas_lleno || {};
+  const totalTours = (d.tours || []).reduce((s, t) => s + (t.salidas || 0), 0);
+  const paxTours = (d.tours || []).reduce((s, t) => s + (t.pax_total || 0), 0);
+
+  return `
+    <div class="card">
+      <div class="header">
+        <div>
+          <p class="title">Resumen de operación · periodo</p>
+          <p class="subtitle">${d.desde} — ${d.hasta} ·
+             ${d.dias} día${d.dias === 1 ? "" : "s"} · toca una fecha de la tabla para
+             abrir la hoja de ese día</p>
+        </div>
+        <div>
+          ${barraFechasResumen(F, null)}
+          <div class="filterbar" style="margin-top:6px;justify-content:flex-end;">
+            <button class="btn btn-primary" onclick="vistaPreviaHoja(null,'${d.desde}','${d.hasta}')">👁 Vista previa</button>
+            <button class="btn" onclick="descargar('resumen-operacion', {desde:'${d.desde}', hasta:'${d.hasta}'}, 'xlsx')">⬇ Excel</button>
+            <button class="btn" onclick="descargar('resumen-operacion', {desde:'${d.desde}', hasta:'${d.hasta}'}, 'pdf')">⬇ PDF</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="summary-grid">
+        ${tarjeta("Entran", d.total_ingresos, `${d.pax_ingresos} pax`)}
+        ${tarjeta("Salen", d.total_salidas, `${d.pax_salidas} pax`)}
+        ${tarjeta("Desayunos", d.pax_desayunos, "pax en todo el periodo")}
+        ${tarjeta("Pax-noche", d.pax_noche, `${d.habitaciones_noche} hab-noche`)}
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:-8px;">
+        Entran y salen se cuentan en habitaciones · <strong>Pax-noche</strong> es la suma
+        de los huéspedes alojados cada día, no cuántos hubo a la vez${lleno.fecha ? ` ·
+        día de más ocupación: <strong>${etiquetaFecha(lleno.fecha)}</strong> con
+        ${lleno.pax} pax en ${lleno.habitaciones} hab.` : ""}</p>
+    </div>
+
+    <div class="card">
+      <p class="title">Día por día</p>
+      <p class="subtitle" style="margin-bottom:12px;">
+        El total de arriba es la suma de esta tabla · toca una fecha para abrir su hoja del día</p>
+      <table>
+        <tr><th>Fecha</th><th>Entran</th><th>Salen</th><th>En casa</th><th>Desayunos</th>
+            <th>Sierpe e/s</th><th>Drake e/s</th><th>Tours</th><th>Pax tour</th></tr>
+        ${d.por_dia.map(x => {
+          const p = x.puntos || {};
+          const par = (n) => (p[n] ? `${p[n].entradas} / ${p[n].salidas}` : "—");
+          return `<tr>
+            <td><button class="btn" style="padding:2px 8px;font-size:12px;"
+                  onclick="loadResumenOperacion('${x.fecha}')">${x.fecha}</button></td>
+            <td>${x.total_ingresos} <span style="color:var(--muted);">/ ${x.pax_ingresos}</span></td>
+            <td>${x.total_salidas} <span style="color:var(--muted);">/ ${x.pax_salidas}</span></td>
+            <td>${x.total_en_casa} <span style="color:var(--muted);">/ ${x.pax_en_casa}</span></td>
+            <td>${x.pax_desayunos}</td>
+            <td>${par("Sierpe")}</td>
+            <td>${par("Drake")}</td>
+            <td>${x.tours || ""}</td>
+            <td>${x.pax_tours || ""}</td>
+          </tr>`;
+        }).join("")}
+        <tr style="background:var(--ok-bg);font-weight:600;">
+          <td>TOTAL</td>
+          <td>${d.total_ingresos} / ${d.pax_ingresos}</td>
+          <td>${d.total_salidas} / ${d.pax_salidas}</td>
+          <td>${d.habitaciones_noche} / ${d.pax_noche}</td>
+          <td>${d.pax_desayunos}</td>
+          <td colspan="2"></td>
+          <td>${totalTours}</td>
+          <td>${paxTours}</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <p class="title">Movimiento por punto de embarque</p>
+      <p class="subtitle" style="margin-bottom:12px;">Todo el periodo sumado</p>
+      ${(d.puntos || []).length ? `
+      <div class="stats" style="grid-template-columns:repeat(${Math.min(d.puntos.length,3)},1fr);">
+        ${d.puntos.map(p => `
+          <div class="stat">
+            <p class="stat-label">${escaparHTML(p.punto)}</p>
+            <p class="stat-value">${p.entradas + p.salidas}</p>
+            <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">
+              ${p.entradas} entran (${p.pax_entradas} pax) · ${p.salidas} salen (${p.pax_salidas} pax)
+            </p>
+          </div>`).join("")}
+      </div>` : `<p class="empty">Sin entradas ni salidas en este periodo.</p>`}
+    </div>
+
+    <div class="card">
+      <p class="title">Tours del periodo</p>
+      <p class="subtitle" style="margin-bottom:12px;">
+        Una salida privada cuenta aparte de la compartida: son dos botes y dos guías</p>
+      ${(d.tours || []).length ? `
+      <table>
+        <tr><th>Tour</th><th>Salidas</th><th>Pax</th><th>Días con salida</th><th>Sin guía</th><th>Sin bote</th></tr>
+        ${d.tours.map(t => `<tr>
+          <td><strong>${escaparHTML(t.tour_codigo)}</strong>${t.es_privado ? ` ${insigniaPrivado()}` : ""}</td>
+          <td>${t.salidas}</td>
+          <td><strong>${t.pax_total}</strong></td>
+          <td>${t.dias}</td>
+          <td>${t.sin_guia ? `<span style="color:var(--warn-text);">${t.sin_guia}</span>` : "—"}</td>
+          <td>${t.sin_bote ? `<span style="color:var(--warn-text);">${t.sin_bote}</span>` : "—"}</td>
+        </tr>`).join("")}
+        <tr style="background:var(--ok-bg);font-weight:600;">
+          <td>TOTAL</td><td>${totalTours}</td><td>${paxTours}</td><td colspan="3"></td>
+        </tr>
+      </table>` : `<p class="empty">No hay tours en este periodo.</p>`}
+      ${(d.bts || []).length ? `
+        <p style="font-weight:600;font-size:13px;margin:16px 0 2px;">Botes extra (BT) · ${d.bts.length}</p>
+        <table>
+          <tr><th>Fecha</th><th>Hora</th><th>Habitación</th><th>Pax</th><th>Bote / capitán</th></tr>
+          ${d.bts.map(b => `<tr>
+            <td>${escaparHTML(b.fecha || "")}</td>
+            <td>${escaparHTML(b.hora || "—")}</td>
+            <td>Hab. ${escaparHTML(b.room_no || "—")}</td>
+            <td>${b.pax}</td>
+            <td>${[b.bote, b.capitan].filter(Boolean).map(escaparHTML).join(" / ") || "—"}</td>
+          </tr>`).join("")}
+        </table>` : ""}
+    </div>
+
+    ${d.restaurantes ? `
+    <div class="card">
+      <p class="title">Restaurantes</p>
+      <p class="subtitle" style="margin-bottom:12px;">Comensales sumados en todo el periodo</p>
+      <table style="max-width:520px;">
+        <tr><th></th><th>Terra Kitchen</th><th>Bar el Bosque</th></tr>
+        <tr><td><strong>Almuerzo</strong></td><td>${d.restaurantes.almuerzo_tk} pax</td><td>${d.restaurantes.almuerzo_bosque} pax</td></tr>
+        <tr><td><strong>Cena</strong></td><td>${d.restaurantes.cena_tk} pax</td><td>${d.restaurantes.cena_bosque} pax</td></tr>
+      </table>
+    </div>` : ""}
+
+    ${(d.restricciones_cocina || []).length ? `
+    <div class="card">
+      <p class="title">Cocina — restricciones, alergias e inclusiones</p>
+      <p class="subtitle" style="margin-bottom:12px;">
+        Cada huésped UNA vez, con los días que estuvo: una alergia se repite todos los
+        días que la persona está alojada, y repetida no se puede leer</p>
+      <table>
+        <tr><th>Días</th><th>Hab.</th><th>Huésped</th><th>Qué</th><th>Detalle</th></tr>
+        ${d.restricciones_cocina.map(x => `<tr>
+          <td style="font-size:11.5px;white-space:nowrap;">${escaparHTML(x.desde || "")}${x.hasta && x.hasta !== x.desde ? ` → ${escaparHTML(x.hasta)}` : ""}</td>
+          <td><strong>${escaparHTML(x.room_no || "")}</strong></td>
+          <td>${escaparHTML(x.nombre_principal || "")}</td>
+          <td><span class="badge ${x.amenidad === "Bebidas incluidas" ? "badge-ok" : "badge-warn"}">${escaparHTML(x.amenidad || "")}</span></td>
+          <td><strong>${escaparHTML(x.detalle || x.tarea || "")}</strong></td>
+        </tr>`).join("")}
+      </table>
+    </div>` : ""}
+
+    ${(d.spa || []).length ? `
+    <div class="card">
+      <p class="title">Spa — citas del periodo</p>
+      <table>
+        <tr><th>Fecha</th><th>Hora</th><th>Hab.</th><th>Huésped</th><th>Tratamiento</th><th>Terapeuta</th></tr>
+        ${d.spa.map(c => `<tr ${c.revisar ? 'style="background:var(--warn-bg);"' : ""}>
+          <td>${escaparHTML(c.fecha || "")}</td>
+          <td><strong>${escaparHTML(c.hora || "—")}</strong></td>
+          <td><strong>${escaparHTML(c.room_no || "—")}</strong></td>
+          <td>${escaparHTML(c.nombre_huesped || "")}</td>
+          <td>${escaparHTML(c.servicio_nombre || "")}${c.revisar ? ' <span class="badge badge-warn">⚕ revisar</span>' : ""}</td>
+          <td>${escaparHTML(c.terapeuta || "—")}</td>
+        </tr>`).join("")}
+      </table>
+    </div>` : ""}
+
+    ${(d.amenidades || []).length ? `
+    <div class="card">
+      <p class="title">Housekeeping y recepción — amenidades del periodo</p>
+      <table>
+        <tr><th>Desde</th><th>Hab.</th><th>Huésped</th><th>Amenidad</th><th>Tarea</th></tr>
+        ${d.amenidades.map(x => `<tr>
+          <td style="font-size:11.5px;">${escaparHTML(x.desde || "")}</td>
+          <td><strong>${escaparHTML(x.room_no || "")}</strong></td>
+          <td>${escaparHTML(x.nombre_principal || "")}</td>
+          <td><span class="badge badge-tour">${escaparHTML(x.amenidad || "")}</span></td>
+          <td style="font-size:12px;">${escaparHTML(x.detalle || x.tarea || "")}</td>
         </tr>`).join("")}
       </table>
     </div>` : ""}

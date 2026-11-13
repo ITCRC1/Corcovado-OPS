@@ -573,6 +573,174 @@ def un_dia_imposible_alarga_el_papel_pero_no_lo_parte(c):
                  "el papel se alarga en vez de partirse")
 
 
+# ---------------------------------------------------------------------------
+# El resumen de un PERIODO
+# ---------------------------------------------------------------------------
+
+def _periodo_de_prueba(dias=7):
+    """Un periodo con reservas de verdad, pasadas por el cargador real."""
+    import main
+    # Se CIERRA la conexion que devuelve base_limpia: en Windows una conexion viva deja
+    # el archivo tomado y la siguiente prueba no puede recrear la base.
+    comun.base_limpia().close()
+    lote = []
+    for i in range(dias):
+        llega = HOY + datetime.timedelta(days=i)
+        lote.append(dict(reserva(
+            73000 + i, f"{(i % 20) + 1:02d}", ddmmyy(llega),
+            ddmmyy(llega + datetime.timedelta(days=2)), adl=2, chl=i % 2),
+            punto_entrada="Sierpe", punto_salida="Drake"))
+    cargar(lote, vistas=lote)
+    return main._resumen_del_periodo(
+        HOY.isoformat(), (HOY + datetime.timedelta(days=dias - 1)).isoformat())
+
+
+def el_total_del_periodo_es_la_suma_de_sus_dias(c):
+    """LA COMPROBACION QUE SOSTIENE TODA LA VISTA DE PERIODO.
+
+    El total sale de sumar el resumen de cada dia, no de una consulta nueva: dos cuentas
+    distintas del mismo numero acaban discrepando y entonces nadie sabe cual creer. Y el
+    dia a dia se enseña DEBAJO del total justamente para que cualquiera pueda sumarlo con
+    el dedo. Si el total no cuadrara con lo que enseña, la pantalla se desmiente sola.
+    """
+    p = _periodo_de_prueba(7)
+    c.igual(p["dias"], 7, "el periodo tiene los dias que se le pidieron")
+    c.igual(len(p["por_dia"]), 7, "y enseña uno por uno")
+    for campo in ("total_ingresos", "pax_ingresos", "total_salidas", "pax_salidas",
+                  "total_desayunos", "pax_desayunos"):
+        c.igual(p[campo], sum(x[campo] for x in p["por_dia"]),
+                f"«{campo}» del periodo es la suma de los dias")
+    c.cierto(p["pax_ingresos"] > 0, "y no es una suma de ceros")
+
+
+def en_casa_no_se_suma_como_si_fuera_un_total(c):
+    """«Cuanta gente hay alojada» es una FOTO de un momento, no un movimiento.
+
+    Sumarla a lo largo de un mes no da «cuantos hubo»: da PAX-NOCHE. Devolverla como
+    «total en casa» seria inventar un numero que nadie puede cuadrar con nada — y que
+    ademas suena a la respuesta de la pregunta que la gente hace de verdad, que es cual
+    fue el dia mas lleno. Las dos cosas se devuelven, cada una con su nombre.
+    """
+    p = _periodo_de_prueba(7)
+    c.cierto("total_en_casa" not in p and "pax_en_casa" not in p,
+             "el periodo NO devuelve «en casa» como si fuera un total")
+    c.igual(p["pax_noche"], sum(x["pax_en_casa"] for x in p["por_dia"]),
+            "pax-noche es la suma de los alojados de cada dia")
+    c.igual(p["dia_mas_lleno"]["pax"], max(x["pax_en_casa"] for x in p["por_dia"]),
+            "y el dia mas lleno es el MAXIMO, no la suma")
+
+
+def lo_que_se_repite_cada_dia_se_dice_una_vez(c):
+    """Una alergia la trae el huesped mientras esta alojado, asi que sale en el resumen
+    de cada uno de sus dias. En un mes la misma persona apareceria cinco veces y la lista
+    de cocina dejaria de poder leerse. Se deja una, con los dias que estuvo."""
+    import main
+    conn = comun.base_limpia()
+    llega = HOY
+    r = dict(reserva(73500, "08", ddmmyy(llega),
+                     ddmmyy(llega + datetime.timedelta(days=4)), adl=2),
+             notas="Alergia al maní")
+    cargar([r], vistas=[r])
+    conn.close()
+    p = main._resumen_del_periodo(HOY.isoformat(),
+                                  (HOY + datetime.timedelta(days=4)).isoformat())
+    suyas = [x for x in p["restricciones_cocina"] if str(x.get("conf_no")) == "73500"]
+    c.igual(len(suyas), 1, "la alergia sale UNA vez, no una por dia")
+    if suyas:
+        c.cierto(suyas[0].get("desde") and suyas[0].get("hasta"),
+                 "y dice entre que dias estuvo")
+
+
+def _periodo_falso(dias, tours=6):
+    """Un periodo con el volumen que se pida, para medir la hoja."""
+    import datetime as dt
+    por_dia = []
+    for i in range(dias):
+        f = (HOY + dt.timedelta(days=i)).isoformat()
+        por_dia.append({
+            "fecha": f,
+            "total_ingresos": 3 + i % 5, "pax_ingresos": 6 + i % 7,
+            "total_salidas": 2 + i % 4, "pax_salidas": 5 + i % 6,
+            "total_en_casa": 18 + i % 9, "pax_en_casa": 38 + i % 13,
+            "total_desayunos": 20, "pax_desayunos": 40 + i % 11,
+            "tours": 3, "pax_tours": 12 + i % 8,
+            "puntos": {"Sierpe": {"entradas": 4, "salidas": 2},
+                       "Drake": {"entradas": 6, "salidas": 5}},
+        })
+    return {
+        "modo": "periodo",
+        "desde": por_dia[0]["fecha"], "hasta": por_dia[-1]["fecha"], "dias": dias,
+        "total_ingresos": sum(x["total_ingresos"] for x in por_dia),
+        "pax_ingresos": sum(x["pax_ingresos"] for x in por_dia),
+        "total_salidas": sum(x["total_salidas"] for x in por_dia),
+        "pax_salidas": sum(x["pax_salidas"] for x in por_dia),
+        "total_desayunos": sum(x["total_desayunos"] for x in por_dia),
+        "pax_desayunos": sum(x["pax_desayunos"] for x in por_dia),
+        "habitaciones_noche": sum(x["total_en_casa"] for x in por_dia),
+        "pax_noche": sum(x["pax_en_casa"] for x in por_dia),
+        "dia_mas_lleno": {"fecha": por_dia[0]["fecha"], "pax": 54, "habitaciones": 26},
+        "puntos": [{"punto": "Drake", "entradas": 20, "salidas": 18,
+                    "pax_entradas": 40, "pax_salidas": 36, "detalle": []},
+                   {"punto": "Sierpe", "entradas": 9, "salidas": 7,
+                    "pax_entradas": 18, "pax_salidas": 14, "detalle": []}],
+        "tours": [{"tour_codigo": ["SNORKEL", "PNC", "SIRENA", "CABALGATA",
+                                   "SAN JOSECITO", "PAJAREO", "BALLENAS", "NW"][i % 8],
+                   "es_privado": i % 4 == 0, "salidas": 14 - i, "pax_total": 70 - 3 * i,
+                   "dias": 10 - i, "sin_guia": i, "sin_bote": i}
+                  for i in range(tours)],
+        "tours_fuera_por_salida": [], "restricciones_cocina": [],
+        "restricciones_cocina_salen": [], "amenidades": [], "restaurantes": None,
+        "spa": [], "bts": [], "por_dia": por_dia,
+    }
+
+
+def la_hoja_del_periodo_cabe_SIEMPRE_en_una_pagina(c):
+    """Lo mismo que la hoja del dia, y por lo mismo: se imprime y se fotografia.
+
+    SE PRUEBA 17 DIAS A PROPOSITO. Con ese tamaño la hoja se iba a la segunda pagina
+    teniendo 27 mm libres: el aire sobrante se repartia con una cuenta que daba por
+    supuesta la forma de la hoja del dia —tantos renglones como habitaciones mas dos de
+    cabecera— y la del periodo lleva ademas una fila de TOTAL. Se pasaba por un renglon.
+    """
+    import hoja_dia
+    for dias in (1, 7, 17, 31, 92, 180):
+        d = hoja_dia.definicion_periodo(_periodo_falso(dias))
+        paginas, texto = _paginas(hoja_dia.pdf_periodo(d))
+        c.igual(paginas, 1, f"con {dias} dias la hoja del periodo es UNA")
+        c.cierto("TOTAL" in texto, f"con {dias} dias el total sigue estando")
+
+
+def la_hoja_del_periodo_sale_en_pdf_y_en_excel(c):
+    """Los DOS formatos de la misma definicion, igual que la hoja del dia: el que
+    circula por WhatsApp es el PDF y nadie lo contrasta."""
+    import hoja_dia
+    from openpyxl import load_workbook
+    d = hoja_dia.definicion_periodo(_periodo_falso(12))
+    c.igual(len(d["filas"]), 12, "un renglon por dia")
+
+    _, texto = _paginas(hoja_dia.pdf_periodo(d))
+    for esperado in ("Tours del periodo", "Totales del periodo", "MOVIMIENTO",
+                     "Pax-noche", "FECHA", "TOTAL"):
+        c.cierto(esperado in texto, f"el PDF del periodo trae «{esperado}»")
+
+    ws = load_workbook(hoja_dia.excel_periodo(d)).active
+    cabeceras = [ws.cell(row=13, column=i).value
+                 for i in range(1, len(hoja_dia.COLUMNAS_PERIODO) + 1)]
+    c.igual(cabeceras, [col[1] for col in hoja_dia.COLUMNAS_PERIODO],
+            "el Excel lleva las MISMAS columnas que el PDF, en el mismo orden")
+
+
+def la_hoja_del_periodo_cabe_en_el_ancho(c):
+    """A4 apaisado son 297 mm y los margenes se comen 14. Pasarse no da error: recorta."""
+    import hoja_dia
+    ancho = sum(col[2] for col in hoja_dia.COLUMNAS_PERIODO)
+    c.cierto(ancho <= hoja_dia.ANCHO_UTIL_MM,
+             f"las columnas del periodo caben ({ancho} mm de {hoja_dia.ANCHO_UTIL_MM})")
+    c.igual(len(hoja_dia.COLUMNAS_PERIODO),
+            sum(n for _, n in hoja_dia.GRUPOS_PERIODO),
+            "los grupos de la cabecera cubren todas las columnas")
+
+
 def la_hoja_del_dia_sale_en_pdf_y_en_excel(c):
     """De punta a punta, con datos de verdad. Y los DOS formatos de la MISMA definicion:
     el pantallazo que circula por WhatsApp es el que nadie contrasta, asi que no puede
@@ -709,13 +877,17 @@ def el_horario_de_la_hoja_es_el_del_traslado_no_el_del_vuelo(c):
     sale = next(f for f in d["filas"] if f["estado"] == "SALE")
     c.igual(sale["horario"], "7:10 a.m.", "el horario es el del bote")
     c.cierto("RZ5759" in sale["notas"], "el numero del vuelo no se pierde: va en notas")
-    # LA HORA DEL VUELO YA NO VA EN NOTAS. Lo pidio el lodge: «colocar el numero del
-    # vuelo pero no la hora, ya que la hora fue designada en otra columna y no crear
-    # confusion». Y era justo esa confusion: en HORARIO va la del BOTE (7:10) y al lado,
-    # en notas, aparecia la del AVION (9:10). Dos horas distintas en el mismo renglon,
-    # y la que hay que ejecutar es la de la columna.
-    c.cierto("9:10" not in sale["notas"],
-             "y la hora del avion NO, que la del bote ya esta en su columna")
+    # LA HORA DEL AVION VUELVE A NOTAS, y con la palabra «avion» delante. El lodge la
+    # quito en noviembre y la volvio a pedir: «habiamos eliminado que en el numero de
+    # vuelo a la par apareciera la hora real del vuelo, volvamos a agregarlo».
+    #
+    # El motivo por el que se habia quitado sigue siendo cierto —en HORARIO va la del
+    # BOTE (7:10) y al lado aparece la del AVION (9:10), dos horas distintas en el mismo
+    # renglon— asi que lo que se fija aqui es la parte que impide confundirlas: la del
+    # avion va DICIENDO que es del avion. Sin esa palabra son dos cifras sueltas.
+    c.cierto("9:10" in sale["notas"], "la hora del avion esta")
+    c.cierto("avión 9:10" in sale["notas"] or "avion 9:10" in sale["notas"],
+             f"y dice de QUE es esa hora (notas: «{sale['notas']}»)")
 
 
 def una_habitacion_que_cambia_de_huesped_no_mezcla_sus_horas(c):
@@ -800,6 +972,12 @@ PRUEBAS = [
     las_cortesias_se_cuentan_no_se_valoran,
     la_ocupacion_usa_el_mismo_total_que_la_pantalla,
     el_spa_si_entra_en_el_informe,
+    el_total_del_periodo_es_la_suma_de_sus_dias,
+    en_casa_no_se_suma_como_si_fuera_un_total,
+    lo_que_se_repite_cada_dia_se_dice_una_vez,
+    la_hoja_del_periodo_cabe_SIEMPRE_en_una_pagina,
+    la_hoja_del_periodo_sale_en_pdf_y_en_excel,
+    la_hoja_del_periodo_cabe_en_el_ancho,
     la_hoja_del_dia_cabe_en_el_ancho,
     la_hoja_del_dia_cabe_SIEMPRE_en_una_pagina,
     la_letra_de_la_hoja_se_adapta_al_dia,

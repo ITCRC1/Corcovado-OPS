@@ -506,8 +506,11 @@ def la_hoja_del_dia_se_puede_ver_antes_de_imprimir(c):
     recorta, una fila que se va a la segunda pagina. Ya paso una vez — la tabla se salia
     de la hoja y el PDF se generaba sin error."""
     html = _html()
-    resumen = _cuerpo_de_funcion(html, "loadResumenOperacion")
-    c.cierto("vistaPreviaHoja(" in resumen, "el resumen ofrece la vista previa")
+    # LAS DOS VISTAS la ofrecen: la del dia y la del periodo. El dibujo vive en ellas,
+    # no en el cargador, desde que la pantalla tiene las dos.
+    for vista in ("vistaResumenDia", "vistaResumenPeriodo"):
+        c.cierto("vistaPreviaHoja(" in _cuerpo_de_funcion(html, vista),
+                 f"{vista} ofrece la vista previa")
 
     previa = _cuerpo_de_funcion(html, "vistaPreviaHoja")
     c.cierto("/api/export/resumen-operacion" in previa and "formato=pdf" in previa,
@@ -515,8 +518,10 @@ def la_hoja_del_dia_se_puede_ver_antes_de_imprimir(c):
     c.cierto("<iframe" in previa, "y lo enseña dentro de la pantalla")
 
     # UNA sola generacion para ver, imprimir y descargar: si se pidiera otra vez, lo
-    # que se mira y lo que se manda podrian ser archivos distintos.
-    c.igual(previa.count("/api/export/resumen-operacion"), 1,
+    # que se mira y lo que se manda podrian ser archivos distintos. Se cuentan las
+    # PETICIONES, no las veces que aparece la direccion: desde que hay vista de periodo
+    # la direccion se escribe de dos formas —un dia o un rango— en la misma peticion.
+    c.igual(previa.count("fetchAuth("), 1,
             "el PDF se pide una sola vez y se reutiliza")
     c.cierto("hoja-imprimir" in previa and "hoja-descargar" in previa,
              "con imprimir y descargar sobre el mismo archivo")
@@ -853,7 +858,38 @@ def el_pasaporte_se_mira_y_no_se_guarda(c):
              "agrandar el tiquete no sale de la app (eso lo descargaria en Android)")
 
 
+def el_resumen_se_puede_ver_por_rango_de_fechas(c):
+    """Lo pidio el lodge: «ver la informacion total entre periodos de fechas».
+
+    Se comprueba el camino entero: que el cargador sepa pedir un rango, que haya una
+    vista distinta para el periodo y que esa vista NO llame «en casa» a lo que es
+    pax-noche — que es el numero que se inventaria si se sumara una foto de un momento.
+    """
+    html = _html()
+    cargador = _sin_comentarios(_cuerpo_de_funcion(html, "loadResumenOperacion"))
+    c.cierto('modo = "rango"' in cargador or "modo = 'rango'" in cargador,
+             "el resumen sabe pasar a modo rango")
+    c.cierto("desde=" in cargador and "hasta=" in cargador,
+             "y le pide al servidor el rango")
+    c.cierto("vistaResumenPeriodo(" in cargador and "vistaResumenDia(" in cargador,
+             "con una vista para cada modo")
+
+    periodo = _sin_comentarios(_cuerpo_de_funcion(html, "vistaResumenPeriodo"))
+    c.cierto("Pax-noche" in periodo, "el periodo habla de pax-noche")
+    c.cierto("por_dia" in periodo, "y enseña el dia a dia que compone el total")
+    # El dia a dia no es decoracion: es lo que hace auditable el total. Sin el, un total
+    # que no cuadre con lo que alguien recuerda deja de creerse entero.
+    c.cierto("TOTAL" in periodo, "con su fila de total al final")
+
+    # Y el filtro de fechas es el MISMO en las dos vistas: cambiar de una a otra no puede
+    # obligar a buscar los botones en otro sitio.
+    for vista in ("vistaResumenDia", "vistaResumenPeriodo"):
+        c.cierto("barraFechasResumen(" in _cuerpo_de_funcion(html, vista),
+                 f"{vista} usa la misma barra de fechas")
+
+
 PRUEBAS = [
+    el_resumen_se_puede_ver_por_rango_de_fechas,
     no_contestar_no_es_decir_que_no,
     el_perfil_se_guarda_para_poder_entrar_sin_senal,
     sin_senal_no_se_ofrece_borrar_la_cache,
