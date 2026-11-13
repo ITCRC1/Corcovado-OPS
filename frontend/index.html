@@ -3385,7 +3385,10 @@ async function loadEntradas(desde, hasta) {
         <div class="stat" onclick="detalleSinac('OK')"><p class="stat-label">Ya compradas</p><p class="stat-value" style="color:var(--ok-text);">${compradas}</p></div>
         <div class="stat" id="tarjeta-tiquetes" onclick="detalleTiquetes()" title="Los comprobantes del SINAC, para enseñarlos en el puesto del parque">
           <p class="stat-label">🎟 Tiquets adquiridos</p>
-          <p class="stat-value" style="color:var(--forest);">${tiquetes.length}</p></div>
+          <p class="stat-value" style="color:var(--forest);">${tiquetesHoyManana(tiquetes).length}</p>
+          <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">hoy y mañana${
+            tiquetes.length > tiquetesHoyManana(tiquetes).length
+              ? ` · ${tiquetes.length} en el rango` : ""}</p></div>
       </div>
       <div id="sinac-detalle"></div>
       ${rows.some(e => e.huerfana) ? `
@@ -3504,6 +3507,30 @@ function marcaTiquete(e) {
     title="Ver el tiquete de esta entrada" style="text-decoration:none;">🎟</a>`;
 }
 
+// ---------- TIQUETS ADQUIRIDOS ----------
+//
+// ABRE EN HOY Y MAÑANA, y lo demás por rango. Lo pidió el lodge: «mostrar solo los del
+// día en curso y los del día siguiente, los demás que aparezcan por rango de fechas a
+// seleccionar».
+//
+// Y es lo que pide el uso: esta pantalla la mira recepción con un rango de MESES —para
+// ver qué falta comprar— así que la lista de comprobantes salía con decenas de archivos
+// de enero cuando el guía busca el de mañana. El guía no filtra: abre y enseña.
+//
+// EL RANGO POR DEFECTO NO PIDE NADA A LA RED. Se filtra la lista que la pantalla ya
+// trajo, que es lo que hace que esto siga funcionando en el puesto del parque sin señal.
+// Solo cuando alguien pide OTRAS fechas se va al servidor, y eso es una acción de
+// oficina, con internet.
+function rangoTiquetesPorDefecto() {
+  const hoy = hoyISO();
+  return { desde: hoy, hasta: shiftDate(hoy, 1) };
+}
+
+function tiquetesHoyManana(lista) {
+  const r = rangoTiquetesPorDefecto();
+  return (lista || []).filter(t => t.fecha >= r.desde && t.fecha <= r.hasta);
+}
+
 function detalleTiquetes() {
   const panel = document.getElementById("sinac-detalle");
   if (window._sinacAbierto === "TIQUETES") {
@@ -3515,8 +3542,61 @@ function detalleTiquetes() {
   window._sinacAbierto = "TIQUETES";
   document.querySelectorAll("#app .stat").forEach(s => s.classList.remove("selected"));
   if (event && event.currentTarget) event.currentTarget.classList.add("selected");
+  window._tqRango = rangoTiquetesPorDefecto();
+  pintarTiquetes();
+}
 
-  const lista = window._sinacTiquetes || [];
+// Los comprobantes que ya están en memoria dentro del rango pedido.
+function tiquetesDelRango() {
+  const r = window._tqRango || rangoTiquetesPorDefecto();
+  return (window._sinacTiquetes || [])
+    .filter(t => t.fecha >= r.desde && t.fecha <= r.hasta);
+}
+
+async function cargarTiquetesDelRango() {
+  const r = window._tqRango || rangoTiquetesPorDefecto();
+  // Si el rango pedido cae DENTRO de lo que la pantalla ya trajo, no se pide nada: se
+  // filtra lo que hay. Así mirar «la semana que viene» funciona igual sin señal.
+  if (r.desde >= FILTROS.sinac.desde && r.hasta <= FILTROS.sinac.hasta) {
+    pintarTiquetes();
+    return;
+  }
+  pintarTiquetes("buscando");
+  try {
+    const res = await fetchAuth(
+      `${API}/api/tiquetes-sinac?desde=${r.desde}&hasta=${r.hasta}`);
+    const d = await res.json();
+    // Se MEZCLAN por id, no se reemplazan: los de hoy y mañana ya están descargados en
+    // este teléfono y tirarlos obligaría a volver a bajarlos para enseñarlos.
+    const porId = {};
+    for (const t of (window._sinacTiquetes || []).concat(d.tiquetes || [])) porId[t.id] = t;
+    window._sinacTiquetes = Object.values(porId);
+    pintarTiquetes();
+  } catch (e) {
+    pintarTiquetes(String(e.message || e));
+  }
+}
+
+function verTiquetesDeOtrasFechas() {
+  const desde = document.getElementById("tq-desde").value;
+  const hasta = document.getElementById("tq-hasta").value;
+  if (!desde || !hasta) return;
+  window._tqRango = { desde, hasta: hasta < desde ? desde : hasta };
+  cargarTiquetesDelRango();
+}
+
+function tiquetesVolverAHoy() {
+  window._tqRango = rangoTiquetesPorDefecto();
+  pintarTiquetes();
+}
+
+function pintarTiquetes(aviso) {
+  const panel = document.getElementById("sinac-detalle");
+  if (!panel) return;
+  const r = window._tqRango || rangoTiquetesPorDefecto();
+  const porDefecto = r.desde === rangoTiquetesPorDefecto().desde
+                  && r.hasta === rangoTiquetesPorDefecto().hasta;
+  const lista = tiquetesDelRango();
   const puede = window._sinacPuedeSubir;
   // Agrupados por día: es como se usan. El guía busca «lo de mañana», no un archivo.
   const porDia = {};
@@ -3525,19 +3605,36 @@ function detalleTiquetes() {
 
   panel.innerHTML = `
     <div class="detail-panel">
-      <p style="font-weight:600;margin:0 0 4px;">Tiquets adquiridos — ${lista.length} comprobante(s) entre ${escaparHTML(FILTROS.sinac.desde)} y ${escaparHTML(FILTROS.sinac.hasta)}</p>
+      <p style="font-weight:600;margin:0 0 4px;">
+        Tiquets adquiridos — ${lista.length} comprobante(s)
+        ${porDefecto ? "de hoy y mañana"
+                     : `entre ${escaparHTML(r.desde)} y ${escaparHTML(r.hasta)}`}</p>
       <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">
         Se abren para enseñarlos en el puesto del parque. Al abrir esta pantalla con señal
         quedan guardados en este teléfono y se ven igual sin internet.
       </p>
+      <div class="filterbar" style="margin-bottom:10px;">
+        <button class="btn${porDefecto ? " btn-primary" : ""}" onclick="tiquetesVolverAHoy()">Hoy y mañana</button>
+        <span style="color:var(--muted);">o buscar otras fechas:</span>
+        <input type="date" id="tq-desde" value="${escaparHTML(r.desde)}">
+        <input type="date" id="tq-hasta" value="${escaparHTML(r.hasta)}">
+        <button class="btn${porDefecto ? "" : " btn-primary"}" onclick="verTiquetesDeOtrasFechas()">Ver</button>
+      </div>
+      ${aviso === "buscando"
+        ? `<p style="font-size:13px;color:var(--muted);margin:0 0 10px;">Buscando…</p>`
+        : aviso ? `<p style="font-size:13px;color:var(--danger-text);margin:0 0 10px;">
+             No se pudieron traer esos comprobantes. <small>${escaparHTML(aviso)}</small></p>` : ""}
       ${puede ? formularioTiquete() : ""}
       ${dias.length ? dias.map(f => `
         <div style="border-top:1px solid var(--border);padding:8px 0;">
-          <p style="margin:0 0 5px;font-weight:600;font-size:13px;">${escaparHTML(f)}</p>
+          <p style="margin:0 0 5px;font-weight:600;font-size:13px;">${escaparHTML(f)}${
+            f === hoyISO() ? ' <span class="badge badge-hoy">Hoy</span>' : ""}${
+            f === shiftDate(hoyISO(), 1) ? ' <span class="badge badge-tour">Mañana</span>' : ""}</p>
           ${porDia[f].map(t => lineaTiquete(t, puede)).join("")}
         </div>`).join("")
       : `<p style="font-size:13px;color:var(--muted);margin:10px 0 0;">
-           Todavía no hay comprobantes subidos en estas fechas.
+           ${porDefecto ? "No hay comprobantes subidos para hoy ni para mañana."
+                        : "No hay comprobantes subidos en esas fechas."}
            ${puede ? "Subí el que manda el SINAC al comprar la entrada." : ""}</p>`}
     </div>`;
 }
@@ -3630,21 +3727,34 @@ async function subirTiquete() {
   }
   if (!subidos) return;
   avisar(subidos === 1 ? "Tiquete guardado" : `${subidos} tiquetes guardados`);
-  await recargarConTiquetesAbiertos();
+  await recargarConTiquetesAbiertos(fecha);
 }
 
-// Se recarga la pantalla entera y se vuelve a abrir el panel donde estaba: así el
-// comprobante recién subido aparece en su día y la marca 🎟 sale en la fila que le toca,
-// sin que recepción tenga que volver a buscar el botón.
-async function recargarConTiquetesAbiertos() {
+// Se recarga la pantalla entera y se vuelve a abrir el panel: así el comprobante recién
+// subido aparece en su día y la marca 🎟 sale en la fila que le toca, sin que recepción
+// tenga que volver a buscar el botón.
+//
+// Y SE ABRE EN EL DÍA DEL COMPROBANTE, no en hoy y mañana. Recepción compra con semanas
+// de antelación: si al subir el de enero el panel volviera a hoy, el archivo acabaría de
+// guardarse y no se vería por ninguna parte — que es exactamente como se vuelve a subir
+// dos veces lo mismo.
+async function recargarConTiquetesAbiertos(fecha) {
   await loadEntradas();
-  window._sinacAbierto = null;
+  window._sinacAbierto = "TIQUETES";
+  document.querySelectorAll("#app .stat").forEach(s => s.classList.remove("selected"));
   const tarjeta = document.getElementById("tarjeta-tiquetes");
-  if (tarjeta) tarjeta.click();
+  if (tarjeta) tarjeta.classList.add("selected");
+  const r = rangoTiquetesPorDefecto();
+  window._tqRango = (fecha && (fecha < r.desde || fecha > r.hasta))
+    ? { desde: fecha, hasta: fecha } : r;
+  await cargarTiquetesDelRango();
 }
 
 async function quitarTiquete(id) {
   if (!confirm("¿Borrar este comprobante? No se puede deshacer.")) return;
+  // La fecha se guarda ANTES de borrar: después la fila ya no está y el panel no sabría
+  // a qué día volver.
+  const fecha = ((window._sinacTiquetes || []).find(x => x.id === id) || {}).fecha;
   const res = await fetchAuth(`${API}/api/tiquetes-sinac/${id}`, { method: "DELETE" });
   if (!res.ok) {
     const e = await res.json().catch(() => ({}));
@@ -3652,7 +3762,7 @@ async function quitarTiquete(id) {
     return;
   }
   avisar("Comprobante borrado");
-  await recargarConTiquetesAbiertos();
+  await recargarConTiquetesAbiertos(fecha);
 }
 
 // El archivo se pide con la sesión puesta, no con <img src> ni <iframe src>: una

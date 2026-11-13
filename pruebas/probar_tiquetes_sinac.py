@@ -415,6 +415,69 @@ def el_boton_esta_en_la_pantalla_del_sinac_y_se_llama_como_pidieron(c):
              "y usa el rango que ya tiene la pantalla")
 
 
+def el_boton_abre_en_hoy_y_mañana(c):
+    """Lo pidio el lodge: «mostrar solo los del dia en curso y los del dia siguiente, los
+    demas que aparezcan por rango de fechas a seleccionar».
+
+    Y es lo que pide el uso: esta pantalla la mira recepcion con un rango de MESES —para
+    ver que falta comprar— asi que la lista salia con decenas de archivos de enero cuando
+    el guia busca el de mañana. El guia no filtra: abre y enseña.
+    """
+    html = _html()
+    porDefecto = html.split("function rangoTiquetesPorDefecto(", 1)[1].split("\n}", 1)[0]
+    c.cierto("hoyISO()" in porDefecto, "el rango por defecto arranca HOY")
+    c.cierto("shiftDate(hoy, 1)" in porDefecto, "y llega hasta mañana")
+    # La fecha de AQUI, no la de UTC: el lodge va seis horas por detras y despues de las
+    # 6 de la tarde el «hoy» de UTC ya es mañana.
+    c.cierto("toISOString" not in porDefecto, "nada de fechas en UTC")
+
+    entradas = html.split("async function loadEntradas(", 1)[1].split("\nfunction detalleSinac", 1)[0]
+    c.cierto("tiquetesHoyManana(tiquetes).length" in entradas,
+             "el recuadro cuenta los de hoy y mañana, no los del rango entero")
+    c.cierto("hoy y mañana" in entradas, "y lo dice debajo del numero")
+
+    abrir = html.split("function detalleTiquetes(", 1)[1].split("\n}", 1)[0]
+    c.cierto("rangoTiquetesPorDefecto()" in abrir, "al abrir, el panel arranca ahi")
+
+
+def los_demas_tiquetes_salen_por_rango(c):
+    """La otra mitad de lo que se pidio: los que no son de hoy ni de mañana se buscan."""
+    html = _html()
+    panel = html.split("function pintarTiquetes(", 1)[1].split("\nfunction lineaTiquete", 1)[0]
+    for pieza in ('id="tq-desde"', 'id="tq-hasta"', "verTiquetesDeOtrasFechas()",
+                  "tiquetesVolverAHoy()"):
+        c.cierto(pieza in panel, f"el panel trae «{pieza}»")
+
+    cargar = html.split("async function cargarTiquetesDelRango(", 1)[1].split("\n}\n", 1)[0]
+    # EL RANGO POR DEFECTO NO PUEDE PEDIR NADA A LA RED: es el que mira el guia en el
+    # puesto del parque, donde no hay senal. Solo se va al servidor si piden fechas que
+    # la pantalla no trajo.
+    c.cierto("FILTROS.sinac.desde" in cargar and "FILTROS.sinac.hasta" in cargar,
+             "si el rango cae dentro de lo que ya se trajo, no se pide nada")
+    c.cierto("fetchAuth" in cargar, "y si cae fuera, se va al servidor")
+    orden = cargar.find("pintarTiquetes()") < cargar.find("fetchAuth")
+    c.cierto(orden, "primero se intenta con lo que hay, despues la red")
+
+
+def al_subir_un_tiquete_el_panel_se_abre_en_SU_dia(c):
+    """Recepcion compra con semanas de antelacion. Si al subir el de enero el panel
+    volviera a hoy, el archivo acabaria de guardarse y no se veria por ninguna parte —
+    que es exactamente como se vuelve a subir dos veces lo mismo."""
+    html = _html()
+    subir = html.split("async function subirTiquete(", 1)[1].split("\n// Se recarga", 1)[0]
+    c.cierto("recargarConTiquetesAbiertos(fecha)" in subir,
+             "al subir se le dice al panel de que dia es")
+    quitar = html.split("async function quitarTiquete(", 1)[1].split("\n}", 1)[0]
+    c.cierto("recargarConTiquetesAbiertos(fecha)" in quitar, "y al borrar tambien")
+    # La fecha se lee ANTES de borrar: despues la fila ya no esta.
+    c.cierto(quitar.find("find(x => x.id === id)") < quitar.find('method: "DELETE"'),
+             "la fecha se guarda antes de borrar la fila")
+
+    recarga = html.split("async function recargarConTiquetesAbiertos(", 1)[1].split("\n}", 1)[0]
+    c.cierto("fecha < r.desde || fecha > r.hasta" in recarga,
+             "y si ese dia no es hoy ni mañana, el panel se abre en el")
+
+
 def el_guia_no_descarga_nada(c):
     """Lo mismo que con los pasaportes: se abre para ensenarlo. El boton de pantalla
     completa del PDF no es una descarga —es la misma copia que ya esta en el telefono—,
@@ -444,6 +507,9 @@ PRUEBAS = [
     la_migracion_se_lo_da_a_los_guias_que_ya_existen,
     el_tiquete_se_sirve_del_telefono_y_no_de_la_red,
     el_boton_esta_en_la_pantalla_del_sinac_y_se_llama_como_pidieron,
+    el_boton_abre_en_hoy_y_mañana,
+    los_demas_tiquetes_salen_por_rango,
+    al_subir_un_tiquete_el_panel_se_abre_en_SU_dia,
     el_guia_no_descarga_nada,
 ]
 
