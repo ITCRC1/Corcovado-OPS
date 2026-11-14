@@ -504,7 +504,13 @@ def la_hoja_del_dia_se_puede_ver_antes_de_imprimir(c):
     imprime y se fotografia para mandarla al grupo, asi que una vista previa que no sea
     el documento final podria mentir justo en lo que se reparte: una columna que alla se
     recorta, una fila que se va a la segunda pagina. Ya paso una vez — la tabla se salia
-    de la hoja y el PDF se generaba sin error."""
+    de la hoja y el PDF se generaba sin error.
+
+    QUIEN PIDE LA HOJA ES `cargarEnElVisorDeLaHoja`, no `vistaPreviaHoja`: desde que el
+    lodge pidio cambiar de fecha «ahi mismo, sin devolverse a la pantalla principal», la
+    segunda solo apunta a que dia hay que mirar y la primera lo trae, una vez por fecha.
+    La regla comprobada es la de siempre: UNA peticion del PDF de verdad y el visor
+    compartido."""
     html = _html()
     # LAS DOS VISTAS la ofrecen: la del dia y la del periodo. El dibujo vive en ellas,
     # no en el cargador, desde que la pantalla tiene las dos.
@@ -512,7 +518,7 @@ def la_hoja_del_dia_se_puede_ver_antes_de_imprimir(c):
         c.cierto("vistaPreviaHoja(" in _cuerpo_de_funcion(html, vista),
                  f"{vista} ofrece la vista previa")
 
-    previa = _cuerpo_de_funcion(html, "vistaPreviaHoja")
+    previa = _cuerpo_de_funcion(html, "cargarEnElVisorDeLaHoja")
     c.cierto("/api/export/resumen-operacion" in previa and "formato=pdf" in previa,
              "que pide el PDF de verdad")
     # UNA sola generacion para ver, imprimir y descargar: si se pidiera otra vez, lo
@@ -522,6 +528,10 @@ def la_hoja_del_dia_se_puede_ver_antes_de_imprimir(c):
     c.igual(previa.count("fetchAuth("), 1,
             "el PDF se pide una sola vez y se reutiliza")
     c.cierto("mostrarPDF(" in previa, "y se enseña con el visor compartido")
+    # Y AL CAMBIAR DE DIA SE REEMPLAZA, no se vuelve a abrir: armar otro modal perderia
+    # el sitio del desplazamiento y dejaria el documento anterior sin liberar.
+    c.cierto("visor.cambiar(" in previa,
+             "y al cambiar de fecha se reemplaza el documento, no el visor")
 
     # EL VISOR ES UNO SOLO para todo lo que se imprime. Lo que se comprueba aqui vale
     # para la hoja del dia, la del rango y la tarjeta de alergias a la vez: si cada
@@ -536,6 +546,69 @@ def la_hoja_del_dia_se_puede_ver_antes_de_imprimir(c):
     c.cierto("contentWindow.print()" in visor, "imprime el PDF, no la pantalla")
     # Y el objeto se libera al cerrar: son megabytes por cada vez que se abre.
     c.cierto("revokeObjectURL" in visor, "y se libera la memoria al cerrar")
+
+
+def la_hoja_se_mueve_de_fecha_sin_cerrar_el_visor(c):
+    """Lo pidio el lodge: «que ahi mismo en la pantalla de previsualizacion se puedan
+    cambiar las fechas sin devolverse a la pantalla principal».
+
+    Los controles son LOS MISMOS que los de la pantalla de Resumen y en el mismo orden:
+    quien ya sabe moverse por dias no tiene que aprender otra cosa porque este mirando el
+    papel. Y al cerrar, la pantalla de atras se va al dia que acabo viendose — si no,
+    alguien que repasa cinco dias cierra y se encuentra el primero, sin las notas que
+    acaba de escribir.
+    """
+    html = _html()
+    barra = _cuerpo_de_funcion(html, "barraDeFechasDelVisor")
+    for control in ("irEnElVisor(-1)", "irEnElVisor(1)", "verDiaEnElVisor(hoyISO())",
+                    "verDiaEnElVisor(masDiasISO(1))", "verRangoEnElVisor()"):
+        c.cierto(control in barra, f"el visor trae «{control}»")
+    c.cierto('id="hoja-dia"' in barra and 'id="hoja-desde"' in barra
+             and 'id="hoja-hasta"' in barra, "con su dia y su rango")
+
+    # El modal se queda abierto: lo unico que se vuelve a pedir es el documento.
+    ir = _cuerpo_de_funcion(html, "verDiaEnElVisor")
+    c.cierto("cargarEnElVisorDeLaHoja()" in ir and "mostrarPDF(" not in ir,
+             "cambiar de dia recarga el documento, no vuelve a abrir el visor")
+
+    cerrar = _cuerpo_de_funcion(html, "cerrarVisorDeLaHoja")
+    c.cierto("loadResumenOperacion(" in cerrar,
+             "y al cerrar, la pantalla de atras se pone en la fecha que se acabo viendo")
+
+
+def las_notas_de_la_hoja_se_escriben_en_la_vista_previa(c):
+    """Lo pidio el lodge: «que tambien sea editable en la parte de notas, ahi mismo … las
+    notas escritas ahi permanecen solo ahi, no en ninguna otra parte de la app».
+
+    SE ESCRIBEN DEBAJO DEL DOCUMENTO, NO ENCIMA. Lo de arriba es el PDF de verdad y un
+    PDF no se escribe desde el navegador; dibujar en HTML una copia editable de la hoja
+    daria dos dibujos de la misma cosa, y el dia que se separaran lo que diferiria seria
+    una nota de operacion. Al guardar, la hoja se vuelve a pedir: lo que queda dibujado
+    arriba es la prueba de que se guardo.
+    """
+    html = _html()
+    panel = _cuerpo_de_funcion(html, "panelDeNotasDeLaHoja")
+    c.cierto("hoja-nota-dia" in panel, "hay una casilla para la nota del dia")
+    c.cierto("nota-de-fila" in panel, "y una por habitacion")
+    c.cierto('data-conf=' in panel,
+             "cada casilla va atada a la RESERVA, no al numero de cuarto")
+    c.cierto("puedeEscribir(\"resumen\")" in panel,
+             "y quien solo puede ver la hoja no puede escribir en ella")
+
+    guardar = _cuerpo_de_funcion(html, "mandarNotasDeLaHoja")
+    c.cierto("/api/notas-hoja" in guardar and 'method: "POST"' in guardar,
+             "se guardan en el servidor, no en el telefono")
+    c.cierto("cargarEnElVisorDeLaHoja()" in guardar,
+             "y al guardar se vuelve a pedir la hoja, que es la prueba de que quedo")
+
+    # Lo tecleado se recoge ANTES de volver a dibujar el panel: sin eso, cerrar la caja
+    # para mirar la hoja y volver a abrirla borraria lo escrito, y sin decir nada.
+    alternar = _cuerpo_de_funcion(html, "alternarNotasDeLaHoja")
+    c.cierto("recogerNotasDeLaHoja()" in alternar,
+             "cerrar y abrir la caja no borra lo que se estaba escribiendo")
+    salir = _cuerpo_de_funcion(html, "hayQueSalirDeLaFecha")
+    c.cierto("confirm(" in salir,
+             "y cambiar de dia con notas sin guardar avisa antes")
 
 
 def la_tarjeta_de_alergias_se_ve_desde_el_boton_de_alergias(c):
@@ -959,6 +1032,8 @@ PRUEBAS = [
     la_alergia_se_puede_corregir_desde_la_hoja_de_cocina,
     las_canceladas_no_salen_en_ningun_modulo,
     la_hoja_del_dia_se_puede_ver_antes_de_imprimir,
+    la_hoja_se_mueve_de_fecha_sin_cerrar_el_visor,
+    las_notas_de_la_hoja_se_escriben_en_la_vista_previa,
     la_tarjeta_de_alergias_se_ve_desde_el_boton_de_alergias,
     el_capitan_y_el_ayudante_se_eligen_en_transporte,
     reservas_muestra_los_ingresos_de_la_fecha_elegida,

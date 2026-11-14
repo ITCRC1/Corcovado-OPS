@@ -385,6 +385,87 @@ def resumen_operacion(fecha: str = None, desde: str = None, hasta: str = None,
     return _datos_del_resumen(fecha)
 
 
+# ---------------------------------------------------------------------------
+# Las notas escritas a mano sobre la hoja de operación
+# ---------------------------------------------------------------------------
+#
+# Lo pidió el lodge: «que también sea editable en la parte de notas, ahí mismo [en la
+# previsualización] … las notas escritas ahí permanecen solo ahí, no en ninguna otra
+# parte de la app». Viven en su propia tabla por eso: ver backend/notas_hoja.py.
+#
+# SE DEVUELVEN LOS RENGLONES DE LA HOJA, no solo las notas guardadas. La pantalla de
+# notas tiene que enseñar una casilla por habitación del día —con el nombre del huésped y
+# con lo que la hoja ya dice de él— y quien la abre puede estar mirando cualquier fecha,
+# incluso una de dentro de tres meses que la pantalla de atrás no ha cargado nunca.
+def _notas_de_la_hoja(fecha):
+    import hoja_dia
+    import notas_hoja
+
+    conn = get_connection()
+    try:
+        d = hoja_dia.definicion(conn, fecha, _datos_del_resumen(fecha))
+        guardadas = notas_hoja.leer(conn, fecha)
+    finally:
+        conn.close()
+
+    filas = [{"conf_no": f.get("conf_no"), "hab": f.get("hab"),
+              "huesped": f.get("huesped"), "estado": f.get("estado"),
+              "nota": f.get("nota_mano") or "",
+              # Lo que la hoja ya dice de ese renglón, para no repetirlo a mano.
+              "auto": (f.get("notas") or "")[:hoja_dia.TOPE_NOTA_AUTO]}
+             for f in d["filas"]]
+
+    # Las que quedaron sin renglón: la reserva se canceló, se movió de día o cambió de
+    # número. Se devuelven en vez de callarlas porque si no, lo escrito desaparece de la
+    # hoja sin que nadie se entere de que sigue ahí guardado — y quien lo escribió
+    # pensaría que no se guardó.
+    vivas = {str(f["conf_no"]) for f in filas if f["conf_no"]}
+    huerfanas = [{"destino": k, "texto": v}
+                 for k, v in guardadas["filas"].items() if k not in vivas]
+
+    return {"fecha": fecha, "dia": guardadas["dia"], "filas": filas,
+            "huerfanas": huerfanas,
+            "actualizado_en": guardadas["actualizado_en"],
+            "actualizado_por": guardadas["actualizado_por"],
+            "limite_dia": notas_hoja.LIMITE_DIA,
+            "limite_fila": notas_hoja.LIMITE_FILA}
+
+
+@app.get("/api/notas-hoja")
+def notas_hoja_leer(fecha: str, user: dict = Depends(exige("resumen"))):
+    """Lo escrito a mano sobre la hoja de un día, con los renglones de esa hoja."""
+    return _notas_de_la_hoja(fecha)
+
+
+@app.post("/api/notas-hoja")
+def notas_hoja_guardar(payload: dict,
+                       user: dict = Depends(exige("resumen", escribir=True))):
+    """Guarda las notas de un día. Devuelve la hoja entera, no un «ok».
+
+    Devolver lo guardado y no un acuse sirve para algo concreto: el texto pasa por un
+    recorte y una limpieza al guardarse, así que lo que queda en la base puede no ser
+    exactamente lo que se escribió. Con el acuse, la pantalla seguiría enseñando lo que
+    el usuario tecleó mientras la hoja impresa diría otra cosa.
+    """
+    import notas_hoja
+
+    fecha = (payload or {}).get("fecha")
+    if not fecha:
+        raise HTTPException(status_code=400, detail="Falta la fecha.")
+    filas = (payload or {}).get("filas") or {}
+    if not isinstance(filas, dict):
+        raise HTTPException(status_code=400,
+                            detail="«filas» tiene que venir como {reserva: texto}.")
+    conn = get_connection()
+    try:
+        notas_hoja.guardar_varias(conn, fecha, dia=(payload or {}).get("dia"),
+                                  filas={str(k): v for k, v in filas.items()},
+                                  usuario=user.get("username"))
+    finally:
+        conn.close()
+    return _notas_de_la_hoja(fecha)
+
+
 # Cuántos días como mucho. No es una limitación técnica —un día cuesta 7 ms medidos, así
 # que un año entero serían dos segundos y medio— sino de sentido: lo que se devuelve
 # incluye las listas de cocina y de spa, y un rango de años no se lee, se descarga.

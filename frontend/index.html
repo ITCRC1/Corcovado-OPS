@@ -1344,6 +1344,13 @@ function escaparHTML(t) {
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// Para el texto que va DENTRO de un atributo, entre comillas. El de arriba no escapa las
+// comillas —en el contenido de una celda no hacen daño— y ahí sí: una nota con una
+// comilla cierra el atributo antes de tiempo y lo que sigue se lee como HTML.
+function escaparAtributo(t) {
+  return escaparHTML(t).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 function aplicarPermisos() {
   const botones = document.querySelectorAll("nav button");
   botones.forEach((b, i) => {
@@ -3164,57 +3171,178 @@ async function guardarAsignacion(tourId) {
 // se mira y lo que se manda son el mismo archivo, no dos generaciones distintas.
 // `fecha` para la hoja de UN día; `desde`/`hasta` para la del periodo. Es el mismo
 // visor porque es el mismo documento: cambia la unidad de cada renglón, no el papel.
+//
+// EL VISOR TIENE MEMORIA, y eso es lo que lo separa de la tarjeta de cocina. Lo pidió el
+// lodge: «que ahí mismo en la pantalla de previsualización se puedan cambiar las fechas
+// sin devolverse a la pantalla principal, y que también sea editable en la parte de
+// notas». Así que el modal guarda qué está viendo y se mueve sin cerrarse: cerrar, buscar
+// el día en la pantalla de atrás y volver a abrir era el trabajo que se vino a quitar.
+let HOJA = null;
+
 async function vistaPreviaHoja(fecha, desde, hasta) {
+  const F = FILTROS.resumen;
+  HOJA = {
+    fecha: fecha || null,
+    desde: desde || F.desde,
+    hasta: hasta || F.hasta,
+    visor: null,
+    notas: null,
+    sucio: false,
+    // Si se quedaron abiertas, siguen abiertas al cambiar de día: quien está repasando
+    // las notas de la semana no quiere volver a abrir la caja en cada fecha.
+    notasAbiertas: false,
+    // Con qué venía la pantalla de atrás, para dejarla donde el visor acabó.
+    desdePantalla: fecha || null,
+  };
+  await cargarEnElVisorDeLaHoja();
+}
+
+// Pide la hoja de lo que HOJA esté apuntando y la pone en el visor: lo abre la primera
+// vez y lo reemplaza las siguientes.
+async function cargarEnElVisorDeLaHoja() {
+  if (!HOJA) return;
+  const rango = !HOJA.fecha;
   avisar("Preparando la hoja…");
-  const rango = !fecha && desde && hasta;
-  // La FECHA, no solo la insignia: `etiquetaFecha` devuelve «Hoy» o nada, y un título
-  // que pone «Hoja de operación» a secas no dice de qué día es el papel que se va a
-  // imprimir. En un rango no dice nada en absoluto.
-  const titulo = rango ? `${desde} — ${hasta}`
-                       : `${fecha} ${etiquetaFecha(fecha)}`;
   let blob;
   try {
     const res = await fetchAuth(
-      rango ? `${API}/api/export/resumen-operacion?desde=${desde}&hasta=${hasta}&formato=pdf`
-            : `${API}/api/export/resumen-operacion?fecha=${fecha}&formato=pdf`);
+      rango ? `${API}/api/export/resumen-operacion?desde=${HOJA.desde}&hasta=${HOJA.hasta}&formato=pdf`
+            : `${API}/api/export/resumen-operacion?fecha=${HOJA.fecha}&formato=pdf`);
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
     blob = await res.blob();
   } catch (e) {
     avisar("No se pudo generar la hoja: " + e.message, true);
     return;
   }
-  mostrarPDF({
-    blob,
-    titulo: `Hoja de operación ${titulo}`,
+  // La FECHA, no solo la insignia: `etiquetaFecha` devuelve «Hoy» o nada, y un título
+  // que pone «Hoja de operación» a secas no dice de qué día es el papel que se va a
+  // imprimir. En un rango no dice nada en absoluto.
+  const datos = {
+    titulo: `Hoja de operación ${rango ? `${HOJA.desde} — ${HOJA.hasta}`
+                                       : `${HOJA.fecha} ${etiquetaFecha(HOJA.fecha)}`}`,
     subtitulo: `Así se va a imprimir. Es el mismo archivo que se descarga.${
       rango ? " Es la hoja de siempre con una columna de fecha, y lleva "
               + "<strong>solo las entradas y salidas</strong> del periodo." : ""}`,
-    archivo: rango ? `operacion-${desde}_a_${hasta}.pdf` : `operacion-${fecha}.pdf`,
-  });
+    archivo: rango ? `operacion-${HOJA.desde}_a_${HOJA.hasta}.pdf`
+                   : `operacion-${HOJA.fecha}.pdf`,
+  };
+  if (HOJA.visor) {
+    HOJA.visor.cambiar(blob, datos);
+  } else {
+    HOJA.visor = mostrarPDF({
+      blob, ...datos,
+      barra: barraDeFechasDelVisor(),
+      alCerrar: cerrarVisorDeLaHoja,
+    });
+  }
+  const dia = document.getElementById("hoja-dia");
+  if (dia) dia.value = HOJA.fecha || "";
+  const d1 = document.getElementById("hoja-desde");
+  const d2 = document.getElementById("hoja-hasta");
+  if (d1) d1.value = HOJA.desde || "";
+  if (d2) d2.value = HOJA.hasta || "";
+  await cargarNotasDeLaHoja();
+}
+
+// Los mismos controles que la pantalla de Resumen y en el mismo orden. Son los mismos a
+// propósito: quien ya sabe moverse por días en la pantalla no tiene que aprender otra
+// cosa porque esté mirando el papel.
+function barraDeFechasDelVisor() {
+  return `
+    <div class="filterbar" style="margin:8px 0 0;">
+      <button class="btn" onclick="irEnElVisor(-1)">‹</button>
+      <input type="date" id="hoja-dia" onchange="verDiaEnElVisor(this.value)">
+      <button class="btn" onclick="irEnElVisor(1)">›</button>
+      <button class="btn" onclick="verDiaEnElVisor(hoyISO())">Hoy</button>
+      <button class="btn" onclick="verDiaEnElVisor(masDiasISO(1))">Mañana</button>
+      <span style="color:var(--muted);">o rango:</span>
+      <input type="date" id="hoja-desde">
+      <input type="date" id="hoja-hasta">
+      <button class="btn" onclick="verRangoEnElVisor()">Ver rango</button>
+    </div>`;
+}
+
+// Un día adelante o atrás. Mirando un RANGO, el día del que se parte es el primero del
+// rango: es el que se está viendo arriba del todo.
+function irEnElVisor(cuantos) {
+  verDiaEnElVisor(shiftDate(HOJA.fecha || HOJA.desde || hoyISO(), cuantos));
+}
+
+async function verDiaEnElVisor(fecha) {
+  if (!fecha || !HOJA || !hayQueSalirDeLaFecha()) return;
+  HOJA.fecha = fecha;
+  await cargarEnElVisorDeLaHoja();
+}
+
+async function verRangoEnElVisor() {
+  if (!HOJA || !hayQueSalirDeLaFecha()) return;
+  const d1 = document.getElementById("hoja-desde");
+  const d2 = document.getElementById("hoja-hasta");
+  if (!d1.value || !d2.value) { avisar("Elige las dos fechas del rango.", true); return; }
+  HOJA.fecha = null;
+  HOJA.desde = d1.value;
+  HOJA.hasta = d2.value;
+  await cargarEnElVisorDeLaHoja();
+}
+
+// UNA NOTA ESCRITA Y NO GUARDADA SE PIERDE SIN RUIDO: la hoja del día siguiente se dibuja
+// igual de bien y nadie se entera hasta que la busca. Por eso se pregunta antes de
+// moverse, y no después.
+function hayQueSalirDeLaFecha() {
+  if (!HOJA || !HOJA.sucio) return true;
+  if (confirm("Hay notas escritas que no se han guardado. ¿Salir sin guardarlas?")) {
+    HOJA.sucio = false;
+    return true;
+  }
+  return false;
+}
+
+// Al cerrar, la pantalla de atrás se va al día que acabó viéndose. Sin esto, alguien que
+// repasa cinco días en el visor cierra y se encuentra con el primero, como si no hubiera
+// pasado nada — y las notas que acaba de escribir no estarían en la hoja que ve.
+function cerrarVisorDeLaHoja() {
+  const estado = HOJA;
+  HOJA = null;
+  if (!estado) return;
+  if (estado.fecha && estado.fecha !== estado.desdePantalla) {
+    loadResumenOperacion(estado.fecha);
+  } else if (!estado.fecha && estado.desdePantalla) {
+    loadResumenOperacion(null, estado.desde, estado.hasta);
+  }
 }
 
 // EL VISOR, UNO SOLO para todo lo que se imprime. Lo usan la hoja de operación y la
 // tarjeta de alergias, y lo usará lo próximo: si cada pantalla armara el suyo, una
 // acabaría sin liberar el objeto al cerrar —son megabytes por cada vez que se abre— o
 // imprimiendo la página en vez del PDF.
-function mostrarPDF({ blob, titulo, subtitulo, archivo, ancho }) {
-  const url = URL.createObjectURL(blob);
+// Devuelve un mando para quien lo abre: `cambiar()` pone otro documento SIN cerrar el
+// visor y `ponerPanel()` reemplaza lo que va debajo. Las dos hacen falta desde que la
+// hoja se puede mover de día por dentro: volver a armar el modal en cada fecha perdería
+// el sitio del desplazamiento y, peor, dejaría el documento anterior sin liberar.
+function mostrarPDF({ blob, titulo, subtitulo, archivo, ancho, barra, panel, alCerrar }) {
+  let url = URL.createObjectURL(blob);
+  let nombre = archivo || "documento.pdf";
   const fondo = document.createElement("div");
   fondo.className = "modal-fondo";
   fondo.id = "modal-hoja";
-  const cerrar = () => { URL.revokeObjectURL(url); fondo.remove(); };
+  const cerrar = () => {
+    URL.revokeObjectURL(url);
+    fondo.remove();
+    if (alCerrar) alCerrar();
+  };
   fondo.onclick = (e) => { if (e.target === fondo) cerrar(); };
   fondo.innerHTML = `
     <div class="modal-caja" style="max-width:${ancho || "1180px"};">
       <div class="modal-encabezado">
         <div>
-          <p class="title">${titulo}</p>
-          <p class="subtitle">${subtitulo || ""}</p>
+          <p class="title" id="hoja-titulo">${titulo}</p>
+          <p class="subtitle" id="hoja-sub">${subtitulo || ""}</p>
         </div>
         <button class="modal-cerrar" id="hoja-x" title="Cerrar">×</button>
       </div>
+      ${barra || ""}
       <iframe id="hoja-marco" src="${url}#toolbar=0&navpanes=0"
-              style="width:100%;height:68vh;min-height:420px;border:1px solid var(--linea,#d8d8d0);
+              style="width:100%;height:58vh;min-height:360px;border:1px solid var(--linea,#d8d8d0);
                      border-radius:8px;background:#fff;margin-top:10px;"></iframe>
       <p style="margin:10px 0 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <button class="btn btn-primary" id="hoja-imprimir">🖨 Imprimir</button>
@@ -3223,6 +3351,7 @@ function mostrarPDF({ blob, titulo, subtitulo, archivo, ancho }) {
           Si el recuadro sale en blanco —pasa en algunos teléfonos, que no traen visor de
           PDF— descárgalo y se abre igual.</span>
       </p>
+      <div id="hoja-panel">${panel || ""}</div>
     </div>`;
   document.body.appendChild(fondo);
 
@@ -3230,7 +3359,7 @@ function mostrarPDF({ blob, titulo, subtitulo, archivo, ancho }) {
   fondo.querySelector("#hoja-imprimir").onclick = () => {
     // Se imprime el PDF que ya está cargado, no la página: imprimir la pantalla daría
     // el menú, las tarjetas y los botones.
-    const marco = document.getElementById("hoja-marco");
+    const marco = fondo.querySelector("#hoja-marco");
     try {
       marco.contentWindow.focus();
       marco.contentWindow.print();
@@ -3243,9 +3372,241 @@ function mostrarPDF({ blob, titulo, subtitulo, archivo, ancho }) {
   fondo.querySelector("#hoja-descargar").onclick = () => {
     const a = document.createElement("a");
     a.href = url;
-    a.download = archivo || "documento.pdf";
+    a.download = nombre;
     document.body.appendChild(a); a.click(); a.remove();
   };
+
+  return {
+    cerrar,
+    cambiar(nuevo, datos) {
+      // SE LIBERA EL ANTERIOR. Cada hoja son cientos de kilobytes que el navegador no
+      // suelta solo; repasando una semana, el visor se quedaría con siete colgando.
+      URL.revokeObjectURL(url);
+      url = URL.createObjectURL(nuevo);
+      fondo.querySelector("#hoja-marco").src = `${url}#toolbar=0&navpanes=0`;
+      // innerHTML y no textContent: el titulo lleva la insignia de «Hoy», que es HTML.
+      // Con textContent se leia «2026-11-15 <span class="badge">Hoy</span>» tal cual.
+      if (datos && datos.titulo) fondo.querySelector("#hoja-titulo").innerHTML = datos.titulo;
+      if (datos && datos.subtitulo !== undefined) fondo.querySelector("#hoja-sub").innerHTML = datos.subtitulo;
+      if (datos && datos.archivo) nombre = datos.archivo;
+    },
+    ponerPanel(html) { fondo.querySelector("#hoja-panel").innerHTML = html || ""; },
+  };
+}
+
+// ---------- LAS NOTAS ESCRITAS A MANO SOBRE LA HOJA ----------
+//
+// Lo pidió el lodge: «que también sea editable en la parte de notas, ahí mismo … que sea
+// capaz de guardar todo lo editado en fechas posteriores … las notas escritas ahí
+// permanecen solo ahí, no en ninguna otra parte de la app».
+//
+// SE ESCRIBEN DEBAJO DEL DOCUMENTO, NO ENCIMA. Lo que se enseña arriba es el PDF de
+// verdad —el que se imprime y se fotografía— y un PDF no se escribe desde el navegador.
+// Dibujar en HTML una copia editable de la hoja daría dos dibujos de la misma cosa, y el
+// día que se separaran, lo que diferiría sería una nota de operación. Así que se escriben
+// aquí y, al guardar, la hoja se vuelve a pedir: lo que aparece dibujado arriba es la
+// prueba de que quedó guardado.
+async function cargarNotasDeLaHoja() {
+  if (!HOJA || !HOJA.visor) return;
+  if (!HOJA.fecha) {
+    // Una nota es de UN día. En la hoja de un rango se enseñan —salen en una caja al
+    // final— pero se escriben en el día al que pertenecen.
+    HOJA.notas = null;
+    HOJA.visor.ponerPanel(`
+      <p style="margin:12px 0 0;border-top:1px solid var(--border);padding-top:10px;
+                font-size:11.5px;color:var(--muted);">
+        ✎ Las notas de este periodo salen al final de la hoja. Para escribirlas, abre el
+        día al que pertenecen con los botones de arriba.</p>`);
+    return;
+  }
+  try {
+    const res = await fetchAuth(`${API}/api/notas-hoja?fecha=${HOJA.fecha}`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
+    HOJA.notas = await res.json();
+  } catch (e) {
+    HOJA.notas = null;
+    HOJA.visor.ponerPanel(`
+      <p style="margin:12px 0 0;font-size:11.5px;color:var(--warn-text);">
+        No se pudieron cargar las notas de este día: ${escaparHTML(e.message || e)}</p>`);
+    return;
+  }
+  HOJA.visor.ponerPanel(panelDeNotasDeLaHoja());
+  rellenarNotasDeLaHoja();
+  ajustarAltoDeLaHoja();
+}
+
+// Con las notas abiertas el documento encoge. Si no, entre el papel y las casillas la
+// caja mide más que la pantalla y hay que desplazarse para ver lo que se está anotando —
+// justo lo que se vino a quitar: escribir la nota mirando la hoja.
+function ajustarAltoDeLaHoja() {
+  const marco = document.getElementById("hoja-marco");
+  if (marco) marco.style.height = (HOJA && HOJA.notasAbiertas) ? "34vh" : "58vh";
+}
+
+function panelDeNotasDeLaHoja() {
+  const n = HOJA && HOJA.notas;
+  if (!n) return "";
+  const puede = puedeEscribir("resumen");
+  const cuantas = (n.dia ? 1 : 0) + n.filas.filter(f => f.nota).length;
+  const abierto = HOJA.notasAbiertas;
+  const cuando = n.actualizado_en
+    ? `Última vez: ${n.actualizado_en.replace("T", " ").slice(0, 16)}${
+        n.actualizado_por ? ` · ${escaparHTML(n.actualizado_por)}` : ""}`
+    : "";
+  return `
+    <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px;">
+      <p style="margin:0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <button class="btn${abierto ? " btn-primary" : ""}" onclick="alternarNotasDeLaHoja()">
+          ✎ Notas de la hoja${cuantas ? ` · ${cuantas}` : ""}</button>
+        <span style="font-size:11.5px;color:var(--muted);">
+          Se guardan para el <strong>${escaparHTML(n.fecha)}</strong> y salen solo en esta
+          hoja: no tocan la reserva ni ninguna otra pantalla.</span>
+      </p>
+      <div id="hoja-notas" style="display:${abierto ? "block" : "none"};margin-top:10px;">
+        <label for="hoja-nota-dia"
+               style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;">
+          Nota del día <span style="font-weight:400;color:var(--muted);">— sale en una
+          caja al pie de la hoja</span></label>
+        <textarea id="hoja-nota-dia" rows="2" maxlength="${n.limite_dia}"
+                  ${puede ? "" : "disabled"}
+                  placeholder="Lo que haya que decirle a todo el staff ese día"
+                  style="width:100%;font:inherit;font-size:13px;padding:6px 8px;
+                         border:1px solid var(--border);border-radius:8px;
+                         background:var(--card);color:inherit;resize:vertical;"></textarea>
+
+        <p style="font-size:12px;font-weight:600;margin:12px 0 4px;">
+          Por habitación <span style="font-weight:400;color:var(--muted);">— se escribe
+          delante de lo que la columna NOTAS ya dice, y en negrita</span></p>
+        <div style="max-height:210px;overflow:auto;border:1px solid var(--border);
+                    border-radius:8px;padding:8px;">
+          ${n.filas.length ? n.filas.map(f => `
+            <div style="display:grid;grid-template-columns:minmax(110px,180px) 1fr;
+                        gap:8px;align-items:start;margin-bottom:6px;">
+              <div style="font-size:12px;line-height:1.35;">
+                <strong>${escaparHTML(f.hab || "—")}</strong> ·
+                ${escaparHTML(f.huesped || "")}
+                <br><span style="font-size:10.5px;color:var(--muted);">${escaparHTML(f.estado)}</span>
+              </div>
+              <div>
+                <input class="nota-de-fila" type="text"
+                       data-conf="${escaparAtributo(f.conf_no)}"
+                       maxlength="${n.limite_fila}" ${puede ? "" : "disabled"}
+                       style="width:100%;font:inherit;font-size:13px;padding:5px 8px;
+                              border:1px solid var(--border);border-radius:8px;
+                              background:var(--card);color:inherit;">
+                ${f.auto ? `<span style="font-size:10.5px;color:var(--muted);">
+                  la hoja ya dice: ${escaparHTML(f.auto)}</span>` : ""}
+              </div>
+            </div>`).join("")
+          : `<p class="empty">Este día no tiene movimiento.</p>`}
+        </div>
+
+        ${(n.huerfanas || []).length ? `
+          <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;
+                      padding:9px 11px;margin-top:8px;font-size:12px;">
+            <p style="margin:0 0 4px;font-weight:600;">
+              ${n.huerfanas.length} nota${n.huerfanas.length === 1 ? "" : "s"} de reservas
+              que ya no están en la hoja de este día</p>
+            <p style="margin:0 0 6px;font-size:11.5px;">La reserva se canceló, se movió de
+              fecha o cambió de número. No salen impresas; se enseñan para que no
+              desaparezcan en silencio.</p>
+            ${n.huerfanas.map(h => `<p style="margin:0 0 3px;">
+              · ${escaparHTML(h.texto)}
+              ${puede ? `<button class="btn" style="padding:1px 7px;font-size:11px;"
+                   onclick="borrarNotaSinRenglon('${escaparAtributo(h.destino)}')">borrar</button>` : ""}
+            </p>`).join("")}
+          </div>` : ""}
+
+        <p style="margin:10px 0 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          ${puede ? `<button class="btn btn-primary" id="hoja-notas-guardar"
+                             onclick="guardarNotasDeLaHoja()">Guardar notas</button>`
+                  : `<span style="font-size:11.5px;color:var(--muted);">Tu usuario puede
+                     ver la hoja, pero no escribir en ella.</span>`}
+          <span style="font-size:11.5px;color:var(--muted);">${cuando}</span>
+        </p>
+      </div>
+    </div>`;
+}
+
+// El texto se pone DESDE JAVASCRIPT y no dentro del HTML: una nota con comillas metida en
+// un atributo value lo cerraría antes de tiempo, y lo que siguiera se leería como HTML.
+function rellenarNotasDeLaHoja() {
+  const n = HOJA && HOJA.notas;
+  if (!n) return;
+  const dia = document.getElementById("hoja-nota-dia");
+  if (dia) { dia.value = n.dia || ""; dia.oninput = marcarNotasSucias; }
+  document.querySelectorAll("#hoja-notas input.nota-de-fila").forEach(campo => {
+    const f = n.filas.find(x => String(x.conf_no) === campo.dataset.conf);
+    campo.value = (f && f.nota) || "";
+    campo.oninput = marcarNotasSucias;
+  });
+}
+
+// Lo escrito se recoge del formulario ANTES de volver a dibujar el panel. Sin esto,
+// cerrar la caja para mirar la hoja y volver a abrirla borraría lo que se acababa de
+// escribir, y sin decir nada — que es la peor forma de perder una nota.
+function recogerNotasDeLaHoja() {
+  const n = HOJA && HOJA.notas;
+  if (!n) return;
+  const dia = document.getElementById("hoja-nota-dia");
+  if (dia) n.dia = dia.value;
+  document.querySelectorAll("#hoja-notas input.nota-de-fila").forEach(campo => {
+    const f = n.filas.find(x => String(x.conf_no) === campo.dataset.conf);
+    if (f) f.nota = campo.value;
+  });
+}
+
+function marcarNotasSucias() { if (HOJA) HOJA.sucio = true; }
+
+function alternarNotasDeLaHoja() {
+  if (!HOJA || !HOJA.notas) return;
+  recogerNotasDeLaHoja();
+  HOJA.notasAbiertas = !HOJA.notasAbiertas;
+  HOJA.visor.ponerPanel(panelDeNotasDeLaHoja());
+  rellenarNotasDeLaHoja();
+  ajustarAltoDeLaHoja();
+}
+
+async function guardarNotasDeLaHoja() {
+  if (!HOJA || !HOJA.fecha || !HOJA.notas) return;
+  recogerNotasDeLaHoja();
+  const filas = {};
+  HOJA.notas.filas.forEach(f => {
+    if (f.conf_no) filas[f.conf_no] = f.nota || "";
+  });
+  await mandarNotasDeLaHoja({ dia: HOJA.notas.dia || "", filas });
+}
+
+// Borra una nota que se quedó sin renglón. Va por el mismo camino que guardar —texto
+// vacío BORRA— para no tener dos formas de escribir en la misma tabla.
+async function borrarNotaSinRenglon(destino) {
+  if (!HOJA || !HOJA.fecha) return;
+  if (!confirm("¿Borrar esta nota? No se puede deshacer.")) return;
+  const filas = {};
+  filas[destino] = "";
+  await mandarNotasDeLaHoja({ filas });
+}
+
+async function mandarNotasDeLaHoja(cambios) {
+  const boton = document.getElementById("hoja-notas-guardar");
+  if (boton) { boton.disabled = true; boton.textContent = "Guardando…"; }
+  try {
+    const res = await fetchAuth(`${API}/api/notas-hoja`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fecha: HOJA.fecha, ...cambios }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
+    HOJA.notas = await res.json();
+    HOJA.sucio = false;
+    avisar("Notas guardadas.");
+    // LA HOJA SE VUELVE A PEDIR, y eso es lo que convierte el botón en una prueba: lo que
+    // queda dibujado arriba sale de la base, no de lo que se acaba de teclear. Si algo no
+    // se guardó, se ve al instante y en el documento que se va a imprimir.
+    await cargarEnElVisorDeLaHoja();
+  } catch (e) {
+    avisar("No se pudieron guardar las notas: " + (e.message || e), true);
+    if (boton) { boton.disabled = false; boton.textContent = "Guardar notas"; }
+  }
 }
 
 // ---------- LA TARJETA DE ALERGIAS PARA COCINA ----------

@@ -19,6 +19,7 @@ import datetime
 import io
 
 import notas as _notas
+import notas_hoja as _mano
 
 # Los colores del Excel del lodge. Se copian tal cual: el staff ya asocia el verde con
 # «se queda», el rojo con «se va» y el amarillo con «llega», y eso se lee antes que el
@@ -41,6 +42,48 @@ def etiqueta_tour(t):
     grupo = "" if (t.get("grupo_operativo") or "A") == "A" else f" gr.{t['grupo_operativo']}"
     privado = " · PRIVADO" if t.get("es_privado") else ""
     return f"{t.get('tour_codigo') or ''}{grupo}{privado}"
+
+
+# Cuánto de la nota AUTOMÁTICA cabe en la casilla. Lo escrito a mano no entra en este
+# recorte: ver `nota_de_la_fila`.
+TOPE_NOTA_AUTO = 110
+
+
+def nota_de_la_fila(f, tope=TOPE_NOTA_AUTO):
+    """Lo que dice la casilla NOTAS: lo escrito a mano delante, lo automático detrás.
+
+    EN UNA SOLA FUNCIÓN porque esa casilla se escribe en cuatro sitios —el PDF del día,
+    el del rango y los dos Excel— y los cuatro tienen que decir lo mismo. Es la misma
+    razón por la que `etiqueta_tour` existe: con cuatro copias, una acaba poniendo lo
+    escrito a mano detrás, o recortándolo, y la misma hoja dice dos cosas distintas según
+    por dónde se mire.
+
+    LO ESCRITO A MANO VA PRIMERO Y NO SE RECORTA. El recorte existe para que la nota de
+    Opera —que llega con párrafos enteros— no se coma el renglón, y alcanza solo a esa
+    parte. Alguien que escribe una nota a mano sobre la hoja del día la escribe porque
+    hace falta hoy; perder la mitad por una cuenta de caracteres sería tirar justo lo que
+    alguien decidió añadir.
+    """
+    mano = (f.get("nota_mano") or "").strip()
+    auto = (f.get("notas") or "")[:tope]
+    return " · ".join(x for x in (mano, auto) if x)
+
+
+def _notas_con_marcado(f, escape, tope=TOPE_NOTA_AUTO):
+    """Lo mismo, con lo escrito a mano en negrita, para el PDF.
+
+    Se distingue a propósito: en una columna que mezcla lo que trajo Opera con lo que
+    escribió una persona, quien lee la hoja en el muelle tiene que poder ver cuál es cuál
+    —lo de la persona es lo que no está en ningún otro lado.
+    """
+    mano = (f.get("nota_mano") or "").strip()
+    auto = (f.get("notas") or "")[:tope]
+    partes = []
+    if mano:
+        partes.append(f"<b>{escape(mano)}</b>")
+    if auto:
+        partes.append(escape(auto))
+    return " · ".join(partes)
 
 # Las columnas de la tabla ancha, en el orden del Excel del lodge.
 # (clave, título, ancho en mm para el PDF)
@@ -122,6 +165,12 @@ def definicion(conn, fecha, resumen):
     """
     import traslados as _tras
 
+    # Lo que alguien escribió A MANO sobre la hoja de este día. Se lee aquí y no en el
+    # dibujo porque de aquí salen las cuatro salidas —PDF del día, PDF del rango y los dos
+    # Excel—: leyéndolo en cada dibujo, el día que uno se olvidara, la hoja impresa y la
+    # del pantallazo dirían cosas distintas. Ver notas_hoja.py.
+    mano = _mano.leer(conn, fecha)
+
     # --- Una fila por habitación, igual que la hoja del lodge ---
     por_conf, por_hab = {}, {}
 
@@ -140,6 +189,10 @@ def definicion(conn, fecha, resumen):
             "sierpe": "", "drake": "", "horario": "", "guia_t": "", "bote_t": "",
             "notas": _notas.solo_lo_operativo(
                 r.get("nota_salida") or r.get("nota_ingreso")),
+            # Lo escrito a mano va en SU PROPIO campo y no pegado al de arriba: esa
+            # columna la reescribe la carga de Opera, así que mezclarlos haría que la
+            # importación siguiente se llevara por delante lo que escribió una persona.
+            "nota_mano": mano["filas"].get(str(clave), ""),
             "tours": [],
             "tour": "", "tour_guia": "", "tour_bote": "",
         }
@@ -311,6 +364,9 @@ def definicion(conn, fecha, resumen):
     return {
         "fecha": fecha,
         "filas": filas,
+        # La nota del día entero, la que va al pie. Vacía no dibuja nada: una caja con
+        # el título y nada dentro ocuparía hoja para decir que no hay nada que decir.
+        "nota_dia": mano["dia"],
         "tours": tours,
         "totales_punto": totales,
         "movimientos": [
@@ -413,7 +469,13 @@ def _techo_por_las_palabras(d, columnas=None):
     for clave, titulo, ancho in columnas:
         mirar(titulo, ancho, negrita=True)
         for fila in d["filas"]:
-            mirar(fila.get(clave), ancho, negrita=clave in ("estado", "hab", "fecha"))
+            # La casilla de NOTAS lleva además lo escrito a mano, y en negrita. Mirando
+            # solo `fila["notas"]` una palabra larga escrita hoy no contaría para el
+            # techo, y la hoja crecería hasta partirla por la mitad.
+            if clave == "notas":
+                mirar(nota_de_la_fila(fila), ancho, negrita=True)
+            else:
+                mirar(fila.get(clave), ancho, negrita=clave in ("estado", "hab", "fecha"))
 
     # Y la caja de tours de arriba, que es donde viven los nombres de guía y de bote.
     for t in d["tours"]:
@@ -483,6 +545,33 @@ def _cabecera_verde(tabla, k, hasta_col=-1):
         ("LEFTPADDING", (0, 0), (-1, -1), MARGEN_CELDA * k),
         ("RIGHTPADDING", (0, 0), (-1, -1), MARGEN_CELDA * k),
     ]))
+
+
+def _caja_de_notas(renglones, k, columnas=None, titulo="NOTAS DEL DÍA"):
+    """La caja de lo escrito a mano, al pie de la hoja. Vacía no devuelve nada.
+
+    `renglones` son párrafos ya armados por quien llama, con SU estilo: la hoja del día
+    dibuja con la letra que le quepa y la del rango con la de siempre.
+
+    VA AL PIE Y NO ARRIBA porque arriba está el resumen que se lee de un vistazo —tours,
+    movimientos, muelles— y meter ahí un párrafo libre empujaría hacia abajo justo lo que
+    el staff busca primero. Al pie, cerrando la hoja, es donde el lodge escribe las suyas
+    en el Excel que lleva meses armando a mano.
+
+    Ancha como la tabla, no como la página: una caja más ancha que la tabla que tiene
+    encima se lee como si fuera otra cosa, de otro documento.
+    """
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Table
+
+    renglones = [x for x in renglones if x]
+    if not renglones:
+        return []
+    ancho = sum(c[2] for c in (columnas or COLUMNAS))
+    tabla = Table([[titulo]] + [[r] for r in renglones],
+                  colWidths=[ancho * mm], hAlign="LEFT")
+    _cabecera_verde(tabla, k)
+    return [tabla]
 
 
 def _historia(d, k, aire=0.0):
@@ -644,7 +733,7 @@ def _historia(d, k, aire=0.0):
             texto(f["huesped"]),
             f["pax"], f["sierpe"], f["drake"], f["horario"],
             texto(f["guia_t"]), texto(f["bote_t"]),
-            texto((f["notas"] or "")[:110]),
+            Paragraph(_notas_con_marcado(f, escape), chico),
             renglones(f["tour"]), renglones(f["tour_guia"]), renglones(f["tour_bote"]),
         ])
     if not d["filas"]:
@@ -687,6 +776,16 @@ def _historia(d, k, aire=0.0):
             estilo.append(("BACKGROUND", (0, n), (-1, n), colors.HexColor("#" + fondo)))
     tabla.setStyle(TableStyle(estilo))
     e.append(tabla)
+
+    # ---- La nota del día, escrita a mano sobre esta hoja ----
+    #
+    # Entra en la MEDIDA como todo lo demás —se arma aquí dentro, no se pega después— así
+    # que la letra ya encoge contando con ella. Pegándola fuera, un día con nota larga se
+    # habría ido a la segunda página con la hoja ya decidida: exactamente el fallo que
+    # costó rehacer este dibujo.
+    if d.get("nota_dia"):
+        e += [Spacer(1, hueco)] + _caja_de_notas(
+            [Paragraph(escape(d["nota_dia"]), chico)], k)
     return e
 
 
@@ -797,15 +896,26 @@ def definicion_rango(dias):
     """
     filas, tours, movs, puntos = [], {}, {"ENTRA": [0, 0], "SALE": [0, 0]}, {
         "Sierpe": {"ENTRA": 0, "SALE": 0}, "Drake": {"ENTRA": 0, "SALE": 0}}
+    notas_dia = []
     habitaciones_noche = pax_noche = pax_desayunos = 0
 
     for d in dias:
         for f in d["filas"]:
             if f["estado"] == "EN CASA":
+                # LO ESCRITO A MANO NO SE CAE DEL RESUMEN. El rango deja fuera a quien
+                # solo está alojado —es lo que lo hace un resumen y lo eligió el lodge—
+                # pero si alguien se tomó el trabajo de escribir una nota sobre ese
+                # renglón, es justo lo que no está en ningún otro sitio. El renglón
+                # aparece; en los totales de movimiento sigue sin contar, porque no se
+                # movió.
+                if (f.get("nota_mano") or "").strip():
+                    filas.append(dict(f, fecha=_dmy(d["fecha"])))
                 continue
             filas.append(dict(f, fecha=_dmy(d["fecha"])))
             movs[f["estado"]][0] += 1
             movs[f["estado"]][1] += f.get("pax") or 0
+        if d.get("nota_dia"):
+            notas_dia.append((_dmy(d["fecha"]), d["nota_dia"]))
         for t in d["tours"]:
             fila = tours.setdefault(etiqueta_tour(t), {
                 "tour_codigo": t.get("tour_codigo"),
@@ -829,6 +939,10 @@ def definicion_rango(dias):
         "hasta": dias[-1]["fecha"] if dias else None,
         "dias": len(dias),
         "filas": filas,
+        # Las notas del día de cada día del periodo, con su fecha delante. Sueltas no se
+        # entenderían: en una hoja de quince días, «llega el inspector» sin fecha no dice
+        # qué día hay que esperarlo.
+        "notas_dia": notas_dia,
         "tours": sorted(tours.values(), key=lambda t: (-t["pax_total"],
                                                        t["tour_codigo"] or "")),
         "totales_punto": puntos,
@@ -971,7 +1085,7 @@ def _historia_rango(d, k=1.0):
             f["fecha"], f["estado"], f["hab"], texto(f["huesped"]),
             f["pax"], f["sierpe"], f["drake"], f["horario"],
             texto(f["guia_t"]), texto(f["bote_t"]),
-            texto((f["notas"] or "")[:110]),
+            Paragraph(_notas_con_marcado(f, escape), chico),
             renglones(f["tour"]), renglones(f["tour_guia"]), renglones(f["tour_bote"]),
         ])
     if not d["filas"]:
@@ -1010,6 +1124,13 @@ def _historia_rango(d, k=1.0):
             estilo.append(("BACKGROUND", (0, n), (-1, n), colors.HexColor("#" + fondo)))
     tabla.setStyle(TableStyle(estilo))
     e.append(tabla)
+
+    # ---- Las notas de cada día, al final del periodo ----
+    if d.get("notas_dia"):
+        e += [Spacer(1, hueco)] + _caja_de_notas(
+            [Paragraph(f"<b>{escape(fecha)}</b> · {escape(nota)}", chico)
+             for fecha, nota in d["notas_dia"]],
+            k, columnas=COLUMNAS_RANGO, titulo="NOTAS DE CADA DÍA")
     return e
 
 
@@ -1144,7 +1265,10 @@ def excel_rango(d):
     for n, f in enumerate(d["filas"], start=inicio + 2):
         relleno = FONDO.get(f["estado"])
         for i, (clave, _, _) in enumerate(COLUMNAS_RANGO, start=1):
-            valor = f.get(clave)
+            # La misma casilla que el PDF, de la misma función: lo escrito a mano
+            # delante. En el Excel no puede ir en negrita dentro de la celda, pero el
+            # texto es palabra por palabra el del papel.
+            valor = nota_de_la_fila(f) if clave == "notas" else f.get(clave)
             c = poner(n, i, valor if valor != "" else None)
             if relleno:
                 c.fill = PatternFill("solid", fgColor=relleno)
@@ -1154,6 +1278,11 @@ def excel_rango(d):
                 c.alignment = centrado
             if clave in ("tour", "tour_guia", "tour_bote", "huesped", "notas"):
                 c.alignment = Alignment(vertical="top", wrap_text=True)
+
+    if d.get("notas_dia"):
+        _caja_notas_excel(ws, inicio + 3 + len(d["filas"]),
+                          [f"{fecha} · {nota}" for fecha, nota in d["notas_dia"]],
+                          len(COLUMNAS_RANGO), titulo="NOTAS DE CADA DÍA")
 
     for i, (_, titulo, ancho) in enumerate(COLUMNAS_RANGO, start=1):
         ws.column_dimensions[get_column_letter(i)].width = max(ancho * 0.52,
@@ -1171,6 +1300,39 @@ def _guardar(wb):
     wb.save(buf)
     buf.seek(0)
     return buf
+
+
+def _caja_notas_excel(ws, fila, renglones, cuantas_columnas, titulo="NOTAS DEL DÍA"):
+    """El mismo bloque de notas del PDF, en el Excel: título verde y el texto debajo.
+
+    Está en una función porque lo ponen las dos hojas —la del día y la del periodo— por
+    el mismo motivo que `_cabecera_verde` en el PDF: dos copias acabarían con dos verdes
+    y dos sitios distintos donde buscarlo.
+    """
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    renglones = [x for x in renglones if x]
+    if not renglones:
+        return fila
+    borde = Border(*[Side(style="thin", color=LINEA)] * 4)
+
+    def banda(n, valor, **kw):
+        c = ws.cell(row=n, column=1, value=valor)
+        c.border = borde
+        for k, v in kw.items():
+            setattr(c, k, v)
+        ws.merge_cells(start_row=n, start_column=1, end_row=n,
+                       end_column=cuantas_columnas)
+        # El borde de una celda fusionada solo lo pinta la primera; sin esto la caja
+        # quedaría abierta por la derecha.
+        for x in range(2, cuantas_columnas + 1):
+            ws.cell(row=n, column=x).border = borde
+
+    banda(fila, titulo, font=Font(bold=True, color="FFFFFF"),
+          fill=PatternFill("solid", fgColor=VERDE_CAB))
+    for i, texto in enumerate(renglones, start=1):
+        banda(fila + i, texto, alignment=Alignment(vertical="top", wrap_text=True))
+    return fila + len(renglones)
 
 
 def _pintar_excel(ws, d):
@@ -1256,7 +1418,8 @@ def _pintar_excel(ws, d):
     for n, f in enumerate(d["filas"], start=inicio + 2):
         relleno = FONDO.get(f["estado"])
         for i, (clave, _, _) in enumerate(COLUMNAS, start=1):
-            valor = f.get(clave)
+            # Lo escrito a mano delante, igual que en el PDF y desde la misma función.
+            valor = nota_de_la_fila(f) if clave == "notas" else f.get(clave)
             c = poner(n, i, valor if valor != "" else None)
             if relleno:
                 c.fill = PatternFill("solid", fgColor=relleno)
@@ -1268,6 +1431,10 @@ def _pintar_excel(ws, d):
             # enseña solo el primero y el resto se queda escondido dentro de la celda.
             if clave in ("tour", "tour_guia", "tour_bote", "huesped", "notas"):
                 c.alignment = Alignment(vertical="top", wrap_text=True)
+
+    if d.get("nota_dia"):
+        _caja_notas_excel(ws, inicio + 3 + len(d["filas"]), [d["nota_dia"]],
+                          len(COLUMNAS))
 
     for i, (_, titulo, ancho) in enumerate(COLUMNAS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = max(ancho * 0.52, len(titulo) + 2)

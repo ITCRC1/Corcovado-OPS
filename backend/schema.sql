@@ -879,3 +879,34 @@ CREATE TABLE IF NOT EXISTS opera_ciclo (
 );
 
 CREATE INDEX IF NOT EXISTS idx_opera_ciclo_fecha ON opera_ciclo (ocurrio_en DESC);
+
+
+-- ---------------------------------------------------------------------------
+-- Las notas escritas A MANO sobre la hoja de operacion
+-- ---------------------------------------------------------------------------
+-- Lo pidio el lodge: «que tambien sea editable en la parte de notas, ahi mismo
+-- [en la previsualizacion] ... las notas escritas ahi permanecen solo ahi, no en
+-- ninguna otra parte de la app».
+--
+-- Esa frase es la razon de que esto sea una tabla propia y no un campo mas de la
+-- reserva. La columna NOTAS de la hoja la llena sola la carga de Opera -- la nota
+-- de la reserva, el vuelo, el BT -- asi que escribir encima tendria dos fallos
+-- callados: la siguiente importacion lo borraria, y lo escrito para UN dia saldria
+-- en los otros cuatro que el huesped esta alojado. Ver backend/notas_hoja.py.
+CREATE TABLE IF NOT EXISTS nota_hoja (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- El dia de la hoja, en ISO. Una nota es SIEMPRE de un dia concreto.
+    fecha TEXT NOT NULL,
+    -- Vacio = la nota del dia entero, la que va al pie de la hoja. Si no, el
+    -- conf_no de la reserva: POR RESERVA Y NO POR HABITACION, porque el cuarto se
+    -- reutiliza y el dia que cambia de huesped el que sale y el que entra tienen el
+    -- mismo numero. Va vacio y no NULL para que el UNIQUE de abajo sirva: en SQLite
+    -- dos NULL no chocan entre si, asi que con NULL cabrian catorce notas del dia.
+    destino TEXT NOT NULL DEFAULT '',
+    texto TEXT NOT NULL,
+    actualizado_en TEXT NOT NULL,
+    actualizado_por TEXT,
+    UNIQUE (fecha, destino)
+);
+
+CREATE INDEX IF NOT EXISTS idx_nota_hoja_fecha ON nota_hoja (fecha);
