@@ -275,6 +275,10 @@ def pdf(d):
 
     if not d["bloques"]:
         e.append(Paragraph("No hay nadie comiendo este día.", hab))
+    elif isinstance(e[-1], Spacer):
+        # El aire que separa un bloque del siguiente sobra después del último, y abajo de
+        # una tarjeta que se mira en un teléfono un dedo de blanco se nota.
+        e.pop()
 
     # El papel crece con el contenido en vez de partirse: esta hoja se mira de un tirón
     # en un teléfono, y pasar de página en una lista de habitaciones es perder el hilo.
@@ -292,3 +296,31 @@ def pdf(d):
 def _alto_necesario(piezas, ancho):
     """Lo que mide la hoja armada, en puntos. El marco se queda 12 pt de relleno."""
     return sum(p.wrap(ancho, 0x7FFFFFFF)[1] for p in piezas) + 12
+
+
+# Lo bastante nítida para leerla ampliada en un teléfono y lo bastante liviana para
+# mandarla por WhatsApp: a 200 puntos por pulgada, la tarjeta de 120 mm sale de unos
+# 945 px de ancho y pesa menos de 200 KB.
+RESOLUCION = 200
+
+
+def imagen(d, resolucion=RESOLUCION):
+    """La MISMA tarjeta, en PNG.
+
+    POR QUÉ HACE FALTA. Android no dibuja un PDF dentro de un marco: en vez de la tarjeta
+    enseña un recuadro gris con el nombre del archivo y un botón «Abrir» —que además se
+    lo pasa al gestor de descargas—. Una imagen la dibuja cualquier teléfono sin
+    descargar nada. Y de paso es lo que se acaba reenviando al grupo de cocina: una foto
+    se pega en WhatsApp, un PDF se adjunta.
+
+    SE RASTERIZA EL PDF, no se vuelve a dibujar. Dibujar la tarjeta dos veces —una para
+    el papel y otra para la pantalla— es garantizar que algún día digan cosas distintas,
+    y aquí lo que diferiría serían alergias. La imagen ES el PDF, fotografiado.
+    """
+    import pdfplumber
+
+    salida = io.BytesIO()
+    with pdfplumber.open(pdf(d)) as doc:
+        doc.pages[0].to_image(resolution=resolucion).original.save(salida, format="PNG")
+    salida.seek(0)
+    return salida

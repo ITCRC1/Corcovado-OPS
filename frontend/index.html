@@ -3254,6 +3254,10 @@ function mostrarPDF({ blob, titulo, subtitulo, archivo, ancho }) {
 // donde las alergias se puedan ver en previsualización en el siguiente formato». El
 // formato es la tarjeta que ya arman a mano y mandan al grupo de cocina, así que se
 // imita: quien la recibe lleva meses leyéndola así.
+// LLEGA COMO IMAGEN, no como PDF. Android no dibuja un PDF dentro de un marco: enseña un
+// recuadro gris con el nombre del archivo y un botón «Abrir», que además se lo pasa al
+// gestor de descargas. Una imagen la dibuja cualquier teléfono sin descargar nada — y es
+// lo que se acaba reenviando al grupo de cocina, porque una foto se pega en WhatsApp.
 async function vistaPreviaAlergias(fecha) {
   avisar("Preparando la tarjeta…");
   let blob;
@@ -3265,16 +3269,91 @@ async function vistaPreviaAlergias(fecha) {
     avisar("No se pudo generar la tarjeta: " + e.message, true);
     return;
   }
-  mostrarPDF({
+  mostrarImagen({
     blob,
     titulo: `Alergias y preferencias · ${fecha}`,
     subtitulo: "Para mandarle a cocina. Salen todas las habitaciones que comen ese día, "
                + "y el color dice de qué clase es: <strong>rojo</strong> alergia, "
                + "<strong>verde</strong> vegetariano o vegano, <strong>ámbar</strong> "
                + "preferencia.",
-    archivo: `alergias-${fecha}.pdf`,
-    ancho: "560px",
+    archivo: `alergias-${fecha}.png`,
+    pdf: `${API}/api/export/alergias-cocina?fecha=${fecha}&formato=pdf`,
   });
+}
+
+// El visor de IMÁGENES. Es el hermano de mostrarPDF y existe por la misma razón que
+// aquel: un solo sitio donde se libera el objeto al cerrar y donde se imprime lo que se
+// está viendo. La diferencia es que esto se ve en TODOS los teléfonos.
+function mostrarImagen({ blob, titulo, subtitulo, archivo, pdf }) {
+  const url = URL.createObjectURL(blob);
+  const fondo = document.createElement("div");
+  fondo.className = "modal-fondo";
+  fondo.id = "modal-imagen";
+  const cerrar = () => { URL.revokeObjectURL(url); fondo.remove(); };
+  fondo.onclick = (e) => { if (e.target === fondo) cerrar(); };
+  fondo.innerHTML = `
+    <div class="modal-caja" style="max-width:620px;">
+      <div class="modal-encabezado">
+        <div>
+          <p class="title">${titulo}</p>
+          <p class="subtitle">${subtitulo || ""}</p>
+        </div>
+        <button class="modal-cerrar" id="img-x" title="Cerrar">×</button>
+      </div>
+      <div style="text-align:center;margin-top:10px;max-height:66vh;overflow:auto;
+                  background:var(--card);border:1px solid var(--border);
+                  border-radius:8px;padding:8px;">
+        <img id="img-vista" src="${url}" alt=""
+             style="max-width:100%;border-radius:4px;">
+      </div>
+      <p style="margin:10px 0 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <button class="btn btn-primary" id="img-descargar">⬇ Descargar imagen</button>
+        <button class="btn" id="img-imprimir">🖨 Imprimir</button>
+        ${pdf ? `<a href="#" id="img-pdf" style="font-size:11.5px;color:var(--forest);">o descargar en PDF</a>` : ""}
+        <span style="font-size:11.5px;color:var(--muted);">
+          Es una imagen: se puede reenviar por WhatsApp tal cual.</span>
+      </p>
+    </div>`;
+  document.body.appendChild(fondo);
+
+  fondo.querySelector("#img-x").onclick = cerrar;
+  fondo.querySelector("#img-descargar").onclick = () => {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = archivo || "imagen.png";
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+  fondo.querySelector("#img-imprimir").onclick = () => {
+    // Se imprime SOLO la imagen, en un marco oculto: mandar a imprimir la página daría
+    // el menú, las tarjetas y los botones. Y en un marco, no en una ventana nueva, que
+    // es lo que los bloqueadores de ventanas emergentes cortan en el teléfono.
+    const marco = document.createElement("iframe");
+    marco.setAttribute("aria-hidden", "true");
+    marco.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
+    marco.srcdoc = `<!doctype html><meta charset="utf-8">
+      <style>@page{margin:8mm}html,body{margin:0}
+        img{max-width:100%}</style>
+      <img src="${url}" onload="window.focus();window.print();">`;
+    document.body.appendChild(marco);
+    setTimeout(() => marco.remove(), 60000);
+  };
+  if (pdf) {
+    fondo.querySelector("#img-pdf").onclick = async (ev) => {
+      ev.preventDefault();
+      try {
+        const res = await fetchAuth(pdf);
+        const b = await res.blob();
+        const u = URL.createObjectURL(b);
+        const a = document.createElement("a");
+        a.href = u;
+        a.download = (archivo || "documento").replace(/\.png$/, ".pdf");
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(u), 30000);
+      } catch (e) {
+        avisar("No se pudo bajar el PDF: " + (e.message || e), true);
+      }
+    };
+  }
 }
 
 // ---------- TRANSPORTE ----------

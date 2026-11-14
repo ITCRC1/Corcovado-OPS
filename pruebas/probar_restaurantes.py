@@ -786,6 +786,39 @@ def la_tarjeta_sale_en_pdf_de_una_sola_pagina(c):
     c.cierto("Vegetarianos" in texto, "y la etiqueta de quien la tiene")
 
 
+def la_tarjeta_tambien_sale_como_imagen(c):
+    """ANDROID NO DIBUJA UN PDF DENTRO DE UN MARCO. En vez de la tarjeta enseña un
+    recuadro gris con el nombre del archivo y un boton «Abrir» —que ademas se lo pasa al
+    gestor de descargas—. Lo reporto el lodge con una foto de la pantalla.
+
+    Una imagen la dibuja cualquier telefono sin descargar nada, y de paso es lo que se
+    acaba reenviando al grupo de cocina: una foto se pega en WhatsApp, un PDF se adjunta.
+
+    SE RASTERIZA EL PDF, no se vuelve a dibujar: dibujar la tarjeta dos veces es
+    garantizar que algun dia digan cosas distintas, y lo que diferiria serian alergias.
+    """
+    import hoja_alergias as HA
+    from PIL import Image
+    conn = comun.base_limpia()
+    llega = ddmmyy(HOY - datetime.timedelta(days=1))
+    sale = ddmmyy(HOY + datetime.timedelta(days=3))
+    lote = [dict(reserva(680600 + i, f"{i + 1:02d}", llega, sale, adl=2),
+                 notas="Gluten free" if i == 0 else "")
+            for i in range(5)]
+    cargar(lote, vistas=lote)
+    d = HA.definicion(conn, HOY.isoformat())
+    conn.close()
+
+    buf = HA.imagen(d)
+    im = Image.open(buf)
+    c.igual(im.format, "PNG", "la tarjeta sale en PNG")
+    c.cierto(im.width > 700, f"con ancho de sobra para leerla ({im.width} px)")
+    c.cierto(im.height > 200, "y el alto de su contenido")
+    # Liviana: se manda por WhatsApp con el internet del lodge.
+    c.cierto(buf.getbuffer().nbytes < 600_000,
+             f"y liviana ({buf.getbuffer().nbytes // 1024} KB)")
+
+
 PRUEBAS = [
     el_reparto_automatico_no_parte_un_grupo,
     mover_una_habitacion_del_grupo_las_mueve_todas,
@@ -813,6 +846,7 @@ PRUEBAS = [
     la_tarjeta_lista_TODAS_las_habitaciones_que_comen,
     la_tarjeta_junta_a_los_que_viajan_juntos,
     la_tarjeta_sale_en_pdf_de_una_sola_pagina,
+    la_tarjeta_tambien_sale_como_imagen,
 ]
 
 

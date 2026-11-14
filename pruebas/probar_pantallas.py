@@ -556,7 +556,23 @@ def la_tarjeta_de_alergias_se_ve_desde_el_boton_de_alergias(c):
     previa = _cuerpo_de_funcion(html, "vistaPreviaAlergias")
     c.cierto("/api/export/alergias-cocina" in previa, "pide la tarjeta de verdad")
     c.igual(previa.count("fetchAuth("), 1, "una sola vez")
-    c.cierto("mostrarPDF(" in previa, "y la enseña con el mismo visor que la hoja")
+
+    # COMO IMAGEN, NO COMO PDF. Android no dibuja un PDF dentro de un marco: enseña un
+    # recuadro gris con el nombre del archivo y un boton «Abrir» que ademas se lo pasa al
+    # gestor de descargas. Lo reporto el lodge con una foto de la pantalla. Una imagen la
+    # dibuja cualquier telefono sin descargar nada.
+    c.cierto("mostrarImagen(" in previa, "y la enseña como IMAGEN")
+    c.cierto("mostrarPDF(" not in previa,
+             "nunca como PDF en un marco: en Android eso no se ve")
+
+    visor = _cuerpo_de_funcion(html, "mostrarImagen")
+    c.cierto("<img" in visor, "el visor de imagenes usa <img>, que lo dibuja todo telefono")
+    c.cierto("revokeObjectURL" in visor, "y libera la memoria al cerrar")
+    # Imprimir imprime SOLO la imagen, y en un marco oculto: una ventana nueva es lo que
+    # los bloqueadores cortan en el telefono.
+    c.cierto("srcdoc" in visor and "window.print()" in visor,
+             "imprime solo la imagen, en un marco oculto")
+    c.cierto("window.open" not in visor, "sin abrir ventanas nuevas")
 
 
 def el_capitan_y_el_ayudante_se_eligen_en_transporte(c):

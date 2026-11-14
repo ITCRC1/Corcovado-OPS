@@ -3945,11 +3945,24 @@ from fastapi.responses import Response
 import exports
 
 
-def export_response(buf, filename, formato):
-    media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if formato == "xlsx" else "application/pdf"
+TIPOS_DE_EXPORTACION = {
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pdf": "application/pdf",
+    "png": "image/png",
+}
+
+
+def export_response(buf, filename, formato, adjunto=True):
+    """La descarga. `adjunto=False` la sirve para MIRARLA en vez de bajarla.
+
+    La diferencia es `Content-Disposition`: con «attachment» el navegador la guarda, y
+    una imagen que se quiere enseñar dentro de la pantalla tiene que llegar «inline».
+    """
     return Response(
-        content=buf.getvalue(), media_type=media,
-        headers={"Content-Disposition": f'attachment; filename="{filename}.{formato}"'},
+        content=buf.getvalue(),
+        media_type=TIPOS_DE_EXPORTACION.get(formato, "application/pdf"),
+        headers={"Content-Disposition":
+                 f'{"attachment" if adjunto else "inline"}; filename="{filename}.{formato}"'},
     )
 
 
@@ -4054,12 +4067,18 @@ def export_resumen(fecha: str = None, desde: str = None, hasta: str = None,
 
 
 @app.get("/api/export/alergias-cocina")
-def export_alergias_cocina(fecha: str, user: dict = Depends(exige("restaurantes"))):
+def export_alergias_cocina(fecha: str, formato: str = "png",
+                           user: dict = Depends(exige("restaurantes"))):
     """La tarjeta de alergias y preferencias que se le manda al grupo de cocina.
 
     Es un formato aparte del informe de restaurantes a propósito: lo pidió el lodge con
     el dibujo que ya usa, y lo que se reparte por WhatsApp tiene que verse como lo que
     la gente de cocina lleva meses leyendo.
+
+    SALE COMO IMAGEN, no como PDF. Android no dibuja un PDF dentro de un marco: en vez de
+    la tarjeta enseña un recuadro gris con el nombre del archivo y un botón «Abrir», que
+    es justo lo que el lodge reportó. Una imagen la dibuja cualquier teléfono sin
+    descargar nada — y además es lo que se acaba reenviando por WhatsApp.
     """
     import hoja_alergias
     conn = get_connection()
@@ -4067,7 +4086,10 @@ def export_alergias_cocina(fecha: str, user: dict = Depends(exige("restaurantes"
         d = hoja_alergias.definicion(conn, fecha)
     finally:
         conn.close()
-    return export_response(hoja_alergias.pdf(d), f"alergias-{fecha}", "pdf")
+    if formato == "pdf":
+        return export_response(hoja_alergias.pdf(d), f"alergias-{fecha}", "pdf")
+    return export_response(hoja_alergias.imagen(d), f"alergias-{fecha}", "png",
+                           adjunto=False)
 
 
 @app.get("/api/export/restaurantes")
