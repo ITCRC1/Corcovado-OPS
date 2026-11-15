@@ -4033,17 +4033,22 @@ TIPOS_DE_EXPORTACION = {
 }
 
 
-def export_response(buf, filename, formato, adjunto=True):
+def export_response(buf, filename, formato, adjunto=True, cabeceras=None):
     """La descarga. `adjunto=False` la sirve para MIRARLA en vez de bajarla.
 
     La diferencia es `Content-Disposition`: con «attachment» el navegador la guarda, y
     una imagen que se quiere enseñar dentro de la pantalla tiene que llegar «inline».
+
+    `cabeceras` son las que añade quien llama: la hoja de un periodo manda cuántas
+    páginas tiene, para que la pantalla sepa si hay que ofrecer la siguiente.
     """
+    todas = {"Content-Disposition":
+             f'{"attachment" if adjunto else "inline"}; filename="{filename}.{formato}"'}
+    todas.update(cabeceras or {})
     return Response(
         content=buf.getvalue(),
         media_type=TIPOS_DE_EXPORTACION.get(formato, "application/pdf"),
-        headers={"Content-Disposition":
-                 f'{"attachment" if adjunto else "inline"}; filename="{filename}.{formato}"'},
+        headers=todas,
     )
 
 
@@ -4107,7 +4112,8 @@ def export_entradas(desde: str = None, hasta: str = None, formato: str = "xlsx",
 
 @app.get("/api/export/resumen-operacion")
 def export_resumen(fecha: str = None, desde: str = None, hasta: str = None,
-                   formato: str = "xlsx", user: dict = Depends(exige("resumen"))):
+                   formato: str = "xlsx", pagina: int = 1,
+                   user: dict = Depends(exige("resumen"))):
     """La hoja del día, con el formato que el lodge ya manda al staff.
 
     No es el informe analítico de las demás áreas: esto se imprime o se fotografía y se
@@ -4117,6 +4123,13 @@ def export_resumen(fecha: str = None, desde: str = None, hasta: str = None,
     Los datos son los MISMOS que ve la pantalla de Resumen —se piden a la misma
     función— para que el pantallazo que circula no pueda decir un número distinto del
     que se ve al abrir la app.
+
+    TRES FORMATOS, UN SOLO DOCUMENTO. El PDF es el que se imprime; el Excel, el que se
+    toca; y el PNG es ese mismo PDF rasterizado, porque ANDROID NO DIBUJA UN PDF DENTRO
+    DE UN MARCO —en la tablet del lodge la vista previa salía como un recuadro gris con
+    un botón «Abrir»—. La imagen no es otro dibujo: es el PDF fotografiado, así que no
+    puede decir algo distinto de lo que se imprime. `pagina` solo sirve para el PNG de un
+    periodo, que ocupa varias; la respuesta dice cuántas hay en la cabecera X-Paginas.
     """
     import hoja_dia
     # EL RANGO ES LA MISMA HOJA, con una columna de fecha delante y las páginas que haga
@@ -4132,8 +4145,11 @@ def export_resumen(fecha: str = None, desde: str = None, hasta: str = None,
         finally:
             conn.close()
         d = hoja_dia.definicion_rango(dias)
+        nombre = f"operacion-{fechas[0]}_a_{fechas[-1]}"
+        if formato == "png":
+            return _hoja_en_imagen(hoja_dia.pdf_rango(d), nombre, pagina)
         buf = hoja_dia.excel_rango(d) if formato == "xlsx" else hoja_dia.pdf_rango(d)
-        return export_response(buf, f"operacion-{fechas[0]}_a_{fechas[-1]}", formato)
+        return export_response(buf, nombre, formato)
 
     if not fecha:
         raise HTTPException(status_code=400,
@@ -4143,8 +4159,28 @@ def export_resumen(fecha: str = None, desde: str = None, hasta: str = None,
         d = hoja_dia.definicion(conn, fecha, _datos_del_resumen(fecha))
     finally:
         conn.close()
+    if formato == "png":
+        return _hoja_en_imagen(hoja_dia.pdf(d), f"operacion-{fecha}", pagina)
     buf = hoja_dia.excel(d) if formato == "xlsx" else hoja_dia.pdf(d)
     return export_response(buf, f"operacion-{fecha}", formato)
+
+
+def _hoja_en_imagen(pdf, nombre, pagina):
+    """El PDF de la hoja, rasterizado, servido para MIRARLO dentro de la pantalla.
+
+    Va «inline» y no como descarga: lo que se quiere es que se dibuje en el visor, que
+    es justo lo que un PDF no hace en Android. Y lleva el total de páginas, porque una
+    hoja de periodo ocupa varias y quien la mira tiene que poder pasarlas —y, al
+    imprimir, llevárselas todas.
+    """
+    import exports
+
+    imagen, total = exports.pagina_en_imagen(pdf, pagina)
+    n = min(max(int(pagina or 1), 1), total)
+    sufijo = f"-p{n}" if total > 1 else ""
+    return export_response(imagen, nombre + sufijo, "png", adjunto=False,
+                           cabeceras={"X-Paginas": str(total),
+                                      "Access-Control-Expose-Headers": "X-Paginas"})
 
 
 @app.get("/api/export/alergias-cocina")

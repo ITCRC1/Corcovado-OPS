@@ -25,6 +25,47 @@ if not os.path.exists(LOGO_PATH):
     LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "frontend", "assets", "logo.jpg")
 
 
+# ---------------------------------------------------------------------------
+# Un PDF, visto como imagen
+# ---------------------------------------------------------------------------
+#
+# POR QUÉ EXISTE. ANDROID NO DIBUJA UN PDF DENTRO DE UN MARCO. En vez del documento
+# enseña un recuadro gris con el nombre del archivo y un botón «Abrir» que se lo pasa al
+# gestor de descargas. Lo reportó el lodge dos veces con una foto de la pantalla: primero
+# con la tarjeta de cocina y después con la hoja de operación en la tablet. En iPhone y en
+# computadora sí se ve, y por eso las dos veces pasó la primera vuelta.
+#
+# SE RASTERIZA EL PDF, NO SE VUELVE A DIBUJAR. Dibujar el mismo documento dos veces —una
+# para el papel y otra para la pantalla— es garantizar que algún día digan cosas
+# distintas, y aquí lo que diferiría serían alergias y notas de operación. La imagen ES el
+# PDF, fotografiado.
+#
+# Lo bastante nítida para leerla ampliada en una tablet y lo bastante liviana para el
+# internet del lodge: a 200 puntos por pulgada, la hoja apaisada sale de 2339 px de ancho
+# y pesa unos 30 KB (medido sobre la hoja de un día, 72 ms).
+RESOLUCION = 200
+
+
+def pagina_en_imagen(buf, pagina=1, resolucion=RESOLUCION):
+    """Una página de un PDF en PNG. Devuelve (imagen, cuántas páginas tiene).
+
+    Devuelve el total junto con la imagen a propósito: quien la pide necesita saber si
+    hay más —para ofrecer la página siguiente, o para imprimirlas todas— y abrir el PDF
+    dos veces para contarlas sería rasterizar dos veces.
+    """
+    import pdfplumber
+
+    salida = io.BytesIO()
+    buf.seek(0)
+    with pdfplumber.open(buf) as doc:
+        total = len(doc.pages)
+        n = min(max(int(pagina or 1), 1), total)
+        doc.pages[n - 1].to_image(resolution=resolucion).original.save(
+            salida, format="PNG")
+    salida.seek(0)
+    return salida, total
+
+
 def to_xlsx(columns, rows, title):
     """columns: lista de (clave, encabezado). rows: lista de dicts."""
     wb = Workbook()

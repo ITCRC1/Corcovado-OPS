@@ -963,6 +963,57 @@ def la_hoja_del_dia_deja_fuera_las_notas_de_plata(c):
              "pero la hora a la que tiene que registrarse para el vuelo SI")
 
 
+def la_hoja_se_mira_como_imagen_porque_android_no_dibuja_el_pdf(c):
+    """ANDROID NO DIBUJA UN PDF DENTRO DE UN MARCO.
+
+    En vez del documento pone un recuadro gris con el nombre del archivo y un boton
+    «Abrir» que se lo pasa al gestor de descargas. El lodge lo reporto dos veces con una
+    foto de la pantalla: primero la tarjeta de cocina y despues la hoja de operacion en
+    la tablet. En iPhone y en computadora si se ve, y por eso las dos veces paso la
+    primera vuelta.
+
+    SE RASTERIZA EL PDF, NO SE VUELVE A DIBUJAR. Dibujar la hoja dos veces —una para el
+    papel y otra para la pantalla— es garantizar que algun dia digan cosas distintas, y
+    aqui lo que diferiria serian horas de bote y notas de operacion. La imagen ES el PDF,
+    fotografiado: por eso sale de la misma funcion que ya usa la tarjeta de cocina.
+    """
+    import exports
+    import hoja_dia
+    import main
+    from PIL import Image
+
+    d = _hoja_falsa(20, tours=3, pesadas=2)
+    imagen, total = exports.pagina_en_imagen(hoja_dia.pdf(d))
+    c.igual(total, 1, "la hoja de un dia es una sola pagina")
+    foto = Image.open(imagen)
+    c.cierto(foto.width > 2000, f"sale nitida para ampliarla ({foto.width} px de ancho)")
+    c.cierto(foto.width > foto.height, "y apaisada, como el papel")
+    peso = len(imagen.getvalue()) // 1024
+    c.cierto(peso < 600, f"y liviana para el internet del lodge ({peso} KB)")
+
+    # La respuesta se sirve para MIRARLA, no para bajarla, y dice cuantas paginas hay.
+    resp = main._hoja_en_imagen(hoja_dia.pdf(d), "operacion-x", 1)
+    c.igual(resp.media_type, "image/png", "se sirve como imagen")
+    c.igual(resp.headers.get("x-paginas"), "1", "diciendo cuantas paginas tiene")
+    c.cierto("inline" in (resp.headers.get("content-disposition") or ""),
+             "y para enseñarla dentro de la pantalla, no para descargarla")
+
+    # UN PERIODO OCUPA VARIAS, y cada una tiene que poder pedirse por separado: es lo que
+    # deja pasar de pagina en el visor y lo que permite imprimirlas todas.
+    dias = _dias_de_prueba(30)
+    pdf = hoja_dia.pdf_rango(hoja_dia.definicion_rango(dias))
+    una, cuantas = exports.pagina_en_imagen(pdf, 1)
+    c.cierto(cuantas > 1, f"la hoja de 30 dias ocupa varias paginas ({cuantas})")
+    dos, _ = exports.pagina_en_imagen(pdf, 2)
+    c.cierto(una.getvalue() != dos.getvalue(), "y cada pagina es distinta")
+    # Pedir una que no existe no revienta: da la ultima. Una pantalla que se equivoque
+    # de numero tiene que enseñar algo, no un error.
+    fuera, _ = exports.pagina_en_imagen(pdf, 999)
+    ultima, _ = exports.pagina_en_imagen(pdf, cuantas)
+    c.igual(fuera.getvalue(), ultima.getvalue(),
+            "y pedir una pagina que no existe da la ultima, no un error")
+
+
 def un_area_inventada_se_rechaza(c):
     conn = comun.base_limpia()
     try:
@@ -1009,6 +1060,7 @@ PRUEBAS = [
     el_horario_de_la_hoja_es_el_del_traslado_no_el_del_vuelo,
     una_habitacion_que_cambia_de_huesped_no_mezcla_sus_horas,
     la_hoja_del_dia_deja_fuera_las_notas_de_plata,
+    la_hoja_se_mira_como_imagen_porque_android_no_dibuja_el_pdf,
     un_area_inventada_se_rechaza,
 ]
 

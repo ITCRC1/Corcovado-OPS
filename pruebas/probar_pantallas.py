@@ -509,8 +509,13 @@ def la_hoja_del_dia_se_puede_ver_antes_de_imprimir(c):
     QUIEN PIDE LA HOJA ES `cargarEnElVisorDeLaHoja`, no `vistaPreviaHoja`: desde que el
     lodge pidio cambiar de fecha «ahi mismo, sin devolverse a la pantalla principal», la
     segunda solo apunta a que dia hay que mirar y la primera lo trae, una vez por fecha.
-    La regla comprobada es la de siempre: UNA peticion del PDF de verdad y el visor
-    compartido."""
+
+    Y SE ENSEÑA COMO IMAGEN, NO COMO PDF DENTRO DE UN MARCO. Android no dibuja un PDF en
+    un marco: pone un recuadro gris con el nombre del archivo y un boton «Abrir» que se
+    lo pasa al gestor de descargas. El lodge lo reporto dos veces con una foto de la
+    pantalla —la tarjeta de cocina primero, la hoja de operacion en la tablet despues— y
+    las dos veces habia pasado la primera vuelta porque en iPhone y en computadora si se
+    ve. La imagen no es otro dibujo: es el mismo PDF rasterizado en el servidor."""
     html = _html()
     # LAS DOS VISTAS la ofrecen: la del dia y la del periodo. El dibujo vive en ellas,
     # no en el cargador, desde que la pantalla tiene las dos.
@@ -519,33 +524,67 @@ def la_hoja_del_dia_se_puede_ver_antes_de_imprimir(c):
                  f"{vista} ofrece la vista previa")
 
     previa = _cuerpo_de_funcion(html, "cargarEnElVisorDeLaHoja")
-    c.cierto("/api/export/resumen-operacion" in previa and "formato=pdf" in previa,
-             "que pide el PDF de verdad")
+    c.cierto('direccionDeLaHoja("png"' in previa, "la hoja se pide como IMAGEN")
     # UNA sola generacion para ver, imprimir y descargar: si se pidiera otra vez, lo
     # que se mira y lo que se manda podrian ser archivos distintos. Se cuentan las
     # PETICIONES, no las veces que aparece la direccion: desde que hay vista de periodo
     # la direccion se escribe de dos formas —un dia o un rango— en la misma peticion.
-    c.igual(previa.count("fetchAuth("), 1,
-            "el PDF se pide una sola vez y se reutiliza")
-    c.cierto("mostrarPDF(" in previa, "y se enseña con el visor compartido")
+    c.igual(previa.count("fetchAuth("), 1, "se pide una sola vez y se reutiliza")
+    c.cierto("mostrarImagen(" in previa, "y se enseña con el visor compartido")
     # Y AL CAMBIAR DE DIA SE REEMPLAZA, no se vuelve a abrir: armar otro modal perderia
     # el sitio del desplazamiento y dejaria el documento anterior sin liberar.
     c.cierto("visor.cambiar(" in previa,
              "y al cambiar de fecha se reemplaza el documento, no el visor")
+    # El PDF no desaparece: sigue a un clic para quien lo quiera imprimir o archivar.
+    c.cierto('direccionDeLaHoja("pdf")' in previa, "y el PDF sigue estando a un clic")
 
-    # EL VISOR ES UNO SOLO para todo lo que se imprime. Lo que se comprueba aqui vale
-    # para la hoja del dia, la del rango y la tarjeta de alergias a la vez: si cada
-    # pantalla armara el suyo, una acabaria sin liberar el objeto o imprimiendo la
-    # pagina en vez del PDF.
-    visor = _cuerpo_de_funcion(html, "mostrarPDF")
-    c.cierto("<iframe" in visor, "el visor lo enseña dentro de la pantalla")
-    c.cierto("hoja-imprimir" in visor and "hoja-descargar" in visor,
+    # LA DIRECCION ES UNA SOLA. Lo que se mira, lo que se imprime y lo que se baja tienen
+    # que salir del mismo sitio; con una copia por cada uso, el dia que cambie un
+    # parametro se estaria imprimiendo un documento distinto del que se mira.
+    direccion = _cuerpo_de_funcion(html, "direccionDeLaHoja")
+    c.cierto("/api/export/resumen-operacion" in direccion and "formato=" in direccion,
+             "la direccion de la hoja se arma en un solo sitio")
+
+    # EL VISOR ES UNO SOLO para todo lo que se mira y se imprime: la hoja del dia, la del
+    # rango y la tarjeta de alergias. Si cada pantalla armara el suyo, una acabaria sin
+    # liberar el objeto o imprimiendo la pagina entera.
+    c.cierto("function mostrarPDF(" not in html,
+             "ya no queda un visor que meta el PDF en un marco")
+    visor = _cuerpo_de_funcion(html, "mostrarImagen")
+    c.cierto("<iframe" not in visor,
+             "el visor no enseña el documento dentro de un marco")
+    c.cierto("img-imprimir" in visor and "img-descargar" in visor,
              "con imprimir y descargar sobre el mismo archivo")
-    # Imprimir tiene que imprimir el PDF, no la pantalla: imprimir la pagina daria el
-    # menu, las tarjetas y los botones.
-    c.cierto("contentWindow.print()" in visor, "imprime el PDF, no la pantalla")
     # Y el objeto se libera al cerrar: son megabytes por cada vez que se abre.
     c.cierto("revokeObjectURL" in visor, "y se libera la memoria al cerrar")
+
+
+def imprimir_un_periodo_lleva_todas_sus_paginas(c):
+    """La hoja de un periodo ocupa varias paginas. Imprimir en silencio solo la que se
+    esta mirando es la clase de fallo del que nadie se entera hasta que busca en el papel
+    lo que no esta.
+
+    Las demas se piden SOLO al mandar a imprimir: traerlas al abrir gastaria el internet
+    del lodge en ocho paginas que casi siempre nadie va a mirar.
+    """
+    html = _html()
+    traer = _cuerpo_de_funcion(html, "paginasDeLaHojaParaImprimir")
+    c.cierto("HOJA.paginas" in traer and "for (" in traer,
+             "al imprimir se traen todas las paginas")
+    c.cierto("revokeObjectURL" in traer, "y se sueltan despues")
+
+    visor = _cuerpo_de_funcion(html, "mostrarImagen")
+    c.cierto("alImprimir" in visor, "el visor las pide antes de imprimir")
+    c.cierto("page-break-after" in visor, "y cada una sale en su propia hoja")
+    # Apaisada si la imagen es mas ancha que alta: la hoja de operacion lo es, y en un
+    # folio vertical saldria reducida a un tercio y sin poder leerse.
+    c.cierto("naturalWidth" in visor and "landscape" in visor,
+             "y la hoja apaisada se imprime apaisada")
+
+    # Pasar de pagina no puede borrar lo que se este escribiendo en las notas.
+    cargar = _cuerpo_de_funcion(html, "cargarEnElVisorDeLaHoja")
+    c.cierto("soloPagina" in cargar and "if (!soloPagina) await cargarNotasDeLaHoja()" in cargar,
+             "y pasar de pagina no vuelve a pedir las notas")
 
 
 def la_hoja_se_mueve_de_fecha_sin_cerrar_el_visor(c):
@@ -1032,6 +1071,7 @@ PRUEBAS = [
     la_alergia_se_puede_corregir_desde_la_hoja_de_cocina,
     las_canceladas_no_salen_en_ningun_modulo,
     la_hoja_del_dia_se_puede_ver_antes_de_imprimir,
+    imprimir_un_periodo_lleva_todas_sus_paginas,
     la_hoja_se_mueve_de_fecha_sin_cerrar_el_visor,
     las_notas_de_la_hoja_se_escriben_en_la_vista_previa,
     la_tarjeta_de_alergias_se_ve_desde_el_boton_de_alergias,

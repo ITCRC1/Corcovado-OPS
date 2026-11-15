@@ -3197,42 +3197,70 @@ async function vistaPreviaHoja(fecha, desde, hasta) {
   await cargarEnElVisorDeLaHoja();
 }
 
+// La dirección de la hoja que el visor está mirando, en el formato que se le pida. En
+// UNA función porque la piden cuatro: la vista, el enlace al PDF, el paso de página y la
+// impresión. Con cuatro copias, el día que cambie un parámetro una se quedaría atrás y
+// se estaría imprimiendo un documento distinto del que se mira.
+function direccionDeLaHoja(formato, pagina) {
+  const base = HOJA.fecha
+    ? `${API}/api/export/resumen-operacion?fecha=${HOJA.fecha}`
+    : `${API}/api/export/resumen-operacion?desde=${HOJA.desde}&hasta=${HOJA.hasta}`;
+  return `${base}&formato=${formato}` + (pagina ? `&pagina=${pagina}` : "");
+}
+
 // Pide la hoja de lo que HOJA esté apuntando y la pone en el visor: lo abre la primera
 // vez y lo reemplaza las siguientes.
-async function cargarEnElVisorDeLaHoja() {
+//
+// SE PIDE COMO IMAGEN. Android no dibuja un PDF dentro de un marco —el lodge lo reportó
+// con una foto de la tablet: un recuadro gris con un botón «Abrir»— y una imagen la
+// dibuja cualquier aparato. No es otro dibujo: es el mismo PDF rasterizado, y el PDF
+// sigue estando a un clic para quien lo quiera imprimir o archivar.
+async function cargarEnElVisorDeLaHoja(pagina) {
   if (!HOJA) return;
+  // Pasar de página no es cambiar de hoja: las notas que se estén escribiendo se quedan
+  // donde están. Volver a pedirlas borraría lo tecleado sin decir nada.
+  const soloPagina = !!pagina;
   const rango = !HOJA.fecha;
+  HOJA.pagina = pagina || 1;
   avisar("Preparando la hoja…");
-  let blob;
+  let blob, cuantas;
   try {
-    const res = await fetchAuth(
-      rango ? `${API}/api/export/resumen-operacion?desde=${HOJA.desde}&hasta=${HOJA.hasta}&formato=pdf`
-            : `${API}/api/export/resumen-operacion?fecha=${HOJA.fecha}&formato=pdf`);
+    const res = await fetchAuth(direccionDeLaHoja("png", HOJA.pagina));
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
+    cuantas = parseInt(res.headers.get("X-Paginas") || "1", 10) || 1;
     blob = await res.blob();
   } catch (e) {
     avisar("No se pudo generar la hoja: " + e.message, true);
     return;
   }
+  HOJA.paginas = cuantas;
   // La FECHA, no solo la insignia: `etiquetaFecha` devuelve «Hoy» o nada, y un título
   // que pone «Hoja de operación» a secas no dice de qué día es el papel que se va a
   // imprimir. En un rango no dice nada en absoluto.
   const datos = {
     titulo: `Hoja de operación ${rango ? `${HOJA.desde} — ${HOJA.hasta}`
                                        : `${HOJA.fecha} ${etiquetaFecha(HOJA.fecha)}`}`,
-    subtitulo: `Así se va a imprimir. Es el mismo archivo que se descarga.${
+    subtitulo: `Es el documento que se imprime, visto como imagen para que se dibuje en
+      cualquier aparato.${
       rango ? " Es la hoja de siempre con una columna de fecha, y lleva "
               + "<strong>solo las entradas y salidas</strong> del periodo." : ""}`,
-    archivo: rango ? `operacion-${HOJA.desde}_a_${HOJA.hasta}.pdf`
-                   : `operacion-${HOJA.fecha}.pdf`,
+    archivo: (rango ? `operacion-${HOJA.desde}_a_${HOJA.hasta}`
+                    : `operacion-${HOJA.fecha}`)
+             + (cuantas > 1 ? `-p${HOJA.pagina}` : "") + ".png",
+    pdf: direccionDeLaHoja("pdf"),
+    paginas: cuantas,
+    pagina: HOJA.pagina,
   };
   if (HOJA.visor) {
     HOJA.visor.cambiar(blob, datos);
   } else {
-    HOJA.visor = mostrarPDF({
+    HOJA.visor = mostrarImagen({
       blob, ...datos,
+      ancho: "1180px",
       barra: barraDeFechasDelVisor(),
       alCerrar: cerrarVisorDeLaHoja,
+      alPasarPagina: (n) => cargarEnElVisorDeLaHoja(n),
+      alImprimir: paginasDeLaHojaParaImprimir,
     });
   }
   const dia = document.getElementById("hoja-dia");
@@ -3241,7 +3269,25 @@ async function cargarEnElVisorDeLaHoja() {
   const d2 = document.getElementById("hoja-hasta");
   if (d1) d1.value = HOJA.desde || "";
   if (d2) d2.value = HOJA.hasta || "";
-  await cargarNotasDeLaHoja();
+  if (!soloPagina) await cargarNotasDeLaHoja();
+}
+
+// Todas las páginas de la hoja, para imprimirla entera. Solo se piden al mandar a
+// imprimir: traerlas al abrir gastaría el internet del lodge en ocho páginas que casi
+// siempre nadie va a mirar. Devuelve nulo cuando hay una sola, y entonces el visor
+// imprime la que ya tiene.
+async function paginasDeLaHojaParaImprimir() {
+  if (!HOJA || (HOJA.paginas || 1) <= 1) return null;
+  const hojas = [];
+  for (let n = 1; n <= HOJA.paginas; n++) {
+    const res = await fetchAuth(direccionDeLaHoja("png", n));
+    if (!res.ok) throw new Error(`no se pudo traer la página ${n}`);
+    const u = URL.createObjectURL(await res.blob());
+    hojas.push(u);
+    // Se sueltan cuando ya no puede haber una impresión en marcha.
+    setTimeout(() => URL.revokeObjectURL(u), 120000);
+  }
+  return hojas;
 }
 
 // Los mismos controles que la pantalla de Resumen y en el mismo orden. Son los mismos a
@@ -3311,88 +3357,8 @@ function cerrarVisorDeLaHoja() {
   }
 }
 
-// EL VISOR, UNO SOLO para todo lo que se imprime. Lo usan la hoja de operación y la
-// tarjeta de alergias, y lo usará lo próximo: si cada pantalla armara el suyo, una
-// acabaría sin liberar el objeto al cerrar —son megabytes por cada vez que se abre— o
-// imprimiendo la página en vez del PDF.
-// Devuelve un mando para quien lo abre: `cambiar()` pone otro documento SIN cerrar el
-// visor y `ponerPanel()` reemplaza lo que va debajo. Las dos hacen falta desde que la
-// hoja se puede mover de día por dentro: volver a armar el modal en cada fecha perdería
-// el sitio del desplazamiento y, peor, dejaría el documento anterior sin liberar.
-function mostrarPDF({ blob, titulo, subtitulo, archivo, ancho, barra, panel, alCerrar }) {
-  let url = URL.createObjectURL(blob);
-  let nombre = archivo || "documento.pdf";
-  const fondo = document.createElement("div");
-  fondo.className = "modal-fondo";
-  fondo.id = "modal-hoja";
-  const cerrar = () => {
-    URL.revokeObjectURL(url);
-    fondo.remove();
-    if (alCerrar) alCerrar();
-  };
-  fondo.onclick = (e) => { if (e.target === fondo) cerrar(); };
-  fondo.innerHTML = `
-    <div class="modal-caja" style="max-width:${ancho || "1180px"};">
-      <div class="modal-encabezado">
-        <div>
-          <p class="title" id="hoja-titulo">${titulo}</p>
-          <p class="subtitle" id="hoja-sub">${subtitulo || ""}</p>
-        </div>
-        <button class="modal-cerrar" id="hoja-x" title="Cerrar">×</button>
-      </div>
-      ${barra || ""}
-      <iframe id="hoja-marco" src="${url}#toolbar=0&navpanes=0"
-              style="width:100%;height:58vh;min-height:360px;border:1px solid var(--linea,#d8d8d0);
-                     border-radius:8px;background:#fff;margin-top:10px;"></iframe>
-      <p style="margin:10px 0 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-        <button class="btn btn-primary" id="hoja-imprimir">🖨 Imprimir</button>
-        <button class="btn" id="hoja-descargar">⬇ Descargar PDF</button>
-        <span style="font-size:11.5px;color:var(--muted);">
-          Si el recuadro sale en blanco —pasa en algunos teléfonos, que no traen visor de
-          PDF— descárgalo y se abre igual.</span>
-      </p>
-      <div id="hoja-panel">${panel || ""}</div>
-    </div>`;
-  document.body.appendChild(fondo);
-
-  fondo.querySelector("#hoja-x").onclick = cerrar;
-  fondo.querySelector("#hoja-imprimir").onclick = () => {
-    // Se imprime el PDF que ya está cargado, no la página: imprimir la pantalla daría
-    // el menú, las tarjetas y los botones.
-    const marco = fondo.querySelector("#hoja-marco");
-    try {
-      marco.contentWindow.focus();
-      marco.contentWindow.print();
-    } catch (e) {
-      // Algunos navegadores no dejan imprimir dentro de un iframe de blob. Abrirlo en
-      // su propia pestaña siempre funciona, y desde ahí se imprime.
-      window.open(url, "_blank");
-    }
-  };
-  fondo.querySelector("#hoja-descargar").onclick = () => {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = nombre;
-    document.body.appendChild(a); a.click(); a.remove();
-  };
-
-  return {
-    cerrar,
-    cambiar(nuevo, datos) {
-      // SE LIBERA EL ANTERIOR. Cada hoja son cientos de kilobytes que el navegador no
-      // suelta solo; repasando una semana, el visor se quedaría con siete colgando.
-      URL.revokeObjectURL(url);
-      url = URL.createObjectURL(nuevo);
-      fondo.querySelector("#hoja-marco").src = `${url}#toolbar=0&navpanes=0`;
-      // innerHTML y no textContent: el titulo lleva la insignia de «Hoy», que es HTML.
-      // Con textContent se leia «2026-11-15 <span class="badge">Hoy</span>» tal cual.
-      if (datos && datos.titulo) fondo.querySelector("#hoja-titulo").innerHTML = datos.titulo;
-      if (datos && datos.subtitulo !== undefined) fondo.querySelector("#hoja-sub").innerHTML = datos.subtitulo;
-      if (datos && datos.archivo) nombre = datos.archivo;
-    },
-    ponerPanel(html) { fondo.querySelector("#hoja-panel").innerHTML = html || ""; },
-  };
-}
+// (El visor vive más abajo, en `mostrarImagen`: uno solo para todo lo que se mira y se
+// imprime. Ver el comentario que lo encabeza.)
 
 // ---------- LAS NOTAS ESCRITAS A MANO SOBRE LA HOJA ----------
 //
@@ -3439,8 +3405,8 @@ async function cargarNotasDeLaHoja() {
 // caja mide más que la pantalla y hay que desplazarse para ver lo que se está anotando —
 // justo lo que se vino a quitar: escribir la nota mirando la hoja.
 function ajustarAltoDeLaHoja() {
-  const marco = document.getElementById("hoja-marco");
-  if (marco) marco.style.height = (HOJA && HOJA.notasAbiertas) ? "34vh" : "58vh";
+  const caja = document.getElementById("img-caja");
+  if (caja) caja.style.maxHeight = (HOJA && HOJA.notasAbiertas) ? "34vh" : "62vh";
 }
 
 function panelDeNotasDeLaHoja() {
@@ -3642,72 +3608,132 @@ async function vistaPreviaAlergias(fecha) {
   });
 }
 
-// El visor de IMÁGENES. Es el hermano de mostrarPDF y existe por la misma razón que
-// aquel: un solo sitio donde se libera el objeto al cerrar y donde se imprime lo que se
-// está viendo. La diferencia es que esto se ve en TODOS los teléfonos.
-function mostrarImagen({ blob, titulo, subtitulo, archivo, pdf }) {
-  const url = URL.createObjectURL(blob);
+// EL VISOR, UNO SOLO para todo lo que se mira y se imprime: la hoja de operación y la
+// tarjeta de cocina. Si cada pantalla armara el suyo, una acabaría sin liberar el objeto
+// al cerrar —son megabytes por cada vez que se abre— o imprimiendo la página entera.
+//
+// Y ENSEÑA UNA IMAGEN, NO EL PDF DENTRO DE UN MARCO. Android no dibuja un PDF en un
+// marco: en vez del documento pone un recuadro gris con el nombre del archivo y un botón
+// «Abrir» que se lo pasa al gestor de descargas. El lodge lo reportó dos veces con una
+// foto de la pantalla —primero la tarjeta de cocina, después la hoja de operación en la
+// tablet—. En iPhone y en computadora sí se ve, y por eso las dos veces pasó la primera
+// vuelta. La imagen no es otro dibujo: es ese mismo PDF rasterizado en el servidor, así
+// que no puede decir algo distinto de lo que se imprime. Y el PDF sigue a un clic.
+//
+// Devuelve un mando para quien lo abre: `cambiar()` pone otro documento SIN cerrar el
+// visor y `ponerPanel()` reemplaza lo que va debajo. Las dos hacen falta desde que la
+// hoja se puede mover de día por dentro: volver a armar el modal en cada fecha perdería
+// el sitio del desplazamiento y, peor, dejaría el documento anterior sin liberar.
+function mostrarImagen({ blob, titulo, subtitulo, archivo, pdf, ancho, barra, panel,
+                         alCerrar, paginas, alPasarPagina, alImprimir }) {
+  let url = URL.createObjectURL(blob);
+  let nombre = archivo || "imagen.png";
+  let enlacePDF = pdf || null;
+  let total = paginas || 1;
+  let actual = 1;
   const fondo = document.createElement("div");
   fondo.className = "modal-fondo";
   fondo.id = "modal-imagen";
-  const cerrar = () => { URL.revokeObjectURL(url); fondo.remove(); };
+  const cerrar = () => {
+    URL.revokeObjectURL(url);
+    fondo.remove();
+    if (alCerrar) alCerrar();
+  };
   fondo.onclick = (e) => { if (e.target === fondo) cerrar(); };
   fondo.innerHTML = `
-    <div class="modal-caja" style="max-width:620px;">
+    <div class="modal-caja" style="max-width:${ancho || "620px"};">
       <div class="modal-encabezado">
         <div>
-          <p class="title">${titulo}</p>
-          <p class="subtitle">${subtitulo || ""}</p>
+          <p class="title" id="img-titulo">${titulo}</p>
+          <p class="subtitle" id="img-sub">${subtitulo || ""}</p>
         </div>
         <button class="modal-cerrar" id="img-x" title="Cerrar">×</button>
       </div>
-      <div style="text-align:center;margin-top:10px;max-height:66vh;overflow:auto;
-                  background:var(--card);border:1px solid var(--border);
+      ${barra || ""}
+      <div id="img-caja" style="text-align:center;margin-top:10px;max-height:62vh;
+                  overflow:auto;background:var(--card);border:1px solid var(--border);
                   border-radius:8px;padding:8px;">
         <img id="img-vista" src="${url}" alt=""
              style="max-width:100%;border-radius:4px;">
       </div>
+      <p id="img-paginas" style="margin:8px 0 0;gap:8px;align-items:center;
+             justify-content:center;font-size:12px;display:none;">
+        <button class="btn" id="img-antes">‹</button>
+        <span id="img-cuenta"></span>
+        <button class="btn" id="img-despues">›</button>
+      </p>
       <p style="margin:10px 0 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <button class="btn btn-primary" id="img-descargar">⬇ Descargar imagen</button>
         <button class="btn" id="img-imprimir">🖨 Imprimir</button>
-        ${pdf ? `<a href="#" id="img-pdf" style="font-size:11.5px;color:var(--forest);">o descargar en PDF</a>` : ""}
+        ${enlacePDF ? `<a href="#" id="img-pdf" style="font-size:11.5px;color:var(--forest);">o descargar en PDF</a>` : ""}
         <span style="font-size:11.5px;color:var(--muted);">
-          Es una imagen: se puede reenviar por WhatsApp tal cual.</span>
+          Es una imagen: se ve en cualquier aparato y se reenvía por WhatsApp tal cual.</span>
       </p>
+      <div id="hoja-panel">${panel || ""}</div>
     </div>`;
   document.body.appendChild(fondo);
 
+  function pintarPaginas() {
+    const caja = fondo.querySelector("#img-paginas");
+    caja.style.display = total > 1 ? "flex" : "none";
+    fondo.querySelector("#img-cuenta").textContent = `página ${actual} de ${total}`;
+    fondo.querySelector("#img-antes").disabled = actual <= 1;
+    fondo.querySelector("#img-despues").disabled = actual >= total;
+  }
+  pintarPaginas();
+
   fondo.querySelector("#img-x").onclick = cerrar;
+  fondo.querySelector("#img-antes").onclick = () => alPasarPagina && alPasarPagina(actual - 1);
+  fondo.querySelector("#img-despues").onclick = () => alPasarPagina && alPasarPagina(actual + 1);
   fondo.querySelector("#img-descargar").onclick = () => {
     const a = document.createElement("a");
     a.href = url;
-    a.download = archivo || "imagen.png";
+    a.download = nombre;
     document.body.appendChild(a); a.click(); a.remove();
   };
-  fondo.querySelector("#img-imprimir").onclick = () => {
-    // Se imprime SOLO la imagen, en un marco oculto: mandar a imprimir la página daría
-    // el menú, las tarjetas y los botones. Y en un marco, no en una ventana nueva, que
-    // es lo que los bloqueadores de ventanas emergentes cortan en el teléfono.
+  fondo.querySelector("#img-imprimir").onclick = async () => {
+    // Se imprime SOLO el documento, en un marco oculto: mandar a imprimir la página
+    // daría el menú, las tarjetas y los botones. Y en un marco, no en una ventana nueva,
+    // que es lo que los bloqueadores de ventanas emergentes cortan en el teléfono.
+    //
+    // TODAS LAS PÁGINAS, no la que se está mirando. Una hoja de periodo ocupa varias, e
+    // imprimir en silencio solo una es la clase de fallo del que nadie se entera hasta
+    // que busca en el papel lo que no está.
+    let hojas = [url];
+    if (alImprimir) {
+      try {
+        hojas = await alImprimir() || [url];
+      } catch (e) {
+        avisar("No se pudieron preparar las demás páginas: " + (e.message || e), true);
+      }
+    }
+    const vista = fondo.querySelector("#img-vista");
+    // Apaisada si la imagen es más ancha que alta: la hoja de operación lo es, y en un
+    // folio vertical saldría reducida a un tercio y sin poder leerse.
+    const apaisada = vista.naturalWidth > vista.naturalHeight;
     const marco = document.createElement("iframe");
     marco.setAttribute("aria-hidden", "true");
     marco.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
     marco.srcdoc = `<!doctype html><meta charset="utf-8">
-      <style>@page{margin:8mm}html,body{margin:0}
-        img{max-width:100%}</style>
-      <img src="${url}" onload="window.focus();window.print();">`;
+      <style>@page{margin:8mm;size:A4 ${apaisada ? "landscape" : "portrait"}}
+        html,body{margin:0}
+        img{max-width:100%;display:block;page-break-after:always}
+        img:last-child{page-break-after:auto}</style>
+      ${hojas.map((u, i) => `<img src="${u}"${
+        i === hojas.length - 1 ? ' onload="window.focus();window.print();"' : ""}>`).join("")}`;
     document.body.appendChild(marco);
     setTimeout(() => marco.remove(), 60000);
   };
-  if (pdf) {
+  if (enlacePDF) {
     fondo.querySelector("#img-pdf").onclick = async (ev) => {
       ev.preventDefault();
       try {
-        const res = await fetchAuth(pdf);
+        const res = await fetchAuth(enlacePDF);
         const b = await res.blob();
         const u = URL.createObjectURL(b);
         const a = document.createElement("a");
         a.href = u;
-        a.download = (archivo || "documento").replace(/\.png$/, ".pdf");
+        a.download = nombre.replace(/(-p\d+)?\.png$/, ".pdf");
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(u), 30000);
       } catch (e) {
@@ -3715,6 +3741,30 @@ function mostrarImagen({ blob, titulo, subtitulo, archivo, pdf }) {
       }
     };
   }
+
+  return {
+    cerrar,
+    cambiar(nuevo, datos) {
+      // SE LIBERA EL ANTERIOR. Cada hoja son decenas de kilobytes que el navegador no
+      // suelta solo; repasando una semana, el visor se quedaría con siete colgando.
+      URL.revokeObjectURL(url);
+      url = URL.createObjectURL(nuevo);
+      fondo.querySelector("#img-vista").src = url;
+      fondo.querySelector("#img-caja").scrollTop = 0;
+      if (datos) {
+        // innerHTML y no textContent: el título lleva la insignia de «Hoy», que es HTML.
+        // Con textContent se leía «2026-11-15 <span class="badge">Hoy</span>» tal cual.
+        if (datos.titulo) fondo.querySelector("#img-titulo").innerHTML = datos.titulo;
+        if (datos.subtitulo !== undefined) fondo.querySelector("#img-sub").innerHTML = datos.subtitulo;
+        if (datos.archivo) nombre = datos.archivo;
+        if (datos.pdf !== undefined) enlacePDF = datos.pdf;
+        if (datos.paginas) total = datos.paginas;
+        if (datos.pagina) actual = datos.pagina;
+      }
+      pintarPaginas();
+    },
+    ponerPanel(html) { fondo.querySelector("#hoja-panel").innerHTML = html || ""; },
+  };
 }
 
 // ---------- TRANSPORTE ----------

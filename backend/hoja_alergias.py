@@ -316,11 +316,11 @@ def imagen(d, resolucion=RESOLUCION):
     SE RASTERIZA EL PDF, no se vuelve a dibujar. Dibujar la tarjeta dos veces —una para
     el papel y otra para la pantalla— es garantizar que algún día digan cosas distintas,
     y aquí lo que diferiría serían alergias. La imagen ES el PDF, fotografiado.
-    """
-    import pdfplumber
 
-    salida = io.BytesIO()
-    with pdfplumber.open(pdf(d)) as doc:
-        doc.pages[0].to_image(resolution=resolucion).original.save(salida, format="PNG")
-    salida.seek(0)
-    return salida
+    El rasterizado está en UNA función, en exports.py, porque lo usan los dos documentos
+    que se miran en el teléfono: esta tarjeta y la hoja de operación. Dos copias
+    acabarían con dos resoluciones distintas sin que nadie lo decidiera.
+    """
+    import exports
+
+    return exports.pagina_en_imagen(pdf(d), resolucion=resolucion)[0]
