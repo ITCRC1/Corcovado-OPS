@@ -82,7 +82,33 @@ CONFIG_POR_DEFECTO = {
     # Apagándolo se vuelve a lo anterior: solo se piden las reservas cuya marca de
     # modificación se movió, más el repaso completo cada 'horas_repaso_completo'.
     "releer_todo_cada_ciclo": True,
+    # CUÁNTAS SE ESCRIBEN COMO MUCHO EN UN CICLO.
+    #
+    # Leer es barato y va por la red; ESCRIBIR es lo que pesa: cada reserva arrastra sus
+    # tours, sus amenidades, sus alertas y su itinerario, y todo eso va en una sola
+    # transacción. En régimen normal no cambia casi nada y este tope no se nota nunca.
+    #
+    # Donde sí se nota es en el PRIMER ciclo después de un despliegue: ahí no hay
+    # ninguna firma guardada todavía, así que las 451 reservas de la ventana cuentan
+    # como cambiadas y se escribirían todas de golpe, segundos después de arrancar el
+    # servidor y mientras la plataforma todavía está comprobando que responde. Con el
+    # tope, ese arranque se reparte en varios ciclos y lo que queda fuera entra en el
+    # siguiente — no se pierde nada, porque su firma sigue sin coincidir.
+    #
+    # Se escriben primero las reservas MÁS PRÓXIMAS: si algo tiene que esperar media
+    # hora, que sea lo de dentro de dos meses y no la llegada de esta tarde.
+    "maximo_por_ciclo": 120,
 }
+
+# Lo que el ciclo espera antes de su primera vuelta, en segundos.
+#
+# POR QUÉ. El bucle arranca con 'ultimo = 0', así que la primera vuelta salía de
+# inmediato: el contenedor acababa de levantarse y ya estaba pidiéndole a Opera cientos
+# de reservas y escribiéndolas, justo mientras la plataforma comprueba que el servidor
+# responde. Si esa comprobación no pasa, Railway reinicia el contenedor —y vuelve a
+# empezar—. Con el respiro, el servidor queda sirviendo y sano antes de ponerse a
+# trabajar. Es lo mismo que ya hace el repaso de avisos por la misma razón.
+GRACIA_AL_ARRANCAR = 90
 
 # Estado del último ciclo, para mostrarlo en pantalla. Vive en memoria: es información
 # de diagnóstico, no datos de la operación.
@@ -474,7 +500,7 @@ def _sincronizar(cargar=True):
     # eso trae de todo: un día 31 en un mes de 30, erratas, números de más. Una nota
     # mal escrita puede costar ese tour; no puede costar la sincronización del hotel.
     manda = alcance_de_opera()
-    sin_cambio_real = 0
+    sin_cambio_real = aplazadas = 0
     try:
         lote = build_review_batch_desde_reservas(a_cargar)
         # Las amenidades que Opera entrega como paquete se agregan DESPUÉS del
@@ -484,6 +510,10 @@ def _sincronizar(cargar=True):
         # Y AQUÍ SE CAE LO QUE NO CAMBIÓ. Se lee todo, se aplica todo, y justo antes de
         # escribir se compara con la firma de la última vez. Ver `huella_de`.
         sin_cambio_real = _quitar_lo_que_no_cambio(lote)
+        # Y lo que cambió se escribe con tope, empezando por lo más próximo. Ver
+        # 'maximo_por_ciclo': el que de verdad importa es el primer ciclo tras un
+        # despliegue, cuando todavía no hay ninguna firma guardada.
+        aplazadas = _dejar_para_el_siguiente_ciclo(lote, cfg_ciclo)
         # Solo se permite cancelar ausentes si la descarga vino completa. Con una lista
         # parcial, "no vino en el lote" no significa "cancelada": significa que falta,
         # y cancelarla sacaría de la agenda a un huésped que sí llega.
@@ -521,7 +551,7 @@ def _sincronizar(cargar=True):
     # LAS CARGADAS SON LAS QUE SE ESCRIBIERON, no las que se leyeron. Con la relectura
     # completa se le pide el detalle a todas, así que contar las leídas diría «451
     # cargadas» cada media hora y el registro dejaría de significar nada.
-    escritas = len(a_cargar) - sin_cambio_real
+    escritas = len(a_cargar) - sin_cambio_real - aplazadas
     _anotar(ultimo_exito=datetime.datetime.now().isoformat(timespec="seconds"),
             resultado="OK", detalle="; ".join(problemas) or None,
             reservas_cargadas=escritas,
@@ -532,6 +562,8 @@ def _sincronizar(cargar=True):
             "reservas_cargadas": escritas,
             "releidas": len(a_cargar),
             "sin_cambio_real": sin_cambio_real,
+            # Las que se quedaron para el ciclo siguiente por el tope de escritura.
+            "aplazadas": aplazadas,
             "releer_todo_cada_ciclo": releer_todo,
             "nuevas": len(nuevas), "cambiadas": len(cambiadas),
             "sin_cambio": len(iguales),
@@ -1073,6 +1105,34 @@ def _quitar_lo_que_no_cambio(lote):
     return saltadas
 
 
+def _cuando_llega(item):
+    """La llegada de una reserva en ISO, para poder ordenarlas. '' si no se sabe."""
+    partes = str(((item or {}).get("reserva") or {}).get("arr_date") or "").split("-")
+    if len(partes) != 3:
+        return ""
+    d, m, y = partes
+    return f"20{y}-{m}-{d}"
+
+
+def _dejar_para_el_siguiente_ciclo(lote, cfg):
+    """Deja en el lote como mucho 'maximo_por_ciclo' reservas. Devuelve cuántas aplazó.
+
+    LAS MÁS PRÓXIMAS PRIMERO. Si algo tiene que esperar media hora, que sea la reserva
+    de dentro de dos meses y no la llegada de esta tarde. Lo que se aplaza no se pierde:
+    su firma sigue sin coincidir, así que entra en el ciclo siguiente.
+    """
+    items = lote.get("reservas") or []
+    try:
+        tope = int(cfg.get("maximo_por_ciclo") or 0)
+    except (TypeError, ValueError):
+        tope = 0
+    if tope <= 0 or len(items) <= tope:
+        return 0
+    items = sorted(items, key=lambda x: _cuando_llega(x) or "9999")
+    lote["reservas"] = items[:tope]
+    return len(items) - tope
+
+
 def _separar_por_cambio(reservas):
     """(nuevas, cambiadas, iguales) comparando la marca de Opera con la guardada.
 
@@ -1129,10 +1189,15 @@ LATIDO = 60
 
 def _bucle():
     ultimo = 0.0
+    arranque = time.time()
     while True:
         try:
             cfg = cargar_config()
             intervalo = max(int(cfg.get("intervalo_minutos", 30) or 30), 5) * 60
+            # El respiro del arranque: ver GRACIA_AL_ARRANCAR.
+            if (time.time() - arranque) < GRACIA_AL_ARRANCAR:
+                time.sleep(LATIDO)
+                continue
             if cfg.get("activo") and esta_configurado() and (time.time() - ultimo) >= intervalo:
                 # 'AUTOMATICO' distingue este ciclo del que dispara el botón. Es lo
                 # primero que se pregunta cuando algo se ve raro en la pantalla.
