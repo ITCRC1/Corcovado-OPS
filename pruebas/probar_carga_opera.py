@@ -447,6 +447,175 @@ def el_grupo_toma_el_itinerario_de_la_nota_de_su_PM(c):
             "y conserva SUS tours, no los del grupo")
 
 
+# ---------------------------------------------------------------------------
+# El regimen: que comidas trae pagadas la reserva
+# ---------------------------------------------------------------------------
+
+def _detalle(plan, comidas, dias=4):
+    """Un detalle de Opera con su plan de tarifa y sus paquetes de comida.
+
+    Se arma con la forma REAL que devuelve Opera —medida sobre la propiedad el 16 de
+    noviembre—: los paquetes cuelgan de 'reservationPackages' y cada noche es una
+    entrada de 'scheduleList'.
+    """
+    codigos = {"desayuno": "BRFWEB", "almuerzo": "LUNWEB", "cena": "DINWEB"}
+    nombres = {"desayuno": "Breakfast Included Web", "almuerzo": "Lunch Included Web",
+               "cena": "Dinner Included Web"}
+    paquetes = []
+    for comida in comidas:
+        paquetes.append({
+            "packageCode": codigos[comida],
+            "packageHeaderType": {"primaryDetails": {"description": nombres[comida]}},
+            # Las mismas banderas que trae una comida INCLUIDA en la tarifa. Opera no
+            # distingue una cosa de la otra: esta medido, y es justo lo que obliga a
+            # mirar el plan de tarifa.
+            "postingAttributes": {"addToRate": False},
+            "scheduleList": [{"consumptionDate": f"2026-11-{16 + i:02d}",
+                              "totalQuantity": 2, "unitPrice": 52.2}
+                             for i in range(dias)],
+        })
+    return {"roomStay": {"roomRates": [{"ratePlanCode": plan}]},
+            "reservationPackages": paquetes}
+
+
+def _mapeada(plan):
+    """Una reserva ya mapeada, con su plan de tarifa, como la deja mapear()."""
+    import opera_mapeo as om
+    cruda = {
+        "reservationIdList": [{"type": "Confirmation", "id": "595402389"}],
+        "roomStay": {"arrivalDate": "2026-11-16", "departureDate": "2026-11-21",
+                     "roomId": "03", "roomRates": [{"ratePlanCode": plan}]},
+    }
+    return om.mapear(cruda)
+
+
+def la_tarifa_de_desayuno_manda_sobre_un_almuerzo_pegado_despues(c):
+    """Lo reporto el lodge con las habitaciones 02 y 03 del 16 de noviembre: «indican
+    solo desayuno en Opera, pero en la aplicacion lo refleja como incluido todo».
+
+    LOS PAQUETES DICEN LO QUE SE COBRA, NO LO QUE ESTA INCLUIDO. A una tarifa de
+    desayuno se le pegan despues un almuerzo y una cena —a precio de lista, con su fecha
+    en cada noche— y la reserva sigue siendo de solo desayuno. Medido sobre las 94
+    reservas vivas de ese dia: el plan y los paquetes coinciden en 90 y se contradicen en
+    4, las cuatro de esta forma.
+    """
+    import opera_mapeo as om
+
+    r = _mapeada("BKFN")
+    c.igual(r.get("plan_tarifa"), "BKFN", "el plan de tarifa se capta al mapear")
+
+    om.incorporar_detalle(r, _detalle("BKFN", ["desayuno", "almuerzo", "cena"]))
+    c.igual(r.get("regimen"), "SOLO_DESAYUNO",
+            "con tarifa de desayuno NO se sirve almuerzo ni cena")
+    c.cierto(r.get("regimen_en_conflicto"), "y queda anotado que hay contradiccion")
+    if r.get("regimen_en_conflicto"):
+        c.igual(r["regimen_en_conflicto"]["de_los_paquetes"], "PENSION_COMPLETA",
+                "el aviso dice lo que decian los paquetes")
+
+
+def con_una_tarifa_de_comidas_mandan_los_paquetes(c):
+    """La regla nueva NO puede quitarle el almuerzo a quien lo tiene incluido: 90 de las
+    94 reservas vivas salen por aqui."""
+    import opera_mapeo as om
+
+    r = _mapeada("A30OL")
+    om.incorporar_detalle(r, _detalle("A30OL", ["desayuno", "almuerzo", "cena"]))
+    c.igual(r.get("regimen"), "PENSION_COMPLETA", "la pension completa no se toca")
+    c.igual(r.get("regimen_en_conflicto"), None, "y no hay nada que avisar")
+
+
+def un_plan_que_no_esta_en_la_tabla_deja_decidir_a_los_paquetes(c):
+    """Un codigo desconocido no decide NADA: manda lo que se hacia antes.
+
+    Inventar que un codigo nuevo es de desayuno dejaria sin almuerzo a una casa entera,
+    y en silencio. Si ademas contradice a sus paquetes, salta el aviso y asi se descubre.
+    """
+    import opera_mapeo as om
+
+    r = _mapeada("TARIFA_NUEVA_2027")
+    om.incorporar_detalle(r, _detalle("TARIFA_NUEVA_2027",
+                                      ["desayuno", "almuerzo", "cena"]))
+    c.igual(r.get("regimen"), "PENSION_COMPLETA",
+            "un plan desconocido no cambia lo que decian los paquetes")
+    c.igual(r.get("regimen_en_conflicto"), None, "y no inventa un conflicto")
+
+
+def el_codigo_se_compara_entero_y_no_por_pedazos(c):
+    """EL FALLO QUE ESTA PRUEBA EVITA DEJARIA MEDIA CASA SIN ALMUERZO.
+
+    'WEBFBF' lleva «BF» dentro y es pension completa. Con una regla por subcadena o por
+    prefijo, esa tarifa —y todas las WEBF*— pasarian a solo desayuno.
+    """
+    import opera_paquetes as op
+
+    c.igual(op.regimen_del_plan("BKFN"), "SOLO_DESAYUNO", "BKFN es de desayuno")
+    c.igual(op.regimen_del_plan("bkfn"), "SOLO_DESAYUNO", "sin importar mayusculas")
+    for plan in ("WEBFBF", "WEBF", "WEBFBN", "A30OL", "SW304", "FBFLEXEXP", "BKFNX"):
+        c.igual(op.regimen_del_plan(plan), None, f"«{plan}» no es de desayuno")
+    c.igual(op.regimen_del_plan(None), None, "y sin plan no se deduce nada")
+
+
+def la_nota_de_la_reserva_manda_sobre_la_tarifa(c):
+    """La salida para cuando el huesped SI compro las comidas: se escribe en la nota.
+
+    Es como el lodge ya trabaja —«Paquete 5N/6D+Only Breakfast», «+FULL BOARD»— y es lo
+    que hace que la regla del plan de tarifa no sea una jaula. Pasa de verdad: la hab 09
+    del 20 de noviembre tiene tarifa OTABF y la nota dice pension completa.
+    """
+    import importer
+    import opera_mapeo as om
+    import opera_sync as osync
+
+    r = _mapeada("BKFN")
+    om.incorporar_detalle(r, _detalle("BKFN", ["desayuno"]))
+    r["texto_completo"] = "PAQUETE 4D/3N+FULL BOARD"
+    c.igual(importer.detectar_regimen(r), "PENSION_COMPLETA",
+            "el texto de la nota dice pension completa")
+
+    importer.build_review_batch_desde_reservas([r])
+    osync._sumar_amenidades_de_opera({"reservas": [{"reserva": r}]})
+    c.igual(r.get("regimen"), "PENSION_COMPLETA",
+            "y manda sobre el plan de tarifa")
+
+
+def el_conflicto_de_regimen_avisa_una_sola_vez(c):
+    """El ciclo pasa por la misma reserva muchas veces al dia. Un aviso por vuelta
+    llenaria la pantalla de la misma linea repetida y nadie la leeria."""
+    import opera_sync as osync
+
+    conn = base_limpia()
+    conn.close()
+    r = {"conf_no": "595402389", "room_no": "03", "arr_date": LLEGADA,
+         "regimen_en_conflicto": {"plan": "BKFN", "del_plan": "SOLO_DESAYUNO",
+                                  "de_los_paquetes": "PENSION_COMPLETA",
+                                  "comidas": ["almuerzo", "cena", "desayuno"]}}
+    osync._avisar_regimen_en_conflicto([r])
+    osync._avisar_regimen_en_conflicto([r])
+
+    conn = conexion()
+    avisos = [dict(f) for f in conn.execute(
+        "SELECT mensaje FROM alerta WHERE tipo='REGIMEN_EN_CONFLICTO' AND resuelto=0")]
+    conn.close()
+    c.igual(len(avisos), 1, "dos vueltas del ciclo dejan UN aviso")
+    if avisos:
+        texto = avisos[0]["mensaje"]
+        for pedazo in ("Hab. 03", "BKFN", "solo desayuno", "nota de la reserva"):
+            c.cierto(pedazo in texto, f"el aviso dice «{pedazo}»")
+
+
+def una_reserva_sin_conflicto_no_genera_aviso(c):
+    import opera_sync as osync
+
+    conn = base_limpia()
+    conn.close()
+    osync._avisar_regimen_en_conflicto([{"conf_no": "1", "room_no": "05"}])
+    conn = conexion()
+    n = conn.execute("SELECT COUNT(*) n FROM alerta "
+                     "WHERE tipo='REGIMEN_EN_CONFLICTO'").fetchone()["n"]
+    conn.close()
+    c.igual(n, 0, "sin contradiccion no hay aviso")
+
+
 def la_PM_de_un_grupo_cancelado_no_reparte_nada(c):
     """Un grupo que no viene no le pone tours a nadie."""
     import opera_mapeo as om
@@ -594,6 +763,13 @@ PRUEBAS = [
     una_cancelada_sale_de_la_operacion,
     una_cancelada_no_se_lleva_el_trabajo_ya_hecho,
     el_grupo_toma_el_itinerario_de_la_nota_de_su_PM,
+    la_tarifa_de_desayuno_manda_sobre_un_almuerzo_pegado_despues,
+    con_una_tarifa_de_comidas_mandan_los_paquetes,
+    un_plan_que_no_esta_en_la_tabla_deja_decidir_a_los_paquetes,
+    el_codigo_se_compara_entero_y_no_por_pedazos,
+    la_nota_de_la_reserva_manda_sobre_la_tarifa,
+    el_conflicto_de_regimen_avisa_una_sola_vez,
+    una_reserva_sin_conflicto_no_genera_aviso,
     la_PM_de_un_grupo_cancelado_no_reparte_nada,
     entre_varias_PM_gana_la_que_trae_el_itinerario,
     cuando_recepcion_escribe_el_dia_del_tour_llega_a_las_habitaciones,

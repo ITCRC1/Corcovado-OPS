@@ -482,6 +482,9 @@ def _sincronizar(cargar=True):
                                 detalles["desconocidos"]), [], problemas)
     alertas += _con_cuidado("avisar cuartos con dos reservas",
                             _avisar_cuartos_con_dos_reservas, [], problemas)
+    alertas += _con_cuidado("avisar regimen en conflicto",
+                            lambda: _avisar_regimen_en_conflicto(a_cargar), [],
+                            problemas)
 
     # El ciclo fue bien: las reservas están al día. Si alguna limpieza falló, se dice,
     # pero no se presenta como si la sincronización hubiera fracasado.
@@ -852,6 +855,62 @@ def _avisar_paquetes_desconocidos(desconocidos):
                 conn.execute(
                     "INSERT INTO alerta (tipo, referencia_id, mensaje) "
                     "VALUES ('PAQUETE_SIN_MAPEAR', NULL, ?)", (msg,))
+            mensajes.append(msg)
+        conn.commit()
+    finally:
+        conn.close()
+    return mensajes
+
+
+NOMBRE_DEL_REGIMEN = {
+    "PENSION_COMPLETA": "pensión completa",
+    "DESAYUNO_CENA": "desayuno y cena",
+    "SOLO_DESAYUNO": "solo desayuno",
+    "COMEDOR_TRABAJADORES": "comedor de trabajadores",
+}
+
+
+def _avisar_regimen_en_conflicto(reservas):
+    """Un aviso por cada reserva donde el plan de tarifa y los paquetes no coinciden.
+
+    POR QUÉ AVISAR Y NO SOLO DECIDIR. Manda el plan de tarifa —ver
+    opera_paquetes.PLANES_DE_COMIDAS— porque un almuerzo pegado a una tarifa de desayuno
+    casi siempre es algo que se le va a cobrar al huésped, no algo que trae incluido. Es
+    lo correcto en la mayoría de los casos, pero no en todos: si el huésped SÍ compró las
+    comidas, quitárselas en silencio sería negarle en el comedor algo que pagó.
+
+    Así que la hoja del restaurante dice lo que dice el plan, y este aviso dice que hay
+    que mirarlo. Si resulta que las compró, se escribe en la nota de la reserva en Opera
+    —«+FULL BOARD»— y la nota manda sobre todo lo demás; es como el lodge ya trabaja.
+    """
+    conflictivas = [r for r in (reservas or []) if r.get("regimen_en_conflicto")]
+    if not conflictivas:
+        return []
+    from init_db import get_connection
+
+    conn = get_connection()
+    mensajes = []
+    try:
+        for r in conflictivas:
+            d = r["regimen_en_conflicto"]
+            nombre = NOMBRE_DEL_REGIMEN.get
+            msg = (f"Hab. {r.get('room_no') or '?'} (conf {r.get('conf_no')}, "
+                   f"{r.get('arr_date')}): la tarifa «{d.get('plan')}» es de "
+                   f"{nombre(d.get('del_plan'), d.get('del_plan'))}, pero en Opera tiene "
+                   f"paquetes de {', '.join(d.get('comidas') or [])}. Se opera como "
+                   f"{nombre(d.get('del_plan'), d.get('del_plan'))}. Si el huésped sí "
+                   f"compró las comidas, escríbelo en la nota de la reserva.")
+            ya = conn.execute(
+                "SELECT 1 FROM alerta WHERE tipo='REGIMEN_EN_CONFLICTO' AND mensaje=? "
+                "AND resuelto=0", (msg,)).fetchone()
+            if not ya:
+                # Va en 'referencia_texto' —el conf_no— y no en 'referencia_id', que
+                # apunta a un tour o a una amenidad. Con eso el aviso hereda la fecha de
+                # la estadía, así que sale el día que importa, y se calla solo si la
+                # reserva se cancela. Ver alertas.py.
+                conn.execute(
+                    "INSERT INTO alerta (tipo, referencia_texto, mensaje) "
+                    "VALUES ('REGIMEN_EN_CONFLICTO', ?, ?)", (r.get("conf_no"), msg))
             mensajes.append(msg)
         conn.commit()
     finally:

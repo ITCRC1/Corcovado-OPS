@@ -81,7 +81,10 @@ COLUMNAS_POR_AREA = {
     # lo que la fuente manda y es el que usa Opera. Una columna que falte aquí se guarda
     # por el primer camino y se queda en NULL por el segundo —sin dar ningún error—, que
     # es exactamente lo que pasó con estas dos.
-    "regimen": ("regimen", "bebidas_incluidas", "cortesia"),
+    # 'plan_tarifa' va aquí y no en el núcleo porque es de donde sale el régimen, y
+    # porque solo Opera lo trae: el PDF no lo imprime. Puesto en el núcleo, una
+    # importación de PDF lo dejaría en NULL hasta la siguiente sincronización.
+    "regimen": ("regimen", "bebidas_incluidas", "cortesia", "plan_tarifa"),
     # 'tours_vendidos' va con los textos y NO con los tours, y la distinción importa:
     # no es una salida de la agenda, es la lista de lo que el huésped COMPRÓ. Su fecha
     # —la del paquete de Opera— es la de facturación, así que poner un bote con ella
@@ -956,8 +959,8 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                 punto_salida, punto_entrada_sin_confirmar, punto_salida_sin_confirmar,
                 hora_vuelo_entrada, hora_vuelo_salida, vuelo_entrada, vuelo_salida, nota_ingreso,
                 nota_en_casa, nota_salida, notas_operacion, notas_libres, fuente_pdf, block_code,
-                regimen, bebidas_incluidas, cortesia)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                regimen, bebidas_incluidas, cortesia, plan_tarifa)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 r["conf_no"], grupo_id, r["room_no"], r["nombre_principal"], r["company_travel_agent"],
                 r["arr_date"], r["dep_date"], r["arr_time"], r["room_type"], r["adl"], r["chl"], r["rooms"],
@@ -969,7 +972,7 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                 r.get("nota_ingreso"), r.get("nota_en_casa"), r.get("nota_salida"),
                 " · ".join(r.get("notas_operacion") or []) or None, r["notas"], fuente_pdf,
                 r.get("block_code"), r.get("regimen"),
-                r.get("bebidas_incluidas"), r.get("cortesia"),
+                r.get("bebidas_incluidas"), r.get("cortesia"), r.get("plan_tarifa"),
             ),
         )
 

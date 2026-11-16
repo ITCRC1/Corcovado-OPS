@@ -419,6 +419,47 @@ def regimen_de(comidas):
     return None
 
 
+# Los planes de tarifa cuyo NOMBRE dice qué comidas trae la reserva.
+#
+# POR QUÉ HACE FALTA. Los paquetes de comida dicen lo que se le va a COBRAR a la
+# reserva, y en el lodge eso no siempre es el régimen: a una tarifa de desayuno se le
+# pegan después un almuerzo y una cena —a precio de lista, con su fecha en cada noche— y
+# la reserva sigue siendo de solo desayuno. El lodge lo reportó con las reservas
+# 595402392 y 595402389 (habs 02 y 03 del 16 de noviembre): «indican solo desayuno en
+# Opera, pero en la aplicación lo refleja como incluido todo».
+#
+# MEDIDO sobre las 94 reservas vivas de ese día: el plan y los paquetes dicen lo mismo en
+# 90 y los paquetes dicen de más en 4. Las cuatro eran tarifa de desayuno con almuerzo y
+# cena añadidos después, y las cuatro estaban mal. Opera NO marca esos paquetes de
+# ninguna forma especial —se comprobó: addToRate, allowance, postingType y precio son
+# idénticos a los de una tarifa con comidas— así que el plan de tarifa es la única señal
+# que queda cuando la reserva no tiene nota.
+#
+# SE LISTAN LOS CÓDIGOS EXACTOS, no un prefijo ni una subcadena. 'WEBFBF' lleva «BF»
+# dentro y es pensión completa: con una regla por subcadena, media casa se quedaría sin
+# almuerzo.
+#
+# Un código que no esté aquí no decide nada y mandan los paquetes, que es lo que se hacía
+# antes. Y cuando el plan y los paquetes se contradicen salta un aviso —ver
+# opera_sync._avisar_regimen_en_conflicto—, así que un código mal puesto en esta tabla se
+# descubre el primer día, en vez de quitarle el almuerzo a alguien en silencio.
+PLANES_DE_COMIDAS = {
+    "BKF": "SOLO_DESAYUNO",
+    "BKFN": "SOLO_DESAYUNO",
+    "OTABF": "SOLO_DESAYUNO",
+    "OTAEF": "SOLO_DESAYUNO",
+}
+
+
+def regimen_del_plan(codigo):
+    """El régimen que declara el plan de tarifa, o None si ese código no lo dice.
+
+    None NO significa «sin comidas»: significa que el código no dice nada del régimen y
+    que hay que mirar los paquetes. Es la misma distinción que hace `regimen_de`.
+    """
+    return PLANES_DE_COMIDAS.get(str(codigo or "").strip().upper())
+
+
 def leer_paquetes(reserva):
     """Los paquetes de una reserva de Opera, ya clasificados y con su fecha.
 

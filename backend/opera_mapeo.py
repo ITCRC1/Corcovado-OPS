@@ -115,6 +115,15 @@ RUTAS = {
         "roomStay.blockCode",
         "blockCode",
     ],
+    # EL PLAN DE TARIFA. Es lo que el lodge mira en Opera para saber qué comidas trae la
+    # reserva, y la única señal que queda cuando la reserva viene con la nota vacía: los
+    # paquetes dicen lo que se cobra, no lo que está incluido. Ver
+    # opera_paquetes.PLANES_DE_COMIDAS.
+    "plan_tarifa": [
+        "roomStay.roomRates.ratePlanCode",
+        "roomStay.ratePlanCode",
+        "ratePlanCode",
+    ],
     # El idioma del huésped, tal como lo tiene el PMS. Sirve para el itinerario y para
     # el formulario del spa: hoy eso se pone a mano.
     "idioma": [
@@ -646,6 +655,7 @@ def mapear(cruda):
         "src_code": campo(cruda, "src_code"),
         "res_status": estado_lodge(campo(cruda, "estado")),
         "block_code": campo(cruda, "block_code"),
+        "plan_tarifa": campo(cruda, "plan_tarifa"),
         # Para que el ciclo automático sepa qué cambió sin repreguntar todo.
         "opera_modificado_en": campo(cruda, "modificado_en"),
         # Con qué id se le pide el detalle a Opera (los paquetes, o sea los tours).
@@ -1034,13 +1044,38 @@ def incorporar_detalle(reserva, detalle):
         if not reserva.get("adicionales_raw"):
             reserva["adicionales_raw"] = ", ".join(vendidos)
 
-    regimen = op.regimen_de(leido["comidas"])
+    # EL RÉGIMEN: MANDA EL PLAN DE TARIFA, y los paquetes rellenan cuando el plan no dice
+    # nada. Los paquetes dicen lo que se le va a COBRAR a la reserva, que no es lo mismo:
+    # a una tarifa de desayuno se le pegan después un almuerzo y una cena —a precio de
+    # lista— y la reserva sigue siendo de solo desayuno. Lo reportó el lodge con las
+    # habitaciones 02 y 03 del 16 de noviembre, y está medido en
+    # opera_paquetes.PLANES_DE_COMIDAS: el plan y los paquetes coinciden en 90 de 94.
+    #
+    # La que de verdad manda sigue siendo la NOTA, que es donde el lodge escribe «Paquete
+    # 5N/6D+Only Breakfast». Eso lo decide quien llama, después del importador; aquí solo
+    # se resuelve qué dice OPERA cuando la nota no dice nada. Y así, además, corregir una
+    # reserva es escribirlo en su nota, que es como el lodge ya trabaja.
+    de_los_paquetes = op.regimen_de(leido["comidas"])
+    del_plan = op.regimen_del_plan(reserva.get("plan_tarifa"))
+    regimen = del_plan or de_los_paquetes
     if regimen:
         reserva["regimen"] = regimen
         # Se guarda aparte porque el importador vuelve a deducir el régimen del TEXTO
         # y sobreescribe esta llave. En Opera no hay texto, así que lo dejaría en
         # blanco: quien llama lo restaura después. Misma razón que con las amenidades.
         reserva["regimen_de_opera"] = regimen
+
+    # UNA CONTRADICCIÓN NO SE RESUELVE EN SILENCIO. Si el plan dice una cosa y los
+    # paquetes otra, puede ser que el huésped SÍ comprara las comidas aparte: entonces
+    # hay que servírselas, y quitárselas calladamente sería negarle algo que pagó. Se
+    # deja anotado para que salte un aviso y recepción lo mire en Opera.
+    if del_plan and de_los_paquetes and del_plan != de_los_paquetes:
+        reserva["regimen_en_conflicto"] = {
+            "plan": reserva.get("plan_tarifa"),
+            "del_plan": del_plan,
+            "de_los_paquetes": de_los_paquetes,
+            "comidas": sorted(leido["comidas"]),
+        }
 
     if leido["amenidades"]:
         reserva["amenidades_de_opera"] = leido["amenidades"]

@@ -120,6 +120,11 @@ CREATE TABLE IF NOT EXISTS reserva (
     -- PENSION_COMPLETA | DESAYUNO_CENA | SOLO_DESAYUNO | COMEDOR_TRABAJADORES | NULL
     -- NULL significa que el PDF no lo dijo, no que no tenga comidas.
     regimen TEXT,
+    -- El plan de tarifa de Opera ('BKFN', 'A30OL', 'WEBF'...). Es lo que el lodge mira
+    -- en Opera para saber que comidas trae la reserva, y de el sale el regimen cuando la
+    -- reserva viene con la nota vacia: los paquetes dicen lo que se COBRA, no lo que
+    -- esta incluido. Ver opera_paquetes.PLANES_DE_COMIDAS.
+    plan_tarifa TEXT,
     -- Lo que la reserva trae pagado además de las comidas. Va junto al régimen y no
     -- como amenidad: una amenidad es algo que hay que PREPARAR —la cuna, la canasta de
     -- frutas— y esto no se prepara, se sabe antes de servir.

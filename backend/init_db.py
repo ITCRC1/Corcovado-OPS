@@ -274,6 +274,10 @@ COLUMNAS_NUEVAS = [
     # antes de pasar la cuenta.
     ("reserva", "bebidas_incluidas", "TEXT"),
     ("reserva", "cortesia", "TEXT"),
+    # El plan de tarifa de Opera, de donde sale el régimen cuando la reserva no tiene
+    # nota. La tabla 'reserva' ya existe en la base instalada, así que el CREATE TABLE
+    # IF NOT EXISTS no corre y esta columna no aparecería sola.
+    ("reserva", "plan_tarifa", "TEXT"),
 ]
 
 
