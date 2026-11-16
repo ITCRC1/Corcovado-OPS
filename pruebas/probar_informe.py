@@ -1012,6 +1012,66 @@ def una_alerta_de_opera_llega_a_la_hoja_del_dia(c):
     conn.close()
 
 
+def lo_del_check_in_sale_el_dia_del_check_in_y_no_toda_la_estadia(c):
+    """Lo pidio el lodge con una foto de la hoja: la 17, EN CASA, arrastrando los dos
+    avisos de su llegada —«dejan el equipaje en Picolina», «el transporte llega entre 1 y
+    1:30»— tres dias despues de haber llegado. «Solo aplican para el check in, ya no es
+    necesario verlas los demas dias de estadia.»
+
+    Y no es solo ruido: una hoja que repite cuatro dias lo mismo enseña a no leer esa
+    columna, y el dia que ahi ponga algo que si hay que hacer, nadie lo va a mirar.
+
+    EL MISMO PROBLEMA TENIA LA NOTA DE LA RESERVA. La casilla era «nota_salida o
+    nota_ingreso», asi que en los dias de EN CASA —donde no hay nota de salida— caia la
+    del check-in, repetida cada dia.
+    """
+    import hoja_dia
+    import main
+
+    conn = comun.base_limpia()
+    llego = HOY - datetime.timedelta(days=2)
+    r = dict(reserva(74020, "17", ddmmyy(llego),
+                     ddmmyy(HOY + datetime.timedelta(days=2)), adl=2,
+                     estado="EN CASA"),
+             notas="Dejan el equipaje en la oficina de Picolina, recogerlo el 15",
+             alertas_opera=[{"codigo": "FRONT_DESK", "para_cocina": False,
+                             "texto": "El transporte llega entre 1 y 1:30 pm"}])
+    cargar([r], vistas=[r])
+
+    def casilla(dia):
+        d = hoja_dia.definicion(conn, dia.isoformat(),
+                                main._datos_del_resumen(dia.isoformat()))
+        fila = next((f for f in d["filas"] if str(f["conf_no"]) == "74020"), None)
+        return (fila or {}).get("estado"), hoja_dia.nota_de_la_fila(fila or {})
+
+    estado_llegada, texto_llegada = casilla(llego)
+    c.igual(estado_llegada, "ENTRA", "el dia que llega, su renglon dice ENTRA")
+    c.cierto("transporte llega" in texto_llegada,
+             "y ese dia SI sale el aviso de Opera")
+
+    estado_hoy, texto_hoy = casilla(HOY)
+    c.igual(estado_hoy, "EN CASA", "dos dias despues solo esta alojado")
+    c.cierto("transporte llega" not in texto_hoy,
+             "y el aviso del check-in YA NO sale")
+    c.cierto("Picolina" not in texto_hoy,
+             "ni la nota de la llegada, que es lo mismo repetido")
+
+    # Lo que SI tiene que seguir saliendo cada dia: lo que se escribio a mano para ESE
+    # dia en la vista previa. Es la salida para avisar algo a quien esta alojado.
+    import notas_hoja
+    conn.close()
+    conn = comun.conexion()
+    notas_hoja.guardar_varias(conn, HOY.isoformat(),
+                              filas={"74020": "Hoy cambian de habitacion"},
+                              usuario="pruebas")
+    conn.close()
+    conn = comun.conexion()
+    _, con_mano = casilla(HOY)
+    c.cierto("cambian de habitacion" in con_mano,
+             "la nota escrita a mano para hoy si sale hoy")
+    conn.close()
+
+
 def un_aviso_largo_no_empuja_fuera_el_vuelo_ni_el_BT(c):
     """EL ORDEN DE LA CASILLA ES UNA REGLA, no una preferencia.
 
@@ -1138,6 +1198,7 @@ PRUEBAS = [
     una_habitacion_que_cambia_de_huesped_no_mezcla_sus_horas,
     la_hoja_del_dia_deja_fuera_las_notas_de_plata,
     una_alerta_de_opera_llega_a_la_hoja_del_dia,
+    lo_del_check_in_sale_el_dia_del_check_in_y_no_toda_la_estadia,
     un_aviso_largo_no_empuja_fuera_el_vuelo_ni_el_BT,
     la_hoja_se_mira_como_imagen_porque_android_no_dibuja_el_pdf,
     un_area_inventada_se_rechaza,

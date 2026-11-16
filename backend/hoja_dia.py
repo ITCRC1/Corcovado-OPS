@@ -50,6 +50,26 @@ TOPE_NOTA_AUTO = 110     # la nota libre que viene de Opera
 TOPE_AVISO = 200         # una alerta de Opera (mediana medida: 106; el 81% entra entera)
 
 
+def _nota_del_estado(r, estado):
+    """La nota de la reserva que le toca a ESTE renglón, según lo que pase hoy.
+
+    Antes era `nota_salida or nota_ingreso`, y eso tenía una consecuencia que solo se ve
+    mirando la hoja de un día cualquiera: en los días de EN CASA no hay nota de salida,
+    así que caía la de INGRESO — la del check-in, repetida cada día de la estadía. Lo
+    mismo le pasaba al renglón del que se va cuando su nota de salida venía vacía.
+
+    Ahora cada día enseña lo suyo: el que llega, lo de su llegada; el que se va, lo de su
+    salida; y el que solo está, nada. Si un día hay que decirle algo a quien está
+    alojado, para eso está la nota a mano de la hoja, que se escribe en la vista previa y
+    es de ESE día.
+    """
+    if estado == "ENTRA":
+        return r.get("nota_ingreso")
+    if estado == "SALE":
+        return r.get("nota_salida")
+    return None
+
+
 def _componer_nota(f):
     """La casilla NOTAS automática, armada POR ORDEN DE IMPORTANCIA.
 
@@ -259,10 +279,19 @@ def definicion(conn, fecha, resumen):
             # `_componer_nota` las junta por orden de importancia. Pegadas en una sola
             # cadena, como estaban, el recorte se llevaba por delante lo que tocara estar
             # al final —el vuelo, el BT— en vez de lo que menos duele perder.
-            "avisos": avisos.get(str(clave), []),
+            #
+            # CADA NOTA EN EL DÍA QUE SE EJECUTA, Y NO TODOS LOS DÍAS. Lo pidió el lodge
+            # con una foto de la hoja: la 17, EN CASA, arrastrando los dos avisos de su
+            # llegada —«dejan el equipaje en Picolina», «el transporte llega entre 1 y
+            # 1:30»— tres días después de haber llegado. «Solo aplican para el check in,
+            # ya no es necesario verlas los demás días de estadía.»
+            #
+            # Y tiene razón en algo más que el ruido: una hoja que repite cuatro días lo
+            # mismo enseña a no leer esa columna, y el día que ahí ponga algo que sí hay
+            # que hacer, nadie lo va a mirar.
+            "avisos": avisos.get(str(clave), []) if estado == "ENTRA" else [],
             "vuelo": "", "bt": "",
-            "nota_opera": _notas.solo_lo_operativo(
-                r.get("nota_salida") or r.get("nota_ingreso")),
+            "nota_opera": _notas.solo_lo_operativo(_nota_del_estado(r, estado)),
             "notas": "",
             # Lo escrito a mano va en SU PROPIO campo y no pegado al de arriba: esa
             # columna la reescribe la carga de Opera, así que mezclarlos haría que la
