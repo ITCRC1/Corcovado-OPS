@@ -848,19 +848,53 @@ def _datos_del_resumen(fecha):
         c["revisar"] = bool(c.get("embarazo") or c.get("cirugia_reciente")
                             or c.get("buceo_24h"))
 
+    # LAS AMENIDADES DEL DÍA SON LAS QUE TOCAN HOY, NO LAS DE QUIEN LLEGA HOY.
+    #
+    # Antes se listaban todas las pendientes de quien INGRESA, sin mirar nunca la fecha
+    # de la amenidad. Con eso, una cena privada que recepción acordó para la tercera
+    # noche salía en la hoja del día de la llegada —y volvía a salir cada vez que se
+    # miraba ese día— mientras que el día que de verdad tocaba no aparecía en ninguna
+    # parte, porque para entonces el huésped ya no «ingresa». Lo reportó el lodge: «en
+    # el resumen de hoy aparecen unas cenas privadas que en amenidades fueron hechas
+    # para fechas posteriores».
+    #
+    # ES LA MISMA REGLA QUE YA USA LA PANTALLA DE AMENIDADES —la fecha de la amenidad si
+    # la tiene, y la de llegada si no; ver `listar_amenidades`, que lo resuelve con un
+    # COALESCE—. Tienen que decir lo mismo: es justo lo que el lodge comparó para
+    # encontrar esto, la cena privada puesta para el 19 en una pantalla y saliendo hoy
+    # en la otra.
+    #
+    # Son DOS consultas y no una con OR, por dos motivos: no pueden solaparse (una mira
+    # 'fecha = hoy' y la otra 'fecha IS NULL'), y sobre todo porque la segunda va por
+    # lotes de reservas — con una sola consulta, un día SIN ingresos no tendría lotes y
+    # se perdería también la cena privada que sí toca hoy.
+    #
     # 'areas' trae TODOS los departamentos separados por · para que la columna Área de la
     # hoja del día los muestre completos. Antes salía solo el principal, y una tarea que
     # también era de cocina se leía como si fuera solo de housekeeping.
-    amenidades = por_reserva(
-        f"""SELECT a.id AS _orden, r.conf_no, r.room_no, r.nombre_principal, a.amenidad,
-                   a.detalle, a.tarea, a.area_responsable, a.estado,
-                   (SELECT GROUP_CONCAT(x.area, ' · ') FROM amenidad_area x
-                    WHERE x.amenidad_id = a.id) AS areas
-            FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
-            WHERE a.estado = 'PENDIENTE' AND {viva()}
-              AND a.conf_no IN ({{marcas}})
-            ORDER BY a.id""",
-        confs_ingresan)
+    SQL_AMENIDADES = f"""
+        SELECT a.id AS _orden, r.conf_no, r.room_no, r.nombre_principal, a.amenidad,
+               a.detalle, a.tarea, a.area_responsable, a.estado, a.fecha,
+               (SELECT GROUP_CONCAT(x.area, ' · ') FROM amenidad_area x
+                WHERE x.amenidad_id = a.id) AS areas
+        FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
+        WHERE a.estado = 'PENDIENTE' AND {viva()} AND {{cuando}}"""
+
+    # 1. Las que tienen puesta ESTA fecha, sean de quien sean: la cena privada de la
+    #    tercera noche es de alguien que ese día ya no ingresa, está en casa.
+    amenidades = lista(SQL_AMENIDADES.format(cuando="a.fecha = ?"), (fecha,))
+    # 2. Y las que no tienen fecha, de quien ingresa hoy. Sin fecha, el día de llegada es
+    #    lo único que se sabe —y es a propósito que la cena privada sin noche asignada no
+    #    la tenga: ver loader._guardar_amenidades—. Quitarlas de aquí las dejaría sin
+    #    ninguna pantalla donde aparecer.
+    for lote in en_lotes(sorted(c for c in confs_ingresan if c)):
+        marcas = ",".join("?" * len(lote))
+        amenidades += lista(
+            SQL_AMENIDADES.format(cuando=f"a.fecha IS NULL AND a.conf_no IN ({marcas})"),
+            lote)
+    amenidades.sort(key=lambda x: x["_orden"])
+    for x in amenidades:
+        del x["_orden"]          # es solo para ordenar, no es parte del dato
     # Las restricciones alimentarias YA tienen su bloque en esta misma hoja —el de
     # cocina, unas líneas más arriba— así que aquí salían DOS veces. Una hoja del día que
     # repite la misma alergia en dos sitios hace dudar de si son dos personas distintas.

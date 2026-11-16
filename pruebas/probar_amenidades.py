@@ -494,6 +494,114 @@ AL_GERENTE = ("ATENCION GUEST SERVICE & OPERATIONS: Andrea solicita amablemente 
 AL_COBRO = "ATENCION FRONT DESK COBRAR $678 POR EL TOUR DE MANGLAR"
 
 
+def una_cena_privada_sale_la_noche_que_toca_y_no_la_de_la_llegada(c):
+    """EL FALLO QUE ESTA PRUEBA EVITA SALE DOS VECES MAL: de mas y de menos.
+
+    Lo reporto el lodge: «en el resumen de hoy aparecen unas cenas privadas que en
+    amenidades fueron hechas para fechas posteriores». La hoja del dia listaba TODAS las
+    pendientes de quien INGRESA, sin mirar nunca la fecha de la amenidad. Asi, una cena
+    privada acordada para la tercera noche salia el dia de la llegada —cocina la
+    preparaba el dia equivocado— y el dia que de verdad tocaba no aparecia en ninguna
+    parte, porque para entonces el huesped ya no «ingresa», esta en casa.
+    """
+    import datetime
+    import main
+
+    conn = comun.base_limpia()
+    hoy = datetime.date.today()
+    luego = hoy + datetime.timedelta(days=2)
+
+    def ddmmyy(d):
+        return f"{d.day:02d}-{d.month:02d}-{str(d.year)[2:]}"
+
+    r = dict(comun.reserva(690500, "07", ddmmyy(hoy),
+                           ddmmyy(hoy + datetime.timedelta(days=4)), adl=2),
+             notas="Cena privada en la playa para celebrar el aniversario")
+    comun.cargar([r], vistas=[r])
+
+    # Recepcion le pone la noche, que es justo lo que hace en la pantalla de Amenidades.
+    conn.execute("""UPDATE amenidad_tarea SET fecha = ?, editado_a_mano = 1
+                     WHERE conf_no = '690500' AND amenidad LIKE '%rivad%'""",
+                 (luego.isoformat(),))
+    conn.commit()
+    cuantas = conn.execute("""SELECT COUNT(*) n FROM amenidad_tarea
+                               WHERE conf_no='690500' AND fecha = ?""",
+                           (luego.isoformat(),)).fetchone()["n"]
+    conn.close()
+    c.igual(cuantas, 1, "la cena privada quedo puesta para la tercera noche")
+
+    nombres = lambda d: [a["amenidad"] for a in d["amenidades"]]
+    de_hoy = main._datos_del_resumen(hoy.isoformat())
+    c.cierto(not any("rivad" in x for x in nombres(de_hoy)),
+             "el dia de la llegada NO sale la cena privada de otra noche")
+
+    de_luego = main._datos_del_resumen(luego.isoformat())
+    c.cierto(any("rivad" in x for x in nombres(de_luego)),
+             "y el dia que toca SI sale, aunque ese dia el huesped ya no ingresa")
+
+
+def una_amenidad_sin_fecha_sigue_saliendo_el_dia_de_la_llegada(c):
+    """La otra mitad: lo que no tiene fecha no puede desaparecer de todas las pantallas.
+
+    A la cena privada sin noche asignada se le deja la fecha VACIA a proposito —ponerle
+    la llegada seria inventarle un dia y apagaria el aviso de «contratadas sin noche»—.
+    Si la hoja del dia solo mirara 'fecha = hoy', esas se quedarian sin ningun sitio
+    donde aparecer.
+    """
+    import datetime
+    import main
+
+    conn = comun.base_limpia()
+    hoy = datetime.date.today()
+
+    def ddmmyy(d):
+        return f"{d.day:02d}-{d.month:02d}-{str(d.year)[2:]}"
+
+    r = dict(comun.reserva(690600, "09", ddmmyy(hoy),
+                           ddmmyy(hoy + datetime.timedelta(days=3)), adl=2),
+             notas="Cena privada incluida en el paquete")
+    comun.cargar([r], vistas=[r])
+    sin_fecha = conn.execute("""SELECT COUNT(*) n FROM amenidad_tarea
+                                 WHERE conf_no='690600' AND fecha IS NULL""").fetchone()["n"]
+    conn.close()
+    c.igual(sin_fecha, 1, "la cena privada sin noche asignada se guarda sin fecha")
+
+    d = main._datos_del_resumen(hoy.isoformat())
+    c.cierto(any("rivad" in a["amenidad"] for a in d["amenidades"]),
+             "y sale el dia de la llegada, que es lo unico que se sabe")
+
+
+def las_amenidades_del_dia_son_las_de_ese_dia(c):
+    """Y las de quien YA ESTA en casa cuentan igual: la decoracion de un cumpleaños que
+    cae a mitad de estadia es del dia del cumpleaños, no del dia que llego."""
+    import datetime
+    import main
+
+    conn = comun.base_limpia()
+    hoy = datetime.date.today()
+    llego = hoy - datetime.timedelta(days=2)
+
+    def ddmmyy(d):
+        return f"{d.day:02d}-{d.month:02d}-{str(d.year)[2:]}"
+
+    r = dict(comun.reserva(690700, "11", ddmmyy(llego),
+                           ddmmyy(hoy + datetime.timedelta(days=2)), adl=2,
+                           estado="EN CASA"),
+             notas="Decoración de cumpleaños para la habitación")
+    comun.cargar([r], vistas=[r])
+    conn.execute("""UPDATE amenidad_tarea SET fecha = ?, editado_a_mano = 1
+                     WHERE conf_no = '690700'""", (hoy.isoformat(),))
+    conn.commit()
+    conn.close()
+
+    d = main._datos_del_resumen(hoy.isoformat())
+    c.cierto(any(a["conf_no"] == "690700" for a in d["amenidades"]),
+             "una amenidad de hoy sale hoy aunque el huesped llegara anteayer")
+    ayer = main._datos_del_resumen((hoy - datetime.timedelta(days=1)).isoformat())
+    c.cierto(not any(a["conf_no"] == "690700" for a in ayer["amenidades"]),
+             "y no sale el dia anterior")
+
+
 def las_alertas_de_opera_se_reparten_por_lo_que_son(c):
     """Lo pidio el lodge: revisar las alertas de cada reserva y traer lo que importe.
 
@@ -654,6 +762,9 @@ PRUEBAS = [
     el_queque_y_las_fresas_con_chocolate_se_reconocen,
     las_formas_de_pedir_el_queque_y_las_fresas,
     el_queque_llega_hasta_la_base,
+    una_cena_privada_sale_la_noche_que_toca_y_no_la_de_la_llegada,
+    una_amenidad_sin_fecha_sigue_saliendo_el_dia_de_la_llegada,
+    las_amenidades_del_dia_son_las_de_ese_dia,
     las_alertas_de_opera_se_reparten_por_lo_que_son,
     la_alerta_de_cocina_llega_a_la_hoja_aunque_no_case_con_ningun_patron,
     lo_que_ya_se_sabia_de_la_nota_no_se_pisa,
