@@ -809,7 +809,7 @@ def _datos_del_resumen(fecha):
     # aparecer en la hoja de cocina en cuanto Recepción quedara primera.
     SQL_RESTRICCIONES = f"""
         SELECT a.id AS _orden, r.conf_no, r.room_no, r.nombre_principal, a.amenidad,
-               a.detalle, a.tarea, a.estado
+               a.detalle, a.tarea, a.estado, a.fecha, r.arr_date
         FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
         WHERE (a.area_responsable = 'Cocina'
                OR EXISTS (SELECT 1 FROM amenidad_area x
@@ -817,7 +817,35 @@ def _datos_del_resumen(fecha):
           AND {viva()}
           AND a.conf_no IN ({{marcas}})
         ORDER BY a.id"""
-    restricciones = por_reserva(SQL_RESTRICCIONES, confs_en_casa)
+
+    def _de_hoy_para_cocina(fila):
+        """Si esta fila le toca a cocina HOY.
+
+        AQUÍ CONVIVEN DOS COSAS QUE NO SE FILTRAN IGUAL, y confundirlas se paga en las
+        dos direcciones:
+
+          · Una ALERGIA o una dieta no son de un día: son del huésped, y valen cada
+            noche que se sienta a comer. Filtrarlas por fecha las enseñaría solo el día
+            de llegada —justo cuando menos falta hacen— y el resto de la estadía cocina
+            cocinaría a ciegas. Por eso pasan siempre.
+          · Una CENA PRIVADA sí es de una noche concreta. Sin este filtro salía todos
+            los días de la estadía, y cocina la veía anunciada cuatro veces seguidas sin
+            saber cuál era la buena. Lo reportó el lodge con una foto de la hoja: «eso
+            aparece hoy y no es de hoy», la 01 y la 14 con su cena privada en el resumen
+            de un día que no era el suyo.
+
+        La noche es la de la amenidad, y la de llegada si todavía no se le asignó
+        ninguna: es la misma regla que usan la pantalla de Amenidades y la lista de
+        housekeeping de esta misma hoja.
+        """
+        import restaurantes as _rest_cocina
+        if not _rest_cocina.es_cena_privada(fila.get("amenidad"), fila.get("tarea")):
+            return True
+        cuando = fila.get("fecha") or sql_fecha_py(fila.get("arr_date"))
+        return not cuando or cuando == fecha
+
+    restricciones = [x for x in por_reserva(SQL_RESTRICCIONES, confs_en_casa)
+                     if _de_hoy_para_cocina(x)]
 
     # Y aparte, las de quienes SE VAN hoy.
     #
@@ -826,7 +854,8 @@ def _datos_del_resumen(fecha):
     # razón— es que no se mezclen con las de todo el día. Van en su propio bloque,
     # etiquetado, para que la hoja principal quede limpia sin perder la información.
     confs_salen = {x["conf_no"] for x in salidas} - confs_en_casa
-    restricciones_salen = por_reserva(SQL_RESTRICCIONES, confs_salen)
+    restricciones_salen = [x for x in por_reserva(SQL_RESTRICCIONES, confs_salen)
+                           if _de_hoy_para_cocina(x)]
 
     # --- Amenidades a preparar para quienes llegan ese día ---
     confs_ingresan = {x["conf_no"] for x in ingresos}

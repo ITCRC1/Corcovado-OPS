@@ -602,6 +602,68 @@ def las_amenidades_del_dia_son_las_de_ese_dia(c):
              "y no sale el dia anterior")
 
 
+def en_la_hoja_de_cocina_la_cena_privada_sale_solo_su_noche(c):
+    """Lo reporto el lodge con una foto de la hoja: «eso aparece hoy y no es de hoy»,
+    la 01 y la 14 con su cena privada en el resumen de un dia que no era el suyo.
+
+    EN ESA TARJETA CONVIVEN DOS COSAS QUE NO SE FILTRAN IGUAL, y confundirlas se paga en
+    las dos direcciones:
+
+      · Una ALERGIA no es de un dia, es del huesped: vale cada noche que se sienta a
+        comer. Filtrarla por fecha la enseñaria solo el dia de llegada —justo cuando
+        menos falta hace— y el resto de la estadia cocina cocinaria a ciegas.
+      · Una CENA PRIVADA si es de una noche concreta. Sin filtro salia todos los dias de
+        la estadia, y cocina la veia anunciada cuatro veces sin saber cual era la buena.
+    """
+    import datetime
+    import main
+
+    conn = comun.base_limpia()
+    hoy = datetime.date.today()
+    llego = hoy - datetime.timedelta(days=2)
+    la_noche = hoy + datetime.timedelta(days=1)
+
+    def ddmmyy(d):
+        return f"{d.day:02d}-{d.month:02d}-{str(d.year)[2:]}"
+
+    r = dict(comun.reserva(690800, "01", ddmmyy(llego),
+                           ddmmyy(hoy + datetime.timedelta(days=3)), adl=2,
+                           estado="EN CASA"),
+             notas="Cena privada 2 pax en la piscina. Alergia al mani.")
+    comun.cargar([r], vistas=[r])
+
+    # En la propiedad, de la cena privada responde cocina: por eso sale en esa tarjeta.
+    conn.execute("""UPDATE amenidad_tarea SET area_responsable = 'Cocina', fecha = ?,
+                           editado_a_mano = 1
+                     WHERE conf_no = '690800' AND amenidad LIKE '%rivad%'""",
+                 (la_noche.isoformat(),))
+    conn.execute("""UPDATE amenidad_tarea SET area_responsable = 'Cocina'
+                     WHERE conf_no = '690800' AND amenidad NOT LIKE '%rivad%'""")
+    conn.commit()
+    cuantas = conn.execute("""SELECT COUNT(*) n FROM amenidad_tarea
+                               WHERE conf_no='690800' AND area_responsable='Cocina'
+                            """).fetchone()["n"]
+    conn.close()
+    c.cierto(cuantas >= 2, "la reserva tiene cena privada y alergia, las dos de cocina")
+
+    def que_ve_cocina(dia):
+        d = main._datos_del_resumen(dia.isoformat())
+        return [x["amenidad"] for x in d["restricciones_cocina"]
+                if x["conf_no"] == "690800"]
+
+    de_hoy = que_ve_cocina(hoy)
+    c.cierto(not any("rivad" in x for x in de_hoy),
+             "hoy NO sale la cena privada, que es de mañana")
+    c.cierto(any("rivad" not in x for x in de_hoy),
+             "pero la alergia si sale, porque vale todos los dias")
+
+    de_la_noche = que_ve_cocina(la_noche)
+    c.cierto(any("rivad" in x for x in de_la_noche),
+             "y la noche que toca si sale la cena privada")
+    c.cierto(any("rivad" not in x for x in de_la_noche),
+             "con la alergia al lado, como siempre")
+
+
 def las_alertas_de_opera_se_reparten_por_lo_que_son(c):
     """Lo pidio el lodge: revisar las alertas de cada reserva y traer lo que importe.
 
@@ -765,6 +827,7 @@ PRUEBAS = [
     una_cena_privada_sale_la_noche_que_toca_y_no_la_de_la_llegada,
     una_amenidad_sin_fecha_sigue_saliendo_el_dia_de_la_llegada,
     las_amenidades_del_dia_son_las_de_ese_dia,
+    en_la_hoja_de_cocina_la_cena_privada_sale_solo_su_noche,
     las_alertas_de_opera_se_reparten_por_lo_que_son,
     la_alerta_de_cocina_llega_a_la_hoja_aunque_no_case_con_ningun_patron,
     lo_que_ya_se_sabia_de_la_nota_no_se_pisa,
