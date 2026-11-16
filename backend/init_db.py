@@ -278,6 +278,9 @@ COLUMNAS_NUEVAS = [
     # nota. La tabla 'reserva' ya existe en la base instalada, así que el CREATE TABLE
     # IF NOT EXISTS no corre y esta columna no aparecería sola.
     ("reserva", "plan_tarifa", "TEXT"),
+    # La firma de lo último escrito, para releerlo todo sin reescribirlo todo. Ver
+    # opera_sync.huella_de.
+    ("reserva", "huella_opera", "TEXT"),
 ]
 
 

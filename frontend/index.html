@@ -7698,7 +7698,14 @@ async function operaSincronizar() {
   if (r.estado === "OK") {
     // No hace falta recargar esta pantalla: fetchAuth ya avisó del cambio de datos,
     // y las demás pantallas se ponen al día solas cuando se entra a ellas.
-    let texto = `${r.reservas_cargadas} reservas actualizadas desde Opera`;
+    // SE DICEN LAS DOS COSAS: cuántas se releyeron y cuántas cambiaron. Desde que el
+    // ciclo relee TODAS las reservas en cada vuelta, «0 reservas actualizadas» es el
+    // resultado NORMAL —quiere decir que todo estaba al día— y a secas se lee como si
+    // la sincronización no hubiera hecho nada.
+    let texto = r.reservas_cargadas
+      ? `${r.reservas_cargadas} reservas actualizadas desde Opera`
+        + (r.releidas ? ` (de ${r.releidas} releídas)` : "")
+      : `Al día: se releyeron ${r.releidas || r.revisadas || 0} reservas y ninguna cambió`;
     if (r.duplicadas_unificadas) texto += ` · ${r.duplicadas_unificadas} duplicada(s) unificada(s)`;
     avisar(texto);
     // Si una limpieza secundaria falló, el ciclo igual salió bien, pero hay que

@@ -67,6 +67,10 @@ COLUMNAS_DEL_NUCLEO = (
     # La marca de Opera. Se guarda junto al núcleo para que el próximo ciclo sepa que
     # esta reserva ya está al día.
     "opera_modificado_en",
+    # La firma de lo último que se escribió de esta reserva. Con ella, el ciclo puede
+    # releerlo TODO de Opera y aun así escribir solo lo que de verdad cambió. Ver
+    # opera_sync.huella_de.
+    "huella_opera",
 )
 
 # Qué columnas de 'reserva' pertenecen a cada área. Solo se escriben las de las áreas
@@ -1088,10 +1092,17 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
             # Una compra que recepción ya registró no se pisa: el reporte no sabe que
             # alguien fue al SINAC y la pagó.
             estado = "COMPRADA" if previa["estado"] == "COMPRADA" else e["estado"]
+            # SOLO SI DE VERDAD CAMBIÓ. La tabla lleva disparador de sync_log, y un
+            # UPDATE que escribe los mismos valores lo dispara igual: con la relectura
+            # completa cada media hora, eso refrescaría solas todas las pantallas del
+            # lodge aunque nadie hubiera tocado nada. Ver opera_sync.huella_de.
             cur.execute(
                 """UPDATE entrada_sinac SET pax_total_grupo = ?, estado = ?, nota = ?
-                   WHERE id = ?""",
-                (e["pax_total_grupo"], estado, nota, previa["id"]))
+                   WHERE id = ?
+                     AND (pax_total_grupo IS NOT ? OR estado IS NOT ?
+                          OR IFNULL(nota,'') != IFNULL(?,''))""",
+                (e["pax_total_grupo"], estado, nota, previa["id"],
+                 e["pax_total_grupo"], estado, nota))
         else:
             cur.execute(
                 """INSERT INTO entrada_sinac

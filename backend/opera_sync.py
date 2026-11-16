@@ -62,6 +62,26 @@ CONFIG_POR_DEFECTO = {
     #
     # En 0 se apaga.
     "horas_repaso_completo": 12,
+    # RELEER TODO EN CADA CICLO: las reservas, sus notas, sus alertas, la nota de su PM
+    # y los paquetes. Lo pidió el lodge después de que una alerta de Opera pasara entera
+    # sin verse: «que cada 30 minutos, cuando actualiza el sistema, lea todas las
+    # reservas, notas, alertas, PM si hay y actualizaciones».
+    #
+    # LO QUE CUESTA, MEDIDO contra la propiedad el 17 de noviembre: la ventana son 90
+    # días y 451 reservas vivas, y el detalle de cada una tarda 1,0 s de media (los
+    # paquetes, las notas y las alertas SOLO vienen entrando a la reserva una por una;
+    # la búsqueda no los entrega). Son unos 7,5 minutos de cada ciclo de 30 y unas
+    # 21.600 peticiones al día.
+    #
+    # LO QUE NO CUESTA es reescribir la base. Releer no es escribir: de cada reserva se
+    # calcula una firma de lo que se iba a guardar y se compara con la de la última vez
+    # (ver `huella_de`). Lo que no cambió no se toca. Sin eso, reescribir 451 filas cada
+    # media hora dispararía sync_log en todas y las pantallas abiertas en el lodge se
+    # refrescarían solas cada 30 minutos, sin que nada hubiera cambiado.
+    #
+    # Apagándolo se vuelve a lo anterior: solo se piden las reservas cuya marca de
+    # modificación se movió, más el repaso completo cada 'horas_repaso_completo'.
+    "releer_todo_cada_ciclo": True,
 }
 
 # Estado del último ciclo, para mostrarlo en pantalla. Vive en memoria: es información
@@ -392,14 +412,20 @@ def _sincronizar(cargar=True):
     from loader import load_batch
     from validations import validar_todos_los_tours
 
-    # Solo lo que cambió. Opera no deja filtrar por fecha de modificación —se probaron
-    # tres parámetros y los tres se ignoran en silencio—, así que la comparación se hace
-    # aquí, contra la marca guardada de cada reserva.
+    # QUÉ SE LE PIDE A OPERA EN ESTE CICLO.
     #
-    # No es solo por ahorrar trabajo: reescribir las 70 reservas cada media hora movería
-    # la marca de actualización de todas, y entonces nadie podría distinguir en la
-    # pantalla lo que de verdad cambió de lo que solo se volvió a escribir.
-    repaso = _toca_repaso_completo()
+    # Lo normal ahora es pedirlo TODO: las notas, las alertas y los paquetes solo vienen
+    # entrando a cada reserva una por una, así que la única forma de no perderse una
+    # alerta nueva es volver a entrar. Lo pidió el lodge y está medido en
+    # 'releer_todo_cada_ciclo'.
+    #
+    # Pedirlo todo NO es escribirlo todo: lo que no cambió se descarta más abajo, por su
+    # firma. Antes esto se resolvía aquí, comparando la marca de modificación de Opera
+    # —que es más barato pero se fía de que Opera la mueva siempre—, y eso sigue estando
+    # para quien apague la relectura completa.
+    cfg_ciclo = cargar_config()
+    releer_todo = bool(cfg_ciclo.get("releer_todo_cada_ciclo"))
+    repaso = releer_todo or _toca_repaso_completo(cfg_ciclo)
     if repaso:
         # Se procesan todas, sin mirar las marcas. Ver 'horas_repaso_completo'.
         nuevas, cambiadas, iguales = [], list(reservas), []
@@ -448,12 +474,16 @@ def _sincronizar(cargar=True):
     # eso trae de todo: un día 31 en un mes de 30, erratas, números de más. Una nota
     # mal escrita puede costar ese tour; no puede costar la sincronización del hotel.
     manda = alcance_de_opera()
+    sin_cambio_real = 0
     try:
         lote = build_review_batch_desde_reservas(a_cargar)
         # Las amenidades que Opera entrega como paquete se agregan DESPUÉS del
         # importador, porque el importador las deduce del texto y aquí no hay texto:
         # las sobrescribiría con una lista vacía.
         _sumar_amenidades_de_opera(lote)
+        # Y AQUÍ SE CAE LO QUE NO CAMBIÓ. Se lee todo, se aplica todo, y justo antes de
+        # escribir se compara con la firma de la última vez. Ver `huella_de`.
+        sin_cambio_real = _quitar_lo_que_no_cambio(lote)
         # Solo se permite cancelar ausentes si la descarga vino completa. Con una lista
         # parcial, "no vino en el lote" no significa "cancelada": significa que falta,
         # y cancelarla sacaría de la agenda a un huésped que sí llega.
@@ -488,14 +518,21 @@ def _sincronizar(cargar=True):
 
     # El ciclo fue bien: las reservas están al día. Si alguna limpieza falló, se dice,
     # pero no se presenta como si la sincronización hubiera fracasado.
+    # LAS CARGADAS SON LAS QUE SE ESCRIBIERON, no las que se leyeron. Con la relectura
+    # completa se le pide el detalle a todas, así que contar las leídas diría «451
+    # cargadas» cada media hora y el registro dejaría de significar nada.
+    escritas = len(a_cargar) - sin_cambio_real
     _anotar(ultimo_exito=datetime.datetime.now().isoformat(timespec="seconds"),
             resultado="OK", detalle="; ".join(problemas) or None,
-            reservas_cargadas=len(a_cargar),
+            reservas_cargadas=escritas,
             descartadas=descartadas, completo=completo)
     return {"estado": "OK", "desde": desde, "hasta": hasta,
             "problemas_secundarios": problemas,
             "revisadas": len(reservas),
-            "reservas_cargadas": len(a_cargar),
+            "reservas_cargadas": escritas,
+            "releidas": len(a_cargar),
+            "sin_cambio_real": sin_cambio_real,
+            "releer_todo_cada_ciclo": releer_todo,
             "nuevas": len(nuevas), "cambiadas": len(cambiadas),
             "sin_cambio": len(iguales),
             "repaso_completo": repaso,
@@ -967,6 +1004,73 @@ def _toca_repaso_completo(cfg=None):
         return False
     _ultimo_repaso["cuando"] = ahora
     return True
+
+
+def huella_de(item):
+    """La firma de lo que se iba a escribir de una reserva.
+
+    POR QUÉ EXISTE. El lodge pidió releerlo todo cada media hora —«todas las reservas,
+    notas, alertas, PM si hay y actualizaciones»— y releer está bien, pero reescribir
+    no: cada UPDATE de 'reserva' deja una fila en sync_log, que es lo que miran todas
+    las pantallas abiertas para saber si tienen que refrescarse. Reescribir 451 filas
+    cada media hora refrescaría solas todas las pantallas del lodge, cada media hora,
+    sin que hubiera cambiado nada. Con la firma, se lee todo y se escribe lo que cambió.
+
+    SE FIRMA LA SALIDA, NO LA ENTRADA. Es decir, lo que ya pasó por las reglas del lodge
+    —el régimen, los tours repartidos, las amenidades, las alertas— y no el JSON que
+    mandó Opera. Firmando la entrada, el día que se corrige una REGLA las reservas
+    tendrían la misma firma y la corrección no llegaría nunca a la base: habría que
+    acordarse de invalidar las firmas a mano. Así no hay nada que recordar.
+
+    Si algo no se puede firmar, devuelve None y entonces la reserva SE ESCRIBE. Ante la
+    duda, escribir de más: lo caro es dejar la base vieja.
+    """
+    import hashlib
+
+    try:
+        texto = json.dumps(item, sort_keys=True, default=str, ensure_ascii=False)
+    except Exception:
+        return None
+    return hashlib.sha1(texto.encode("utf-8")).hexdigest()
+
+
+def _quitar_lo_que_no_cambio(lote):
+    """Saca del lote las reservas cuya firma es igual a la de la última vez.
+
+    Devuelve cuántas se sacaron. Las entradas del SINAC se dejan: son agregados de
+    varias reservas y su escritura ya no toca la fila si los números no cambiaron.
+    """
+    from init_db import get_connection
+
+    items = lote.get("reservas") or []
+    if not items:
+        return 0
+    try:
+        conn = get_connection()
+        try:
+            guardadas = {str(f["conf_no"]): f["huella_opera"] for f in conn.execute(
+                "SELECT conf_no, huella_opera FROM reserva")}
+        finally:
+            conn.close()
+    except Exception:
+        # Base sin la columna todavía (no se ha reiniciado el servidor): se escribe
+        # todo, que es exactamente lo que se hacía antes.
+        return 0
+
+    quedan, saltadas = [], 0
+    for item in items:
+        r = (item or {}).get("reserva") or {}
+        firma = huella_de(item)
+        if firma and guardadas.get(str(r.get("conf_no"))) == firma:
+            saltadas += 1
+            continue
+        # La firma se guarda CON la reserva, en el mismo UPDATE: si se guardara aparte y
+        # la escritura fallara a medias, la firma diría que está al día y la fila no lo
+        # estaría. Ver loader.COLUMNAS_DEL_NUCLEO.
+        r["huella_opera"] = firma
+        quedan.append(item)
+    lote["reservas"] = quedan
+    return saltadas
 
 
 def _separar_por_cambio(reservas):

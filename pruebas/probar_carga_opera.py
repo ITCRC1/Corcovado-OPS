@@ -448,6 +448,124 @@ def el_grupo_toma_el_itinerario_de_la_nota_de_su_PM(c):
 
 
 # ---------------------------------------------------------------------------
+# Releer todo cada ciclo sin reescribir todo
+# ---------------------------------------------------------------------------
+
+def _escribir(datos, vistas=None):
+    """Una vuelta del ciclo: aplica las reglas, descarta lo que no cambio, y guarda.
+
+    Es el mismo camino que usa opera_sync, con sus dos piezas en el mismo orden.
+    Devuelve cuantas reservas se saltaron por no haber cambiado.
+    """
+    import contextlib
+    import io
+    from importer import build_review_batch_desde_reservas
+    from loader import load_batch
+    import opera_sync as osync
+
+    copia = [dict(d) for d in datos]
+    with contextlib.redirect_stdout(io.StringIO()):
+        lote = build_review_batch_desde_reservas(copia)
+        saltadas = osync._quitar_lo_que_no_cambio(lote)
+        load_batch(lote, fuente_pdf="prueba", marcar_ausentes_como_canceladas=False,
+                   manda_en=comun.MANDA_OPERA,
+                   vistas_por_la_fuente=vistas if vistas is not None else copia)
+    return saltadas
+
+
+def _cuantos_cambios(conn):
+    return conn.execute("SELECT COUNT(*) n FROM sync_log").fetchone()["n"]
+
+
+def releer_lo_mismo_no_reescribe_nada(c):
+    """LA PIEZA QUE HACE POSIBLE RELEERLO TODO CADA MEDIA HORA.
+
+    Lo pidio el lodge: «que cada 30 minutos, cuando actualiza el sistema, lea todas las
+    reservas, notas, alertas, PM si hay y actualizaciones». Leerlo todo esta bien;
+    reescribirlo todo, no: cada UPDATE de 'reserva' deja una fila en sync_log, que es lo
+    que miran todas las pantallas abiertas para saber si tienen que refrescarse.
+    Reescribir las 451 reservas de la ventana cada media hora refrescaria solas todas
+    las pantallas del lodge, cada media hora, sin que nada hubiera cambiado.
+    """
+    conn = base_limpia()
+    conn.close()
+    lote = [dict(reserva(75001, "11", LLEGADA, SALIDA, adl=2),
+                 punto_entrada="Sierpe"),
+            dict(reserva(75002, "12", LLEGADA, SALIDA, adl=2))]
+
+    c.igual(_escribir(lote), 0, "la primera vuelta escribe las dos")
+    conn = conexion()
+    antes = _cuantos_cambios(conn)
+    guardadas = conn.execute("SELECT COUNT(*) n FROM reserva WHERE huella_opera "
+                             "IS NOT NULL").fetchone()["n"]
+    conn.close()
+    c.igual(guardadas, 2, "y les deja su firma")
+    c.cierto(antes > 0, "y queda anotado el cambio")
+
+    # Segunda vuelta con EXACTAMENTE lo mismo.
+    c.igual(_escribir(lote), 2, "la segunda no escribe ninguna")
+    conn = conexion()
+    c.igual(_cuantos_cambios(conn), antes,
+            "y las pantallas no se enteran de nada, porque nada cambio")
+    conn.close()
+
+
+def un_cambio_de_verdad_si_se_escribe(c):
+    """La otra mitad: la firma no puede convertirse en un candado.
+
+    Si cambia cualquier cosa de la reserva —la habitacion, una nota, una alerta nueva en
+    Opera— la firma cambia y la reserva se vuelve a escribir.
+    """
+    conn = base_limpia()
+    conn.close()
+    base = dict(reserva(75010, "11", LLEGADA, SALIDA, adl=2))
+    _escribir([base])
+
+    for que, cambio in (("la habitacion", {"room_no": "14"}),
+                        ("los pax", {"adl": 4}),
+                        ("una nota", {"notas": "Alergia al mani"}),
+                        ("una alerta de Opera", {"alertas_opera": [
+                            {"codigo": "FRONT_DESK", "para_cocina": False,
+                             "texto": "El transporte llega a la 1 pm"}]})):
+        c.igual(_escribir([dict(base, **cambio)]), 0,
+                f"si cambia {que}, se vuelve a escribir")
+        # Y vuelve a quedar quieta con el valor nuevo.
+        c.igual(_escribir([dict(base, **cambio)]), 1,
+                f"y despues de {que} se queda quieta otra vez")
+
+
+def la_firma_sale_de_lo_que_se_guarda_y_no_de_lo_que_manda_opera(c):
+    """SE FIRMA LA SALIDA, NO LA ENTRADA, y esto es lo que lo mantiene honesto.
+
+    Firmando el JSON que manda Opera, el dia que se corrige una REGLA —como la del
+    regimen, la semana pasada— las reservas tendrian la misma firma y la correccion no
+    llegaria nunca a la base: habria que acordarse de invalidar las firmas a mano.
+    Firmando lo que se iba a escribir, un cambio de regla cambia la firma solo.
+    """
+    import opera_sync as osync
+
+    item = {"reserva": {"conf_no": "75020", "room_no": "11", "regimen": "SOLO_DESAYUNO"},
+            "needs_review": False}
+    otro = {"reserva": {"conf_no": "75020", "room_no": "11",
+                        "regimen": "PENSION_COMPLETA"},
+            "needs_review": False}
+    c.cierto(osync.huella_de(item), "una reserva se puede firmar")
+    c.igual(osync.huella_de(item), osync.huella_de(dict(item)),
+            "la misma reserva da la misma firma")
+    c.cierto(osync.huella_de(item) != osync.huella_de(otro),
+             "y un regimen distinto da otra firma")
+    # El orden de las llaves no puede cambiarla: los diccionarios se arman en sitios
+    # distintos y en Python el orden es el de insercion.
+    revuelto = {"needs_review": False, "reserva": dict(
+        reversed(list(item["reserva"].items())))}
+    c.igual(osync.huella_de(revuelto), osync.huella_de(item),
+            "y el orden de las llaves no cuenta")
+    # Lo que no se pueda firmar se escribe: ante la duda, escribir de mas.
+    c.igual(osync.huella_de({"reserva": {"x": object()}}) is None, False,
+            "lo raro se firma igual, por su texto")
+
+
+# ---------------------------------------------------------------------------
 # El regimen: que comidas trae pagadas la reserva
 # ---------------------------------------------------------------------------
 
@@ -763,6 +881,9 @@ PRUEBAS = [
     una_cancelada_sale_de_la_operacion,
     una_cancelada_no_se_lleva_el_trabajo_ya_hecho,
     el_grupo_toma_el_itinerario_de_la_nota_de_su_PM,
+    releer_lo_mismo_no_reescribe_nada,
+    un_cambio_de_verdad_si_se_escribe,
+    la_firma_sale_de_lo_que_se_guarda_y_no_de_lo_que_manda_opera,
     la_tarifa_de_desayuno_manda_sobre_un_almuerzo_pegado_despues,
     con_una_tarifa_de_comidas_mandan_los_paquetes,
     un_plan_que_no_esta_en_la_tabla_deja_decidir_a_los_paquetes,

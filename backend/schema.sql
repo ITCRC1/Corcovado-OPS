@@ -142,6 +142,12 @@ CREATE TABLE IF NOT EXISTS reserva (
     notas_operacion TEXT,  -- notas en texto libre que aparecen tras el itinerario
     notas_libres TEXT,
     fuente_pdf TEXT,
+    -- La firma de lo ultimo que la sincronizacion escribio de esta reserva. Permite
+    -- releer TODO de Opera en cada ciclo y aun asi escribir solo lo que cambio de
+    -- verdad: sin esto, reescribir 451 reservas cada media hora movería el disparador
+    -- de sync_log de todas y las pantallas del lodge se refrescarian solas cada 30
+    -- minutos. Ver opera_sync.huella_de.
+    huella_opera TEXT,
     -- Marca de última modificación que informa Opera Cloud ('lastModifyDateTime').
     -- Guardarla permite que el ciclo automático solo vuelva a procesar las reservas que
     -- de verdad cambiaron, en vez de reescribirlas todas cada media hora.
