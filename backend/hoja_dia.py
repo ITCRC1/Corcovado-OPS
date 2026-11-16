@@ -44,12 +44,46 @@ def etiqueta_tour(t):
     return f"{t.get('tour_codigo') or ''}{grupo}{privado}"
 
 
-# Cuánto de la nota AUTOMÁTICA cabe en la casilla. Lo escrito a mano no entra en este
+# Cuánto cabe de cada cosa en la casilla de NOTAS. Lo escrito a mano no entra en ningún
 # recorte: ver `nota_de_la_fila`.
-TOPE_NOTA_AUTO = 110
+TOPE_NOTA_AUTO = 110     # la nota libre que viene de Opera
+TOPE_AVISO = 200         # una alerta de Opera (mediana medida: 106; el 81% entra entera)
 
 
-def nota_de_la_fila(f, tope=TOPE_NOTA_AUTO):
+def _componer_nota(f):
+    """La casilla NOTAS automática, armada POR ORDEN DE IMPORTANCIA.
+
+    EL ORDEN NO ES ESTÉTICO: dice cuál se recorta cuando no cabe todo. Antes esto era una
+    cadena a la que cada cosa se iba pegando por detrás y el renderizador cortaba a 110
+    caracteres el resultado, así que una nota larga de Opera empujaba fuera de la casilla
+    al VUELO y al BT —los dos datos que alguien tiene que ejecutar a una hora concreta—.
+    Es la misma lección que ya está escrita en notas.py: la plata no solo sobra, desplaza.
+
+    El orden, de lo que no se puede perder a lo que sí:
+
+      1. EL AVISO DE OPERA. Es lo que el lodge escribe para que no se pase por alto, y
+         hasta ahora no llegaba a esta hoja: medido, 43 de las 51 reservas con alerta
+         tenían su texto en 'nota_en_casa', que la hoja del día no usa. Lo reportó el
+         lodge con la reserva 600382440 —«te adjunto una que se omitió por completo»—.
+      2. El VUELO con su hora de avión.
+      3. El BT, que es un bote apartado a una hora.
+      4. La nota libre de la reserva, que es la única que se recorta.
+    """
+    partes = []
+    for texto in (f.get("avisos") or []):
+        texto = str(texto).strip()
+        if texto:
+            partes.append("AVISO: " + (texto[:TOPE_AVISO - 1] + "…"
+                                       if len(texto) > TOPE_AVISO else texto))
+    for clave in ("vuelo", "bt"):
+        if f.get(clave):
+            partes.append(str(f[clave]))
+    if f.get("nota_opera"):
+        partes.append(str(f["nota_opera"])[:TOPE_NOTA_AUTO])
+    return " · ".join(partes)
+
+
+def nota_de_la_fila(f):
     """Lo que dice la casilla NOTAS: lo escrito a mano delante, lo automático detrás.
 
     EN UNA SOLA FUNCIÓN porque esa casilla se escribe en cuatro sitios —el PDF del día,
@@ -58,26 +92,55 @@ def nota_de_la_fila(f, tope=TOPE_NOTA_AUTO):
     escrito a mano detrás, o recortándolo, y la misma hoja dice dos cosas distintas según
     por dónde se mire.
 
-    LO ESCRITO A MANO VA PRIMERO Y NO SE RECORTA. El recorte existe para que la nota de
-    Opera —que llega con párrafos enteros— no se coma el renglón, y alcanza solo a esa
-    parte. Alguien que escribe una nota a mano sobre la hoja del día la escribe porque
-    hace falta hoy; perder la mitad por una cuenta de caracteres sería tirar justo lo que
-    alguien decidió añadir.
+    LO ESCRITO A MANO VA PRIMERO Y NO SE RECORTA NUNCA. Alguien que escribe una nota a
+    mano sobre la hoja del día la escribe porque hace falta hoy; perder la mitad por una
+    cuenta de caracteres sería tirar justo lo que alguien decidió añadir. Los recortes de
+    lo automático ya los hizo `_componer_nota`, cada uno con su propio tope.
     """
     mano = (f.get("nota_mano") or "").strip()
-    auto = (f.get("notas") or "")[:tope]
+    auto = (f.get("notas") or "").strip()
     return " · ".join(x for x in (mano, auto) if x)
 
 
-def _notas_con_marcado(f, escape, tope=TOPE_NOTA_AUTO):
+def avisos_de_opera(conn):
+    """{conf_no: [texto, …]} con las alertas de Opera que siguen sin resolver.
+
+    SE LEEN DE LA TABLA DE AVISOS, no de las notas de la reserva. El texto de la alerta
+    también se suma a las notas —para que los detectores de amenidades y de alergias lo
+    vean— pero ahí lo clasifica el repartidor de frases y acaba casi siempre en
+    'nota_en_casa', que la hoja del día no usa: medido, 43 de 51. Leyéndolo del aviso se
+    sabe además que es una ALERTA y no una frase más de la nota, que es justo lo que hay
+    que distinguir en el papel.
+
+    Una sola consulta para toda la hoja: son 60 filas en la base del lodge.
+    """
+    import alertas_opera as _al
+
+    salida = {}
+    for f in conn.execute(
+            """SELECT referencia_texto, mensaje FROM alerta
+                WHERE tipo = 'ALERTA_OPERA' AND resuelto = 0
+                  AND referencia_texto IS NOT NULL
+                ORDER BY id"""):
+        texto = _al.solo_el_texto(f["mensaje"])
+        if texto:
+            salida.setdefault(str(f["referencia_texto"]), []).append(texto)
+    return salida
+
+
+def _notas_con_marcado(f, escape):
     """Lo mismo, con lo escrito a mano en negrita, para el PDF.
 
     Se distingue a propósito: en una columna que mezcla lo que trajo Opera con lo que
     escribió una persona, quien lee la hoja en el muelle tiene que poder ver cuál es cuál
     —lo de la persona es lo que no está en ningún otro lado.
+
+    NO SE VUELVE A RECORTAR AQUÍ. Los topes los aplicó `_componer_nota`, uno por pieza;
+    cortando otra vez el resultado entero se perdería el vuelo o el BT por culpa de un
+    aviso largo, que es justo lo que se vino a arreglar.
     """
     mano = (f.get("nota_mano") or "").strip()
-    auto = (f.get("notas") or "")[:tope]
+    auto = (f.get("notas") or "").strip()
     partes = []
     if mano:
         partes.append(f"<b>{escape(mano)}</b>")
@@ -171,6 +234,11 @@ def definicion(conn, fecha, resumen):
     # del pantallazo dirían cosas distintas. Ver notas_hoja.py.
     mano = _mano.leer(conn, fecha)
 
+    # Las ALERTAS que el lodge escribió en Opera para que no se pasen por alto. Entran
+    # aquí, en la casilla de la habitación de la que hablan, y no en una caja aparte: son
+    # un hecho de ESE huésped, y quien lee la hoja en el muelle lee su renglón.
+    avisos = avisos_de_opera(conn)
+
     # --- Una fila por habitación, igual que la hoja del lodge ---
     por_conf, por_hab = {}, {}
 
@@ -187,8 +255,15 @@ def definicion(conn, fecha, resumen):
             "conf_no": clave,
             "pax": (r.get("adl") or 0) + (r.get("chl") or 0),
             "sierpe": "", "drake": "", "horario": "", "guia_t": "", "bote_t": "",
-            "notas": _notas.solo_lo_operativo(
+            # Las piezas de la casilla de NOTAS van por separado hasta el final, y ahí
+            # `_componer_nota` las junta por orden de importancia. Pegadas en una sola
+            # cadena, como estaban, el recorte se llevaba por delante lo que tocara estar
+            # al final —el vuelo, el BT— en vez de lo que menos duele perder.
+            "avisos": avisos.get(str(clave), []),
+            "vuelo": "", "bt": "",
+            "nota_opera": _notas.solo_lo_operativo(
                 r.get("nota_salida") or r.get("nota_ingreso")),
+            "notas": "",
             # Lo escrito a mano va en SU PROPIO campo y no pegado al de arriba: esa
             # columna la reescribe la carga de Opera, así que mezclarlos haría que la
             # importación siguiente se llevara por delante lo que escribió una persona.
@@ -256,7 +331,7 @@ def definicion(conn, fecha, resumen):
                 vuelo = f"VUELO {det['vuelo']}"
                 if det.get("hora"):
                     vuelo += f" · avión {det['hora']}"
-                fila["notas"] = f"{fila['notas']} · {vuelo}".strip(" ·") if fila["notas"] else vuelo
+                fila["vuelo"] = vuelo
 
     # --- La tripulación de cada corrida ---
     # Esto el Excel del lodge no lo tenía: el capitán y el ayudante se asignan ahora en
@@ -290,7 +365,7 @@ def definicion(conn, fecha, resumen):
         quien = " / ".join(x for x in (b.get("bote"), b.get("capitan")) if x)
         if quien:
             texto += f" · {quien}"
-        fila["notas"] = f"{fila['notas']} · {texto}".strip(" ·") if fila["notas"] else texto
+        fila["bt"] = texto
 
     # --- Los tours de cada habitación ---
     #
@@ -348,6 +423,9 @@ def definicion(conn, fecha, resumen):
 
         fila["tour_guia"] = columna("guia")
         fila["tour_bote"] = columna("bote")
+        # Y ahora sí, la casilla de NOTAS: todas sus piezas ya están, así que se juntan
+        # por orden de importancia y cada una con su tope. Ver `_componer_nota`.
+        fila["notas"] = _componer_nota(fila)
 
     filas = sorted(por_conf.values(),
                    key=lambda x: int(x["hab"]) if str(x["hab"]).isdigit() else 999)

@@ -116,3 +116,29 @@ def texto_para_amenidades(alertas):
 def sin_encabezado(texto):
     """«ATENCION FRONT DESK: COBRAR $678…» -> «COBRAR $678…»."""
     return _ENCABEZADO.sub("", texto or "").strip() or (texto or "").strip()
+
+
+# Cómo se escribe el aviso de una reserva, y cómo se vuelve a leer. Las dos cosas van
+# JUNTAS y en un solo sitio: lo escribe el cargador y lo lee la hoja del día, y si el
+# formato se cambiara en uno solo, la hoja empezaría a imprimir «Hab. 17 · Feuster/Sascha
+# (llega 16-11-26):» dentro de la casilla de notas sin que nada avisara.
+def mensaje_de_reserva(r, texto):
+    """El aviso tal como se guarda: con la habitación y el huésped delante.
+
+    El encabezado hace falta en la lista del Dashboard, donde los avisos de treinta
+    reservas se leen seguidos y «cobrar $678» sin habitación no sirve de nada.
+    """
+    return (f"Hab. {r.get('room_no') or '—'} · {r.get('nombre_principal') or ''} "
+            f"(llega {r.get('arr_date')}): {texto}")
+
+
+_ENCABEZADO_DE_RESERVA = re.compile(r"^Hab\.\s.*?\(llega\s[^)]*\):\s*")
+
+
+def solo_el_texto(mensaje):
+    """Lo que dice la alerta, sin el encabezado con el que se guardó.
+
+    Lo usa la hoja del día: ahí la habitación ya es el renglón, así que repetirla dentro
+    de su propia casilla gastaría la mitad del ancho en decir dónde estamos.
+    """
+    return _ENCABEZADO_DE_RESERVA.sub("", mensaje or "").strip()

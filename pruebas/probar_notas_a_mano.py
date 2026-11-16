@@ -202,16 +202,20 @@ def se_puede_escribir_para_un_dia_que_todavia_no_llego(c):
 # ---------------------------------------------------------------------------
 
 def lo_escrito_a_mano_va_delante_y_no_lo_recorta_el_tope(c):
-    """El recorte a 110 existe para que la nota de Opera no se coma el renglon, y alcanza
+    """El recorte existe para que la nota libre de Opera no se coma el renglon, y alcanza
     SOLO a esa parte. Lo escrito a mano va delante porque es lo que no esta en ningun
     otro sitio -- y porque es lo primero que se lee."""
     import hoja_dia
     larga = "OPERA " + "x" * 200
-    f = {"nota_mano": "AVISAR AL MUELLE", "notas": larga}
+    auto = hoja_dia._componer_nota({"nota_opera": larga})
+    c.igual(len(auto), hoja_dia.TOPE_NOTA_AUTO,
+            "la nota libre de Opera se recorta a su tope")
+
+    f = {"nota_mano": "AVISAR AL MUELLE", "notas": auto}
     texto = hoja_dia.nota_de_la_fila(f)
     c.cierto(texto.startswith("AVISAR AL MUELLE · "), "lo de la mano va primero")
-    c.igual(len(texto), len("AVISAR AL MUELLE · ") + 110,
-            "y el recorte alcanza solo a lo que trae Opera")
+    c.igual(len(texto), len("AVISAR AL MUELLE · ") + hoja_dia.TOPE_NOTA_AUTO,
+            "y lo escrito a mano no entra en el recorte")
 
     marcado = hoja_dia._notas_con_marcado(f, lambda x: x)
     c.cierto(marcado.startswith("<b>AVISAR AL MUELLE</b>"),

@@ -963,6 +963,83 @@ def la_hoja_del_dia_deja_fuera_las_notas_de_plata(c):
              "pero la hora a la que tiene que registrarse para el vuelo SI")
 
 
+def una_alerta_de_opera_llega_a_la_hoja_del_dia(c):
+    """EL FALLO QUE ESTA PRUEBA EVITA NO DA ERROR: la alerta existe, esta guardada, y el
+    papel que circula no la dice.
+
+    Lo reporto el lodge con la reserva 600382440 —«te adjunto una que se omitio por
+    completo»—: dos alertas de Opera, «los clientes van a dejar el equipaje en la oficina
+    de Picolina» y «el transporte llega entre 1 y 1:30, el capitan es Dago», y ninguna
+    aparecia en la hoja. El texto de la alerta SI se guardaba, pero el repartidor de
+    frases lo mandaba a 'nota_en_casa' y la hoja del dia solo usa 'nota_ingreso' y
+    'nota_salida'. Medido sobre la base del lodge: 43 de las 51 reservas con alerta
+    tenian su texto justo ahi, o sea que el 84% no llegaba al papel.
+    """
+    import hoja_dia
+    import main
+
+    conn = comun.base_limpia()
+    llega = HOY
+    r = dict(reserva(74010, "17", ddmmyy(llega),
+                     ddmmyy(llega + datetime.timedelta(days=3)), adl=2),
+             alertas_opera=[
+                 {"codigo": "FRONT_DESK", "para_cocina": False,
+                  "texto": "ATENCION FRONT DESK: LOS CLIENTES DEJAN EL EQUIPAJE EN "
+                           "PICOLINA, RECOGERLO EL 15"},
+                 {"codigo": "FRONT_DESK", "para_cocina": False,
+                  "texto": "El transporte llega entre 1 y 1:30 pm. El capitan es Dago"}])
+    cargar([r], vistas=[r])
+
+    d = hoja_dia.definicion(conn, HOY.isoformat(), main._datos_del_resumen(HOY.isoformat()))
+    fila = next((f for f in d["filas"] if str(f["conf_no"]) == "74010"), None)
+    c.cierto(fila, "la reserva esta en la hoja")
+    if fila:
+        casilla = hoja_dia.nota_de_la_fila(fila)
+        c.cierto("PICOLINA" in casilla, "la primera alerta sale en su renglon")
+        c.cierto("Dago" in casilla, "y la segunda tambien")
+        # Marcadas como lo que son: en una casilla que mezcla la nota de Opera con el
+        # vuelo y el BT, hay que poder ver cual es la alerta.
+        c.cierto(casilla.count("AVISO:") == 2, "las dos van marcadas como aviso")
+        # Y SIN el encabezado con el que se guardan: la habitacion ya es el renglon.
+        c.cierto("Hab. 17 ·" not in casilla,
+                 "sin repetir la habitacion dentro de su propia casilla")
+        c.cierto("ATENCION FRONT DESK" not in casilla,
+                 "y sin el «atencion front desk», que se repite en casi todas")
+
+    paginas, texto = _paginas(hoja_dia.pdf(d))
+    c.igual(paginas, 1, "la hoja con avisos sigue siendo UNA pagina")
+    c.cierto("PICOLINA" in texto, "y el aviso esta impreso")
+    conn.close()
+
+
+def un_aviso_largo_no_empuja_fuera_el_vuelo_ni_el_BT(c):
+    """EL ORDEN DE LA CASILLA ES UNA REGLA, no una preferencia.
+
+    Antes, la casilla era una cadena a la que cada cosa se pegaba por detras y el dibujo
+    cortaba a 110 caracteres el resultado: una nota larga de Opera empujaba fuera el
+    VUELO y el BT, que son los dos datos que alguien tiene que ejecutar a una hora. Es la
+    misma leccion que notas.py: la plata no solo sobra, desplaza.
+    """
+    import hoja_dia
+
+    fila = {
+        "avisos": ["EL TRANSPORTE LLEGA ENTRE 1 Y 1:30 PM PARA INTERCAMBIAR CLIENTES, "
+                   "EL CAPITAN ES DAGO, " + "x" * 300],
+        "vuelo": "VUELO RZ1116 · avión 9:10",
+        "bt": "BT 11:00 · Dorado / Willy",
+        "nota_opera": "y" * 400,
+    }
+    casilla = hoja_dia._componer_nota(fila)
+    c.cierto("VUELO RZ1116" in casilla, "el vuelo sobrevive a un aviso largo")
+    c.cierto("avión 9:10" in casilla, "con su hora de avion")
+    c.cierto("BT 11:00" in casilla, "y el BT tambien")
+    c.cierto(casilla.startswith("AVISO:"), "el aviso va delante de todo")
+    c.cierto(casilla.index("VUELO") < casilla.index("yyy"),
+             "y la nota libre de Opera va la ultima, que es la que se recorta")
+    c.cierto(len(fila["avisos"][0]) > hoja_dia.TOPE_AVISO and "…" in casilla,
+             "un aviso larguisimo se recorta, pero se ve que sigue")
+
+
 def la_hoja_se_mira_como_imagen_porque_android_no_dibuja_el_pdf(c):
     """ANDROID NO DIBUJA UN PDF DENTRO DE UN MARCO.
 
@@ -1060,6 +1137,8 @@ PRUEBAS = [
     el_horario_de_la_hoja_es_el_del_traslado_no_el_del_vuelo,
     una_habitacion_que_cambia_de_huesped_no_mezcla_sus_horas,
     la_hoja_del_dia_deja_fuera_las_notas_de_plata,
+    una_alerta_de_opera_llega_a_la_hoja_del_dia,
+    un_aviso_largo_no_empuja_fuera_el_vuelo_ni_el_BT,
     la_hoja_se_mira_como_imagen_porque_android_no_dibuja_el_pdf,
     un_area_inventada_se_rechaza,
 ]

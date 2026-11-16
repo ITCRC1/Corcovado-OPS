@@ -656,8 +656,9 @@ def _guardar_alertas_de_opera(cur, r):
         # Y no es el mismo sitio dos veces: la hoja de cocina dice qué no puede comer,
         # el aviso de la reserva dice por qué. Quien sirve el plato necesita lo primero;
         # quien recibe al huésped, lo segundo.
-        mensaje = (f"Hab. {r.get('room_no') or '—'} · {r.get('nombre_principal') or ''} "
-                   f"(llega {r.get('arr_date')}): {texto[:600]}")
+        # El formato lo decide alertas_opera, que es también quien sabe deshacerlo: la
+        # hoja del día lee estos mismos avisos y tiene que poder quitarles el encabezado.
+        mensaje = _al.mensaje_de_reserva(r, texto[:600])
         cur.execute(
             "INSERT INTO alerta (tipo, referencia_id, referencia_texto, mensaje) "
             "VALUES ('ALERTA_OPERA', NULL, ?, ?)", (str(r["conf_no"]), mensaje))
