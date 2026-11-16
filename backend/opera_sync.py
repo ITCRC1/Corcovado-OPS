@@ -1187,11 +1187,29 @@ def _separar_por_cambio(reservas):
 LATIDO = 60
 
 
+def apagado_por_el_entorno():
+    """Si alguien apagó el ciclo con una variable de entorno.
+
+    ES EL INTERRUPTOR DE EMERGENCIA, y existe porque el otro no se alcanza cuando hace
+    falta: el de la pantalla vive en la configuración, y a la pantalla se entra por la
+    app. El día que el ciclo sea el que no deja arrancar la app, no habría forma de
+    pararlo. Con esto se pone HOTEL_OPERA_APAGADO=1 en el panel del servidor, se
+    reinicia, y el ciclo no corre.
+    """
+    return str(os.environ.get("HOTEL_OPERA_APAGADO") or "").strip().lower() in (
+        "1", "si", "sí", "true", "yes")
+
+
 def _bucle():
     ultimo = 0.0
     arranque = time.time()
     while True:
         try:
+            if apagado_por_el_entorno():
+                _anotar(resultado="APAGADO",
+                        detalle="apagado con HOTEL_OPERA_APAGADO en el servidor")
+                time.sleep(LATIDO)
+                continue
             cfg = cargar_config()
             intervalo = max(int(cfg.get("intervalo_minutos", 30) or 30), 5) * 60
             # El respiro del arranque: ver GRACIA_AL_ARRANCAR.
