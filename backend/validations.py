@@ -3,6 +3,7 @@ Valida capacidad de botes y guías al asignar tours, generando alertas
 y recomendaciones tal como se definió en el Documento de Requerimientos (9.1, 9.6).
 """
 from init_db import get_connection
+import horas as _horas
 
 
 def sugerir_bote_alterno(conn, tour_codigo, fecha, pax_necesarios, bote_actual=None):
@@ -327,14 +328,15 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 
 def _a_minutos(hora):
-    """'07:15' -> 435 minutos. Devuelve None si no hay hora definida."""
-    if not hora:
-        return None
-    try:
-        h, m = str(hora).strip().split(":")[:2]
-        return int(h) * 60 + int(m)
-    except (ValueError, AttributeError):
-        return None
+    """'07:15' -> 435 minutos. Devuelve None si no hay hora definida.
+
+    Lee también la hora escrita a mano que pudo quedar guardada en el catálogo antes de
+    que se normalizara al guardarla —«2:00 pm»—. Importa porque cuando aquí sale None se
+    supone que las dos salidas PODRÍAN coincidir, así que una hora ilegible no daba un
+    error: daba un conflicto de horario inventado, y el guía aparecía en rojo en la
+    línea del día por un choque que no existe. Ver horas.py.
+    """
+    return _horas.a_minutos(hora)
 
 
 def _se_solapan(inicio_a, fin_a, inicio_b, fin_b):

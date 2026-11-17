@@ -18,6 +18,7 @@ import validations as _val
 import auth
 import tours_pax
 import alertas as _alertas
+import horas as _horas
 
 app = FastAPI(title="Sistema de Operación Hotelera - Sierpe/Drake")
 
@@ -2391,8 +2392,47 @@ def estado_bote(nombre: str, activo: bool, user: dict = Depends(exige("catalogo"
     return {"status": "ok"}
 
 
+# Los cuatro campos de hora del catálogo, con el nombre que hay que usar al decir que
+# uno no se entiende: el mensaje sale tal cual en la pantalla de Catálogo.
+HORAS_DEL_TOUR = (("horario_inicio", "hora de inicio"),
+                  ("horario_fin", "hora de fin"),
+                  ("horario_alterno_inicio", "hora de inicio del horario alterno"),
+                  ("horario_alterno_fin", "hora de fin del horario alterno"))
+
+
+def _horas_del_tour(payload):
+    """Las horas que trae el payload, ya en «HH:MM». 400 si alguna no se entiende.
+
+    SE RECHAZA, NO SE LIMPIA EN SILENCIO. Guardar None cuando alguien escribió algo deja
+    el tour sin hora, y un tour sin hora no sale en la línea del día ni ordena en la
+    agenda: el error se convierte en una ausencia, que es justo lo que nadie busca.
+    Devolver el 400 hace que la pantalla lo diga debajo de la caja, con el tour todavía
+    abierto para corregirlo. Ver horas.py para el caso real que lo motivó.
+    """
+    limpias = {}
+    for campo, como_se_llama in HORAS_DEL_TOUR:
+        if campo not in payload:
+            continue                      # lo que no se manda, no se toca
+        try:
+            limpias[campo] = _horas.exigir(payload[campo], como_se_llama)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    # El fin antes que el inicio es siempre un dedazo: ningún tour del lodge cruza la
+    # medianoche. Con las horas al revés la salida se dibuja con duración negativa y el
+    # detector de choques compara un rango imposible, así que se ataja aquí.
+    for inicio, fin in (("horario_inicio", "horario_fin"),
+                        ("horario_alterno_inicio", "horario_alterno_fin")):
+        a, b = limpias.get(inicio), limpias.get(fin)
+        if a and b and _horas.a_minutos(b) <= _horas.a_minutos(a):
+            raise HTTPException(
+                status_code=400,
+                detail=f"La hora de fin ({b}) no puede ser anterior ni igual a la de inicio ({a}).")
+    return limpias
+
+
 @app.post("/api/catalogo/tour")
 async def crear_tour(payload: dict, user: dict = Depends(exige("catalogo", escribir=True))):
+    horarios = _horas_del_tour(payload)
     conn = get_connection()
     existe = conn.execute("SELECT codigo FROM tour_catalogo WHERE codigo = ?", (payload["codigo"],)).fetchone()
     if existe:
@@ -2403,7 +2443,8 @@ async def crear_tour(payload: dict, user: dict = Depends(exige("catalogo", escri
            (codigo, nombre, horario_inicio, horario_fin, max_pax_guia, requiere_entrada_sinac, es_privado, tour_base)
            VALUES (?,?,?,?,?,?,?,?)""",
         (
-            payload["codigo"].upper(), payload["nombre"], payload.get("horario_inicio"), payload.get("horario_fin"),
+            payload["codigo"].upper(), payload["nombre"],
+            horarios.get("horario_inicio"), horarios.get("horario_fin"),
             payload["max_pax_guia"], 1 if payload.get("requiere_entrada_sinac") else 0,
             1 if payload.get("es_privado") else 0, payload.get("tour_base"),
         ),
@@ -2569,11 +2610,15 @@ async def editar_tour(codigo: str, payload: dict,
     'requiere_entrada_sinac' es el que más pesa: es la marca por la que el sistema crea
     sola la entrada al parque cuando se agrega el tour a una reserva. Marcarla aquí
     alcanza para que un tour nuevo empiece a generarla, sin tocar el código.
+
+    Las horas entran por aquí ya normalizadas a «HH:MM» (ver _horas_del_tour): es el
+    único sitio por donde se editan, así que es donde hay que atajarlas.
     """
     if "max_pax_guia" in payload and not _entero(payload["max_pax_guia"]):
         raise HTTPException(
             status_code=400,
             detail="El máximo de pasajeros por guía tiene que ser un número mayor que 0.")
+    payload = {**payload, **_horas_del_tour(payload)}
     return _editar_catalogo(
         "tour", "tour_catalogo", "codigo", codigo.upper(), payload,
         {"nombre": _texto, "horario_inicio": _texto, "horario_fin": _texto,

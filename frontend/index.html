@@ -144,15 +144,27 @@
   .jornada-tour { position:absolute; top:0; height:38px; min-width:52px;
     background:var(--forest); color:#fff; border-radius:6px; padding:5px 7px;
     overflow:hidden; cursor:pointer; transition:transform .12s, box-shadow .12s; }
-  .jornada-tour:hover { transform:translateY(-1px); box-shadow:0 3px 10px rgba(0,0,0,.18); }
+  .jornada-tour:hover { transform:translateY(-1px); box-shadow:0 3px 10px rgba(0,0,0,.18);
+    z-index:4; }
   .jornada-tour.sin-asignar { background:#8B7B4E; }
   .jornada-tour.conflicto { background:#9B2C2C; }
-  .jornada-tour b { display:block; font-size:11.5px; line-height:1.15; letter-spacing:.2px; }
+  /* El nombre en UNA línea: en una caja angosta «CABALGATA» se partía en tres renglones
+     que se salían por debajo de la caja y se metían en la de al lado. */
+  .jornada-tour b { display:block; font-size:11.5px; line-height:1.15; letter-spacing:.2px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .jornada-tour small { display:block; font-size:9.5px; opacity:.85; line-height:1.25;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .jornada-ahora { position:absolute; top:0; bottom:0; width:2px; background:#B91C1C; z-index:5; }
   .jornada-ahora::before { content:""; position:absolute; top:-3px; left:-3px; width:8px;
     height:8px; border-radius:50%; background:#B91C1C; }
+  /* Las salidas que no tienen hora en el catálogo. No se dibujan en la línea —no hay
+     dónde ponerlas— pero tampoco se tiran: aquí quedan a la vista, con el lugar donde
+     se les pone el horario. */
+  .jornada-sinhora { margin-top:8px; padding:6px 9px; border-radius:6px; cursor:pointer;
+    background:#F4F1E8; border:1px dashed #DCD6C4; font-size:11.5px; color:#5E5847; }
+  .jornada-sinhora b { color:#453F31; font-size:10px; text-transform:uppercase;
+    letter-spacing:.5px; margin-right:5px; }
+  .jornada-sinhora span { color:var(--muted); font-size:10.5px; }
   .jornada-leyenda { display:flex; gap:14px; flex-wrap:wrap; font-size:11px;
     color:var(--muted); margin-top:8px; }
   .jornada-leyenda span { display:flex; align-items:center; gap:5px; }
@@ -1638,17 +1650,44 @@ async function loadDashboard(fecha) {
   window._dashData = d;
 }
 
-// Dibuja el día como una línea de tiempo. Se usa el rango real de operación del
-// lodge: del desayuno (5:45) a la cena (20:30).
+// Una hora escrita a mano, en minutos desde la medianoche. Entiende lo mismo que
+// backend/horas.py —«14:00», «2:00 pm», «7h30», «730»— y devuelve null si no la
+// entiende o si viene vacía.
+//
+// La hora se normaliza al guardarla en el Catálogo, así que lo normal es que aquí
+// llegue «HH:MM». Esto es la red: una base que todavía no pasó por esa corrección, o
+// un dato que entre por otra vía, se dibuja igual de bien en vez de aterrizar a las
+// dos de la madrugada. Ver el encabezado de backend/horas.py.
+function horaEnMinutos(texto) {
+  if (texto === null || texto === undefined) return null;
+  const m = String(texto).replace(/ /g, " ").trim().toLowerCase()
+    .match(/^(\d{1,2})(?:\s*[:.h]\s*|\s+)?(\d{2})?\s*(?:([ap])\s*\.?\s*m?\s*\.?)?$/);
+  if (!m) return null;
+  let hora = parseInt(m[1], 10);
+  const minutos = m[2] ? parseInt(m[2], 10) : 0;
+  const marca = m[3] || "";
+  if (marca && hora <= 12) {
+    if (marca === "p" && hora !== 12) hora += 12;
+    else if (marca === "a" && hora === 12) hora = 0;
+  }
+  if (hora > 23 || minutos > 59) return null;
+  return hora * 60 + minutos;
+}
+
+// Dibuja el día como una línea de tiempo. La ventana EMPIEZA siendo la jornada normal
+// del lodge —del desayuno (5:45) a la cena (20:30)— y se estira si alguna salida cae
+// fuera.
+//
+// Antes se recortaba a los bordes, y ahí se perdió una cabalgata de la tarde: su hora
+// se había escrito «2:00 pm», se leyó como las 2 de la madrugada, y la caja se dibujó
+// pegada al borde izquierdo, debajo del pajareo de las 6. No hubo error que mirar: la
+// salida estaba en la tabla de abajo y no estaba en la línea. Las dos mitades de esa
+// corrección son esta —estirar en vez de recortar, y repartir en pistas por el hueco
+// que ocupa la caja y no solo por el horario— y la de backend/horas.py, que arregla la
+// hora de origen.
 function lineaDelDia(tours, conflictos, fecha) {
-  const INICIO = 5 * 60 + 45, FIN = 20 * 60 + 30;
-  const SPAN = FIN - INICIO;
-  const min = (h) => {
-    if (!h) return null;
-    const p = String(h).split(":");
-    return parseInt(p[0]) * 60 + parseInt(p[1] || 0);
-  };
-  const pos = (m) => Math.max(0, Math.min(100, ((m - INICIO) / SPAN) * 100));
+  const JORNADA_INICIO = 5 * 60 + 45, JORNADA_FIN = 20 * 60 + 30;
+  const min = horaEnMinutos;
 
   // Se agrupan por salida: mismo tour y mismo grupo operativo van juntos
   const salidas = {};
@@ -1658,12 +1697,16 @@ function lineaDelDia(tours, conflictos, fecha) {
     salidas[k].pax += t.pax || 0;
     salidas[k].habitaciones.push(t.room_no);
   });
-  let lista = Object.values(salidas)
-    .map(t => ({ ...t, ini: min(t.horario_inicio), fin: min(t.horario_fin) }))
-    .filter(t => t.ini !== null)
-    .sort((a, b) => a.ini - b.ini);
+  const todas = Object.values(salidas)
+    .map(t => ({ ...t, ini: min(t.horario_inicio), fin: min(t.horario_fin) }));
+  // Las salidas SIN hora no se tiran: van en su propia línea debajo. Son el Claro del
+  // Bosque y el spa —que coordina recepción— y también cualquier tour nuevo al que se
+  // le olvidó el horario en el catálogo. Descartarlas en silencio era la otra forma de
+  // que una salida de verdad desapareciera de esta pantalla.
+  const sinHora = todas.filter(t => t.ini === null);
+  const lista = todas.filter(t => t.ini !== null).sort((a, b) => a.ini - b.ini);
 
-  if (!lista.length) return "";
+  if (!lista.length && !sinHora.length) return "";
 
   const enConflicto = new Set();
   (conflictos || []).forEach(cf => {
@@ -1671,17 +1714,34 @@ function lineaDelDia(tours, conflictos, fecha) {
     enConflicto.add(cf.salida_b.split(" ")[0]);
   });
 
-  // Se reparten en pistas para que dos salidas simultáneas no se tapen
+  // La ventana se estira hasta donde haga falta, redondeando a la media hora, para que
+  // ninguna salida quede fuera del dibujo.
+  let INICIO = JORNADA_INICIO, FIN = JORNADA_FIN;
+  lista.forEach(t => {
+    const dur = Math.max((t.fin || t.ini + 120) - t.ini, 45);
+    if (t.ini - 10 < INICIO) INICIO = Math.max(0, Math.floor((t.ini - 10) / 30) * 30);
+    if (t.ini + dur + 10 > FIN) FIN = Math.min(24 * 60, Math.ceil((t.ini + dur + 10) / 30) * 30);
+  });
+  const SPAN = FIN - INICIO;
+  const pos = (m) => Math.max(0, Math.min(100, ((m - INICIO) / SPAN) * 100));
+
+  // Se reparten en pistas para que dos salidas no se tapen. El hueco que se compara NO
+  // es el horario sino lo que ocupa la caja: tiene un ancho mínimo (52 px), así que dos
+  // salidas con media hora de diferencia se pisan en pantalla aunque no coincidan en el
+  // tiempo. Se mide en minutos equivalentes al ancho mínimo dentro de esta ventana.
+  const MINIMO_VISIBLE = Math.max(45, Math.round(SPAN / 14));
   const pistas = [];
   lista.forEach(t => {
     const dur = Math.max((t.fin || t.ini + 120) - t.ini, 45);
-    const item = { ...t, dur };
-    let puesto = pistas.find(p => p.every(x => t.ini >= (x.ini + x.dur) || (t.ini + dur) <= x.ini));
+    const hueco = Math.max(dur, MINIMO_VISIBLE);
+    const item = { ...t, dur, hueco };
+    let puesto = pistas.find(p => p.every(x => t.ini >= (x.ini + x.hueco) || (t.ini + hueco) <= x.ini));
     if (puesto) puesto.push(item); else pistas.push([item]);
   });
 
+  // Marcas de hora cada dos horas, dentro de la ventana que haya quedado.
   const horas = [];
-  for (let h = 6; h <= 20; h += 2) horas.push(h);
+  for (let h = Math.ceil(INICIO / 60); h * 60 <= FIN; h++) if (h % 2 === 0) horas.push(h);
 
   const comidas = [
     { nombre: "Desayuno", ini: 5 * 60 + 45, fin: 9 * 60 },
@@ -1718,15 +1778,24 @@ function lineaDelDia(tours, conflictos, fecha) {
                 const quien = [t.guia_nombre, t.bote_nombre].filter(Boolean).join(" · ") || "sin asignar";
                 return `<div class="jornada-tour ${clase}"
                     style="left:${pos(t.ini)}%;width:${Math.max(pos(t.ini + t.dur) - pos(t.ini), 6)}%;"
-                    title="${t.tour_codigo}${grupo} · ${t.horario_inicio}–${t.horario_fin || ''} · ${t.pax} pax · ${quien} · Hab. ${t.habitaciones.join(", ")}"
+                    title="${escaparAtributo(`${t.tour_codigo}${grupo} · ${t.horario_inicio}–${t.horario_fin || ''} · ${t.pax} pax · ${quien} · Hab. ${t.habitaciones.join(", ")}`)}"
                     onclick="loadAgenda('${fecha}')">
-                    <b>${t.tour_codigo}${grupo} <span style="font-weight:400;opacity:.8;">${t.pax}p</span></b>
-                    <small>${t.horario_inicio} · ${quien}</small>
+                    <b>${escaparHTML(t.tour_codigo + grupo)} <span style="font-weight:400;opacity:.8;">${t.pax}p</span></b>
+                    <small>${escaparHTML(t.horario_inicio)} · ${escaparHTML(quien)}</small>
                   </div>`;
               }).join("")}
             </div>`).join("")}
         </div>
       </div>
+      ${sinHora.length ? `
+        <div class="jornada-sinhora" onclick="loadAgenda('${fecha}')"
+             title="El horario de cada tour se pone en la pantalla de Catálogo">
+          <b>Sin hora</b>
+          ${sinHora.map(t => escaparHTML(
+              `${t.tour_codigo}${(t.grupo_operativo && t.grupo_operativo !== "A") ? " " + t.grupo_operativo : ""} ${t.pax}p`
+            )).join(" · ")}
+          <span>— ponele horario en Catálogo y se dibuja en la línea</span>
+        </div>` : ""}
       <div class="jornada-leyenda">
         <span><i style="background:var(--forest);"></i>Asignado</span>
         <span><i style="background:#8B7B4E;"></i>Falta guía o bote</span>
@@ -8924,6 +8993,9 @@ function mostrarFormTour() {
         <label style="font-size:12px;"><input type="checkbox" id="nt-entrada"> Requiere entrada SINAC</label>
         <button class="btn btn-primary" onclick="crearTour()">Crear</button>
       </div>
+      <p style="font-size:11px;color:var(--muted);margin:6px 0 0;">
+        La hora, en 24 horas (<strong>14:00</strong>) o con su marca (<strong>2:00 pm</strong>).
+        Sin horario el tour funciona igual, pero no se dibuja en la línea del día.</p>
       <div id="nt-error" style="color:var(--danger-text);font-size:12px;margin-top:6px;"></div>
     </div>`;
 }

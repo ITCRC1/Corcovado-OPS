@@ -427,6 +427,7 @@ def _migrar(conn):
     _renombrar_restaurante(conn, "Vitrales", "Bar el Bosque")
     _corregir_tours_por_tierra(conn)
     _corregir_tours_en_bote(conn)
+    _normalizar_horas_del_catalogo(conn)
     _poner_nombre_a_las_terapeutas(conn)
     _materializar_permisos(conn)
     # Después de materializar: primero se le da rejilla a quien no la tenga, y luego se
@@ -1176,6 +1177,55 @@ def _corregir_tours_en_bote(conn):
         print(f"Catálogo corregido: {cambiados} tour(s) pasan a ir en bote "
               f"({', '.join(TOURS_QUE_VAN_EN_BOTE)}).")
     return cambiados
+
+
+def _normalizar_horas_del_catalogo(conn):
+    """Deja las horas del catálogo escritas en «HH:MM».
+
+    El horario se escribe en una caja de texto libre y se guardaba tal cual. Una
+    cabalgata de la tarde anotada «2:00 pm» se leía como las dos de la madrugada: la
+    línea del día la dibujaba fuera de la jornada, tapada por otra salida, y el detector
+    de choques —que no podía leerla— avisaba de un conflicto que no existía. Desde la
+    corrección la hora se normaliza al guardarla; esto arregla lo que ya está guardado.
+
+    NO LLEVA MARCA de hecho, a propósito: cuesta 26 filas y es idempotente —solo escribe
+    las que cambian—, así que vale como red por si alguna vez entra una hora por otra
+    vía. Lo que no se entiende se deja como está y se dice en el registro: borrarlo sería
+    perder el único rastro de lo que alguien quiso escribir.
+    """
+    import horas as _horas
+    columnas = [c for c in ("horario_inicio", "horario_fin",
+                            "horario_alterno_inicio", "horario_alterno_fin")
+                if c in {r[1] for r in conn.execute("PRAGMA table_info(tour_catalogo)")}]
+    if not columnas:
+        return 0
+
+    arreglados, sin_entender = 0, []
+    for fila in conn.execute(
+            f"SELECT codigo, {', '.join(columnas)} FROM tour_catalogo").fetchall():
+        cambios = {}
+        for col in columnas:
+            valor = fila[col]
+            if _horas.esta_en_blanco(valor):
+                continue
+            buena = _horas.normalizar(valor)
+            if buena is None:
+                sin_entender.append(f"{fila['codigo']} ({col.replace('_', ' ')}): «{valor}»")
+            elif buena != valor:
+                cambios[col] = buena
+        if cambios:
+            conn.execute(
+                f"UPDATE tour_catalogo SET {', '.join(f'{c} = ?' for c in cambios)} "
+                f"WHERE codigo = ?", [*cambios.values(), fila["codigo"]])
+            arreglados += 1
+
+    if arreglados:
+        conn.commit()
+        print(f"Catálogo: {arreglados} tour(s) con el horario reescrito en HH:MM.")
+    if sin_entender:
+        print("Catálogo: horas que no se entienden y quedaron como estaban — "
+              + "; ".join(sin_entender))
+    return arreglados
 
 
 def _poner_nombre_a_las_terapeutas(conn):

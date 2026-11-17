@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<title>La jornada — comprobación</title>
+<style id="mio">
+  body { font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; padding: 16px 18px;
+         max-width: 980px; margin: 0 auto; color: #24291F; background: #fff; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  p.d { color: #6b6757; margin: 0 0 14px; font-size: 12.5px; }
+  #veredicto { font-size: 16px; font-weight: 700; padding: 10px 12px; border-radius: 8px;
+               margin: 0 0 14px; }
+  .bien { background: #E8F0E4; color: #2E5A2E; }
+  .mal  { background: #FBE9E9; color: #9B2C2C; }
+  #detalle { background: #FAF8F2; border: 1px solid #e5e2d8; border-radius: 8px;
+             padding: 11px 12px; overflow-x: auto; font-size: 12px; white-space: pre; }
+  .MAL { color: #9B2C2C; font-weight: 700; }
+  #lienzo { width: 880px; border: 1px dashed #ccc; padding: 6px 8px; margin: 0 0 16px; }
+</style>
+
+<h1>La jornada dibuja TODAS las salidas del día</h1>
+<p class="d">
+  Abrí este archivo en un navegador. Lee <code>lineaDelDia()</code> y
+  <code>horaEnMinutos()</code> del <code>frontend/index.html</code> de al lado —no una
+  copia—, las corre con las salidas de un día de verdad y MIDE dónde quedó cada caja.
+</p>
+<p class="d">
+  Por qué existe: una cabalgata de la tarde con la hora escrita «2:00 pm» se leía como
+  las 2 de la madrugada, la línea recortaba al borde todo lo que caía fuera de la
+  jornada, y la caja quedó debajo del pajareo de las 6. La salida estaba en la tabla de
+  abajo y no estaba en la línea, sin ningún error que mirar. Aquí se comprueba lo que
+  no se puede comprobar leyendo el archivo: que ninguna caja se pise con otra y que
+  cada una caiga en su hora.
+</p>
+
+<div id="veredicto">Leyendo…</div>
+<div id="lienzo"></div>
+<div id="detalle"></div>
+
+<script>
+const ANCHO = 880;   // el ancho del lienzo, para pasar de % a px
+
+// Las salidas de un día cualquiera del lodge, más los dos casos que rompían:
+// una hora fuera de la jornada y una salida sin hora.
+const TOURS = [
+  { tour_codigo: "PAJAREO", grupo_operativo: "A", horario_inicio: "06:00", horario_fin: "08:00",
+    pax: 6, room_no: "02", guia_nombre: "FRAISER", bote_nombre: null, requiere_bote: 0 },
+  { tour_codigo: "PNC", grupo_operativo: "A", horario_inicio: "07:30", horario_fin: "12:30",
+    pax: 5, room_no: "05", guia_nombre: "PABLO", bote_nombre: null, requiere_bote: 0 },
+  { tour_codigo: "SNORKEL", grupo_operativo: "A", horario_inicio: "07:15", horario_fin: "12:30",
+    pax: 4, room_no: "07", guia_nombre: "STEVEN", bote_nombre: "CHULIN", requiere_bote: 1 },
+  // La cabalgata, tal como quedó escrita en el catálogo el día del fallo.
+  { tour_codigo: "CABALGATA PM", grupo_operativo: "A", horario_inicio: "2:00 pm", horario_fin: "4:30 pm",
+    pax: 2, room_no: "03", guia_nombre: "DIEGO", bote_nombre: null, requiere_bote: 0 },
+  { tour_codigo: "TREENET", grupo_operativo: "A", horario_inicio: "16:00", horario_fin: "18:00",
+    pax: 2, room_no: "09", guia_nombre: "DIEGO", bote_nombre: null, requiere_bote: 0 },
+  { tour_codigo: "NW", grupo_operativo: "A", horario_inicio: "17:45", horario_fin: "19:45",
+    pax: 2, room_no: "11", guia_nombre: null, bote_nombre: null, requiere_bote: 0 },
+  // Fuera de la jornada por los dos lados: antes se recortaban al borde.
+  { tour_codigo: "MADRUGON", grupo_operativo: "A", horario_inicio: "04:30", horario_fin: "07:00",
+    pax: 3, room_no: "14", guia_nombre: "LUIS", bote_nombre: null, requiere_bote: 0 },
+  { tour_codigo: "NOCTURNO", grupo_operativo: "A", horario_inicio: "21:00", horario_fin: "22:30",
+    pax: 2, room_no: "15", guia_nombre: "MARTA", bote_nombre: null, requiere_bote: 0 },
+  // Sin hora: el Claro del Bosque lo coordina recepción.
+  { tour_codigo: "CLARO", grupo_operativo: "A", horario_inicio: null, horario_fin: null,
+    pax: 4, room_no: "17", guia_nombre: "LUIS", bote_nombre: null, requiere_bote: 0 },
+];
+
+const CON_HORA = TOURS.filter(t => t.horario_inicio).length;
+
+fetch("../frontend/index.html")
+  .then(r => r.ok ? r.text() : Promise.reject(r.status))
+  .then(html => {
+    // El CSS de verdad: sin él no hay nada que medir.
+    const estilos = [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(m => m[1]).join("\n");
+    const hoja = document.createElement("style");
+    hoja.textContent = estilos;
+    document.getElementById("mio").before(hoja);
+
+    const fns = ["horaEnMinutos", "lineaDelDia", "escaparHTML", "escaparAtributo", "hoyISO"]
+      .map(n => sacar(html, n)).join("\n");
+    // eslint-disable-next-line no-new-func
+    new Function(fns + "\nwindow.__linea = lineaDelDia; window.__min = horaEnMinutos;"
+                     + "\nwindow.__hoy = hoyISO;")();
+    comprobar();
+  })
+  .catch(e => {
+    document.getElementById("veredicto").className = "mal";
+    document.getElementById("veredicto").textContent =
+      "No se pudo leer el index.html: " + e + ". Si el navegador bloquea el archivo " +
+      "local, levantá la carpeta con:  python -m http.server";
+  });
+
+function sacar(html, nombre) {
+  const i = html.indexOf(`function ${nombre}(`);
+  if (i < 0) throw new Error(`no se encontró ${nombre}() en el index.html`);
+  let nivel = 0, j = i;
+  for (; j < html.length; j++) {
+    if (html[j] === "{") nivel++;
+    else if (html[j] === "}" && --nivel === 0) { j++; break; }
+  }
+  return html.slice(i, j);
+}
+
+let lineas = "", malas = 0, total = 0;
+function dice(bien, que, detalle) {
+  total++;
+  if (!bien) malas++;
+  lineas += `${bien ? "ok " : "MAL"}  ${que}${detalle ? "   " + detalle : ""}\n`;
+}
+
+function comprobar() {
+  const lienzo = document.getElementById("lienzo");
+  lienzo.innerHTML = window.__linea(TOURS, [], window.__hoy());
+
+  const cajas = [...lienzo.querySelectorAll(".jornada-tour")];
+  dice(cajas.length === CON_HORA,
+       `se dibujan las ${CON_HORA} salidas con hora`, `hay ${cajas.length}`);
+
+  // 1. Ninguna caja se pisa con otra.
+  let pisadas = [];
+  for (let i = 0; i < cajas.length; i++) {
+    for (let j = i + 1; j < cajas.length; j++) {
+      const a = cajas[i].getBoundingClientRect(), b = cajas[j].getBoundingClientRect();
+      const cruzan = a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+      if (cruzan) pisadas.push(`${texto(cajas[i])} / ${texto(cajas[j])}`);
+    }
+  }
+  dice(pisadas.length === 0, "ninguna caja queda debajo de otra",
+       pisadas.length ? "se pisan: " + pisadas.join(", ") : "");
+
+  // 2. Cada caja, dentro del dibujo y en su hora.
+  const marco = lienzo.querySelector(".jornada-pistas").getBoundingClientRect();
+  const horas = [...lienzo.querySelectorAll(".jornada-hora")]
+    .map(h => ({ hora: parseInt(h.textContent), x: h.getBoundingClientRect().left + h.getBoundingClientRect().width / 2 }));
+  dice(horas.length >= 2, "el eje tiene marcas de hora", horas.map(h => h.hora + ":00").join(" "));
+
+  cajas.forEach(caja => {
+    const r = caja.getBoundingClientRect();
+    const dentro = r.left >= marco.left - 1 && r.right <= marco.right + 1;
+    dice(dentro, `${texto(caja)} cae dentro del dibujo`,
+         dentro ? "" : `izq ${Math.round(r.left - marco.left)} der ${Math.round(r.right - marco.right)}`);
+  });
+
+  // 3. La cabalgata de la tarde cae donde cae su hora: entre las 14:00 y las 16:00.
+  const cab = cajas.find(x => texto(x).startsWith("CABALGATA"));
+  if (cab) {
+    const x = cab.getBoundingClientRect().left;
+    const h14 = interpolar(horas, 14), h16 = interpolar(horas, 16);
+    dice(x >= h14 - 12 && x <= h16,
+         "la cabalgata escrita «2:00 pm» se dibuja en la tarde",
+         `x=${Math.round(x)}  14:00=${Math.round(h14)}  16:00=${Math.round(h16)}`);
+    const paj = cajas.find(y => texto(y).startsWith("PAJAREO"));
+    dice(paj && cab.getBoundingClientRect().left > paj.getBoundingClientRect().right,
+         "y queda a la derecha del pajareo de las 6, no debajo");
+  } else {
+    dice(false, "la cabalgata de la tarde se dibuja");
+  }
+
+  // 4. La ventana se estiró: el madrugón de las 4:30 y el nocturno de las 21:00 están.
+  ["MADRUGON", "NOCTURNO"].forEach(cod => {
+    dice(cajas.some(x => texto(x).startsWith(cod)),
+         `${cod}, fuera de la jornada normal, se dibuja igual`);
+  });
+
+  // 5. La salida sin hora no desaparece.
+  const franja = lienzo.querySelector(".jornada-sinhora");
+  dice(!!franja && franja.textContent.includes("CLARO"),
+       "la salida sin hora sale en su propia franja",
+       franja ? franja.textContent.replace(/\s+/g, " ").trim() : "no hay franja");
+
+  // 6. Y nada se sale del ancho de la pantalla.
+  dice(lienzo.scrollWidth <= lienzo.clientWidth + 1,
+       "nada se sale por los lados",
+       `contenido ${lienzo.scrollWidth} vs lienzo ${lienzo.clientWidth}`);
+
+  const v = document.getElementById("veredicto");
+  v.className = malas ? "mal" : "bien";
+  v.textContent = malas ? `${malas} de ${total} comprobaciones MAL`
+                        : `${total}/${total} comprobaciones correctas`;
+  document.getElementById("detalle").innerHTML =
+    lineas.split("\n").map(l => l.startsWith("MAL") ? `<span class="MAL">${l}</span>` : l).join("\n");
+}
+
+function texto(caja) { return caja.querySelector("b").textContent.trim(); }
+
+function interpolar(horas, h) {
+  // x de una hora cualquiera, a partir de las marcas del eje
+  const a = horas[0], b = horas[horas.length - 1];
+  return a.x + (b.x - a.x) * ((h - a.hora) / (b.hora - a.hora));
+}
+</script>
+</html>
