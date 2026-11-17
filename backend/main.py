@@ -6457,7 +6457,8 @@ def restaurantes_cambiar(payload: dict, user: dict = Depends(current_user)):
     conf_no = payload.get("conf_no")
     comida = (payload.get("comida") or "CENA").upper()
     restaurante = payload.get("restaurante")
-    if not (fecha and conf_no and restaurante in (rest.TERRA, rest.BOSQUE)):
+    # El comedor del staff es un destino válido como los otros dos: ver restaurantes.STAFF.
+    if not (fecha and conf_no and restaurante in rest.RESTAURANTES):
         raise HTTPException(status_code=400, detail="Faltan datos o el restaurante no es válido")
 
     conn = get_connection()

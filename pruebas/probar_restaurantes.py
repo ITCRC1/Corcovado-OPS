@@ -228,6 +228,117 @@ def el_almuerzo_usa_su_propia_comida(c):
 # El cableado hasta la pantalla
 # ---------------------------------------------------------------------------
 
+def el_comedor_del_staff_saca_a_la_habitacion_del_reparto(c):
+    """Lo pidio el lodge: «hay reservas que no comen en los restaurantes principales y se
+    deben mover de forma manual, con el fin de que no afecte la distribucion real».
+
+    EL PUNTO ES QUE NO CUENTE. Antes esas habitaciones se quedaban en Terra o en el
+    Bosque ocupando un sitio que nadie iba a usar: el reparto equilibraba contandolas y
+    la cocina preparaba de mas. Que desaparezcan de las dos listas no alcanza — tienen
+    que salir tambien del TOTAL y del equilibrio.
+    """
+    conn = comun.base_limpia()
+    lote = _grupo(6, "SOLOS", adl=2, desde=1)
+    cargar(lote, vistas=lote)
+
+    antes = _cena(conn)
+    c.igual(antes["total"], 12, "las seis habitaciones cenan (12 pax)")
+
+    # Se manda una al comedor del staff, ella sola.
+    rest.mover_grupo(conn, HOY, "SOLOS0", "CENA", rest.STAFF, solo_esta=True)
+    conn.commit()
+
+    d = _cena(conn)
+    habs = _habs(d["terra_kitchen"]) + _habs(d["bar_el_bosque"])
+    c.cierto("01" not in habs, "ya no esta en ninguno de los dos restaurantes")
+    c.igual(_habs(d["comedor_staff"]), ["01"], "esta en el comedor del staff")
+    c.igual(d["pax_staff"], 2, "con sus pax")
+    c.igual(d["total"], 10, "y el total de la cena baja: no cuenta para el servicio")
+    c.igual(d["pax_tk"] + d["pax_bosque"], 10,
+            "los dos restaurantes suman solo a los que si comen ahi")
+
+    # Y se puede traer de vuelta: no es una puerta de una sola direccion.
+    conn.execute("DELETE FROM restaurante_cambio WHERE conf_no = 'SOLOS0'")
+    conn.commit()
+    vuelta = _cena(conn)
+    c.igual(vuelta["comedor_staff"], [], "al deshacerlo, el comedor del staff queda vacio")
+    c.igual(vuelta["total"], 12, "y vuelve a contar")
+    conn.close()
+
+
+def el_comedor_del_staff_va_por_comida(c):
+    """Igual que los otros dos destinos: a alguien se le puede mandar el almuerzo al
+    comedor y dejarle la cena en el restaurante. Si fuera del dia entero, mover el
+    almuerzo le quitaria la cena sin que nadie lo pidiera."""
+    conn = comun.base_limpia()
+    lote = _grupo(4, "COMIDA", adl=2, desde=1)
+    cargar(lote, vistas=lote)
+
+    rest.mover_grupo(conn, HOY, "COMIDA0", "ALMUERZO", rest.STAFF, solo_esta=True)
+    conn.commit()
+
+    d = rest.distribuir(conn, HOY)
+    c.igual(_habs(d["almuerzo"]["comedor_staff"]), ["01"],
+            "en el almuerzo esta en el comedor del staff")
+    c.igual(d["cena"]["comedor_staff"], [],
+            "y en la cena sigue en su restaurante")
+    en_cena = _habs(d["cena"]["terra_kitchen"]) + _habs(d["cena"]["bar_el_bosque"])
+    c.cierto("01" in en_cena, "cenando con los demas")
+    almorzando = (_habs(d["almuerzo"]["terra_kitchen"])
+                  + _habs(d["almuerzo"]["bar_el_bosque"]))
+    c.cierto("01" not in almorzando, "pero no almorzando")
+    conn.close()
+
+
+def el_comedor_del_staff_esta_en_la_pantalla_y_se_puede_deshacer(c):
+    """El boton de mover y el de traer de vuelta, y que el nombre sea EL MISMO en los dos
+    lados: escrito a mano en cada sitio, una errata de una letra mandaria la habitacion a
+    un «restaurante» que no existe y desapareceria de las tres listas."""
+    raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+    with open(os.path.join(raiz, "backend", "main.py"), encoding="utf-8") as f:
+        servidor = f.read()
+
+    c.cierto(f'const COMEDOR_STAFF = "{rest.STAFF}"' in pantalla,
+             "la pantalla nombra el comedor igual que el servidor")
+    c.cierto("detalleRest('comedor_staff')" in pantalla, "hay tarjeta para verlos")
+    c.cierto("function detalleComedorStaff" in pantalla, "con su detalle")
+    c.cierto("devolverAlReparto" in pantalla, "y un boton para devolverlos al reparto")
+    c.cierto("'${COMEDOR_STAFF}'" in pantalla,
+             "el boton de mover usa la constante, no el nombre escrito otra vez")
+    # El servidor tiene que aceptarlo como destino valido.
+    c.cierto("rest.RESTAURANTES" in servidor,
+             "el servidor valida contra la lista de restaurantes, no contra dos")
+    c.cierto(rest.STAFF in rest.RESTAURANTES, "y el comedor del staff esta en esa lista")
+
+
+def el_boton_de_solo_desayunos_usa_el_mismo_detalle_que_full_board(c):
+    """Lo pidio el lodge: «un boton similar al de full board que se llame Solo desayunos,
+    y que se alberguen ahi en forma de resumen todas las calificadas como solo desayuno,
+    igual al funcionamiento del fullboard».
+
+    ES LA MISMA FUNCION con un filtro, no una copia: dos copias acabarian contando
+    distinto, o enseñando las bebidas incluidas en una vista y no en la otra.
+    """
+    raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+
+    c.cierto("detalleRest('solo_desayuno')" in pantalla, "existe la tarjeta")
+    c.cierto("Solo desayunos" in pantalla, "y se llama asi")
+    c.cierto('detalleRegimen("SOLO_DESAYUNO")' in pantalla,
+             "abre el MISMO detalle del regimen, filtrado")
+    c.cierto("function detalleRegimen(soloEste)" in pantalla,
+             "y ese detalle acepta el filtro en vez de duplicarse")
+    # Las dos tarjetas sacan sus cifras de la misma pareja de funciones.
+    for cual in ("PENSION_COMPLETA", "SOLO_DESAYUNO"):
+        c.cierto(f'paxDeRegimen(d, "{cual}")' in pantalla,
+                 f"la tarjeta de {cual} cuenta con la funcion compartida")
+    c.cierto("function paxFullBoard" not in pantalla,
+             "y ya no queda la pareja de funciones vieja, que solo servia para una")
+
+
 def el_boton_manda_lo_del_grupo(c):
     raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
@@ -830,6 +941,10 @@ PRUEBAS = [
     mover_dos_veces_no_duplica_filas,
     el_almuerzo_usa_su_propia_comida,
     el_boton_manda_lo_del_grupo,
+    el_comedor_del_staff_saca_a_la_habitacion_del_reparto,
+    el_comedor_del_staff_va_por_comida,
+    el_comedor_del_staff_esta_en_la_pantalla_y_se_puede_deshacer,
+    el_boton_de_solo_desayunos_usa_el_mismo_detalle_que_full_board,
     la_alergia_sale_en_restaurantes_y_NO_en_amenidades,
     la_alergia_que_no_es_de_comida_va_como_alerta,
     la_alerta_de_la_alergia_no_alimentaria_llega_a_la_base,

@@ -50,6 +50,22 @@ TERRA = "Terra Kitchen"
 BOSQUE = "Bar el Bosque"
 NOMBRE_ANTERIOR_BOSQUE = "Vitrales"
 
+# El comedor del staff. NO es un tercer restaurante del huésped: es donde come quien no
+# come en los principales —personal de mantenimiento, proveedores, un guía alojado—, y lo
+# que importa de él es justo lo contrario que de los otros dos: que NO cuente.
+#
+# Lo pidió el lodge: «un botón que se llame Comedor staff, ya que hay reservas que no
+# comen en los restaurantes principales y se deben mover de forma manual, con el fin de
+# que no afecte la distribución real de los restaurantes principales». Antes esas
+# habitaciones se quedaban en Terra o en el Bosque ocupando un sitio que nadie iba a usar:
+# el reparto equilibraba contándolas y la cocina preparaba de más.
+#
+# Va por el MISMO camino que los otros dos —un cambio manual de esa fecha y esa comida—
+# así que se mueve, se deshace y se ve con lo que ya existe. Lo único que cambia es que
+# quien está aquí sale de los totales y del equilibrio.
+STAFF = "Comedor staff"
+RESTAURANTES = (TERRA, BOSQUE, STAFF)
+
 CAP_CENA_TK = 30
 CAP_CENA_BOSQUE = 45
 CAP_ALMUERZO_TK = 35
@@ -702,6 +718,12 @@ def distribuir(conn, fecha, cache=None):
         if m:
             fijos[cn] = (m["restaurante"], m.get("motivo") or "cambio manual")
 
+    # Quien cena en el comedor del staff sale del reparto ENTERO: no ocupa sitio en
+    # ninguno de los dos restaurantes y no cuenta para equilibrarlos. Ver STAFF.
+    staff_cena = [r for r in entradas + en_casa
+                  if fijos.get(r["conf_no"], ("",))[0] == STAFF]
+    en_staff = {r["conf_no"] for r in staff_cena}
+
     libres = [r for r in entradas + en_casa if r["conf_no"] not in fijos]
     tk_fijo = [r for r in entradas + en_casa if fijos.get(r["conf_no"], ("",))[0] == TERRA]
     bosque_fijo = [r for r in entradas + en_casa if fijos.get(r["conf_no"], ("",))[0] == BOSQUE]
@@ -723,7 +745,11 @@ def distribuir(conn, fecha, cache=None):
 
     bloques = sorted(_agrupar(libres), key=lambda b: min(prioridad(r) for r in b["reservas"]))
 
-    total_cena = _pax(entradas) + _pax(en_casa)
+    # SIN LOS DEL COMEDOR DEL STAFF. Contándolos, el objetivo de Terra Kitchen se
+    # calculaba sobre gente que no se iba a sentar en ninguno de los dos, y el aviso de
+    # «no se puede equilibrar» saltaba por pax que no existían para el servicio.
+    total_cena = (_pax([r for r in entradas if r["conf_no"] not in en_staff])
+                  + _pax([r for r in en_casa if r["conf_no"] not in en_staff]))
     objetivo_tk = max(0, min(CAP_CENA_TK, (total_cena + 1) // 2))
 
     tk, bosque = list(tk_fijo), list(bosque_fijo)
@@ -772,13 +798,18 @@ def distribuir(conn, fecha, cache=None):
 
     # ---------- ALMUERZO ----------
     # Los de tour almuerzan en el hotel al regresar, así que cuentan como en casa.
-    alm_tk, alm_bosque = [], []
-    for r in en_casa:
+    # El comedor del staff va por comida, igual que los otros dos: a alguien se le puede
+    # mandar el almuerzo al comedor y dejarle la cena en el restaurante.
+    alm_tk, alm_bosque, alm_staff = [], [], []
+    for r in en_casa + entradas:
         m = manuales.get((r["conf_no"], "ALMUERZO"))
-        (alm_bosque if (m and m["restaurante"] == BOSQUE) else alm_tk).append(r)
-    for r in entradas:
-        m = manuales.get((r["conf_no"], "ALMUERZO"))
-        (alm_tk if (m and m["restaurante"] == TERRA) else alm_bosque).append(r)
+        if m and m["restaurante"] == STAFF:
+            alm_staff.append(r)
+            continue
+        if r["tipo"] == "ENTRA":
+            (alm_tk if (m and m["restaurante"] == TERRA) else alm_bosque).append(r)
+        else:
+            (alm_bosque if (m and m["restaurante"] == BOSQUE) else alm_tk).append(r)
 
     # Si el almuerzo en Terra Kitchen se pasa del tope, el sobrante va a Bar el Bosque
     # con el mismo criterio de prioridad.
@@ -837,12 +868,20 @@ def distribuir(conn, fecha, cache=None):
             "pax_tk": pax_tk, "pax_bosque": pax_bosque, "total": total_cena,
             "cap_tk": CAP_CENA_TK, "cap_bosque": CAP_CENA_BOSQUE,
             "diferencia": diferencia, "dentro_margen": diferencia <= MARGEN_BALANCE,
+            # Los del comedor del staff van APARTE y no suman en 'total': no ocupan sitio
+            # en ninguno de los dos restaurantes. Se devuelven para que la pantalla pueda
+            # enseñarlos y traerlos de vuelta — moverlos no puede ser una puerta de una
+            # sola dirección.
+            "comedor_staff": salida(staff_cena, "cena"),
+            "pax_staff": _pax(_agrupar(staff_cena)),
         },
         "almuerzo": {
             "terra_kitchen": salida(alm_tk, "almuerzo"), "bar_el_bosque": salida(alm_bosque, "almuerzo"),
             "pax_tk": _pax(_agrupar(alm_tk)), "pax_bosque": _pax(_agrupar(alm_bosque)),
             "total": _pax(_agrupar(alm_tk)) + _pax(_agrupar(alm_bosque)),
             "cap_tk": CAP_ALMUERZO_TK,
+            "comedor_staff": salida(alm_staff, "almuerzo"),
+            "pax_staff": _pax(_agrupar(alm_staff)),
         },
         "notas": notas,
         "avisos": avisos,

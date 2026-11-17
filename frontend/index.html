@@ -5163,14 +5163,34 @@ async function loadRestaurantes(fecha) {
         Diferencia: ${c.diferencia} pax · ${c.dentro_margen ? "dentro del margen de 4 ✓" : "fuera del margen de 4"}
       </p>
 
-      <div class="stats" style="grid-template-columns:repeat(6,1fr);margin-top:16px;">
+      <!-- Se reparten solas en las que quepan, en vez de un número fijo de columnas:
+           con ocho tarjetas y «repeat(8,1fr)» cada cifra quedaba en una tira y los
+           títulos largos —«Almuerzo · Terra Kitchen»— se partían en cuatro renglones.
+           En el teléfono manda la regla de dos columnas del CSS, que lleva !important. -->
+      <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(145px,1fr));margin-top:16px;">
         <div class="stat" onclick="detalleRest('cena_tk')"><p class="stat-label">Cena · Terra Kitchen</p><p class="stat-value">${c.pax_tk}</p></div>
         <div class="stat" onclick="detalleRest('cena_bosque')"><p class="stat-label">Cena · Bar el Bosque</p><p class="stat-value">${c.pax_bosque}</p></div>
         <div class="stat" onclick="detalleRest('alm_tk')"><p class="stat-label">Almuerzo · Terra Kitchen</p><p class="stat-value">${a.pax_tk}</p></div>
         <div class="stat" onclick="detalleRest('alm_bosque')"><p class="stat-label">Almuerzo · Bar el Bosque</p><p class="stat-value">${a.pax_bosque}</p></div>
         <div class="stat" onclick="detalleRest('regimen')"><p class="stat-label">Full board</p>
-          <p class="stat-value">${paxFullBoard(d)}</p>
-          <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${habsFullBoard(d)} hab. de ${enCasaHoy(d).length}</p></div>
+          <p class="stat-value">${paxDeRegimen(d, "PENSION_COMPLETA")}</p>
+          <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${habsDeRegimen(d, "PENSION_COMPLETA")} hab. de ${enCasaHoy(d).length}</p></div>
+        <!-- Su propia tarjeta, lo pidió el lodge: «un botón similar al de full board que
+             se llame Solo desayunos, y que se alberguen ahí en forma de resumen todas
+             las calificadas como solo desayuno». Es quien NO come en el lodge salvo el
+             desayuno, así que para el comedor es justo el número que hay que descontar:
+             tenerlo a la vista evita contarlos y volverlos a descontar a mano. -->
+        <div class="stat" onclick="detalleRest('solo_desayuno')"><p class="stat-label">Solo desayunos</p>
+          <p class="stat-value">${paxDeRegimen(d, "SOLO_DESAYUNO")}</p>
+          <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${habsDeRegimen(d, "SOLO_DESAYUNO")} hab. de ${enCasaHoy(d).length}</p></div>
+        <!-- Los que NO comen en los restaurantes principales. Van en su propia tarjeta
+             para poder verlos y traerlos de vuelta: mover a alguien al comedor del staff
+             no puede ser una puerta de una sola dirección. -->
+        <div class="stat" onclick="detalleRest('comedor_staff')"><p class="stat-label">Comedor staff</p>
+          <p class="stat-value">${d.cena.pax_staff || 0}</p>
+          <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">
+            ${(d.cena.comedor_staff || []).length} hab. en la cena${
+              (d.almuerzo.pax_staff || 0) ? ` · ${d.almuerzo.pax_staff} en el almuerzo` : ""}</p></div>
         <div class="stat" onclick="detalleRest('alergias')"
              style="${(d.restricciones || []).length ? 'border-color:var(--warn-text);' : ''}position:relative;">
           <p class="stat-label">Alergias</p>
@@ -5252,11 +5272,14 @@ function enCasaHoy(d) {
 function porRegimen(d, regimen) {
   return enCasaHoy(d).filter(x => (x.regimen || "SIN_DATO") === regimen);
 }
-function paxFullBoard(d) {
-  return porRegimen(d, "PENSION_COMPLETA").reduce((s, x) => s + x.pax, 0);
+// Las dos cifras de una tarjeta de régimen, para cualquier régimen. En UNA función y no
+// una pareja por cada tarjeta: con dos copias, el día que cambie quién cuenta como «come
+// hoy» una tarjeta diría una cosa y la de al lado otra, y las dos parecerían correctas.
+function paxDeRegimen(d, regimen) {
+  return porRegimen(d, regimen).reduce((s, x) => s + x.pax, 0);
 }
-function habsFullBoard(d) {
-  return porRegimen(d, "PENSION_COMPLETA").length;
+function habsDeRegimen(d, regimen) {
+  return porRegimen(d, regimen).length;
 }
 
 const ORDEN_REGIMEN = ["PENSION_COMPLETA", "DESAYUNO_CENA", "SOLO_DESAYUNO",
@@ -5533,18 +5556,97 @@ function notasReserva(x) {
   return `<br>${marcas.join(" ")}`;
 }
 
-function detalleRegimen() {
+// El nombre del comedor del staff, tal cual lo guarda el servidor. En UNA constante
+// porque lo escriben el botón de mover y el de devolver: escrito a mano en los dos, una
+// errata de una letra movería la habitación a un «restaurante» que no existe y
+// desaparecería de las tres listas. Tiene que decir lo mismo que restaurantes.STAFF.
+const COMEDOR_STAFF = "Comedor staff";
+
+// Quiénes NO comen hoy en los restaurantes principales.
+//
+// Lo pidió el lodge: «hay reservas que no comen en los restaurantes principales y se
+// deben mover de forma manual, con el fin de que no afecte la distribución real». Antes
+// se quedaban en Terra o en el Bosque ocupando un sitio que nadie iba a usar: el reparto
+// equilibraba contándolas y la cocina preparaba de más.
+//
+// Se enseñan LAS DOS COMIDAS JUNTAS y no una tarjeta por cada una: son pocas filas, y lo
+// que se viene a ver aquí es «quién no está en el comedor hoy», no una u otra comida.
+function detalleComedorStaff() {
+  const d = window._restData;
+  const panel = document.getElementById("rest-detalle");
+  const puedo = puedeEscribir("restaurantes");
+
+  const tabla = (titulo, lista, comida) => !lista.length ? "" : `
+    <p style="margin:12px 0 4px;font-weight:600;font-size:13px;">${titulo}
+      <span style="font-weight:400;color:var(--muted);">— ${lista.length} hab.,
+        ${lista.reduce((s, x) => s + x.pax, 0)} pax</span></p>
+    <table>
+      <tr><th>Hab.</th><th>Huésped</th><th>Pax</th><th>Régimen</th>${puedo ? "<th></th>" : ""}</tr>
+      ${lista.map(x => `<tr>
+        <td><strong>${x.room_no || "—"}</strong>${etiquetaGrupo(x.conf_no)}</td>
+        <td>${escaparHTML(x.nombre || "")}</td>
+        <td>${x.pax}</td>
+        <td style="font-size:11.5px;color:var(--muted);">${escaparHTML(x.regimen_texto || "—")}</td>
+        ${puedo ? `<td style="white-space:nowrap;">
+          <button class="btn" title="Lo devuelve al reparto automático de los dos restaurantes"
+            onclick="devolverAlReparto('${d.fecha}','${x.conf_no}','${comida}')">Devolver al reparto</button>
+        </td>` : ""}
+      </tr>`).join("")}
+    </table>`;
+
+  const cena = d.cena.comedor_staff || [];
+  const almuerzo = d.almuerzo.comedor_staff || [];
+
+  panel.innerHTML = `<div class="detail-panel">
+    <p style="font-weight:600;margin:0 0 4px;">Comedor staff · ${d.fecha}</p>
+    <p style="font-size:12px;color:var(--muted);margin:0 0 6px;">
+      No comen en Terra Kitchen ni en Bar el Bosque, así que <strong>no cuentan</strong>
+      para el reparto ni para el equilibrio de los dos restaurantes.</p>
+    ${(!cena.length && !almuerzo.length) ? `<p class="empty" style="padding:14px 0;">
+      Hoy no hay nadie en el comedor del staff.<small>Para mandar a alguien, usá el botón
+      «A staff» en la lista de la cena o del almuerzo.</small></p>` : ""}
+    ${tabla("Cena", cena, "CENA")}
+    ${tabla("Almuerzo", almuerzo, "ALMUERZO")}
+  </div>`;
+}
+
+async function devolverAlReparto(fecha, confNo, comida) {
+  const res = await fetchAuth(
+    `${API}/api/restaurantes/cambiar?fecha=${fecha}&conf_no=${confNo}&comida=${comida}`,
+    { method: "DELETE" });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    avisar(e.detail || "No se pudo devolver al reparto", true);
+    return;
+  }
+  avisar("Vuelve al reparto automático");
+  await loadRestaurantes(fecha);
+  detalleRest("comedor_staff");
+}
+
+// El detalle del régimen. Sin argumento los enseña TODOS —es la tarjeta de Full board,
+// que es la entrada a la lista completa—; con uno, solo ese.
+//
+// ES LA MISMA FUNCIÓN a propósito. La tarjeta de «Solo desayunos» pide exactamente la
+// misma tabla con otro filtro, y una segunda copia acabaría contando distinto, o
+// enseñando las bebidas incluidas en una vista y no en la otra.
+function detalleRegimen(soloEste) {
   const d = window._restData;
   const panel = document.getElementById("rest-detalle");
   const F = FILTROS.restaurantes;
   const grupos = ORDEN_REGIMEN
+    .filter(r => !soloEste || r === soloEste)
     .map(r => [r, porRegimen(d, r)])
     .filter(([, lista]) => lista.length);
 
   panel.innerHTML = `<div class="detail-panel">
-    <p style="font-weight:600;margin:0 0 4px;">Régimen de comidas · ${F.fecha}</p>
+    <p style="font-weight:600;margin:0 0 4px;">${
+      soloEste ? NOMBRE_REGIMEN[soloEste] : "Régimen de comidas"} · ${F.fecha}</p>
     <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">
       Habitaciones que comen en el lodge ese día: quien entra y quien está en casa.</p>
+    ${!grupos.length ? `<p class="empty" style="padding:14px 0;">Ninguna habitación de
+      las que comen hoy tiene este régimen.<small>Si una debería tenerlo, se corrige en
+      Opera: la nota de la reserva manda sobre el plan de tarifa.</small></p>` : ""}
     ${grupos.map(([regimen, lista]) => `
       <p style="margin:10px 0 4px;font-weight:600;font-size:13px;">
         ${NOMBRE_REGIMEN[regimen]}
@@ -5568,19 +5670,21 @@ function detalleRegimen() {
       <span style="font-size:12.5px;color:var(--muted);">Ver por rango:</span>
       <input type="date" id="rg-desde" value="${F.fecha}">
       <input type="date" id="rg-hasta" value="${masDiasISO(7)}">
-      <button class="btn" onclick="verRegimenRango()">Ver rango</button>
+      <button class="btn" onclick="verRegimenRango('${soloEste || ""}')">Ver rango</button>
     </div>
     <div id="rg-rango"></div>
   </div>`;
 }
 
-async function verRegimenRango() {
+async function verRegimenRango(soloEste) {
   const desde = document.getElementById("rg-desde").value;
   const hasta = document.getElementById("rg-hasta").value;
   const caja = document.getElementById("rg-rango");
   caja.innerHTML = `<p class="empty" style="padding:12px;">Contando…</p>`;
   const d = await (await fetchAuth(`${API}/api/restaurantes/regimen?desde=${desde}&hasta=${hasta}`)).json();
-  const cols = ORDEN_REGIMEN.filter(r => d.totales[r]);
+  // Con un régimen elegido, el rango enseña solo esa columna: quien abrió «Solo
+  // desayunos» para contar los suyos no tiene por qué buscarlos entre cinco columnas.
+  const cols = ORDEN_REGIMEN.filter(r => d.totales[r] && (!soloEste || r === soloEste));
   caja.innerHTML = `
     <p style="font-weight:600;font-size:13px;margin:14px 0 4px;">Del ${d.desde} al ${d.hasta}</p>
     <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">
@@ -5616,6 +5720,8 @@ function detalleRest(cual) {
 
   // El régimen no es un restaurante: se agrupa por lo que trae pagado el huésped.
   if (cual === "regimen") { detalleRegimen(); return; }
+  if (cual === "solo_desayuno") { detalleRegimen("SOLO_DESAYUNO"); return; }
+  if (cual === "comedor_staff") { detalleComedorStaff(); return; }
   if (cual === "alergias") { detalleAlergias(); return; }
 
   const mapa = {
@@ -5679,8 +5785,10 @@ function detalleRest(cual) {
             onchange="guardarHoraMesa('${d.fecha}','${x.conf_no}',this.value)"
             title="${x.grupo ? 'Va en grupo: la hora se le pone también al resto del grupo' : 'Hora de la mesa'}"
             style="font-size:11.5px;padding:2px 4px;width:96px;" ${puedeEscribir("restaurantes")?'':'disabled'}></td>` : ""}
-        ${puedeEscribir("restaurantes") ? `<td>${x.fijo && x.fijo.includes('privada') ? '<span style="font-size:11px;color:var(--muted);">fija</span>'
-          : `<button class="btn" onclick="cambiarRestaurante('${d.fecha}','${x.conf_no}','${comida}','${destino}')">A ${destino.split(' ')[0]}</button>`}</td>` : ""}
+        ${puedeEscribir("restaurantes") ? `<td style="white-space:nowrap;">${x.fijo && x.fijo.includes('privada') ? '<span style="font-size:11px;color:var(--muted);">fija</span>'
+          : `<button class="btn" onclick="cambiarRestaurante('${d.fecha}','${x.conf_no}','${comida}','${destino}')">A ${destino.split(' ')[0]}</button>
+             <button class="btn" title="No come en los restaurantes principales: sale del reparto y deja de contar para el equilibrio"
+                onclick="cambiarRestaurante('${d.fecha}','${x.conf_no}','${comida}','${COMEDOR_STAFF}')">A staff</button>`}</td>` : ""}
       </tr>`).join("")}
     </table>
     ${esCena ? '<p style="font-size:11px;color:var(--muted);margin-top:8px;">La hora de cada mesa la registra el salonero en la mañana. Las habitaciones marcadas <span class="badge badge-tour">grupo</span> comparten mesa: al poner la hora a una, se le pone al resto del grupo.</p>' : ""}
