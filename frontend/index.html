@@ -289,38 +289,70 @@
     nav button .largo { display: none; }
     nav button .corto { display: block; }
 
-    /* ---- Tablas convertidas en tarjetas ----
-       La etiqueta de cada dato la pone adaptarTablasMovil() leyendo el encabezado,
-       así funciona en todas las tablas sin tocar ninguna a mano. */
-    table thead, table tr:first-child th { display: none; }
-    table, table tbody, table tr, table td { display: block; width: 100%; }
+    /* ---- Tablas convertidas en FICHAS COMPACTAS ----
+     *
+     * La etiqueta de cada dato la pone adaptarTablasMovil() leyendo el encabezado, así
+     * funciona en todas las tablas sin tocar ninguna a mano.
+     *
+     * POR QUÉ COMPACTAS. Antes cada celda ocupaba un renglón entero con su etiqueta a la
+     * izquierda, así que una fila de siete columnas se abría en siete líneas: la cena de
+     * catorce habitaciones eran casi cien renglones de desplazamiento para encontrar un
+     * cuarto. Lo reportó el lodge: «cuando son muchas, la búsqueda es tediosa; necesito
+     * que se despliegue en forma de lista que facilite la búsqueda y la edición».
+     *
+     * Ahora cada fila es una ficha de dos o tres líneas:
+     *
+     *     04  Bartkus/Joanne                 <- lo que identifica la fila, grande
+     *     PAX 2 · NOCHE 2 de 4 · CENA incluido   <- el resto, seguido y con su etiqueta
+     *     [ hora ]  [A Bar]  [A staff]       <- lo que se toca, en su propio renglón
+     *
+     * Las dos primeras columnas van sin etiqueta porque no hace falta: nadie necesita que
+     * le digan que «04» es la habitación. El resto la lleva, pequeña y delante del dato,
+     * para que se pueda leer de corrido sin perder de vista qué es cada cosa.
+     *
+     * NO SE PASA A LA TABLA DE VERDAD, que es lo que se pidió primero: con siete columnas
+     * mide unos 900 px sobre una pantalla de 390, así que leer una fila obligaría a
+     * deslizar a los lados en cada renglón — y la regla de que nada se salga de la
+     * pantalla está medida y probada en esta misma hoja. */
+    table thead, table tr[data-encabezado], table tr:first-child th { display: none; }
+    table, table tbody { display: block; width: 100%; }
     table { border-collapse: separate; }
     table tr {
+      display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px;
       border: 1px solid var(--border); border-radius: var(--r-md);
-      margin-bottom: 10px; padding: 4px 0; background: var(--card);
-      overflow: hidden;
+      margin-bottom: 8px; padding: 9px 11px; background: var(--card);
+      width: 100%;
     }
     table td {
-      border: none; border-bottom: 1px solid #F1EFE8;
-      padding: 7px 12px; text-align: left; font-size: 13px;
-      display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+      display: inline-flex; align-items: baseline; gap: 5px;
+      flex: 0 1 auto; width: auto;
+      border: none; padding: 1px 0; text-align: left; font-size: 12.5px;
       /* Si el dato es largo —el nombre de un grupo, por ejemplo— baja de línea en vez
-         de desbordar la tarjeta. */
-      flex-wrap: wrap;
+         de desbordar la ficha. */
+      min-width: 0; overflow-wrap: anywhere;
     }
-    /* La etiqueta de grupo dentro de la tarjeta: cabe completa y se toca cómodo */
+    /* La etiqueta de grupo dentro de la ficha: cabe completa y se toca cómodo */
     .chip-grupo { max-width: 100%; padding: 4px 9px; font-size: 10.5px;
       -webkit-tap-highlight-color: transparent; }
-    table tr td:last-child { border-bottom: none; }
     table td::before {
       content: attr(data-etiqueta);
-      flex: 0 0 38%; font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
-      color: var(--muted); font-weight: 600; padding-top: 2px;
+      font-size: 9.5px; text-transform: uppercase; letter-spacing: .4px;
+      color: var(--muted); font-weight: 600; white-space: nowrap;
     }
-    /* Celdas sin encabezado (la columna de botones) ocupan todo el ancho */
-    table td[data-etiqueta=""] { display: block; }
+    /* La primera columna es lo que se busca: el número de habitación, la fecha. */
+    table td[data-col="0"] {
+      flex: 0 0 auto; font-size: 15.5px; font-weight: 700; color: var(--forest-dark);
+    }
+    /* Y la segunda —casi siempre el nombre— cierra esa primera línea. */
+    table td[data-col="1"] { flex: 1 1 55%; font-size: 13.5px; }
+    table td[data-col="0"]::before, table td[data-col="1"]::before { display: none; }
+    /* Lo que se toca y lo que abarca varias columnas, a renglón completo. */
+    table td[data-celda="ancha"], table td[data-etiqueta=""] {
+      flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+      margin-top: 3px;
+    }
     table td[data-etiqueta=""]::before { display: none; }
-    table td .btn { margin: 3px 6px 3px 0; }
+    table td .btn { margin: 0; }
 
     /* ---- Recuadros de cifras: de a dos ----
      * El !important es para ganarle al `style=` que cada pantalla trae con su propio
@@ -966,6 +998,11 @@ function adaptarTablasMovil(raiz) {
     const encabezados = [...tabla.querySelectorAll("tr")]
       .find(f => f.querySelector("th"));
     if (!encabezados) return;
+    // La fila de encabezados se marca para poder ESCONDERLA ENTERA en el teléfono.
+    // Escondiendo solo sus `th` —como se hacía— la fila seguía ahí, y desde que cada
+    // fila es una ficha con borde y relleno eso dejaba una tarjeta vacía encabezando
+    // cada tabla.
+    encabezados.setAttribute("data-encabezado", "1");
 
     // Un th con colspan da su nombre a todas las columnas que abarca.
     const titulos = [];
@@ -983,8 +1020,22 @@ function adaptarTablasMovil(raiz) {
         while (ocupadas[col] > 0) col++;        // esa columna la puso una fila anterior
         const filas = parseInt(celda.getAttribute("rowspan") || "1", 10) || 1;
         const cols = parseInt(celda.getAttribute("colspan") || "1", 10) || 1;
-        if (celda.tagName === "TD" && !celda.hasAttribute("data-etiqueta")) {
-          celda.setAttribute("data-etiqueta", titulos[col] || "");
+        if (celda.tagName === "TD") {
+          if (!celda.hasAttribute("data-etiqueta")) {
+            celda.setAttribute("data-etiqueta", titulos[col] || "");
+          }
+          // EN QUÉ COLUMNA VA, contando los rowspan de arriba. Con esto el teléfono
+          // puede tratar distinto a la primera —la habitación, la fecha: lo que
+          // identifica la fila y es lo que se busca— sin que cada pantalla tenga que
+          // marcar nada a mano.
+          celda.setAttribute("data-col", String(col));
+          // Y si lleva algo que se toca, necesita su propio renglón y sitio para el
+          // dedo: una casilla de hora o un botón metidos en una línea compartida se
+          // vuelven imposibles de acertar.
+          if (celda.querySelector("input, select, textarea, button")
+              || cols > 1) {
+            celda.setAttribute("data-celda", "ancha");
+          }
         }
         if (filas > 1) for (let k = 0; k < cols; k++) nuevas[col + k] = filas - 1;
         col += cols;

@@ -723,6 +723,63 @@ def las_canceladas_no_salen_en_transporte(c):
             "y lo filtran las DOS consultas, la de entradas y la de salidas")
 
 
+def en_el_telefono_cada_fila_es_una_ficha_compacta(c):
+    """Lo reporto el lodge: «cuando son muchas, la busqueda es tediosa; necesito que se
+    despliegue en forma de lista que facilite la busqueda y la edicion».
+
+    Antes cada celda ocupaba un renglon entero con su etiqueta a la izquierda, asi que
+    una fila de siete columnas se abria en SIETE lineas: la cena de catorce habitaciones
+    eran casi cien renglones de desplazamiento para encontrar un cuarto.
+
+    Ahora la fila es una ficha de dos o tres lineas: lo que identifica la fila grande y
+    sin etiqueta —nadie necesita que le digan que «04» es la habitacion—, el resto
+    seguido con su etiqueta pequeña, y lo que se toca en su propio renglon.
+
+    NO se pasa a la tabla de verdad con desplazamiento lateral, que es lo que se pidio
+    primero: con siete columnas mide unos 900 px sobre una pantalla de 390, asi que leer
+    una fila obligaria a deslizar a los lados en cada renglon. La regla de que nada se
+    salga de la pantalla esta medida y probada aqui al lado.
+    """
+    html = _html()
+    movil = _bloque_movil(html)
+    c.cierto(movil is not None, "existe el bloque de estilos del telefono")
+    if not movil:
+        return
+
+    # La fila es una caja que envuelve, no una pila de renglones.
+    m = re.search(r"table tr\s*\{([^}]*)\}", movil, re.S)
+    c.cierto(m is not None, "la fila tiene su regla en el telefono")
+    if m:
+        regla = m.group(1)
+        c.cierto("display: flex" in regla, "la fila es una ficha que envuelve")
+        c.cierto("flex-wrap: wrap" in regla, "y lo que no cabe baja de linea")
+
+    # Las dos primeras columnas, sin etiqueta: son lo que se busca.
+    c.cierto('table td[data-col="0"]' in movil,
+             "la primera columna se distingue de las demas")
+    c.cierto('table td[data-col="0"]::before, table td[data-col="1"]::before' in movil
+             or 'data-col="1"]::before' in movil,
+             "y las dos primeras van sin etiqueta")
+    # Lo que se toca, a renglon completo: una casilla de hora o un boton metidos en una
+    # linea compartida se vuelven imposibles de acertar con el dedo.
+    c.cierto('table td[data-celda="ancha"]' in movil,
+             "lo que lleva un control ocupa su propio renglon")
+
+    # Y la marca la pone la misma funcion que ya pone las etiquetas, leyendo la tabla:
+    # asi vale para TODAS las pantallas sin tocar ninguna a mano.
+    fn = _funcion(html, "adaptarTablasMovil")
+    c.cierto(fn is not None, "adaptarTablasMovil sigue existiendo")
+    if fn:
+        c.cierto('setAttribute("data-col"' in fn, "marca en que columna va cada celda")
+        c.cierto('"data-celda", "ancha"' in fn, "y cual lleva algo que se toca")
+        c.cierto('setAttribute("data-encabezado"' in fn,
+                 "y marca la fila de encabezados, para esconderla entera")
+    # Escondiendo solo sus `th`, la fila seguia ahi: con borde y relleno dejaba una
+    # ficha VACIA encabezando cada tabla.
+    c.cierto("table tr[data-encabezado]" in movil,
+             "la fila de encabezados se esconde entera, no solo sus celdas")
+
+
 def en_el_telefono_nada_se_sale_de_la_pantalla(c):
     """Lo que reporto el hotel: al navegar, la pantalla se hacia grande o chica y al
     deslizar a la derecha quedaba una franja en blanco.
@@ -1060,6 +1117,7 @@ PRUEBAS = [
     housekeeping_quedo_enganchada_en_las_cinco_listas,
     las_etiquetas_del_telefono_cuentan_el_rowspan,
     la_tarjeta_de_cada_tour_abre_su_detalle,
+    en_el_telefono_cada_fila_es_una_ficha_compacta,
     en_el_telefono_nada_se_sale_de_la_pantalla,
     quien_se_va_hoy_no_esta_en_casa,
     el_filtro_de_fecha_manda_en_toda_la_pantalla,
