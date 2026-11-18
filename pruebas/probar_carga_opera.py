@@ -142,8 +142,13 @@ def la_que_la_fuente_deja_de_reportar_se_cancela(c):
             ["POR INGRESAR"] * 3, "las que el reporte sigue trayendo quedan vivas")
     c.igual([e.get("640004"), e.get("640005")], ["CANCELADA", "CANCELADA"],
             "las que el reporte completo dejo de traer se cancelan")
-    c.igual(len(alertas(conn, "RESERVA_CANCELADA")), 2,
-            "cada cancelacion deja su aviso para revisar tours y entradas")
+    # SIN CARTEL CUANDO NO QUEDA NADA. Estas dos reservas no tenian tours, ni entradas
+    # compradas, ni amenidades ajustadas a mano: no hay nada que revisar, asi que el
+    # aviso solo seria ruido que nadie puede cerrar. Lo pidio el lodge con la reserva
+    # 598425862; las dos caras estan en el_huesped_que_se_fue_antes_no_deja_carteles y
+    # en cuando_SI_queda_algo_el_aviso_lo_nombra.
+    c.igual(len(alertas(conn, "RESERVA_CANCELADA")), 0,
+            "y no dejan ningun cartel, porque no quedo nada que revisar")
     conn.close()
 
 
@@ -156,6 +161,14 @@ def una_reserva_que_revive_recupera_su_estado_y_retira_el_aviso(c):
     conn = base_limpia()
     todas = [reserva(650000 + i, f"{i:02d}", LLEGADA, SALIDA) for i in range(1, 6)]
     cargar(todas, vistas=todas)
+    # Se le deja algo que SI hay que revisar —una amenidad que alguien ajusto a mano—
+    # para que la cancelacion genere aviso: desde que el aviso solo sale cuando queda
+    # algo, sin esto no habria ninguno que retirar y la prueba no probaria nada.
+    conn.execute(
+        """INSERT INTO amenidad_tarea (conf_no, amenidad, tarea, area_responsable,
+                                       estado, editado_a_mano)
+           VALUES ('650004','Botella de vino','Preparar','Restaurante','PENDIENTE',1)""")
+    conn.commit()
     cargar(todas[:3], vistas=None, manda_en="TODO")     # cancela la 4 y la 5
     c.igual(estados(conn).get("650004"), "CANCELADA", "quedo cancelada para la prueba")
     c.cierto(alertas(conn, "RESERVA_CANCELADA"), "y con su aviso puesto")
@@ -363,6 +376,85 @@ def una_cancelada_sale_de_la_operacion(c):
     cargar([a], vistas=[a])
     c.igual(estados(conn).get("690002"), "CANCELADA", "sigue cancelada")
     c.igual(cuenta("tour_asignado", "690002"), 0, "y sigue fuera de la agenda")
+    conn.close()
+
+
+def el_huesped_que_se_fue_antes_no_deja_carteles(c):
+    """EL CASO DE LA RESERVA 598425862: salio antes y desaparecio de Opera.
+
+    El sistema lo detecto bien —la cancelo y le quito los tours— pero dejaba un aviso que
+    decia «Revisar tours y entradas asociadas», o sea una instruccion imposible: los tours
+    se acababan de quitar solos. Y como no hay forma de cerrar un aviso a mano, se quedaba
+    en pantalla para siempre. Lo reporto el lodge: «mejor que no aparezca ya la reserva
+    para no causar confusion».
+    """
+    conn = base_limpia()
+    llega, sale = ddmmyy(HOY), ddmmyy(HOY + datetime.timedelta(days=4))
+    dia = (HOY + datetime.timedelta(days=1)).strftime("%d")
+    con_tour = {"operacion": [{"dia": dia, "tour": "PNC"}]}
+    a = dict(reserva(598425862, "05", llega, sale, adl=1), **con_tour)
+    b = dict(reserva(690099, "08", llega, sale, adl=2), **con_tour)
+    cargar([a, b], vistas=[a, b])
+
+    # Una cita de spa confirmada, como la tendria cualquier huesped de varios dias.
+    conn.execute(
+        """INSERT INTO spa_cita (conf_no, room_no, nombre_huesped, servicio_codigo,
+                                 fecha, hora, estado)
+           VALUES ('598425862','05','Trodel/Lisa','JUNGLE',?,'10:00','CONFIRMADA')""",
+        ((HOY + datetime.timedelta(days=2)).isoformat(),))
+    conn.commit()
+
+    # Opera deja de reportarla.
+    cargar([b], vistas=[b])
+
+    c.igual(estados(conn).get("598425862"), "CANCELADA", "el sistema la detecta")
+    c.igual(conn.execute(
+        "SELECT COUNT(*) n FROM tour_asignado WHERE conf_no='598425862'").fetchone()["n"],
+        0, "y le quita los tours, que es lo que ya hacia bien")
+    c.igual(alertas(conn, "RESERVA_CANCELADA"), [],
+            "y NO deja ningun cartel: no quedaba nada que revisar")
+
+    # La cita del spa no se queda apartada para alguien que ya no esta.
+    cita = dict(conn.execute(
+        "SELECT estado, cancelada_motivo FROM spa_cita WHERE conf_no='598425862'").fetchone())
+    c.igual(cita["estado"], "CANCELADA", "la cita del spa se cancela con la reserva")
+    c.cierto("sistema" in (cita["cancelada_motivo"] or ""),
+             "diciendo por que, que es lo que el spa lee")
+
+    # Y la agenda de tours no la enseña por ninguna via.
+    import main
+    agenda = main.agenda(desde=HOY.isoformat(),
+                         hasta=(HOY + datetime.timedelta(days=6)).isoformat(),
+                         user={"usuario": "pruebas"})
+    c.cierto(all(g["conf_no"] != "598425862" for g in agenda),
+             "no sale en la pantalla de tours")
+    conn.close()
+
+
+def cuando_SI_queda_algo_el_aviso_lo_nombra(c):
+    """La otra mitad: callarse del todo seria perder lo unico que no se puede deshacer
+    solo —una entrada del parque ya pagada que contaba a ese huesped—."""
+    conn = base_limpia()
+    llega, sale = ddmmyy(HOY), ddmmyy(HOY + datetime.timedelta(days=4))
+    dia = (HOY + datetime.timedelta(days=1)).strftime("%d")
+    con_tour = {"operacion": [{"dia": dia, "tour": "PNC"}]}
+    a = dict(reserva(690201, "05", llega, sale, adl=1), **con_tour)
+    b = dict(reserva(690202, "08", llega, sale, adl=2), **con_tour)
+    cargar([a, b], vistas=[a, b])
+
+    # Recepcion ya compro la entrada del parque, y ese tour quedo apuntado a ella.
+    conn.execute("UPDATE tour_asignado SET conf_entrada_sinac = '202125' "
+                 "WHERE conf_no = '690201'")
+    conn.commit()
+
+    cargar([b], vistas=[b])
+
+    avisos = alertas(conn, "RESERVA_CANCELADA")
+    c.igual(len(avisos), 1, "ahi si hay aviso")
+    c.cierto("202125" in avisos[0],
+             "y nombra la entrada comprada, que es lo unico que hay que revisar")
+    c.cierto("Revisar tours" not in avisos[0],
+             "ya no manda revisar unos tours que el mismo acaba de quitar")
     conn.close()
 
 
@@ -879,6 +971,8 @@ PRUEBAS = [
     con_detalle_la_reserva_si_se_actualiza_entera,
     la_hoja_del_restaurante_solo_cuenta_las_reservas_vivas,
     una_cancelada_sale_de_la_operacion,
+    el_huesped_que_se_fue_antes_no_deja_carteles,
+    cuando_SI_queda_algo_el_aviso_lo_nombra,
     una_cancelada_no_se_lleva_el_trabajo_ya_hecho,
     el_grupo_toma_el_itinerario_de_la_nota_de_su_PM,
     releer_lo_mismo_no_reescribe_nada,

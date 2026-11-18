@@ -435,6 +435,7 @@ def _migrar(conn):
     _corregir_tours_por_tierra(conn)
     _corregir_tours_en_bote(conn)
     _normalizar_horas_del_catalogo(conn)
+    _limpiar_lo_que_dejo_una_reserva_caida(conn)
     _poner_nombre_a_las_terapeutas(conn)
     _materializar_permisos(conn)
     # Después de materializar: primero se le da rejilla a quien no la tenga, y luego se
@@ -1184,6 +1185,55 @@ def _corregir_tours_en_bote(conn):
         print(f"Catálogo corregido: {cambiados} tour(s) pasan a ir en bote "
               f"({', '.join(TOURS_QUE_VAN_EN_BOTE)}).")
     return cambiados
+
+
+def _limpiar_lo_que_dejo_una_reserva_caida(conn):
+    """Lo que quedó colgando de las reservas que ya no existen.
+
+    Dos cosas, las dos reportadas con la reserva 598425862 —un huésped que salió antes y
+    desapareció de Opera—:
+
+    1. EL AVISO QUE NO SE PUEDE CUMPLIR. Decía «Revisar tours y entradas asociadas»
+       cuando los tours ya se habían quitado solos, y como no hay forma de cerrar un
+       aviso a mano se quedaba en pantalla para siempre. Se retiran los que ya no
+       nombran nada que exista; los que sí tienen algo pendiente se quedan.
+
+    2. LA CITA DEL SPA. La agenda del spa no mira el estado de la reserva, así que la
+       terapeuta seguía con la hora apartada para alguien que ya no está.
+
+    Las dos se corrigen desde ahora en el cargador; esto arregla lo que ya estaba.
+    """
+    import re
+    import loader as _loader
+
+    cur = conn.cursor()
+    citas = cur.execute(
+        """UPDATE spa_cita SET estado = 'CANCELADA',
+                               cancelada_motivo = 'la reserva ya no está en el sistema'
+           WHERE estado IN ('SOLICITADA', 'CONFIRMADA')
+             AND conf_no IN (SELECT conf_no FROM reserva WHERE res_status = 'CANCELADA')"""
+    ).rowcount or 0
+
+    cerrados = 0
+    for a in cur.execute(
+            "SELECT id, mensaje, referencia_texto FROM alerta "
+            "WHERE tipo = 'RESERVA_CANCELADA' AND resuelto = 0").fetchall():
+        conf = a["referencia_texto"]
+        if not conf:
+            m = re.search(r"conf (\w+)\)", a["mensaje"] or "")
+            conf = m.group(1) if m else None
+        if not conf:
+            continue
+        if _loader.lo_que_queda_de_la_reserva(cur, conf):
+            continue          # algo quedó de verdad: el aviso se gana su sitio
+        cur.execute("UPDATE alerta SET resuelto = 1 WHERE id = ?", (a["id"],))
+        cerrados += 1
+
+    if citas or cerrados:
+        conn.commit()
+        print(f"Reservas caídas: {cerrados} aviso(s) sin nada que revisar retirados, "
+              f"{citas} cita(s) de spa canceladas.")
+    return cerrados
 
 
 def _normalizar_horas_del_catalogo(conn):

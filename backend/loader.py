@@ -423,7 +423,52 @@ def _sacar_de_la_operacion(cur, conf_no):
         (conf_no,)).rowcount
     quitado += cur.execute(
         "DELETE FROM itinerario WHERE conf_no = ?", (conf_no,)).rowcount
+    # LA CITA DEL SPA TAMBIÉN SE CAE. Se quedaba puesta: la agenda del spa no mira el
+    # estado de la reserva, así que la terapeuta seguía con la hora apartada y bajaba al
+    # cuarto de alguien que ya no está. Una cita HECHA no se toca —eso ya pasó y es
+    # historia— y se deja escrito el motivo, que es lo que el spa lee al ver una
+    # cancelación que nadie pidió.
+    quitado += cur.execute(
+        """UPDATE spa_cita SET estado = 'CANCELADA',
+                               cancelada_motivo = 'la reserva ya no está en el sistema'
+           WHERE conf_no = ? AND estado IN ('SOLICITADA', 'CONFIRMADA')""",
+        (conf_no,)).rowcount
     return quitado
+
+
+def lo_que_queda_de_la_reserva(cur, conf_no):
+    """Lo que NO se puede deshacer solo cuando una reserva se cae, en una lista de frases.
+
+    Es lo único que de verdad hay que revisar a mano, y por eso el aviso de cancelación
+    se arma con esto. Antes decía siempre «Revisar tours y entradas asociadas» — una
+    instrucción que ya no se podía cumplir, porque los tours se acababan de quitar
+    automáticamente dos líneas más arriba. Lo reportó el lodge: la reserva se cae, el
+    sistema hace bien su trabajo, y queda en pantalla un cartel pidiendo revisar algo
+    que ya no existe.
+
+    SE LLAMA ANTES DE SACARLA DE LA OPERACIÓN: la entrada del parque no se puede atar a
+    una reserva desde su propia tabla —la comparten todos los que van ese día— y el
+    único sitio donde consta es la salida, que está a punto de borrarse.
+    """
+    pendientes = []
+    # La entrada del parque YA COMPRADA que contaba a este huésped: es dinero puesto, y
+    # el sistema no la recalcula a propósito (ver tours_pax.pax_sinac_pendiente). Que
+    # alguien decida si se devuelve o se le da a otro.
+    for t in cur.execute(
+            """SELECT tour_codigo, fecha, conf_entrada_sinac FROM tour_asignado
+               WHERE conf_no = ? AND IFNULL(conf_entrada_sinac,'') != ''
+               ORDER BY fecha""", (conf_no,)).fetchall():
+        pendientes.append(
+            f"la entrada del SINAC de {t['tour_codigo']} del {t['fecha']} ya comprada "
+            f"(conf {t['conf_entrada_sinac']})")
+    # Y una amenidad que recepción ajustó a mano: sobrevive a propósito —no se destruye
+    # trabajo hecho— así que se queda en la pantalla de Amenidades y hay que decirlo.
+    for a in cur.execute(
+            """SELECT amenidad FROM amenidad_tarea
+               WHERE conf_no = ? AND estado = 'PENDIENTE' AND editado_a_mano = 1""",
+            (conf_no,)).fetchall():
+        pendientes.append(f"la amenidad «{a['amenidad']}», que alguien ajustó a mano")
+    return pendientes
 
 
 def _avisos_de_transporte(cur, r, a_mano=(), fijados=None):
@@ -839,16 +884,31 @@ def _codigo_del_catalogo(codigo, del_catalogo):
     return alias if alias in del_catalogo else None
 
 
-def _aviso_de_cancelacion(nombre, hab, llegada, conf_no):
-    """El texto del aviso de cancelación. En un solo sitio, para poder retirarlo.
+def _aviso_de_cancelacion(nombre, hab, llegada, conf_no, pendientes=None):
+    """El texto del aviso de cancelación, o None si no hay nada que revisar.
 
     Lleva el número de reserva porque es lo único que no cambia: el nombre se corrige,
     la habitación se cambia, la fecha se mueve. Sin él no había manera de reconocer el
     aviso cuando la reserva volvía, y quedaba colgado para siempre.
+
+    DEVUELVE None CUANDO NO QUEDA NADA. Lo pidió el lodge con la reserva 598425862 —un
+    huésped que salió antes y desapareció de Opera—: «a nivel de sistema se detectó, que
+    es genial, pero en los tours aparece con una leyenda de revisar; mejor que no
+    aparezca ya la reserva para no causar confusión».
+
+    Tenía razón y el aviso estaba mal escrito: decía «Revisar tours y entradas
+    asociadas» SIEMPRE, cuando los tours se acababan de quitar solos. Era una
+    instrucción imposible de cumplir y, como no hay forma de cerrar un aviso a mano, se
+    quedaba en pantalla para siempre. Ahora nombra lo que de verdad quedó —una entrada
+    del parque ya pagada, una amenidad ajustada a mano— y si no quedó nada, no hay
+    aviso: la reserva desaparece y ya.
     """
+    quedan = [p for p in (pendientes or []) if p]
+    if not quedan:
+        return None
     return (f"Reserva cancelada: {nombre} (hab. {hab}, {llegada}, conf {conf_no}) "
-            f"ya no aparece en la información actualizada. "
-            f"Revisar tours y entradas asociadas.")
+            f"ya no aparece en la información actualizada. Sus tours y sus citas de spa "
+            f"se quitaron solos. QUEDA POR REVISAR: {'; '.join(quedan)}.")
 
 
 def _retirar_aviso_de_cancelacion(cur, r, previo):
@@ -1169,19 +1229,25 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
 
         for a in ausentes:
             cur.execute("UPDATE reserva SET res_status = 'CANCELADA' WHERE conf_no = ?", (a["conf_no"],))
+            # QUÉ QUEDA, antes de borrar nada: la entrada del parque solo consta en la
+            # salida que está a punto de desaparecer.
+            pendientes = lo_que_queda_de_la_reserva(cur, a["conf_no"])
             # Y sale de la operación, igual que las que llegan ya canceladas en el lote.
             # Este camino es el otro: la reserva no viene en la fuente y se deduce que se
             # cayó. Sin esto, las canceladas por ausencia seguían con sus tours puestos.
             _sacar_de_la_operacion(cur, a["conf_no"])
             mensaje = _aviso_de_cancelacion(a["nombre_principal"], a["room_no"],
-                                            a["arr_date"], a["conf_no"])
+                                            a["arr_date"], a["conf_no"], pendientes)
+            if not mensaje:
+                continue          # no quedó nada: la reserva se va sin dejar carteles
             ya = cur.execute(
                 "SELECT 1 FROM alerta WHERE tipo='RESERVA_CANCELADA' AND mensaje=? AND resuelto=0", (mensaje,)
             ).fetchone()
             if not ya:
                 cur.execute(
-                    "INSERT INTO alerta (tipo, referencia_id, mensaje) VALUES ('RESERVA_CANCELADA', NULL, ?)",
-                    (mensaje,),
+                    "INSERT INTO alerta (tipo, referencia_id, referencia_texto, mensaje) "
+                    "VALUES ('RESERVA_CANCELADA', NULL, ?, ?)",
+                    (str(a["conf_no"]), mensaje),
                 )
 
     # --- Entradas del SINAC ---

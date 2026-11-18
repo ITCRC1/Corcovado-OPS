@@ -1207,7 +1207,12 @@ def agenda(fecha: str = None, desde: str = None, hasta: str = None, user: dict =
                       tc.horario_inicio, tc.horario_fin, tc.max_pax_guia,
                       tc.requiere_bote
                FROM tour_asignado ta
-               JOIN reserva r ON r.conf_no = ta.conf_no
+               -- LAS CANCELADAS NO SALEN, igual que en Reservas y en Transporte. Al
+               -- caerse una reserva el sistema le quita los tours, así que no debería
+               -- quedar ninguno; esto es la segunda línea, para que un tour que
+               -- sobreviva por cualquier vía no aparezca en la agenda de alguien que ya
+               -- no está. Era la única pantalla de las tres sin el filtro.
+               JOIN reserva r ON r.conf_no = ta.conf_no AND r.res_status != 'CANCELADA'
                JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo"""
     params = ()
     if fecha:

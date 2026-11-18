@@ -237,7 +237,13 @@ def el_aviso_de_cancelacion_no_se_esconde_a_si_mismo(c):
     conn = comun.base_limpia()
     import loader
     _reserva(conn, "900008", _dia(3), _dia(6), estado="CANCELADA")
-    mensaje = loader._aviso_de_cancelacion("Perez/Juan", "12", _pms(_dia(3)), "900008")
+    # El aviso solo existe cuando quedo algo que revisar —si no queda nada, la reserva
+    # se va sin dejar carteles—, asi que se le pasa ese algo.
+    # Sin fechas dentro: la unica fecha del mensaje tiene que ser la de la reserva, que
+    # es por donde este aviso se fecha cuando nadie le puso referencia.
+    mensaje = loader._aviso_de_cancelacion(
+        "Perez/Juan", "12", _pms(_dia(3)), "900008",
+        ["la amenidad «Botella de vino», que alguien ajusto a mano"])
     aviso = _aviso(conn, "RESERVA_CANCELADA", mensaje)
 
     por_id = {a["id"]: a for a in A.con_fecha(conn, _abiertos(conn))}
