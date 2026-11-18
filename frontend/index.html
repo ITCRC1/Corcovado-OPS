@@ -3019,7 +3019,19 @@ async function asignarTraslado(clave, campo, valor, volver) {
   const d = await res.json();
   const COMO_SE_LLAMA = { guia: "Guía", bote: "Bote", capitan: "Capitán",
                           ayudante: "Ayudante" };
-  avisar(valor ? `${COMO_SE_LLAMA[campo] || campo} asignado` : "Asignación quitada");
+  // El guía se le pone al grupo entero (lo pidió el lodge), así que hay que DECIR a qué
+  // otras habitaciones acaba de ir: si no, alguien lo vuelve a poner una por una, o
+  // peor, no se entera de que le cambió el guía a una que ya tenía otro.
+  const delGrupo = d.grupo || [];
+  if (delGrupo.length) {
+    const cambiadas = delGrupo.filter(x => x.antes && x.antes !== valor);
+    avisar(`Guía asignado · también a la${delGrupo.length > 1 ? "s" : ""} hab. `
+         + delGrupo.map(x => x.room_no).join(", ")
+         + (cambiadas.length ? ` (reemplaza a ${cambiadas.map(x => x.antes).join(", ")})` : "")
+         + ", que viajan juntas");
+  } else {
+    avisar(valor ? `${COMO_SE_LLAMA[campo] || campo} asignado` : "Asignación quitada");
+  }
   const panel = document.getElementById("ag-alertas");
   if (panel) {
     panel.innerHTML = (d.alertas || []).length

@@ -280,6 +280,43 @@ def playa_agujitas_tambien_es_una_recogida(c):
     conn.close()
 
 
+def el_resumen_y_la_hoja_usan_la_misma_hora_que_transporte(c):
+    """LO VOLVIO A REPORTAR EL LODGE: «sigue apareciendo en la previsualizacion del
+    resumen las 2 horas antes».
+
+    Y tenia razon: la correccion vivia en traslados.hora_de_traslado —que es la que usan
+    Transporte y las corridas— pero el Resumen arma su propia consulta y no traia la
+    marca de la recogida, asi que la regla no la veia y volvia a restar las dos horas.
+    Dos pantallas de la misma operacion diciendo horas distintas es peor que una sola
+    mal: nadie sabe cual ejecutar.
+    """
+    import main
+    limpiar()
+    sale_dia = MANANA + datetime.timedelta(days=2)
+    cargar([reserva("RES1", "18", ddmmyy(MANANA), ddmmyy(sale_dia),
+                    punto_salida_sin_confirmar="Aguila de Osa 10 am",
+                    hora_vuelo_salida="10:00 a.m.")])
+    main.confirmar_transporte("RES1", "salida", "Drake", user={"usuario": "pruebas"})
+
+    d = main._datos_del_resumen(iso(sale_dia))
+    detalles = [x for p in d["puntos"] for x in p["detalle"]
+                if x["conf_no"] == "RES1"]
+    c.igual(len(detalles), 1, "la salida sale en el resumen")
+    if detalles:
+        c.igual(detalles[0]["hora_traslado"], "10:00 a.m.",
+                "con la hora acordada, no con dos horas menos")
+
+    # Y la hoja que se imprime dice lo mismo que la pantalla.
+    import hoja_dia
+    conn = conexion()
+    hoja = hoja_dia.definicion(conn, iso(sale_dia), d)
+    conn.close()
+    fila = next((f for f in hoja["filas"] if f["hab"] == "18"), None)
+    c.cierto(fila is not None, "la habitacion esta en la hoja")
+    if fila:
+        c.igual(fila["horario"], "10:00 a.m.", "y la hoja imprime la misma hora")
+
+
 def el_vuelo_de_verdad_sigue_restando_dos_horas(c):
     """La contraparte, que es la que evita pasarse: si el punto ya venia reconocido en la
     reserva —«Via Drake RZ1118 11:00»— no hay ninguna recogida que respetar y la regla de
@@ -927,6 +964,72 @@ def dos_habitaciones_ligadas_en_un_privado_no_son_un_choque(c):
     c.igual(choques, [], "las dos habitaciones ligadas son UNA salida privada")
 
 
+def el_guia_de_una_habitacion_se_le_pone_a_las_que_viajan_con_ella(c):
+    """LO PIDIO EL LODGE: «cuando sea un grupo o reservas ligadas, si se le asigna a una
+    reserva de ese grupo un guia, que de forma automatica se le asigne a las demas el
+    mismo guia».
+
+    Es lo que pasa en la realidad —una familia en dos cuartos sale con un guia— y habia
+    que ponerlo cuarto por cuarto, con el riesgo de que uno se quedara sin nadie y no se
+    notara hasta el muelle.
+    """
+    import main
+    limpiar()
+    a = reserva("830001", "07", "01-01-26", "06-01-26", adl=2, block_code="FAMILIA1",
+                operacion=[{"dia": 2, "tour": "PNC"}])
+    b = reserva("830002", "08", "01-01-26", "06-01-26", adl=2, block_code="FAMILIA1",
+                operacion=[{"dia": 2, "tour": "PNC"}])
+    sola = reserva("830003", "09", "01-01-26", "06-01-26", adl=2,
+                   operacion=[{"dia": 2, "tour": "PNC"}])
+    cargar([a, b, sola])
+    conn = conexion()
+    conn.execute("INSERT OR IGNORE INTO guia (nombre) VALUES ('PABLO')")
+    conn.commit()
+    suyo = conn.execute(
+        "SELECT id FROM tour_asignado WHERE conf_no='830001'").fetchone()["id"]
+    conn.close()
+
+    d = main.asignar_guia_bote(suyo, guia="PABLO", user={"usuario": "pruebas"})
+
+    conn = conexion()
+    puestos = {f["conf_no"]: f["guia_nombre"] for f in conn.execute(
+        "SELECT conf_no, guia_nombre FROM tour_asignado")}
+    c.igual(puestos.get("830002"), "PABLO", "la otra habitacion del grupo lo recibe")
+    c.igual(puestos.get("830003"), None, "la que viaja sola NO: no va con ellos")
+    c.igual([x["room_no"] for x in d.get("grupo", [])], ["08"],
+            "y la pantalla puede decir a quien mas se le puso")
+    conn.close()
+
+
+def si_el_grupo_no_cabe_con_un_guia_no_se_le_extiende(c):
+    """LA EXCEPCION, que tambien la puso el lodge: «excepto que sobrepase el limite del
+    tour y se deba asignar otros guias y dividir en grupos». Si el grupo entero no cabe,
+    extenderle el guia a todos seria dar por cubierto lo que no lo esta."""
+    import main
+    limpiar()
+    # NW lleva 4 por guia: tres habitaciones de 2 son 6.
+    lote = [reserva(f"83001{i}", f"{10 + i:02d}", "01-01-26", "06-01-26", adl=2,
+                    block_code="GRANDE", operacion=[{"dia": 2, "tour": "NW"}])
+            for i in range(3)]
+    cargar(lote)
+    conn = conexion()
+    conn.execute("INSERT OR IGNORE INTO guia (nombre) VALUES ('PABLO')")
+    conn.commit()
+    suyo = conn.execute(
+        "SELECT id FROM tour_asignado WHERE conf_no='830010'").fetchone()["id"]
+    conn.close()
+
+    d = main.asignar_guia_bote(suyo, guia="PABLO", user={"usuario": "pruebas"})
+
+    conn = conexion()
+    con_guia = [f["conf_no"] for f in conn.execute(
+        "SELECT conf_no, guia_nombre FROM tour_asignado WHERE guia_nombre = 'PABLO'")]
+    c.igual(con_guia, ["830010"], "el guia se queda solo en la habitacion que se toco")
+    c.cierto(any("dividir" in a for a in d.get("alertas", [])),
+             "y se avisa que hay que dividir la salida en grupos")
+    conn.close()
+
+
 def dos_privados_de_huespedes_distintos_si_chocan(c):
     """La contraparte: dos familias SIN relacion con el mismo guia a la misma hora son
     dos salidas de verdad, y ahi el aviso tiene que seguir saliendo."""
@@ -1476,6 +1579,7 @@ PRUEBAS = [
     por_drake_el_ingreso_lleva_la_hora_del_vuelo_sin_tocar,
     una_recogida_en_otro_lodge_mantiene_su_hora,
     playa_agujitas_tambien_es_una_recogida,
+    el_resumen_y_la_hoja_usan_la_misma_hora_que_transporte,
     el_vuelo_de_verdad_sigue_restando_dos_horas,
     una_recogida_no_se_junta_con_las_demas_salidas,
     el_que_no_tiene_hora_no_se_esconde,
@@ -1494,6 +1598,8 @@ PRUEBAS = [
     la_modalidad_privada_llega_a_la_base,
     el_privado_y_el_compartido_son_dos_salidas,
     dos_habitaciones_ligadas_en_un_privado_no_son_un_choque,
+    el_guia_de_una_habitacion_se_le_pone_a_las_que_viajan_con_ella,
+    si_el_grupo_no_cabe_con_un_guia_no_se_le_extiende,
     dos_privados_de_huespedes_distintos_si_chocan,
     el_bote_del_privado_no_se_le_pone_al_compartido,
     la_capacidad_no_suma_el_privado_con_el_compartido,

@@ -641,14 +641,20 @@ def _datos_del_resumen(fecha):
     # --- Movimiento de huéspedes ---
     # conf_no viene en las cuatro listas para poder marcar en pantalla las habitaciones
     # que viajan juntas (grupos de agencia y familias con varios cuartos).
+    # 'hora_entrada_fija' y 'hora_salida_fija' van en el SELECT porque la regla que
+    # calcula la hora del bote las mira: una recogida en otro lodge conserva la hora que
+    # acordó recepción en vez de salir dos horas antes. Sin ellas aquí, el Resumen y la
+    # hoja del día seguían restando las dos horas mientras Transporte ya no lo hacía —y
+    # son dos pantallas de la misma operación. Ver traslados.hora_de_traslado.
     ingresos = lista(
         """SELECT conf_no, room_no, nombre_principal, adl, chl, arr_time, punto_entrada,
-                  vuelo_entrada, hora_vuelo_entrada, nota_ingreso, notas_libres
+                  hora_entrada_fija, vuelo_entrada, hora_vuelo_entrada, nota_ingreso,
+                  notas_libres
            FROM reserva WHERE arr_date = ? AND res_status != 'CANCELADA'
            ORDER BY CAST(room_no AS INTEGER)""", (dd,))
     salidas = lista(
         """SELECT conf_no, room_no, nombre_principal, adl, chl, punto_salida,
-                  vuelo_salida, hora_vuelo_salida, nota_salida
+                  hora_salida_fija, vuelo_salida, hora_vuelo_salida, nota_salida
            FROM reserva WHERE dep_date = ? AND res_status != 'CANCELADA'
            ORDER BY CAST(room_no AS INTEGER)""", (dd,))
     desayunos = lista(
@@ -681,10 +687,14 @@ def _datos_del_resumen(fecha):
 
     # Dos vuelos a menos de 45 minutos comparten bote y por lo tanto comparten hora. Se
     # resuelve con el día entero delante y con la misma función que arma las corridas.
+    def _fija(f, es_entrada):
+        return bool(f.get("hora_entrada_fija") if es_entrada else f.get("hora_salida_fija"))
+
     acordadas = _tras.horas_acordadas(
         [(fecha, "entrada" if t == "entradas" else "salida",
           _tras.normalizar_punto(f.get(c)),
-          _tras.hora_de_traslado(f, t == "entradas")[0])
+          _tras.hora_de_traslado(f, t == "entradas")[0],
+          _fija(f, t == "entradas"))
          for t, filas, c in (("entradas", ingresos, "punto_entrada"),
                              ("salidas", salidas, "punto_salida"))
          for f in filas])
@@ -706,7 +716,10 @@ def _datos_del_resumen(fecha):
             hora_corrida, _ = _tras.hora_de_traslado(f, es_entrada)
             clave_tipo = "entrada" if es_entrada else "salida"
             punto_norm = _tras.normalizar_punto(f.get(campo))
-            junta = acordadas.get((fecha, clave_tipo, punto_norm, hora_corrida))
+            # La recogida en otro lodge no se junta con nadie: su hora la acordó una
+            # persona con el otro operador.
+            junta = (None if _fija(f, es_entrada)
+                     else acordadas.get((fecha, clave_tipo, punto_norm, hora_corrida)))
             if junta:
                 hora_corrida = junta
             puesta = puestas.get((fecha, clave_tipo, punto_norm,
@@ -1659,6 +1672,81 @@ def _publicar_en_segundo_plano():
     se ve de inmediato sin que nadie tenga que hacer nada.
     """
     return "en vivo"
+def _mismo_guia_para_el_grupo(conn, tour_id, guia):
+    """El guía de una habitación se le pone a las demás que viajan con ella.
+
+    LO PIDIÓ EL LODGE: «cuando sea un grupo o reservas ligadas, si se le asigna a una
+    reserva de ese grupo un guía, que de forma automática se le asigne a las demás el
+    mismo guía». Es lo que ya pasa en la realidad —una familia en dos cuartos sale con
+    un guía— y hasta ahora había que ponerlo cuarto por cuarto, con el riesgo de que uno
+    se quedara sin nadie y nadie lo notara hasta el muelle.
+
+    LA EXCEPCIÓN, que también la puso el lodge: «excepto que sobrepase el límite del
+    tour y se deba asignar otros guías y dividir en grupos». Si el grupo entero no cabe
+    con un solo guía, no se extiende nada: eso es una división en grupos operativos
+    (A, B, C…), que es otra decisión y ya tiene su mecanismo.
+
+    Se mueve DENTRO de la misma salida: misma fecha, mismo tour, mismo grupo operativo y
+    misma modalidad. Así una familia ya dividida en A y B conserva su división —cada
+    grupo con su guía— y nunca se pisan entre sí.
+
+    Devuelve (habitaciones que recibieron el guía, motivo por el que no se extendió).
+    """
+    import grupos as _grupos
+    if not guia:
+        return [], None
+    base = conn.execute(
+        """SELECT ta.id, ta.fecha, ta.tour_codigo, ta.grupo_operativo, ta.pax,
+                  COALESCE(ta.es_privado, 0) es_privado,
+                  r.grupo_id, r.block_code, r.conf_no, tc.max_pax_guia
+           FROM tour_asignado ta
+           JOIN reserva r ON r.conf_no = ta.conf_no
+           LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
+           WHERE ta.id = ?""", (tour_id,)).fetchone()
+    if not base:
+        return [], None
+    base = dict(base)
+    clave = _grupos.clave_de(base)
+    # Una clave que empieza por 'r' es la reserva sola: no viaja con nadie. El vínculo
+    # tiene que estar CONFIRMADO (grupo_id) o venir del código de bloque de la agencia;
+    # una nota que dice «vienen junto con la rsv X» es una sugerencia hasta que recepción
+    # la confirma en Reservas, y hasta entonces son dos reservas independientes.
+    if clave.startswith("r"):
+        return [], None
+
+    companeras = [dict(f) for f in conn.execute(
+        """SELECT ta.id, ta.pax, ta.guia_nombre, r.room_no, r.grupo_id, r.block_code,
+                  r.conf_no
+           FROM tour_asignado ta
+           JOIN reserva r ON r.conf_no = ta.conf_no
+           WHERE ta.fecha = ? AND ta.tour_codigo = ? AND ta.grupo_operativo = ?
+             AND COALESCE(ta.es_privado, 0) = ? AND ta.id != ?
+             AND r.res_status != 'CANCELADA'""",
+        (base["fecha"], base["tour_codigo"], base["grupo_operativo"],
+         base["es_privado"], tour_id)).fetchall()]
+    companeras = [c for c in companeras if _grupos.clave_de(c) == clave]
+    if not companeras:
+        return [], None
+
+    tope = base.get("max_pax_guia") or 0
+    total = (base["pax"] or 0) + sum(c["pax"] or 0 for c in companeras)
+    if tope and total > tope:
+        return [], (
+            f"El grupo suma {total} pax en {base['tour_codigo']} y un guía lleva hasta "
+            f"{tope}: el guía se le puso solo a esta habitación. Hay que dividir la "
+            f"salida en grupos y darle un guía a cada uno.")
+
+    puestas = []
+    for c in companeras:
+        if c["guia_nombre"] == guia:
+            continue
+        conn.execute("UPDATE tour_asignado SET guia_nombre = ? WHERE id = ?",
+                     (guia, c["id"]))
+        puestas.append({"room_no": c["room_no"], "conf_no": c["conf_no"],
+                        "antes": c["guia_nombre"]})
+    return puestas, None
+
+
 @app.post("/api/tours/agenda/{tour_id}/asignar")
 def asignar_guia_bote(tour_id: int, guia: str = None, bote: str = None, user: dict = Depends(exige("agenda", escribir=True))):
     """Asigna guía y bote a una salida.
@@ -1692,6 +1780,12 @@ def asignar_guia_bote(tour_id: int, guia: str = None, bote: str = None, user: di
             f"UPDATE tour_asignado SET {', '.join(campos)} WHERE id = ?",
             (*valores, tour_id),
         )
+
+    # EL GUÍA SE LE PONE AL GRUPO ENTERO. Solo el guía: el bote y la tripulación se
+    # eligen en Transporte, por salida, y ahí ya van juntos por definición.
+    del_grupo, no_cupo = ([], None)
+    if guia is not None:
+        del_grupo, no_cupo = _mismo_guia_para_el_grupo(conn, tour_id, nuevo_guia)
 
     cambio_ultimo_momento = None
     if anterior:
@@ -1730,7 +1824,10 @@ def asignar_guia_bote(tour_id: int, guia: str = None, bote: str = None, user: di
         for cf in detectar_conflictos_asignacion(anterior["fecha"]):
             if cf["mensaje"] not in alertas:
                 alertas.append(cf["mensaje"])
-    return {"status": "ok", "alertas": alertas}
+    # Lo que no cupo con un guía SÍ es un aviso: hay que dividir la salida.
+    if no_cupo:
+        alertas.append(no_cupo)
+    return {"status": "ok", "alertas": alertas, "grupo": del_grupo}
 
 
 @app.post("/api/grupos/{grupo_id}/confirmar")

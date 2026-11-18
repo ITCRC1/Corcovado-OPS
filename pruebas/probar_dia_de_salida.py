@@ -105,19 +105,43 @@ def el_reloj_entiende_los_dos_formatos(c):
 # ---------------------------------------------------------------------------
 
 def un_tour_que_no_llega_al_bote_no_va(c):
-    """EL CASO DE LA HAB. 30. PAJAREO termina a las 08:00 y el bote de Sierpe sale a las
-    8:00 a. m.: justo no llega."""
+    """Un SNORKEL termina a las 12:30 y el bote de Sierpe sale a las 8:00 a. m.: ese no
+    llega ni de cerca, y es el caso que esta regla vino a atajar."""
     conn = comun.base_limpia()
     sale = _dia(3)
     _reserva(conn, "700301", "30", _dia(0), sale, punto_salida="Sierpe")
-    _tour(conn, "700301", sale, "PAJAREO")
+    _tour(conn, "700301", sale, "SNORKEL")
 
     fuera = val.tours_del_dia_de_salida_que_no_caben(conn, sale.isoformat())
     c.igual(len(fuera), 1, "queda fuera")
     motivo = list(fuera.values())[0]
-    c.cierto("PAJAREO" in motivo and "08:00" in motivo and "8:00 a.m." in motivo,
+    c.cierto("SNORKEL" in motivo and "12:30" in motivo and "8:00 a.m." in motivo,
              "y el aviso dice las DOS horas, que es lo que hay que comparar")
     conn.close()
+
+
+def el_que_termina_justo_cuando_sale_el_bote_si_va(c):
+    """LO CORRIGIO EL LODGE con la hab 12 del 23-11-26: «la reserva tiene un pajareo al
+    check out (es posible) y no se refleja en la vista previa de la operacion».
+
+    El pajareo sale a las 6:00, dura dos horas y el bote de Sierpe sale a las 8:00. Con
+    la regla vieja —terminar ESTRICTAMENTE antes— ese tour se escondia, y es uno que el
+    lodge si hace: el pajareo es en los jardines, el equipaje ya salio a las 7:00 y el
+    huesped baja al muelle desde ahi.
+    """
+    conn = comun.base_limpia()
+    sale = _dia(3)
+    _reserva(conn, "700311", "12", _dia(0), sale, punto_salida="Sierpe")
+    _tour(conn, "700311", sale, "PAJAREO")
+
+    c.igual(val.tours_del_dia_de_salida_que_no_caben(conn, sale.isoformat()), {},
+            "no se esconde: termina justo a la hora del bote y eso cuenta como llegar")
+    conn.close()
+
+    # Y de verdad sale en la hoja que lee el staff, que es donde el lodge lo echo de menos.
+    resumen = _resumen(sale)
+    c.cierto(any(t["tour_codigo"] == "PAJAREO" for t in resumen["tours"]),
+             "y aparece en el resumen de la operacion")
 
 
 def un_tour_que_termina_antes_del_bote_si_va(c):
@@ -189,16 +213,19 @@ def la_hoja_del_dia_no_le_pone_tour_a_quien_se_va(c):
     fila SALE queda sin tour."""
     conn = comun.base_limpia()
     sale = _dia(3)
+    # SNORKEL y no PAJAREO: el pajareo termina justo cuando sale el bote y eso ahora SI
+    # cuenta como llegar (ver el_que_termina_justo_cuando_sale_el_bote_si_va). El snorkel
+    # termina a las 12:30 y el bote salio a las 8:00: ese es el que no llega.
     _reserva(conn, "700306", "30", _dia(0), sale, punto_salida="Sierpe")
-    _tour(conn, "700306", sale, "PAJAREO")
+    _tour(conn, "700306", sale, "SNORKEL")
     # Y otra habitacion que NO se va ese dia, en el mismo tour: el tour sigue saliendo,
     # solo que sin el pax del que se marcha.
     _reserva(conn, "700307", "27", _dia(0), _dia(6), punto_salida="Sierpe")
-    _tour(conn, "700307", sale, "PAJAREO")
+    _tour(conn, "700307", sale, "SNORKEL")
     conn.close()
 
     resumen = _resumen(sale)
-    pajareo = [t for t in resumen["tours"] if t["tour_codigo"] == "PAJAREO"]
+    pajareo = [t for t in resumen["tours"] if t["tour_codigo"] == "SNORKEL"]
     c.igual(len(pajareo), 1, "el tour sigue existiendo")
     c.igual(pajareo[0]["pax_total"], 2, "pero con el pax del que se queda, no los cuatro")
     c.igual(len(resumen["tours_fuera_por_salida"]), 1,
@@ -210,7 +237,7 @@ def la_hoja_del_dia_no_le_pone_tour_a_quien_se_va(c):
     por_hab = {str(f["hab"]): f for f in d["filas"]}
     c.igual(por_hab["30"]["estado"], "SALE", "la 30 se va")
     c.igual(por_hab["30"]["tour"], "", "y se va sin tour")
-    c.igual(por_hab["27"]["tour"], "PAJAREO", "la 27 se queda y conserva el suyo")
+    c.igual(por_hab["27"]["tour"], "SNORKEL", "la 27 se queda y conserva el suyo")
 
     # ESCONDER SIN DECIRLO ES LO QUE IMPIDE ARREGLARLO, y por eso lo descartado se sigue
     # contando. Lo que cambio es DONDE se dice: estaba en una caja del papel —«Alertas /
@@ -265,7 +292,7 @@ def el_aviso_sale_en_el_dashboard_el_dia_del_tour(c):
     conn = comun.base_limpia()
     sale = _dia(3)
     _reserva(conn, "700310", "30", _dia(0), sale, punto_salida="Sierpe")
-    _tour(conn, "700310", sale, "PAJAREO")
+    _tour(conn, "700310", sale, "SNORKEL")      # el que de verdad no llega al bote
 
     val.validar_todos_los_tours()
     filas = conn.execute(
@@ -296,6 +323,7 @@ def main_():
     return comun.correr("Tours el dia de salida", [
         el_reloj_entiende_los_dos_formatos,
         un_tour_que_no_llega_al_bote_no_va,
+        el_que_termina_justo_cuando_sale_el_bote_si_va,
         un_tour_que_termina_antes_del_bote_si_va,
         sin_datos_no_se_esconde_nada_pero_se_avisa,
         un_tour_que_no_es_del_dia_de_salida_no_se_toca,

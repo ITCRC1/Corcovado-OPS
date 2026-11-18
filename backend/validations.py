@@ -191,8 +191,18 @@ def revisar_tour_del_dia_de_salida(fila):
     if salida is None:
         return True, (f"{quien} cae el día que se va y no se sabe a qué hora sale "
                       f"—falta el punto o la hora del vuelo—. Revisar con la agenda.")
-    if fin < salida:
-        return True, None                      # corto de la mañana: llega de sobra
+    # TERMINAR JUSTO A LA HORA DEL BOTE CUENTA COMO QUE LLEGA.
+    #
+    # El pajareo sale a las 6:00, dura dos horas y el bote de Sierpe sale a las 8:00: con
+    # «fin < salida» ese tour se escondía de la hoja, y es uno que el lodge SÍ hace —el
+    # pajareo es en los jardines del lodge, el equipaje ya salió a las 7:00 y el huésped
+    # baja al muelle desde ahí—. Lo corrigió el lodge con la hab 12 del 23-11-26: «la
+    # reserva tiene un pajareo al check out (es posible) y no se refleja».
+    #
+    # Lo que se sigue escondiendo es lo que termina DESPUÉS de que el bote salió, que es
+    # el caso que esta regla vino a atajar.
+    if fin <= salida:
+        return True, None                      # corto de la mañana: llega
     return False, (f"{quien} termina a las {fila.get('horario_fin')} y el bote sale a "
                    f"las {hora_salida}: no le da tiempo. No se cuenta en la hoja del "
                    f"día — si de verdad va, hay que mover el tour o la salida.")
@@ -209,7 +219,7 @@ def tours_del_dia_de_salida_que_no_caben(conn, fecha):
     filas = conn.execute(
         """SELECT ta.id, ta.fecha, ta.tour_codigo, tc.horario_fin,
                   r.room_no, r.nombre_principal, r.arr_date, r.dep_date,
-                  r.punto_salida, r.hora_vuelo_salida
+                  r.punto_salida, r.hora_vuelo_salida, r.hora_salida_fija
              FROM tour_asignado ta
              JOIN reserva r ON r.conf_no = ta.conf_no
              LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
@@ -242,7 +252,8 @@ def validar_tours_fuera_de_la_estadia():
     filas = conn.execute(
         """SELECT t.id, t.fecha, t.tour_codigo, r.conf_no, r.room_no,
                   r.nombre_principal, r.arr_date, r.dep_date,
-                  r.punto_salida, r.hora_vuelo_salida, tc.horario_fin
+                  r.punto_salida, r.hora_vuelo_salida, r.hora_salida_fija,
+                  tc.horario_fin
              FROM tour_asignado t
              JOIN reserva r ON r.conf_no = t.conf_no
              LEFT JOIN tour_catalogo tc ON tc.codigo = t.tour_codigo
