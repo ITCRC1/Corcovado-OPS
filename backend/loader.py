@@ -99,7 +99,10 @@ COLUMNAS_POR_AREA = {
                "notas_libres", "guia_sugerido", "tours_vendidos"),
     "transporte": ("punto_entrada", "punto_salida", "punto_entrada_sin_confirmar",
                    "punto_salida_sin_confirmar", "hora_vuelo_entrada",
-                   "hora_vuelo_salida", "vuelo_entrada", "vuelo_salida"),
+                   "hora_vuelo_salida", "vuelo_entrada", "vuelo_salida",
+                   # Si la hora escrita es la de una RECOGIDA en otro lodge y no la de
+                   # un vuelo. Sale de la misma nota que el punto, así que viaja con él.
+                   "hora_entrada_fija", "hora_salida_fija"),
 }
 
 # Todas las áreas que existen. Las tres últimas no son columnas: son tablas aparte.
@@ -124,6 +127,10 @@ PUNTOS_A_MANO = {
     "punto_salida": "punto_salida_a_mano",
     "punto_entrada_sin_confirmar": "punto_entrada_a_mano",
     "punto_salida_sin_confirmar": "punto_salida_a_mano",
+    # Y con el punto va su hora: si recepción dijo que esa hora es la del bote —una
+    # recogida en otro lodge— la fuente no se la puede quitar en el siguiente ciclo.
+    "hora_entrada_fija": "punto_entrada_a_mano",
+    "hora_salida_fija": "punto_salida_a_mano",
 }
 
 
@@ -149,6 +156,11 @@ def _valor_de_columna(r, columna):
       notas_libres    <- r['notas']            (la llave nunca se llamó igual)
       notas_operacion <- lista, hay que unirla (SQLite no acepta una lista)
     """
+    # Las dos marcas son NOT NULL y una fuente puede no traerlas (el PDF viejo, una
+    # prueba, cualquier origen que no sepa de recogidas). Sin la marca, no es una
+    # recogida: es el valor seguro, porque hace que se aplique la regla de siempre.
+    if columna in ("hora_entrada_fija", "hora_salida_fija"):
+        return 1 if r.get(columna) else 0
     if columna == "notas_libres":
         return r.get("notas")
     if columna == "notas_operacion":
@@ -1013,6 +1025,8 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                       r.res_status AS estado, r.nombre_principal AS nombre,
                       r.room_no AS hab, r.arr_date AS llegada,
                       r.punto_entrada AS p_ent, r.punto_salida AS p_sal,
+                      r.hora_entrada_fija AS h_ent_fija,
+                      r.hora_salida_fija AS h_sal_fija,
                       r.punto_entrada_a_mano AS ent_a_mano,
                       r.punto_salida_a_mano AS sal_a_mano
                FROM reserva r LEFT JOIN grupo g ON g.id = r.grupo_id
@@ -1111,8 +1125,9 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                 punto_salida, punto_entrada_sin_confirmar, punto_salida_sin_confirmar,
                 hora_vuelo_entrada, hora_vuelo_salida, vuelo_entrada, vuelo_salida, nota_ingreso,
                 nota_en_casa, nota_salida, notas_operacion, notas_libres, fuente_pdf, block_code,
-                regimen, bebidas_incluidas, cortesia, plan_tarifa)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                regimen, bebidas_incluidas, cortesia, plan_tarifa,
+                hora_entrada_fija, hora_salida_fija)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 r["conf_no"], grupo_id, r["room_no"], r["nombre_principal"], r["company_travel_agent"],
                 r["arr_date"], r["dep_date"], r["arr_time"], r["room_type"], r["adl"], r["chl"], r["rooms"],
@@ -1125,6 +1140,8 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                 " · ".join(r.get("notas_operacion") or []) or None, r["notas"], fuente_pdf,
                 r.get("block_code"), r.get("regimen"),
                 r.get("bebidas_incluidas"), r.get("cortesia"), r.get("plan_tarifa"),
+                1 if r.get("hora_entrada_fija") else 0,
+                1 if r.get("hora_salida_fija") else 0,
             ),
         )
 
@@ -1139,17 +1156,21 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                      punto_entrada_sin_confirmar = CASE WHEN ? THEN NULL
                                                    ELSE punto_entrada_sin_confirmar END,
                      punto_entrada_a_mano = ?,
+                     hora_entrada_fija = CASE WHEN ? THEN ? ELSE hora_entrada_fija END,
                      punto_salida = CASE WHEN ? THEN ? ELSE punto_salida END,
                      punto_salida_sin_confirmar = CASE WHEN ? THEN NULL
                                                   ELSE punto_salida_sin_confirmar END,
-                     punto_salida_a_mano = ?
+                     punto_salida_a_mano = ?,
+                     hora_salida_fija = CASE WHEN ? THEN ? ELSE hora_salida_fija END
                    WHERE conf_no = ?""",
                 (1 if "entrada" in a_mano else 0, previo["p_ent"],
                  1 if "entrada" in a_mano else 0,
                  1 if "entrada" in a_mano else 0,
+                 1 if "entrada" in a_mano else 0, previo["h_ent_fija"],
                  1 if "salida" in a_mano else 0, previo["p_sal"],
                  1 if "salida" in a_mano else 0,
                  1 if "salida" in a_mano else 0,
+                 1 if "salida" in a_mano else 0, previo["h_sal_fija"],
                  r["conf_no"]))
 
         _avisos_de_transporte(cur, r, a_mano, fijados)

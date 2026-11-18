@@ -246,6 +246,40 @@ def una_recogida_en_otro_lodge_mantiene_su_hora(c):
     conn.close()
 
 
+def playa_agujitas_tambien_es_una_recogida(c):
+    """«Playa Agujitas», «Punta Marenco» y «Copa del Árbol» YA se resuelven solas a Drake
+    —ahí pasa su bote— asi que nunca llegan al panel de pendientes y nadie aprieta ningun
+    boton. Tambien son recogidas: la hora escrita es la de la cita, no la de un vuelo.
+
+    Lo nombro el lodge junto con el otro caso: «o que diga playa agujitas, o cualquier
+    otro nombre de hotel y se designe drake, mantener el mismo horario indicado».
+    """
+    import pdf_parser as pp
+    # La nota, leida como la lee el sistema.
+    d = pp.leer_texto_de_reserva("Salida: Recogerlos en playa Agujitas 10:00 am\n")
+    c.igual(d["punto_salida"], "Drake", "el punto sigue siendo Drake")
+    c.igual(d["hora_salida_fija"], 1, "y la hora queda marcada como la de la recogida")
+    c.igual(d["hora_vuelo_salida"], "10:00 a.m.", "con la hora que dice la nota")
+
+    # Un vuelo de verdad por Drake NO se marca.
+    v = pp.leer_texto_de_reserva("Salida: Via Drake RZ1118 a las 11:00 a.m.\n")
+    c.igual(v["punto_salida"], "Drake", "el vuelo tambien da Drake")
+    c.igual(v["hora_salida_fija"], 0, "pero ese no es una recogida")
+
+    # Y de punta a punta: la corrida sale a las 10, no a las 8.
+    limpiar()
+    sale_dia = MANANA + datetime.timedelta(days=2)
+    cargar([reserva("AGU1", "12", ddmmyy(MANANA), ddmmyy(sale_dia),
+                    punto_salida="Drake", hora_salida_fija=1,
+                    hora_vuelo_salida="10:00 a.m.")])
+    conn = conexion()
+    sale = [x for x in tr.corridas(conn, iso(sale_dia), iso(sale_dia))
+            if x["tipo"] == "salida"]
+    c.igual([x["hora"] for x in sale], ["10:00 a.m."],
+            "el bote va a recogerlos a la hora acordada")
+    conn.close()
+
+
 def el_vuelo_de_verdad_sigue_restando_dos_horas(c):
     """La contraparte, que es la que evita pasarse: si el punto ya venia reconocido en la
     reserva —«Via Drake RZ1118 11:00»— no hay ninguna recogida que respetar y la regla de
@@ -1441,6 +1475,7 @@ PRUEBAS = [
     por_sierpe_la_hora_fija_manda_sobre_la_de_la_reserva,
     por_drake_el_ingreso_lleva_la_hora_del_vuelo_sin_tocar,
     una_recogida_en_otro_lodge_mantiene_su_hora,
+    playa_agujitas_tambien_es_una_recogida,
     el_vuelo_de_verdad_sigue_restando_dos_horas,
     una_recogida_no_se_junta_con_las_demas_salidas,
     el_que_no_tiene_hora_no_se_esconde,

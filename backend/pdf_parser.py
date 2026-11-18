@@ -574,6 +574,8 @@ def parse_reservations(pdf_path):
                 "punto_salida": None,
                 "punto_entrada_sin_confirmar": None,
                 "punto_salida_sin_confirmar": None,
+                "hora_entrada_fija": 0,
+                "hora_salida_fija": 0,
                 "hora_vuelo_entrada": None,
                 "hora_vuelo_salida": None,
                 "vuelo_entrada": None,
@@ -622,6 +624,8 @@ def bloque_vacio():
         "punto_salida": None,
         "punto_entrada_sin_confirmar": None,
         "punto_salida_sin_confirmar": None,
+        "hora_entrada_fija": 0,
+        "hora_salida_fija": 0,
         "hora_vuelo_entrada": None,
         "hora_vuelo_salida": None,
         "vuelo_entrada": None,
@@ -662,6 +666,19 @@ PUNTOS_CONOCIDOS = {
     "COPA DEL ARBOL": "Drake",
 }
 
+# CUÁLES DE ESOS NOMBRES SON UNA RECOGIDA, y no el muelle ni la pista.
+#
+# La diferencia no es cosmética: cambia la hora a la que sale el bote. Quien vuela por
+# Drake sale del lodge dos horas antes de su vuelo —hay que llevarlo a la pista—; a
+# quien se recoge en otro lodge o en una playa se le va a buscar A LA HORA QUE DIGA LA
+# NOTA, porque esa hora la acordó alguien por teléfono con el otro operador.
+#
+# Lo pidió el lodge: «que diga playa Agujitas, o cualquier otro nombre de hotel y se
+# designe Drake: mantener el mismo horario indicado». Con la regla de las dos horas,
+# una recogida a las 10 mandaba el bote a las 8.
+RECOGIDAS = frozenset({"AGUJITAS", "BAHIA", "PUNTA MARENCO", "MARENCO",
+                       "COPA DE ARBOL", "COPA DEL ARBOL"})
+
 
 def _sin_acentos(texto):
     return (str(texto).upper().replace("Í", "I").replace("Á", "A").replace("É", "E")
@@ -683,6 +700,19 @@ def punto_de(texto):
     if len(encontrados) == 1:
         return encontrados.pop()
     return None
+
+
+def es_una_recogida(texto):
+    """Si ese texto nombra un sitio donde se RECOGE al huésped (otro lodge, una playa).
+
+    Entonces la hora escrita es la del bote, no la de un vuelo: ver RECOGIDAS y
+    traslados.hora_de_traslado.
+    """
+    if not texto:
+        return False
+    arriba = _sin_acentos(texto)
+    return any(re.search(rf"\b{re.escape(palabra)}\b", arriba)
+               for palabra in RECOGIDAS)
 
 
 # Dónde termina el valor de «Entrada:» o «Salida:». Normalmente termina con la línea,
@@ -862,6 +892,10 @@ def procesar_linea(line, current, section):
                     # Si antes se había marcado como pendiente (por una línea vacía o con
                     # texto libre), ya no hace falta: se encontró el punto real.
                     current["punto_entrada_sin_confirmar"] = None
+                    # «Playa Agujitas», «Punta Marenco», «Copa del Árbol»: el punto es
+                    # Drake porque ahí recoge su bote, pero la hora escrita es la de la
+                    # RECOGIDA y no la de un vuelo. Ver RECOGIDAS.
+                    current["hora_entrada_fija"] = 1 if es_una_recogida(texto_ent) else 0
                     _anotar_hora_y_vuelo(current, texto_ent, "entrada")
             else:
                 # La reserva menciona un ingreso, pero sin un punto reconocido (Sierpe o
@@ -886,6 +920,7 @@ def procesar_linea(line, current, section):
                 if not current["punto_salida"]:
                     current["punto_salida"] = punto
                     current["punto_salida_sin_confirmar"] = None
+                    current["hora_salida_fija"] = 1 if es_una_recogida(texto_sal) else 0
                     _anotar_hora_y_vuelo(current, texto_sal, "salida")
             else:
                 if not current["punto_salida"] and not current.get("punto_salida_sin_confirmar"):

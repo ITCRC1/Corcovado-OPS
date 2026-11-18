@@ -450,18 +450,22 @@ def _entero(v, por_defecto=0):
 
 
 def _punto_de_embarque(texto):
-    """(punto_confirmado, texto_sin_confirmar) a partir de texto libre.
+    """(punto_confirmado, texto_sin_confirmar, la_hora_es_del_bote) de un texto libre.
 
     Solo se da por bueno lo que nombra un punto conocido. Todo lo demás entra como
     "sin confirmar" y genera una tarea para recepción, igual que con el PDF: enviar
     un bote al lugar equivocado es un error caro y no se decide por adivinanza.
+
+    El tercer dato distingue el muelle de una RECOGIDA: «playa Agujitas» o «Copa del
+    Árbol» dan Drake porque ahí pasa su bote, pero la hora escrita es la de la cita con
+    el otro operador y no la de un vuelo. Ver pdf_parser.RECOGIDAS.
     """
     if not texto:
-        return None, None
+        return None, None, 0
     punto = pdf_parser.punto_de(texto)
     if punto:
-        return punto, None
-    return None, str(texto).strip()[:200]
+        return punto, None, 1 if pdf_parser.es_una_recogida(texto) else 0
+    return None, str(texto).strip()[:200], 0
 
 
 def _hora(texto):
@@ -636,8 +640,8 @@ def mapear(cruda):
 
     llegada = texto_por_rutas(cruda, RUTAS_TRANSPORTE_LLEGADA)
     salida = texto_por_rutas(cruda, RUTAS_TRANSPORTE_SALIDA)
-    p_ent, p_ent_dudoso = _punto_de_embarque(llegada)
-    p_sal, p_sal_dudoso = _punto_de_embarque(salida)
+    p_ent, p_ent_dudoso, ent_fija = _punto_de_embarque(llegada)
+    p_sal, p_sal_dudoso, sal_fija = _punto_de_embarque(salida)
 
     return {
         "conf_no": conf_no,
@@ -675,6 +679,8 @@ def mapear(cruda):
         "punto_salida": p_sal,
         "punto_entrada_sin_confirmar": p_ent_dudoso,
         "punto_salida_sin_confirmar": p_sal_dudoso,
+        "hora_entrada_fija": ent_fija,
+        "hora_salida_fija": sal_fija,
         "hora_vuelo_entrada": _hora(llegada),
         "hora_vuelo_salida": _hora(salida),
         "vuelo_entrada": None,
@@ -760,7 +766,8 @@ def incorporar_texto_de_nota(reserva, texto):
 
     leido_nota = pdf_parser.leer_texto_de_reserva(texto)
     for clave in ("punto_entrada", "punto_salida", "punto_entrada_sin_confirmar",
-                  "punto_salida_sin_confirmar", "hora_vuelo_entrada",
+                  "punto_salida_sin_confirmar",
+                  "hora_entrada_fija", "hora_salida_fija", "hora_vuelo_entrada",
                   "hora_vuelo_salida", "vuelo_entrada", "vuelo_salida",
                   "guia_sugerido", "vinculo_texto", "block_code"):
         if leido_nota.get(clave):
