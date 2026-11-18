@@ -6747,6 +6747,44 @@ def restaurantes_quitar_cambio(fecha: str, conf_no: str, comida: str = "CENA",
     return {"status": "ok"}
 
 
+@app.post("/api/reservas/{conf_no}/hora-del-bote")
+def fijar_hora_del_bote(conf_no: str, tipo: str, fija: bool = True,
+                        user: dict = Depends(exige("transporte", escribir=True))):
+    """Dice que la hora escrita en la reserva ES la del bote, y no la de un vuelo.
+
+    POR QUÉ LO DECIDE UNA PERSONA Y NO EL SISTEMA. Cuando la nota dice «LLEVAR A DRAKE
+    BAY BOUTIQUE HOTEL, SALEN 11 AM» eso es un traslado acordado con otro operador: el
+    bote sale a las 11, no a las 9. Pero el texto nombra «Drake», así que el sistema lo
+    lee como la pista y le resta las dos horas del vuelo.
+
+    No hay forma segura de distinguirlo solo. Se midió sobre la base del lodge:
+
+      · Por palabras («hotel», «llevar a», «recoger»): de 5 notas vivas que las usan, 2
+        no son traslados —«coordinar con ellos la salida del hotel» es una frase sobre
+        la agencia—, así que adivinar por ahí manda el bote a la hora equivocada.
+      · Por «no trae número de vuelo»: 32 salidas por Drake tienen hora y ningún número,
+        y sus horas son las de Sansa (9:00, 10:20, 11:00, 12:50). Son vuelos a los que
+        nadie les escribió el código. Con esa regla, 32 huéspedes llegarían tarde a la
+        pista.
+
+    Así que lo marca quien lo sabe, desde la columna de Hora de Transporte, y queda
+    escrito. Es reversible: con fija=false vuelve a calcularse del vuelo.
+    """
+    if tipo not in ("entrada", "salida"):
+        raise HTTPException(status_code=400, detail="El tipo es «entrada» o «salida».")
+    conn = get_connection()
+    existe = conn.execute("SELECT 1 FROM reserva WHERE conf_no = ?", (conf_no,)).fetchone()
+    if not existe:
+        conn.close()
+        raise HTTPException(status_code=404, detail="No existe esa reserva")
+    conn.execute(f"UPDATE reserva SET hora_{tipo}_fija = ? WHERE conf_no = ?",
+                 (1 if fija else 0, conf_no))
+    conn.commit()
+    conn.close()
+    _publicar_en_segundo_plano()
+    return {"status": "ok", "fija": bool(fija)}
+
+
 @app.post("/api/restaurantes/soltar")
 def restaurantes_soltar(payload: dict, user: dict = Depends(current_user)):
     """Devuelve un día al reparto automático.

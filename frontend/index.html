@@ -4097,10 +4097,30 @@ async function loadTransporte(fecha, desde, hasta) {
   // La hora la resuelve el servidor con las reglas del lodge: por Sierpe el horario
   // fijo del bote, por Drake el vuelo o el bote calculado desde él. Se marca de dónde
   // sale cada una, para distinguir lo confirmado de lo que falta de verdad.
-  const celdaHora = r => r.hora_efectiva
-    ? `${r.hora_efectiva}${r.hora_origen === "del PDF" ? ""
-        : ` <span style="font-size:10px;color:var(--muted);">${r.hora_origen}</span>`}`
-    : `<span style="color:var(--warn-text);">${r.hora_origen}</span>`;
+  // LA HORA, Y DE DÓNDE SALE. Y un botón para decir que la hora escrita en la reserva
+  // es la del BOTE y no la de un vuelo: pasa cuando el traslado es a otro hotel —«LLEVAR
+  // A DRAKE BAY BOUTIQUE HOTEL, SALEN 11 AM»— y el sistema, al leer «Drake», le resta
+  // las dos horas del vuelo y manda el bote a las 9.
+  //
+  // Lo marca una persona porque no hay forma segura de adivinarlo: ver el endpoint
+  // /api/reservas/{conf}/hora-del-bote, donde está medido por qué.
+  const celdaHora = (r, tipo) => {
+    const escrita = tipo === "entrada" ? r.hora_vuelo_entrada : r.hora_vuelo_salida;
+    const fija = tipo === "entrada" ? r.hora_entrada_fija : r.hora_salida_fija;
+    const texto = r.hora_efectiva
+      ? `${r.hora_efectiva}${r.hora_origen === "del PDF" ? ""
+          : ` <span style="font-size:10px;color:var(--muted);">${r.hora_origen}</span>`}`
+      : `<span style="color:var(--warn-text);">${r.hora_origen}</span>`;
+    if (!puedeEscribir("transporte") || !escrita) return texto;
+    const boton = fija
+      ? `<button class="btn" style="font-size:10px;padding:2px 7px;margin:3px 0 0;"
+            title="Volver a calcular la hora del bote a partir del vuelo"
+            onclick="horaDelBote('${escaparAtributo(r.conf_no)}','${tipo}',false)">↺ calcular del vuelo</button>`
+      : `<button class="btn" style="font-size:10px;padding:2px 7px;margin:3px 0 0;"
+            title="La hora escrita en la reserva es la del bote: un traslado acordado con otro operador, no un vuelo. No se le restan las dos horas."
+            onclick="horaDelBote('${escaparAtributo(r.conf_no)}','${tipo}',true)">⏱ usar ${escaparHTML(escrita)}</button>`;
+    return `${texto}<br>${boton}`;
+  };
   // Quién lo lleva. Se asigna en la Agenda de tours —«Ingresos y salidas por locación»—
   // y se muestra aquí porque esta es la pantalla que se mira el día del movimiento:
   // decir el punto y la hora sin decir quién va es justo lo que había que preguntar
@@ -4141,8 +4161,8 @@ async function loadTransporte(fecha, desde, hasta) {
       </select>`
       + (aMano ? `<div style="font-size:9.5px;color:var(--muted);letter-spacing:.3px;">a mano</div>` : "");
   };
-  const filaE = r => `<tr><td>${r.arr_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${celdaPunto(r, "entrada")}</td><td>${celdaHora(r)}</td><td>${celdaQuien(r)}</td><td>${r.adl+r.chl}${marcaNinos(r.chl)}</td></tr>`;
-  const filaS = r => `<tr><td>${r.dep_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${celdaPunto(r, "salida")}</td><td>${celdaHora(r)}</td><td>${celdaQuien(r)}</td><td>${r.adl+r.chl}${marcaNinos(r.chl)}</td></tr>`;
+  const filaE = r => `<tr><td>${r.arr_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${celdaPunto(r, "entrada")}</td><td>${celdaHora(r, "entrada")}</td><td>${celdaQuien(r)}</td><td>${r.adl+r.chl}${marcaNinos(r.chl)}</td></tr>`;
+  const filaS = r => `<tr><td>${r.dep_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${celdaPunto(r, "salida")}</td><td>${celdaHora(r, "salida")}</td><td>${celdaQuien(r)}</td><td>${r.adl+r.chl}${marcaNinos(r.chl)}</td></tr>`;
   app.innerHTML = `
     <div class="card">
       <div class="header">
@@ -4201,6 +4221,22 @@ async function confirmarTransporte(confNo, tipo, punto) {
     : `Confirmado: ${tipo} por ${punto}`);
   loadTransporte();
   return true;
+}
+
+// «La hora que dice la reserva es la del bote». Se marca desde la columna de Hora
+// cuando el traslado es a otro hotel y no a la pista: ver el endpoint, donde está
+// medido por qué no se puede adivinar.
+async function horaDelBote(confNo, tipo, fija) {
+  const res = await fetchAuth(
+    `${API}/api/reservas/${confNo}/hora-del-bote?tipo=${tipo}&fija=${fija ? "true" : "false"}`,
+    { method: "POST" });
+  if (!res.ok) {
+    avisar((await res.json().catch(() => ({}))).detail || "No se pudo guardar", true);
+    return;
+  }
+  avisar(fija ? "El bote sale a la hora que dice la reserva"
+              : "La hora del bote vuelve a calcularse del vuelo");
+  loadTransporte();
 }
 
 // El mismo camino desde la tabla, donde se corrige un punto que YA venía puesto.

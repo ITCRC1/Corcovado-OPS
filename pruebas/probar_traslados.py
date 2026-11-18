@@ -317,6 +317,58 @@ def el_resumen_y_la_hoja_usan_la_misma_hora_que_transporte(c):
         c.igual(fila["horario"], "10:00 a.m.", "y la hoja imprime la misma hora")
 
 
+def se_puede_decir_que_la_hora_escrita_es_la_del_bote(c):
+    """EL CASO DE LA HAB 17: la nota dice «LLEVAR A DRAKE BAY BOUTIQUE HOTEL, SALEN
+    11 AM» y la hoja ponia el bote a las 9:00.
+
+    El texto nombra «Drake», asi que el punto se reconoce solo y nunca pasa por el panel
+    de pendientes: no hay ningun boton que apretar y la marca de recogida no se pone. Y
+    adivinarlo no se puede —esta medido en el endpoint: por palabras hay 2 falsos de 5,
+    y por «sin numero de vuelo» se romperian 32 salidas que son vuelos de verdad—.
+
+    Asi que lo dice quien lo sabe, desde la columna de Hora, y queda escrito.
+    """
+    import main
+    limpiar()
+    sale_dia = MANANA + datetime.timedelta(days=2)
+    cargar([reserva("HOT1", "17", ddmmyy(MANANA), ddmmyy(sale_dia),
+                    punto_salida="Drake", hora_vuelo_salida="11:00 a.m.")])
+
+    conn = conexion()
+    sale = [x for x in tr.corridas(conn, iso(sale_dia), iso(sale_dia))
+            if x["tipo"] == "salida"]
+    c.igual([x["hora"] for x in sale], ["9:00 a.m."],
+            "de entrada se calcula del vuelo, como cualquier salida por Drake")
+    conn.close()
+
+    main.fijar_hora_del_bote("HOT1", "salida", True, user={"usuario": "pruebas"})
+
+    conn = conexion()
+    sale = [x for x in tr.corridas(conn, iso(sale_dia), iso(sale_dia))
+            if x["tipo"] == "salida"]
+    c.igual([x["hora"] for x in sale], ["11:00 a.m."],
+            "marcada, el bote sale a las 11, que es lo acordado")
+    conn.close()
+
+    # Y la hoja del dia —donde el lodge lo vio— dice lo mismo.
+    import hoja_dia
+    d = main._datos_del_resumen(iso(sale_dia))
+    conn = conexion()
+    hoja = hoja_dia.definicion(conn, iso(sale_dia), d)
+    conn.close()
+    fila = next((f for f in hoja["filas"] if f["hab"] == "17"), None)
+    c.cierto(fila and fila["horario"] == "11:00 a.m.",
+             "y la hoja impresa tambien")
+
+    # Reversible: si era un vuelo despues de todo, se vuelve a calcular.
+    main.fijar_hora_del_bote("HOT1", "salida", False, user={"usuario": "pruebas"})
+    conn = conexion()
+    sale = [x for x in tr.corridas(conn, iso(sale_dia), iso(sale_dia))
+            if x["tipo"] == "salida"]
+    c.igual([x["hora"] for x in sale], ["9:00 a.m."], "y se puede deshacer")
+    conn.close()
+
+
 def el_vuelo_de_verdad_sigue_restando_dos_horas(c):
     """La contraparte, que es la que evita pasarse: si el punto ya venia reconocido en la
     reserva —«Via Drake RZ1118 11:00»— no hay ninguna recogida que respetar y la regla de
@@ -1580,6 +1632,7 @@ PRUEBAS = [
     una_recogida_en_otro_lodge_mantiene_su_hora,
     playa_agujitas_tambien_es_una_recogida,
     el_resumen_y_la_hoja_usan_la_misma_hora_que_transporte,
+    se_puede_decir_que_la_hora_escrita_es_la_del_bote,
     el_vuelo_de_verdad_sigue_restando_dos_horas,
     una_recogida_no_se_junta_con_las_demas_salidas,
     el_que_no_tiene_hora_no_se_esconde,
