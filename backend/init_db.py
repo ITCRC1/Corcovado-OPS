@@ -239,6 +239,10 @@ COLUMNAS_NUEVAS = [
     ("tour_asignado", "pax_editado_a_mano", "INTEGER NOT NULL DEFAULT 0"),
     # La marca de modificación de Opera, para no reprocesar lo que no cambió.
     ("reserva", "opera_modificado_en", "TEXT"),
+    # El punto de embarque que puso recepción a mano. Ver el comentario de las columnas
+    # en schema.sql: sin esto, la corrección duraba hasta el siguiente ciclo de Opera.
+    ("reserva", "punto_entrada_a_mano", "INTEGER NOT NULL DEFAULT 0"),
+    ("reserva", "punto_salida_a_mano", "INTEGER NOT NULL DEFAULT 0"),
     # Quién maneja el bote de cada corrida y quién lo acompaña. La tabla 'traslado' ya
     # existe en la base instalada, así que el CREATE TABLE IF NOT EXISTS no corre y estas
     # dos no aparecerían solas.

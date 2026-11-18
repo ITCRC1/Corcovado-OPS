@@ -111,6 +111,20 @@ CREATE TABLE IF NOT EXISTS reserva (
     punto_salida TEXT,
     punto_entrada_sin_confirmar TEXT,
     punto_salida_sin_confirmar TEXT,
+    -- PUESTO A MANO POR RECEPCIÓN. Mientras esté marcado, ninguna fuente vuelve a
+    -- escribir ese punto: ni la sincronización de Opera cada media hora ni una
+    -- reimportación del PDF.
+    --
+    -- Hace falta porque el lodge sabe cosas que la reserva no dice. Pasó con la hab 13:
+    -- el huésped entraba por Sierpe y el sistema decía Drake. Sin esta marca, corregirlo
+    -- duraba hasta el siguiente ciclo —media hora— y volvía a quedar mal sin que nadie
+    -- tocara nada, que es la peor forma de fallar: el dato se arregla, se comprueba, y
+    -- se vuelve a romper solo.
+    --
+    -- Se quita desde la misma pantalla eligiendo «lo que diga Opera», para que la marca
+    -- no sea una puerta de un solo sentido.
+    punto_entrada_a_mano INTEGER NOT NULL DEFAULT 0,
+    punto_salida_a_mano INTEGER NOT NULL DEFAULT 0,
     -- Código de bloque del PMS (ej. 2608RUSSTI). Sirve para agrupar reservas que
     -- viajan juntas y que no traen la nota "viene con rsv".
     block_code TEXT,

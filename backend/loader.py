@@ -105,6 +105,41 @@ COLUMNAS_POR_AREA = {
 # Todas las áreas que existen. Las tres últimas no son columnas: son tablas aparte.
 AREAS = frozenset(COLUMNAS_POR_AREA) | {"tours", "amenidades", "rooming"}
 
+# EL PUNTO QUE PUSO RECEPCIÓN NO LO PISA NINGUNA FUENTE.
+#
+# El punto de embarque es el único dato del transporte que el lodge sabe mejor que la
+# reserva: el huésped avisa por WhatsApp que viene por tierra, o cambia de vuelo, y eso
+# no siempre llega a Opera. Lo reportaron con la hab 13 —entraba por Sierpe y el sistema
+# decía Drake—.
+#
+# Sin esta protección, corregirlo no servía de nada: el transporte es un área que Opera
+# manda, y el ciclo la reescribe cada media hora. La corrección se deshacía sola, sin que
+# nadie tocara nada y sin dejar rastro — y quien la hizo ya no está mirando.
+#
+# {columna que se protege: columna que lleva la marca}. El texto «sin confirmar» va con
+# ellas: si el punto lo fijó recepción, no hay nada pendiente de confirmar, y dejar el
+# texto haría volver el aviso y la fila amarilla de la pantalla.
+PUNTOS_A_MANO = {
+    "punto_entrada": "punto_entrada_a_mano",
+    "punto_salida": "punto_salida_a_mano",
+    "punto_entrada_sin_confirmar": "punto_entrada_a_mano",
+    "punto_salida_sin_confirmar": "punto_salida_a_mano",
+}
+
+
+def _asignacion_de_columna(columna):
+    """Cómo se actualiza esa columna cuando la reserva ya existía.
+
+    Lo normal es escribir lo que trae la fuente. Las del punto de embarque solo se
+    escriben si recepción no las fijó a mano.
+    """
+    marca = PUNTOS_A_MANO.get(columna)
+    if not marca:
+        return f"{columna} = excluded.{columna}"
+    se_queda = "NULL" if columna.endswith("_sin_confirmar") else f"reserva.{columna}"
+    return (f"{columna} = CASE WHEN reserva.{marca} = 1 "
+            f"THEN {se_queda} ELSE excluded.{columna} END")
+
 
 def _valor_de_columna(r, columna):
     """El valor que va en esa columna, tomado del diccionario de la reserva.
@@ -391,7 +426,7 @@ def _sacar_de_la_operacion(cur, conf_no):
     return quitado
 
 
-def _avisos_de_transporte(cur, r):
+def _avisos_de_transporte(cur, r, a_mano=(), fijados=None):
     """Lo que hay que decir de cómo viaja esta reserva, cuando el texto no alcanzó.
 
     SE LLAMA DESDE LOS DOS CAMINOS DE ESCRITURA, y ese es el motivo de que sea una
@@ -400,13 +435,19 @@ def _avisos_de_transporte(cur, r):
     la segunda. Un aviso puesto solo en el primero no se dispara NUNCA en producción, que
     es exactamente lo que ya pasó con el guardia de las canceladas y está escrito ahí al
     lado. Este aviso llevaba así desde que existe: solo saltaba al importar un PDF.
+
+    'a_mano' son los lados —«entrada», «salida»— que recepción ya fijó, y 'fijados' lo
+    que dejó puesto en cada uno. De los fijados no se pide confirmación: el punto está
+    decidido, y un aviso que pide confirmar lo que ya se confirmó vuelve en cada ciclo y
+    acaba enseñando a no mirar los avisos. Lo que sí se dice es cuando la reserva pasa a
+    decir otra cosa (bloque 3).
     """
     # 1. Un ingreso o salida sin un punto reconocido (Sierpe/Drake): lo confirma
     #    recepción, porque adivinarlo manda un bote al muelle equivocado.
     for tipo, texto in (("entrada", r.get("punto_entrada_sin_confirmar")),
                         ("salida", r.get("punto_salida_sin_confirmar"))):
         mensaje = None
-        if texto:
+        if texto and tipo not in a_mano:
             mensaje = (
                 f"Confirmar punto de {tipo} de {r['nombre_principal']} "
                 f"(hab. {r['room_no']}, {r['arr_date']}): la reserva dice \"{texto}\" "
@@ -473,6 +514,41 @@ def _avisos_de_transporte(cur, r):
             cur.execute(
                 "INSERT INTO alerta (tipo, referencia_id, referencia_texto, mensaje) "
                 "VALUES ('HORA_DE_VUELO_SIN_LEER', NULL, ?, ?)",
+                (str(r["conf_no"]), mensaje))
+
+    # 3. LA RESERVA CAMBIÓ Y EL PUNTO ESTÁ FIJADO A MANO.
+    #
+    # La otra cara de respetar lo que puso recepción: si mañana la reserva dice otra
+    # cosa —el huésped acabó comprando el vuelo a Drake— el sistema la ignora, y hace
+    # bien, pero callárselo sería dejar a alguien esperando en el muelle equivocado con
+    # la pantalla diciendo que todo está en orden. Se avisa y lo decide una persona.
+    for tipo in ("entrada", "salida"):
+        dice = r.get(f"punto_{tipo}")
+        fijado = (fijados or {}).get(tipo)
+        mensaje = None
+        if tipo in a_mano and dice and fijado and dice != fijado:
+            mensaje = (
+                f"Hab. {r.get('room_no') or '—'} · {r.get('nombre_principal') or ''} "
+                f"(reserva {r['conf_no']}): la reserva ahora dice que la {tipo} es por "
+                f"{dice}, y está fijada a mano como {fijado}. Se respeta {fijado}; "
+                f"revisar cuál vale.")
+        # Igual que los de arriba: se retira el anterior de esta reserva y de este lado
+        # —salvo si es idéntico, que entonces se deja abierto el que ya estaba— para que
+        # el aviso no se multiplique cada vez que cambia una palabra.
+        cur.execute(
+            "UPDATE alerta SET resuelto = 1 WHERE tipo = 'PUNTO_A_MANO_DISTINTO' "
+            "AND resuelto = 0 AND referencia_texto = ? AND mensaje LIKE ? "
+            "AND mensaje IS NOT ?",
+            (str(r["conf_no"]), f"%la {tipo} es por%", mensaje))
+        if not mensaje:
+            continue
+        ya = cur.execute(
+            "SELECT 1 FROM alerta WHERE tipo = 'PUNTO_A_MANO_DISTINTO' "
+            "AND mensaje = ? AND resuelto = 0", (mensaje,)).fetchone()
+        if not ya:
+            cur.execute(
+                "INSERT INTO alerta (tipo, referencia_id, referencia_texto, mensaje) "
+                "VALUES ('PUNTO_A_MANO_DISTINTO', NULL, ?, ?)",
                 (str(r["conf_no"]), mensaje))
 
 
@@ -870,13 +946,24 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
         # Se leen también el estado y los datos con los que la reserva estaba guardada.
         # Sirven para reconocer una RESURRECCIÓN —la base la tenía por cancelada y la
         # fuente la reporta viva— y retirar el aviso de cancelación que quedó colgado.
+        # Se leen también los puntos de embarque que recepción fijó a mano: ninguna
+        # fuente los reescribe. Ver PUNTOS_A_MANO.
         previo = cur.execute(
             """SELECT r.grupo_id AS gid, g.confirmado_por_recepcion AS confirmado,
                       r.res_status AS estado, r.nombre_principal AS nombre,
-                      r.room_no AS hab, r.arr_date AS llegada
+                      r.room_no AS hab, r.arr_date AS llegada,
+                      r.punto_entrada AS p_ent, r.punto_salida AS p_sal,
+                      r.punto_entrada_a_mano AS ent_a_mano,
+                      r.punto_salida_a_mano AS sal_a_mano
                FROM reserva r LEFT JOIN grupo g ON g.id = r.grupo_id
                WHERE r.conf_no = ?""", (r["conf_no"],)).fetchone()
         grupo_id = previo["gid"] if previo and previo["confirmado"] else None
+        a_mano = {tipo for tipo, marca in (("entrada", "ent_a_mano"),
+                                           ("salida", "sal_a_mano"))
+                  if previo and previo[marca]}
+        fijados = {tipo: previo[col] for tipo, col in (("entrada", "p_ent"),
+                                                       ("salida", "p_sal"))
+                   if tipo in a_mano}
         _retirar_aviso_de_cancelacion(cur, r, previo)
 
         # LA RESERVA CUYO DETALLE NO LLEGÓ SOLO MANDA EN SU NÚCLEO.
@@ -913,7 +1000,7 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
                     propias.extend(columnas_area)
             columnas = ", ".join(propias)
             marcas = ", ".join("?" * len(propias))
-            asignaciones = ", ".join(f"{c} = excluded.{c}" for c in propias)
+            asignaciones = ", ".join(_asignacion_de_columna(c) for c in propias)
             valores = [_valor_de_columna(r, c) for c in propias]
             cur.execute(
                 f"""INSERT INTO reserva (conf_no, fuente_pdf, {columnas})
@@ -949,7 +1036,7 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
             # Los avisos de cómo viaja: solo si esta fuente manda en el transporte. Si no
             # lo manda, no leyó nada de eso y no tiene nada que decir.
             if "transporte" in manda_r:
-                _avisos_de_transporte(cur, r)
+                _avisos_de_transporte(cur, r, a_mano, fijados)
             if "tours" in manda_r:
                 # Solo se borran los tours si la fuente LEYÓ el itinerario y estaba
                 # vacío. Si ni siquiera pudo leerlo, no sabe nada y no debe borrar.
@@ -981,7 +1068,31 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
             ),
         )
 
-        _avisos_de_transporte(cur, r)
+        # El REPLACE de arriba reescribe la fila ENTERA con una lista fija de columnas,
+        # así que se lleva por delante el punto que puso recepción y su marca. Se vuelven
+        # a poner: una reimportación del reporte no puede deshacer una corrección que el
+        # lodge hizo sabiendo algo que la reserva no dice.
+        if a_mano:
+            cur.execute(
+                """UPDATE reserva SET
+                     punto_entrada = CASE WHEN ? THEN ? ELSE punto_entrada END,
+                     punto_entrada_sin_confirmar = CASE WHEN ? THEN NULL
+                                                   ELSE punto_entrada_sin_confirmar END,
+                     punto_entrada_a_mano = ?,
+                     punto_salida = CASE WHEN ? THEN ? ELSE punto_salida END,
+                     punto_salida_sin_confirmar = CASE WHEN ? THEN NULL
+                                                  ELSE punto_salida_sin_confirmar END,
+                     punto_salida_a_mano = ?
+                   WHERE conf_no = ?""",
+                (1 if "entrada" in a_mano else 0, previo["p_ent"],
+                 1 if "entrada" in a_mano else 0,
+                 1 if "entrada" in a_mano else 0,
+                 1 if "salida" in a_mano else 0, previo["p_sal"],
+                 1 if "salida" in a_mano else 0,
+                 1 if "salida" in a_mano else 0,
+                 r["conf_no"]))
+
+        _avisos_de_transporte(cur, r, a_mano, fijados)
 
         # Al reimportar un PDF (algo normal: primero el mes completo, luego
         # actualizaciones diarias), estos registros se vuelven a generar. Las tres

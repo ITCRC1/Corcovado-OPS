@@ -3932,8 +3932,37 @@ async function loadTransporte(fecha, desde, hasta) {
          + `<br><span style="font-size:10.5px;color:var(--muted);">`
          + `${b ? escaparHTML(b) : `<span style="color:var(--warn-text);">sin bote</span>`}</span>`;
   };
-  const filaE = r => `<tr><td>${r.arr_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${r.punto_entrada||"-"}</td><td>${celdaHora(r)}</td><td>${celdaQuien(r)}</td><td>${r.adl+r.chl}</td></tr>`;
-  const filaS = r => `<tr><td>${r.dep_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${r.punto_salida||"-"}</td><td>${celdaHora(r)}</td><td>${celdaQuien(r)}</td><td>${r.adl+r.chl}</td></tr>`;
+  // POR DÓNDE VIAJA, Y SE PUEDE CAMBIAR AQUÍ MISMO.
+  //
+  // Antes el punto solo se podía elegir en «Pendientes de confirmar», o sea únicamente
+  // cuando la reserva no lo decía. Si venía puesto y estaba mal, no había dónde
+  // tocarlo: lo reportó el lodge con la hab 13, que entraba por Sierpe y aquí salía
+  // Drake. El lodge sabe cosas que la reserva no dice —el huésped avisa que viene por
+  // tierra, cambia de vuelo— así que el punto tiene que ser corregible siempre.
+  //
+  // Lo que se elige aquí queda FIJO: el servidor lo marca como puesto a mano y la
+  // sincronización de Opera ya no lo reescribe. La última opción suelta esa marca y
+  // devuelve el mando a la reserva.
+  const celdaPunto = (r, tipo) => {
+    const valor = tipo === "entrada" ? r.punto_entrada : r.punto_salida;
+    const aMano = tipo === "entrada" ? r.punto_entrada_a_mano : r.punto_salida_a_mano;
+    if (!puedeEscribir("transporte")) {
+      return `${valor ? escaparHTML(valor) : '<span style="color:var(--warn-text);">sin definir</span>'}`
+           + (aMano ? ` <span title="Lo puso recepción" style="color:var(--muted);">✎</span>` : "");
+    }
+    const opcion = (v, texto) =>
+      `<option value="${v}"${valor === v ? " selected" : ""}>${texto}</option>`;
+    return `<select style="font-size:12px;padding:2px 4px;"
+              onchange="cambiarPuntoDeEmbarque('${escaparAtributo(r.conf_no)}','${tipo}',this.value)">
+        ${valor ? "" : `<option value="" selected>— sin definir</option>`}
+        ${opcion("Sierpe", "Sierpe")}
+        ${opcion("Drake", "Drake")}
+        ${aMano ? `<option value="automatico">↺ lo que diga la reserva</option>` : ""}
+      </select>`
+      + (aMano ? `<div style="font-size:9.5px;color:var(--muted);letter-spacing:.3px;">a mano</div>` : "");
+  };
+  const filaE = r => `<tr><td>${r.arr_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${celdaPunto(r, "entrada")}</td><td>${celdaHora(r)}</td><td>${celdaQuien(r)}</td><td>${r.adl+r.chl}</td></tr>`;
+  const filaS = r => `<tr><td>${r.dep_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${celdaPunto(r, "salida")}</td><td>${celdaHora(r)}</td><td>${celdaQuien(r)}</td><td>${r.adl+r.chl}</td></tr>`;
   app.innerHTML = `
     <div class="card">
       <div class="header">
@@ -3980,9 +4009,24 @@ async function loadTransporte(fecha, desde, hasta) {
 }
 
 async function confirmarTransporte(confNo, tipo, punto) {
-  await fetchAuth(`${API}/api/reservas/${confNo}/transporte?tipo=${tipo}&punto=${punto}`, { method: "POST" });
-  avisar(`Confirmado: ${tipo} por ${punto}`);
+  const res = await fetchAuth(
+    `${API}/api/reservas/${confNo}/transporte?tipo=${tipo}&punto=${encodeURIComponent(punto)}`,
+    { method: "POST" });
+  if (!res.ok) {
+    avisar((await res.json()).detail || "No se pudo guardar el punto");
+    return false;
+  }
+  avisar(punto === "automatico"
+    ? `La ${tipo} vuelve a tomarse de la reserva`
+    : `Confirmado: ${tipo} por ${punto}`);
   loadTransporte();
+  return true;
+}
+
+// El mismo camino desde la tabla, donde se corrige un punto que YA venía puesto.
+function cambiarPuntoDeEmbarque(confNo, tipo, punto) {
+  if (!punto) return;              // «— sin definir» no es una elección
+  return confirmarTransporte(confNo, tipo, punto);
 }
 
 // ---------- ENTRADAS SINAC ----------

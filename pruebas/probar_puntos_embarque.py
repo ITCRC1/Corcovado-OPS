@@ -260,6 +260,244 @@ def lo_que_NO_es_una_hora_no_se_inventa(c):
         c.igual(pp.normalizar_hora(texto), None, f"«{texto[:34]}» no es una hora")
 
 
+# ---------------------------------------------------------------------------
+# Cuando recepcion corrige el punto
+# ---------------------------------------------------------------------------
+#
+# EL CASO: la hab 13 del 18 de noviembre. El lodge sabia que ese huesped entraba por
+# Sierpe y la pantalla decia Drake. Dos cosas faltaban:
+#
+#   1. El punto solo se podia elegir en «Pendientes de confirmar», o sea unicamente
+#      cuando la reserva no lo decia. Si venia puesto y estaba mal, no habia donde
+#      tocarlo.
+#   2. Aunque se hubiera podido, el transporte es un area que Opera manda y el ciclo la
+#      reescribe cada media hora: la correccion se habria deshecho sola, sin que nadie
+#      tocara nada. Esa es la peor forma de fallar —el dato se arregla, se comprueba, y
+#      vuelve a estar mal al rato— porque quien lo corrigio ya no esta mirando.
+
+HOY = __import__("datetime").date.today()
+USUARIO = {"usuario": "pruebas", "rol": "ADMIN"}
+
+
+def _ddmmyy(d):
+    return f"{d.day:02d}-{d.month:02d}-{str(d.year)[2:]}"
+
+
+def _lote_de_opera(punto_entrada=None, pendiente=None, conf=880001, room="13"):
+    """Una reserva como la entrega Opera, con su punto de entrada (o sin el)."""
+    import datetime
+    r = dict(comun.reserva(conf, room, _ddmmyy(HOY),
+                           _ddmmyy(HOY + datetime.timedelta(days=3))),
+             punto_entrada=punto_entrada,
+             punto_entrada_sin_confirmar=pendiente)
+    return [r]
+
+
+def recepcion_puede_corregir_un_punto_que_ya_venia_puesto(c):
+    """Lo que no se podia hacer: la reserva decia Drake y no habia donde cambiarlo."""
+    conn = comun.base_limpia()
+    conn.close()
+    lote = _lote_de_opera(punto_entrada="Drake")
+    comun.cargar(lote, vistas=lote)
+    import main
+
+    main.confirmar_transporte("880001", "entrada", "Sierpe", user=USUARIO)
+
+    conn = comun.conexion()
+    f = dict(conn.execute("SELECT * FROM reserva WHERE conf_no='880001'").fetchone())
+    c.igual(f["punto_entrada"], "Sierpe", "queda por donde dijo recepcion")
+    c.igual(f["punto_entrada_a_mano"], 1, "y marcado como puesto a mano")
+    conn.close()
+
+
+def la_sincronizacion_no_se_lleva_lo_que_puso_recepcion(c):
+    """EL FALLO DE FONDO. Opera vuelve a pasar cada media hora con el mismo Drake."""
+    conn = comun.base_limpia()
+    conn.close()
+    lote = _lote_de_opera(punto_entrada="Drake")
+    comun.cargar(lote, vistas=lote)
+    import main
+    main.confirmar_transporte("880001", "entrada", "Sierpe", user=USUARIO)
+
+    # El ciclo siguiente, con exactamente lo mismo que trae Opera.
+    comun.cargar(lote, vistas=lote)
+
+    conn = comun.conexion()
+    f = dict(conn.execute("SELECT * FROM reserva WHERE conf_no='880001'").fetchone())
+    c.igual(f["punto_entrada"], "Sierpe", "sigue siendo Sierpe tras sincronizar")
+    c.igual(f["punto_entrada_a_mano"], 1, "y la marca sigue puesta")
+
+    # Y tampoco si Opera deja de decir el punto y manda un texto que no se entiende:
+    # escribir None encima seria perder la correccion de otra manera.
+    sin_punto = _lote_de_opera(punto_entrada=None, pendiente="TRB")
+    comun.cargar(sin_punto, vistas=sin_punto)
+    f = dict(conn.execute("SELECT * FROM reserva WHERE conf_no='880001'").fetchone())
+    c.igual(f["punto_entrada"], "Sierpe", "ni cuando la reserva deja de decirlo")
+    c.igual(f["punto_entrada_sin_confirmar"], None,
+            "y no vuelve a quedar pendiente de confirmar")
+    c.igual([a for a in comun.alertas(conn, "TRANSPORTE_SIN_CONFIRMAR")], [],
+            "ni vuelve el aviso de confirmarlo")
+    conn.close()
+
+
+def si_la_reserva_pasa_a_decir_otra_cosa_se_avisa(c):
+    """La otra cara de respetar lo que puso recepcion.
+
+    Si manana la reserva dice Drake porque el huesped acabo comprando el vuelo, el
+    sistema sigue respetando el Sierpe que se fijo —y hace bien— pero callarselo dejaria
+    a alguien esperando en el muelle equivocado con la pantalla diciendo que todo esta
+    en orden.
+    """
+    conn = comun.base_limpia()
+    conn.close()
+    lote = _lote_de_opera(punto_entrada="Sierpe")
+    comun.cargar(lote, vistas=lote)
+    import main
+    main.confirmar_transporte("880001", "entrada", "Sierpe", user=USUARIO)
+
+    conn = comun.conexion()
+    c.igual(comun.alertas(conn, "PUNTO_A_MANO_DISTINTO"), [],
+            "mientras dicen lo mismo no se avisa nada")
+    conn.close()
+
+    cambio = _lote_de_opera(punto_entrada="Drake")
+    comun.cargar(cambio, vistas=cambio)
+
+    conn = comun.conexion()
+    avisos = comun.alertas(conn, "PUNTO_A_MANO_DISTINTO")
+    c.igual(len(avisos), 1, "cuando la reserva cambia, se avisa")
+    c.cierto("Drake" in avisos[0] and "Sierpe" in avisos[0],
+             "diciendo las dos: lo que dice la reserva y lo que esta fijado")
+    f = dict(conn.execute("SELECT * FROM reserva WHERE conf_no='880001'").fetchone())
+    c.igual(f["punto_entrada"], "Sierpe", "y el punto sigue siendo el de recepcion")
+    conn.close()
+
+    # El ciclo corre cada media hora: el aviso no se puede multiplicar.
+    comun.cargar(cambio, vistas=cambio)
+    comun.cargar(cambio, vistas=cambio)
+    conn = comun.conexion()
+    c.igual(len(comun.alertas(conn, "PUNTO_A_MANO_DISTINTO")), 1,
+            "y sigue siendo uno solo tras tres ciclos")
+
+    # Y si recepcion suelta la marca, el aviso se retira.
+    main.confirmar_transporte("880001", "entrada", "automatico", user=USUARIO)
+    conn.close()
+    comun.cargar(cambio, vistas=cambio)
+    conn = comun.conexion()
+    c.igual(comun.alertas(conn, "PUNTO_A_MANO_DISTINTO"), [],
+            "al soltar la marca el aviso se va")
+    conn.close()
+
+
+def una_reimportacion_del_pdf_tampoco_la_deshace(c):
+    """El otro camino de escritura: el PDF reescribe la fila entera."""
+    conn = comun.base_limpia()
+    conn.close()
+    lote = _lote_de_opera(punto_entrada="Drake")
+    comun.cargar(lote, vistas=lote)
+    import main
+    main.confirmar_transporte("880001", "entrada", "Sierpe", user=USUARIO)
+
+    comun.cargar(lote, vistas=lote, manda_en="TODO", fuente="Arrivals.PDF")
+
+    conn = comun.conexion()
+    f = dict(conn.execute("SELECT * FROM reserva WHERE conf_no='880001'").fetchone())
+    c.igual(f["punto_entrada"], "Sierpe", "el reporte no deshace la correccion")
+    c.igual(f["punto_entrada_a_mano"], 1, "y la marca sobrevive al REPLACE")
+    conn.close()
+
+
+def se_puede_devolver_el_mando_a_la_reserva(c):
+    """Para que corregir no sea una puerta de un solo sentido: si el huesped acaba
+    viniendo por donde decia la reserva, se suelta la marca."""
+    conn = comun.base_limpia()
+    conn.close()
+    lote = _lote_de_opera(punto_entrada="Drake")
+    comun.cargar(lote, vistas=lote)
+    import main
+    main.confirmar_transporte("880001", "entrada", "Sierpe", user=USUARIO)
+    main.confirmar_transporte("880001", "entrada", "automatico", user=USUARIO)
+
+    conn = comun.conexion()
+    f = dict(conn.execute("SELECT * FROM reserva WHERE conf_no='880001'").fetchone())
+    c.igual(f["punto_entrada_a_mano"], 0, "la marca se suelta")
+    c.igual(f["punto_entrada"], "Sierpe",
+            "y el valor se queda hasta que la fuente lo reescriba")
+
+    comun.cargar(lote, vistas=lote)
+    f = dict(conn.execute("SELECT * FROM reserva WHERE conf_no='880001'").fetchone())
+    c.igual(f["punto_entrada"], "Drake", "el ciclo siguiente vuelve a mandar")
+    conn.close()
+
+
+def confirmar_una_habitacion_no_cierra_los_avisos_de_las_demas(c):
+    """El filtro del aviso era solo «%de entrada de%»: confirmar UNA habitacion resolvia
+    de golpe el aviso de todas. Recepcion dejaba de ver puntos sin confirmar y no habia
+    forma de notarlo."""
+    conn = comun.base_limpia()
+    conn.close()
+    lote = (_lote_de_opera(pendiente="PTE", conf=880001, room="13")
+            + _lote_de_opera(pendiente="(vacio en la reserva)", conf=880002, room="14"))
+    comun.cargar(lote, vistas=lote)
+
+    conn = comun.conexion()
+    c.igual(len(comun.alertas(conn, "TRANSPORTE_SIN_CONFIRMAR")), 2,
+            "las dos quedan pendientes")
+    conn.close()
+
+    import main
+    main.confirmar_transporte("880001", "entrada", "Sierpe", user=USUARIO)
+
+    conn = comun.conexion()
+    quedan = comun.alertas(conn, "TRANSPORTE_SIN_CONFIRMAR")
+    c.igual(len(quedan), 1, "se cierra solo el de la habitacion confirmada")
+    c.cierto(all("880001" not in a for a in quedan), "y es el de la otra el que queda")
+    conn.close()
+
+
+def un_punto_que_no_existe_no_se_guarda(c):
+    from fastapi import HTTPException
+    conn = comun.base_limpia()
+    conn.close()
+    lote = _lote_de_opera(punto_entrada="Drake")
+    comun.cargar(lote, vistas=lote)
+    import main
+    for tipo, punto in (("entrada", "Palmar"), ("llegada", "Sierpe")):
+        try:
+            main.confirmar_transporte("880001", tipo, punto, user=USUARIO)
+            c.cierto(False, f"«{tipo}/{punto}» tenia que dar 400")
+        except HTTPException as e:
+            c.igual(e.status_code, 400, f"«{tipo}/{punto}» da 400")
+    try:
+        main.confirmar_transporte("999999", "entrada", "Sierpe", user=USUARIO)
+        c.cierto(False, "una reserva que no existe tenia que dar 404")
+    except HTTPException as e:
+        c.igual(e.status_code, 404, "y una reserva inexistente, 404")
+
+
+def la_pantalla_deja_cambiar_el_punto_siempre(c):
+    """No solo en «Pendientes de confirmar», que es como estaba."""
+    ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "frontend", "index.html")
+    with open(ruta, encoding="utf-8") as f:
+        html = f.read()
+    c.cierto("celdaPunto" in html, "la celda del punto es un selector")
+    c.cierto("celdaPunto(r, \"entrada\")" in html and "celdaPunto(r, \"salida\")" in html,
+             "en las dos tablas, entradas y salidas")
+    c.cierto("cambiarPuntoDeEmbarque" in html, "que manda el cambio al servidor")
+    c.cierto("automatico" in html, "y deja volver a lo que diga la reserva")
+    c.cierto("punto_entrada_a_mano" in html, "la pantalla sabe cual se puso a mano")
+    # El servidor tiene que mandarla, o el selector nunca ofreceria soltarla.
+    ruta_main = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "backend", "main.py")
+    with open(ruta_main, encoding="utf-8") as f:
+        servidor = f.read()
+    i = servidor.find("def transporte(")
+    c.cierto("punto_entrada_a_mano" in servidor[i:i + 2500]
+             and "punto_salida_a_mano" in servidor[i:i + 2500],
+             "y el endpoint de Transporte las devuelve")
+
+
 PRUEBAS = [
     la_hora_se_lee_aunque_este_mal_escrita,
     con_minutos_manda_la_hora_con_minutos,
@@ -277,6 +515,14 @@ PRUEBAS = [
     el_pte_se_guarda_limpio,
     el_valor_no_se_come_el_resto_de_la_nota,
     una_linea_de_salida_no_cuenta_como_entrada,
+    recepcion_puede_corregir_un_punto_que_ya_venia_puesto,
+    la_sincronizacion_no_se_lleva_lo_que_puso_recepcion,
+    si_la_reserva_pasa_a_decir_otra_cosa_se_avisa,
+    una_reimportacion_del_pdf_tampoco_la_deshace,
+    se_puede_devolver_el_mando_a_la_reserva,
+    confirmar_una_habitacion_no_cierra_los_avisos_de_las_demas,
+    un_punto_que_no_existe_no_se_guarda,
+    la_pantalla_deja_cambiar_el_punto_siempre,
 ]
 
 

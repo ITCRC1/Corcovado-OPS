@@ -1298,11 +1298,18 @@ def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: di
     # dos filas es la buena.
     entradas = conn.execute(
         # conf_no viene para poder marcar en pantalla si esa habitación viaja con otras.
-        f"SELECT conf_no, room_no, nombre_principal, punto_entrada, arr_time, hora_vuelo_entrada, adl, chl, arr_date FROM reserva WHERE {cond_e} AND res_status != 'CANCELADA' ORDER BY rowid",
+        # 'punto_entrada_a_mano' viaja a la pantalla para que el selector del punto
+        # pueda ofrecer «volver a lo que diga la reserva» solo cuando hay algo que
+        # soltar, y para marcar la fila que tocó recepción.
+        f"SELECT conf_no, room_no, nombre_principal, punto_entrada, punto_entrada_a_mano,"
+        f" arr_time, hora_vuelo_entrada, adl, chl, arr_date FROM reserva WHERE {cond_e}"
+        f" AND res_status != 'CANCELADA' ORDER BY rowid",
         params_e,
     ).fetchall()
     salidas = conn.execute(
-        f"SELECT conf_no, room_no, nombre_principal, punto_salida, hora_vuelo_salida, adl, chl, dep_date FROM reserva WHERE {cond_s} AND res_status != 'CANCELADA' ORDER BY rowid",
+        f"SELECT conf_no, room_no, nombre_principal, punto_salida, punto_salida_a_mano,"
+        f" hora_vuelo_salida, adl, chl, dep_date FROM reserva WHERE {cond_s}"
+        f" AND res_status != 'CANCELADA' ORDER BY rowid",
         params_s,
     ).fetchall()
     conn.close()
@@ -4338,27 +4345,54 @@ def export_analitica(desde: str = None, hasta: str = None, formato: str = "xlsx"
 
 
 @app.post("/api/reservas/{conf_no}/transporte")
-def confirmar_transporte(conf_no: str, tipo: str, punto: str, user: dict = Depends(exige("transporte", escribir=True))):
-    """Permite a recepción fijar manualmente el punto (Sierpe/Drake) cuando el PDF
-    no lo indicaba con claridad."""
-    if tipo not in ("entrada", "salida") or punto not in ("Sierpe", "Drake"):
-        raise HTTPException(status_code=400, detail="Tipo o punto inválido")
+def confirmar_transporte(conf_no: str, tipo: str, punto: str,
+                         user: dict = Depends(exige("transporte", escribir=True))):
+    """Recepción fija por dónde entra o sale esta reserva.
+
+    NO ES SOLO PARA LAS PENDIENTES. También corrige un punto que ya venía puesto, que es
+    lo que faltaba: el lodge sabe cosas que la reserva no dice —el huésped avisó que
+    viene por tierra, cambió de vuelo— y antes no había dónde cambiarlo. Lo reportaron
+    con la hab 13: entraba por Sierpe y el sistema decía Drake.
+
+    Lo que se fija aquí QUEDA FIJO: se marca como puesto a mano y ninguna fuente lo
+    vuelve a escribir (ver loader.PUNTOS_A_MANO). Sin esa marca la corrección duraba
+    hasta el siguiente ciclo de Opera, media hora, y se deshacía sola.
+
+    'punto' acepta «Sierpe», «Drake» y «automatico». El último suelta la marca y
+    devuelve el mando a la reserva: la corrección no es una puerta de un solo sentido.
+    """
+    if tipo not in ("entrada", "salida"):
+        raise HTTPException(status_code=400, detail="El tipo es «entrada» o «salida».")
+    if punto not in ("Sierpe", "Drake", "automatico"):
+        raise HTTPException(
+            status_code=400,
+            detail="El punto es «Sierpe», «Drake» o «automatico» para volver a lo que diga la reserva.")
+
     conn = get_connection()
-    if tipo == "entrada":
-        conn.execute(
-            "UPDATE reserva SET punto_entrada = ?, punto_entrada_sin_confirmar = NULL WHERE conf_no = ?",
-            (punto, conf_no),
-        )
+    existe = conn.execute("SELECT 1 FROM reserva WHERE conf_no = ?", (conf_no,)).fetchone()
+    if not existe:
+        conn.close()
+        raise HTTPException(status_code=404, detail="No existe esa reserva")
+
+    if punto == "automatico":
+        # Se suelta la marca y se deja el valor como está: el siguiente ciclo de Opera
+        # lo reescribirá con lo que diga la reserva. Borrarlo aquí dejaría la pantalla
+        # en blanco durante media hora.
+        conn.execute(f"UPDATE reserva SET punto_{tipo}_a_mano = 0 WHERE conf_no = ?",
+                     (conf_no,))
     else:
         conn.execute(
-            "UPDATE reserva SET punto_salida = ?, punto_salida_sin_confirmar = NULL WHERE conf_no = ?",
-            (punto, conf_no),
-        )
-    # Resolver la alerta correspondiente
+            f"""UPDATE reserva SET punto_{tipo} = ?, punto_{tipo}_sin_confirmar = NULL,
+                                   punto_{tipo}_a_mano = 1
+                WHERE conf_no = ?""", (punto, conf_no))
+
+    # El aviso de ESTA reserva y de ESTE lado. Antes el filtro era solo «%de {tipo} de%»,
+    # así que confirmar una habitación cerraba de golpe el aviso de todas las demás:
+    # recepción dejaba de ver puntos que seguían sin confirmar, y nadie podía notarlo.
     conn.execute(
-        "UPDATE alerta SET resuelto = 1 WHERE tipo='TRANSPORTE_SIN_CONFIRMAR' AND mensaje LIKE ?",
-        (f"%de {tipo} de%",),
-    )
+        "UPDATE alerta SET resuelto = 1 WHERE tipo = 'TRANSPORTE_SIN_CONFIRMAR' "
+        "AND resuelto = 0 AND referencia_texto = ? AND mensaje LIKE ?",
+        (str(conf_no), f"%punto de {tipo} de%"))
     conn.commit()
     conn.close()
     return {"status": "ok"}
