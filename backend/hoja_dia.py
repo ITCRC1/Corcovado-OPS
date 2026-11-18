@@ -318,6 +318,16 @@ def definicion(conn, fecha, resumen):
                        if r["conf_no"] == clave), {})
         fila["huesped"] = _nombre_legible(nombres.get(clave),
                                           origen.get("nombre_principal"))
+        # CUÁNTOS DE ESOS PAX SON NIÑOS. Lo pidió el lodge: la reserva de Opera lo dice
+        # y en la hoja los cuatro se leían igual. Cambia el chaleco que se sube al bote,
+        # la porción de cocina y qué tour pueden hacer.
+        #
+        # Va pegado al nombre y no en la columna de PAX porque esa mide 8 mm —solo cabe
+        # el número— y la de HUÉSPED tiene 54. Ver COLUMNAS.
+        ninos = origen.get("chl") or 0
+        fila["ninos"] = ninos
+        if ninos:
+            fila["huesped"] += f" · {ninos} niño{'s' if ninos > 1 else ''}"
 
     # --- El movimiento por muelle ---
     #

@@ -237,6 +237,10 @@
   .badge-warn { background: var(--warn-bg); color: var(--warn-text); }
   .badge-hoy { background: var(--forest); color: #fff; font-weight: 600; letter-spacing:.4px; }
   .badge-tour { background: #EAF1EC; color: var(--forest-dark); margin-right:4px; display:inline-block; margin-bottom:2px; }
+  /* Los niños de la habitación. No lleva el color de ningún estado del día a propósito:
+     no es un movimiento, es una cosa que hay que saber de esa gente. */
+  .ninos { font-size: 10.5px; font-weight: 600; padding: 2px 7px; border-radius: var(--r-pill);
+    background: #EAF1EC; color: var(--forest-dark); white-space: nowrap; }
   nav { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
   nav button { font-size: calc(var(--t-sm) * var(--escala)); padding: 8px 14px; border-radius: var(--r-sm); border: 1px solid var(--border); background: white; cursor: pointer; color: var(--text); }
   nav button.active { background: var(--forest); color: white; border-color: var(--forest); }
@@ -1542,6 +1546,22 @@ function puedeVer(pantalla) {
 }
 function puedeEscribir(pantalla) { return PERMISOS[pantalla] === "escribir"; }
 
+// CUÁNTOS DE LOS PAX SON NIÑOS.
+//
+// La reserva de Opera lo dice —«2 adultos, 2 niños»— y en la app los cuatro se veían
+// iguales: un «4 pax» no le dice a nadie que dos son de 4 y 10 años. Lo pidió el lodge,
+// y cambia cosas concretas: el chaleco que se sube al bote, la porción que manda cocina,
+// la entrada del parque y qué tour pueden hacer.
+//
+// Va pegado al pax, no en una columna aparte: el número de pax es lo que ya se mira.
+// Medido sobre la base del lodge: 20 reservas vivas con niños, 28 niños en total.
+function marcaNinos(chl) {
+  const n = parseInt(chl, 10) || 0;
+  if (!n) return "";
+  return ` <span class="ninos" title="${n === 1 ? "Uno de los pax es un niño"
+    : n + " de los pax son niños"}">${n} niño${n > 1 ? "s" : ""}</span>`;
+}
+
 // Para el texto que escribe una persona y luego se mete en el HTML de una tabla. Sin
 // esto, una descripción con un < o un & rompe la fila donde va — y quien la escribió no
 // entiende por qué la pantalla se ve rara.
@@ -1988,7 +2008,7 @@ function mostrarListaDash(campo) {
       <p style="font-weight:600;margin:0 0 8px;">${titulo} (${lista.length})</p>
       ${lista.length ? lista.map(r => `
         <div style="border-bottom:1px solid var(--border); padding:8px 0;">
-          <p style="margin:0;font-weight:600;">${r.nombre_principal} · Hab. ${r.room_no} <span style="font-weight:400;color:var(--muted);">(${r.adl+r.chl} pax)</span></p>
+          <p style="margin:0;font-weight:600;">${r.nombre_principal} · Hab. ${r.room_no} <span style="font-weight:400;color:var(--muted);">(${r.adl+r.chl} pax)</span>${marcaNinos(r.chl)}</p>
           <p style="margin:2px 0 6px;color:var(--muted);">Ingreso: ${r.arr_date} · Salida: ${r.dep_date}</p>
           <p style="margin:0;">${r.notas_libres ? r.notas_libres.slice(0,180) + (r.notas_libres.length>180 ? "…" : "") : "Sin notas."}</p>
         </div>`).join("") : "<p class=\"empty\">Sin registros.</p>"}
@@ -2082,7 +2102,7 @@ async function loadReservas(fecha, desde, hasta) {
             <td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td>
             <td>${r.nombre_principal}</td>
             <td>${r.arr_date} – ${r.dep_date}</td>
-            <td>${r.adl + r.chl}</td>
+            <td>${r.adl + r.chl}${marcaNinos(r.chl)}</td>
             <td><strong>${e.etiqueta}</strong><br><span style="font-size:11px;color:var(--muted);">${r.res_status}</span></td>
             <td>${r.confianza ? `<span class="badge ${r.confianza === 'ALTA' ? 'badge-ok' : 'badge-warn'}">${r.confianza}${r.confirmado_por_recepcion ? '' : ' · sin confirmar'}</span>` : "—"}</td>
             <td>${(() => {
@@ -2545,7 +2565,8 @@ async function verDetalleReserva(confNo) {
       <button class="modal-cerrar" onclick="this.closest('.modal-fondo').remove()">×</button>
       <p style="font-weight:600;font-size:18px;margin:0;color:var(--forest-dark);">${r.nombre_principal}</p>
       <p style="font-size:13px;color:var(--muted);margin:2px 0 0;">
-        Reserva ${r.conf_no} · Habitación ${r.room_no} · ${r.adl + r.chl} pax
+        Reserva ${r.conf_no} · Habitación ${r.room_no} · ${r.adl + r.chl} pax${
+          r.chl ? ` (${r.adl} adulto${r.adl === 1 ? "" : "s"} y ${r.chl} niño${r.chl === 1 ? "" : "s"})` : ""}
         · <span class="badge badge-ok">${r.res_status}</span>
       </p>
 
@@ -2745,7 +2766,7 @@ async function loadAgenda(fecha, desde, hasta) {
         <tr><th>Huésped / Hab.</th><th>Tour</th><th>Fecha del tour</th><th>Grupo</th><th>Guía</th><th>Bote</th><th>Capitán</th><th>Ayudante</th><th>Pax</th>${puedeEscribir("agenda") ? "<th></th>" : ""}</tr>
         ${rows.map(r => r.tours.map((t, i) => `
           <tr>
-            ${i === 0 ? `<td rowspan="${r.tours.length}">${r.nombre_principal} · ${r.room_no}</td>` : ''}
+            ${i === 0 ? `<td rowspan="${r.tours.length}">${r.nombre_principal} · ${r.room_no}${marcaNinos(r.chl)}</td>` : ''}
             <td>${t.tour_codigo}${t.es_privado ? `<br>${insigniaPrivado()}` : ""}</td>
             <td>${puedeEscribir("agenda")
               ? `<input type="date" value="${t.fecha || r.fecha}"
@@ -4108,8 +4129,8 @@ async function loadTransporte(fecha, desde, hasta) {
       </select>`
       + (aMano ? `<div style="font-size:9.5px;color:var(--muted);letter-spacing:.3px;">a mano</div>` : "");
   };
-  const filaE = r => `<tr><td>${r.arr_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${celdaPunto(r, "entrada")}</td><td>${celdaHora(r)}</td><td>${celdaQuien(r)}</td><td>${r.adl+r.chl}</td></tr>`;
-  const filaS = r => `<tr><td>${r.dep_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${celdaPunto(r, "salida")}</td><td>${celdaHora(r)}</td><td>${celdaQuien(r)}</td><td>${r.adl+r.chl}</td></tr>`;
+  const filaE = r => `<tr><td>${r.arr_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${celdaPunto(r, "entrada")}</td><td>${celdaHora(r)}</td><td>${celdaQuien(r)}</td><td>${r.adl+r.chl}${marcaNinos(r.chl)}</td></tr>`;
+  const filaS = r => `<tr><td>${r.dep_date}</td><td>${r.room_no}${etiquetaGrupo(r.conf_no)}</td><td>${r.nombre_principal}</td><td>${celdaPunto(r, "salida")}</td><td>${celdaHora(r)}</td><td>${celdaQuien(r)}</td><td>${r.adl+r.chl}${marcaNinos(r.chl)}</td></tr>`;
   app.innerHTML = `
     <div class="card">
       <div class="header">
@@ -4317,7 +4338,7 @@ function detalleSinac(urgencia) {
           <p style="margin:0;font-weight:600;">
             <a href="#" onclick="verDetalleReserva('${r.conf_no}'); return false;" style="color:var(--forest);text-decoration:underline;">${r.conf_no}</a>
             · Hab. ${r.room_no} · ${r.nombre_principal}
-            <span style="font-weight:400;color:var(--muted);">(${r.adl + r.chl} pax)</span>
+            <span style="font-weight:400;color:var(--muted);">(${r.adl + r.chl} pax)</span>${marcaNinos(r.chl)}
           </p>
           ${r.entradas.map(e => `<p style="margin:3px 0 0;font-size:12px;">
               <span class="badge badge-tour">${e.tour_codigo}</span> ${e.fecha}
@@ -6004,7 +6025,7 @@ function detalleRegimen(soloEste) {
         ${lista.map(x => `<tr class="${x.tipo === 'ENTRA' ? 'fila-entra' : ''}">
           <td><strong>${x.room_no || '—'}</strong>${etiquetaGrupo(x.conf_no)}</td>
           <td>${x.nombre}</td>
-          <td>${x.pax}</td>
+          <td>${x.pax}${marcaNinos(x.ninos)}</td>
           <!-- Aquí es donde se mira el régimen, así que aquí van también las bebidas
                incluidas y la cortesía: son lo mismo —qué trae pagado la reserva— y
                tenerlas en dos pantallas distintas obliga a cruzarlas de memoria. -->
@@ -6122,7 +6143,7 @@ function detalleRest(cual) {
       ${lista.map(x => `<tr class="${x.tipo === 'ENTRA' ? 'fila-entra' : ''}">
         <td><strong>${x.room_no || '—'}</strong>${etiquetaGrupo(x.conf_no)}</td>
         <td>${x.nombre}${x.grupo ? ' <span class="badge badge-tour">grupo</span>' : ''}</td>
-        <td>${x.pax}</td>
+        <td>${x.pax}${marcaNinos(x.ninos)}</td>
         <td style="font-size:11.5px;color:var(--muted);">${x.noche_estadia || 1} de ${x.noches}</td>
         <td>${celdaComida(x)}${notasReserva(x)}</td>
         <td>${x.tipo === 'ENTRA' ? '<span class="est est-ent">entra</span>' : ''}
@@ -7863,7 +7884,7 @@ function detalleResumen(campo) {
       </tr>
       ${lista.map(x => `<tr>
         <td><strong>${x.room_no}</strong>${etiquetaGrupo(x.conf_no)}</td><td>${x.nombre_principal}</td>
-        <td>${(x.adl||0)+(x.chl||0)}</td>
+        <td>${(x.adl||0)+(x.chl||0)}${marcaNinos(x.chl)}</td>
         ${esIngreso ? `<td>${x.punto_entrada || '—'}</td><td>${x.vuelo_entrada || '—'}</td><td>${x.hora_vuelo_entrada || x.arr_time || '—'}</td>` : ""}
         ${esSalida ? `<td>${x.punto_salida || '—'}</td><td>${x.vuelo_salida || '—'}</td><td>${x.hora_vuelo_salida || '—'}</td>` : ""}
         ${campo === "en_casa" ? `<td>${x.dep_date || '—'}</td>` : ""}

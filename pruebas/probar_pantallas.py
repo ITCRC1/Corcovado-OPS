@@ -185,6 +185,42 @@ def los_iconos_del_menu_dicen_lo_que_abren(c):
     c.igual(len(iconos), len(set(iconos)), "ningun icono se repite en el menu")
 
 
+def los_ninos_se_ven_donde_se_mira_el_pax(c):
+    """LO PIDIO EL LODGE con la reserva 601049123: Opera dice «2 adultos, 2 niños» y en
+    la app los cuatro se veian iguales.
+
+    La marca se pone donde ya se mira el numero de pax, en TODAS las pantallas: el que
+    arma el bote necesita saber cuantos chalecos de niño, cocina cuantas porciones y
+    quien reparte tours que no todos pueden hacer el mismo.
+    """
+    html = _html()
+    fn = _funcion(html, "marcaNinos")
+    c.cierto(fn is not None, "existe una sola funcion que la dibuja")
+    if not fn:
+        return
+    c.cierto("niños" in fn and "niño`" in fn.replace('"', "`"),
+             "dice «niño» o «niños» segun cuantos sean")
+    # Que LEA el dato, no solo que exista: esta es una comprobacion de texto —no hay
+    # navegador aqui— y sin esta linea vaciar la funcion la dejaria pasar.
+    c.cierto("parseInt(chl" in fn, "lee cuantos niños trae la reserva")
+    c.cierto("if (!n) return" in fn, "y no dibuja nada cuando no hay ninguno")
+    c.cierto(".ninos" in html, "y tiene su estilo propio")
+    # NO lleva el color de un estado del dia: no es un movimiento, es algo de esa gente.
+    estilo = html.split(".ninos {")[1].split("}")[0]
+    for prohibido in ("--entra-", "--sale-", "--encasa-"):
+        c.cierto(prohibido not in estilo,
+                 f"y no reusa el color de los estados ({prohibido})")
+
+    # Las pantallas donde el lodge mira el pax.
+    usos = len(re.findall(r"marcaNinos\(", _sin_comentarios(html)))
+    c.cierto(usos >= 7, f"se usa en las pantallas que miran pax (son {usos})")
+    for pantalla, marca in (
+            ("Reservas", "${r.adl + r.chl}${marcaNinos(r.chl)}"),
+            ("Transporte", "${r.adl+r.chl}${marcaNinos(r.chl)}"),
+            ("Restaurantes", "${x.pax}${marcaNinos(x.ninos)}")):
+        c.cierto(marca in html, f"en {pantalla}")
+
+
 def las_etiquetas_del_telefono_cuentan_el_rowspan(c):
     """En el telefono las tablas se vuelven tarjetas y cada dato lleva su etiqueta.
 
@@ -1180,6 +1216,7 @@ PRUEBAS = [
     ni_una_alergia_ni_un_plazo_se_pintan_como_un_movimiento,
     los_botones_se_pueden_tocar_con_el_dedo,
     los_iconos_del_menu_dicen_lo_que_abren,
+    los_ninos_se_ven_donde_se_mira_el_pax,
     el_resumen_se_puede_ver_por_rango_de_fechas,
     no_contestar_no_es_decir_que_no,
     el_perfil_se_guarda_para_poder_entrar_sin_senal,

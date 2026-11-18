@@ -965,6 +965,10 @@ def distribuir(conn, fecha, cache=None):
             out.append({
                 "conf_no": r["conf_no"], "room_no": r["room_no"],
                 "nombre": r["nombre_principal"], "pax": r["pax"], "tipo": r["tipo"],
+                # CUÁNTOS DE ESOS PAX SON NIÑOS. A la cocina le cambia la porción y al
+                # salonero la silla; en la mesa no se distinguen de los adultos hasta que
+                # están sentados. Lo pidió el lodge.
+                "ninos": r.get("chl") or 0,
                 "noche_estadia": r.get("noche_estadia"), "noches": r["noches"],
                 "grupo": r["clave_grupo"] if not r["clave_grupo"].startswith("r") else None,
                 "hora": horas.get(r["conf_no"]) if comida == "cena" else None,

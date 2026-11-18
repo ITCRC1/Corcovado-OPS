@@ -373,6 +373,44 @@ def la_pantalla_recibe_los_renglones_del_dia_para_escribir(c):
             "y los topes, para que la pantalla no deje escribir de mas")
 
 
+def la_hoja_dice_cuantos_de_los_pax_son_ninos(c):
+    """LO PIDIO EL LODGE con la reserva 601049123: la de Opera dice «2 adultos, 2 niños
+    (4, 10)» y en la hoja los cuatro se leian igual, como «4 pax».
+
+    Cambia cosas concretas: el chaleco que se sube al bote, la porcion que manda cocina y
+    que tour pueden hacer. Va pegado al nombre y no en la columna de PAX porque esa mide
+    8 mm —solo cabe el numero— y la del huesped tiene 54.
+    """
+    import hoja_dia
+    conn = comun.base_limpia()
+    lote = [
+        dict(reserva(601049123, "12", ddmmyy(HOY),
+                     ddmmyy(HOY + datetime.timedelta(days=5)), adl=2, chl=2)),
+        dict(reserva(601049124, "14", ddmmyy(HOY),
+                     ddmmyy(HOY + datetime.timedelta(days=3)), adl=2, chl=0)),
+        dict(reserva(601049125, "16", ddmmyy(HOY),
+                     ddmmyy(HOY + datetime.timedelta(days=3)), adl=2, chl=1)),
+    ]
+    cargar(lote, vistas=lote)
+
+    d = _hoja(conn, HOY.isoformat())
+    conn.close()
+    por_hab = {f["hab"]: f for f in d["filas"]}
+    c.igual(por_hab["12"]["pax"], 4, "el pax sigue siendo el total de la habitacion")
+    c.igual(por_hab["12"]["ninos"], 2, "y se sabe cuantos de esos son niños")
+    c.cierto("2 niños" in por_hab["12"]["huesped"],
+             "la hoja lo dice junto al nombre")
+    c.cierto("1 niño" in por_hab["16"]["huesped"] and "niños" not in por_hab["16"]["huesped"],
+             "y en singular cuando es uno solo")
+    c.cierto("niño" not in por_hab["14"]["huesped"],
+             "la que viaja sin niños no dice nada: no se agrega ruido a la hoja")
+
+    # Y llega al PDF, que es lo que se reparte por WhatsApp.
+    buf = hoja_dia.pdf(d)
+    _paginas_n, texto = _paginas(buf)
+    c.cierto("2 niños" in texto, "sale impreso en la hoja del dia")
+
+
 def una_nota_sin_renglon_se_enseña_en_vez_de_desaparecer(c):
     """La reserva se cancelo, se movio de dia o cambio de numero. Lo escrito sigue
     guardado pero ya no sale en la hoja: callarlo haria pensar que no se guardo."""
@@ -403,6 +441,7 @@ PRUEBAS = [
     sin_notas_la_hoja_es_exactamente_la_de_siempre,
     el_rango_lleva_las_notas_de_cada_dia_con_su_fecha,
     la_pantalla_recibe_los_renglones_del_dia_para_escribir,
+    la_hoja_dice_cuantos_de_los_pax_son_ninos,
     una_nota_sin_renglon_se_enseña_en_vez_de_desaparecer,
 ]
 
