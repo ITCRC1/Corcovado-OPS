@@ -6606,7 +6606,12 @@ def restaurantes_cambiar(payload: dict, user: dict = Depends(current_user)):
 @app.delete("/api/restaurantes/cambiar")
 def restaurantes_quitar_cambio(fecha: str, conf_no: str, comida: str = "CENA",
                                user: dict = Depends(current_user)):
-    """Deshace un cambio manual y devuelve la reserva a la asignación automática."""
+    """Deshace un cambio manual y devuelve la reserva a la asignación automática.
+
+    SOLO ESA RESERVA. Las filas que sostienen la foto del día (congelado = 1) se quedan:
+    quien no se tocó sigue donde está, que es justamente lo que se pidió. Para devolver
+    la noche entera al reparto automático está el endpoint de abajo.
+    """
     auth.requiere_permiso(user, "restaurantes")
     conn = get_connection()
     conn.execute(
@@ -6616,6 +6621,33 @@ def restaurantes_quitar_cambio(fecha: str, conf_no: str, comida: str = "CENA",
     conn.close()
     _publicar_en_segundo_plano()
     return {"status": "ok"}
+
+
+@app.post("/api/restaurantes/soltar")
+def restaurantes_soltar(payload: dict, user: dict = Depends(current_user)):
+    """Devuelve un día al reparto automático.
+
+    Un movimiento manual deja la noche fijada tal como quedó: nadie más se reacomoda
+    solo (ver restaurantes.fijar_el_resto). Esto suelta esa foto y vuelve a equilibrar,
+    conservando los cambios que puso una persona — son decisiones, no foto.
+
+    Existe para que fijar la noche no sea una puerta de un solo sentido.
+    """
+    auth.requiere_permiso(user, "restaurantes")
+    import restaurantes as rest
+    fecha = payload.get("fecha")
+    if not fecha:
+        raise HTTPException(status_code=400, detail="Falta la fecha")
+    comida = (payload.get("comida") or "").upper() or None
+    if comida and comida not in ("CENA", "ALMUERZO"):
+        raise HTTPException(status_code=400, detail="La comida es CENA o ALMUERZO")
+    conn = get_connection()
+    soltadas = rest.soltar_el_reparto(conn, fecha, comida)
+    conn.commit()
+    datos = rest.distribuir(conn, fecha)
+    conn.close()
+    _publicar_en_segundo_plano()
+    return {"status": "ok", "soltadas": soltadas, "distribucion": datos}
 
 
 def _hora_guardada(conn, fecha, conf_no):

@@ -194,9 +194,17 @@ def _historial(conn, hasta_fecha):
 
 
 def _cambios_manuales(conn, fecha):
+    """Las filas fijadas de ese día: las que puso una persona y las congeladas.
+
+    Las dos clavan a una reserva en un restaurante y por eso se leen juntas. Lo que las
+    distingue es 'congelado': una la decidió alguien y se enseña como tal; la otra solo
+    sostiene la foto del día (ver fijar_el_resto) y en pantalla no se muestra como un
+    cambio, porque nadie lo pidió.
+    """
     return {(dict(r)["conf_no"], dict(r)["comida"]): dict(r)
             for r in conn.execute(
-                "SELECT conf_no, comida, restaurante, motivo FROM restaurante_cambio WHERE fecha = ?",
+                "SELECT conf_no, comida, restaurante, motivo, congelado "
+                "FROM restaurante_cambio WHERE fecha = ?",
                 (_iso(fecha),)).fetchall()}
 
 
@@ -630,6 +638,88 @@ def companeros_de_mesa(conn, fecha, conf_no):
             if r["clave_grupo"] == yo["clave_grupo"] and r["conf_no"] != conf_no]
 
 
+# ---------------------------------------------------------------------------
+# Un movimiento manual no mueve a nadie más
+# ---------------------------------------------------------------------------
+#
+# EL PROBLEMA. El reparto no se guarda: se recalcula entero cada vez a partir de las
+# reservas, el histórico y las excepciones. Así que al mover UNA habitación a mano, el
+# equilibrio se rehacía desde cero y el hueco que dejaba lo llenaba otra —«de Bar el
+# Bosque a Terra Kitchen»— sin que nadie lo hubiera pedido.
+#
+# Medido sobre la base del lodge, 45 noches seguidas: en 39 un solo movimiento manual
+# arrastraba al menos otra habitación, y la noche del 30 de noviembre arrastraba SIETE.
+# No es un intercambio de uno por uno: al cambiar el objetivo de Terra Kitchen se
+# recoloca todo el que estuviera libre.
+#
+# Lo pidió el lodge: «cuando se haga un movimiento manual, dejarlo tal y como se
+# realizó, que no haga ningún otro movimiento automático».
+#
+# LA SOLUCIÓN. Antes de escribir el cambio se anota dónde estaba cada quien, con la
+# marca 'congelado'. Son filas que no decidió una persona: solo sostienen la foto.
+#
+# QUÉ NO CAMBIA, que es lo que hay que mirar al tocar esto:
+#   · Las reglas siguen enteras —prioridad de la cena de bienvenida, capacidades,
+#     grupos que no se separan— y se aplican a quien siga libre: una reserva que entre
+#     a ese día DESPUÉS del movimiento se coloca con las reglas de siempre, y se sigue
+#     respetando el tope de Terra Kitchen.
+#   · Los demás días no se tocan: la marca es de una fecha y una comida.
+#   · A quien fija OTRA regla —cena privada, restaurante fijo de la estadía— no se le
+#     escribe nada: esa regla tiene que poder dejar de aplicar.
+#   · Los avisos de capacidad y de diferencia siguen saltando. Si el movimiento deja la
+#     noche desequilibrada, se dice; lo que ya no se hace es arreglarlo por cuenta
+#     propia.
+MOTIVO_CONGELADO = "quedó donde estaba al mover otra habitación"
+
+
+def fijar_el_resto(conn, fecha, comida):
+    """Clava el reparto de ese día y esa comida tal como está en este momento.
+
+    Se llama ANTES de escribir un movimiento manual, así que la foto que queda es la de
+    antes de moverlo: el resultado es la misma noche con una habitación cambiada.
+
+    No pisa nada: quien ya tenga fila —puesta a mano o congelada— se queda como está.
+    Devuelve cuántas habitaciones quedaron fijadas por esto.
+    """
+    if isinstance(fecha, str):
+        fecha = datetime.date.fromisoformat(fecha)
+    comida = (comida or "CENA").upper()
+    clave = "cena" if comida == "CENA" else "almuerzo"
+    dist = distribuir(conn, fecha)
+
+    fijadas = 0
+    for lista, restaurante in ((dist[clave]["terra_kitchen"], TERRA),
+                               (dist[clave]["bar_el_bosque"], BOSQUE),
+                               (dist[clave]["comedor_staff"], STAFF)):
+        for x in lista:
+            if x["manual"] or x["fijo"]:
+                continue
+            cur = conn.execute(
+                """INSERT INTO restaurante_cambio
+                     (fecha, conf_no, comida, restaurante, motivo, congelado)
+                   VALUES (?,?,?,?,?,1)
+                   ON CONFLICT(fecha, conf_no, comida) DO NOTHING""",
+                (_iso(fecha), x["conf_no"], comida, restaurante, MOTIVO_CONGELADO))
+            fijadas += cur.rowcount or 0
+    return fijadas
+
+
+def soltar_el_reparto(conn, fecha, comida=None):
+    """Quita las filas congeladas y devuelve el día al reparto automático.
+
+    Los cambios que puso una persona NO se tocan: son decisiones, no foto. El día vuelve
+    a equilibrarse alrededor de ellas, que es lo que hacía antes de esta corrección.
+
+    Existe para que fijar la noche no sea una puerta de un solo sentido.
+    """
+    cond, params = "fecha = ? AND congelado = 1", [_iso(fecha)]
+    if comida:
+        cond += " AND comida = ?"
+        params.append((comida or "").upper())
+    return conn.execute(
+        f"DELETE FROM restaurante_cambio WHERE {cond}", params).rowcount or 0
+
+
 def mover_grupo(conn, fecha, conf_no, comida, restaurante, solo_esta=False,
                 motivo="solicitud del huésped"):
     """Mueve una reserva de restaurante y, si va en grupo, se lleva a los suyos.
@@ -654,16 +744,37 @@ def mover_grupo(conn, fecha, conf_no, comida, restaurante, solo_esta=False,
         fecha = datetime.date.fromisoformat(fecha)
     comida = (comida or "CENA").upper()
 
+    # LO PRIMERO: la foto de cómo está el día, para que mover a esta habitación no
+    # mueva a ninguna otra. Va aquí y no en el endpoint para que valga por cualquier
+    # camino que escriba un cambio. Ver fijar_el_resto.
+    fijar_el_resto(conn, fecha, comida)
+
     manuales = _cambios_manuales(conn, fecha)
-    anterior = (manuales.get((conf_no, comida)) or {}).get("restaurante")
+
+    # SOLO CUENTA LO QUE DECIDIÓ UNA PERSONA. Las filas congeladas también clavan a una
+    # reserva, pero nadie las pidió: son la foto del día. Mirándolas, la regla de «a
+    # quien ya separaron a mano no se le pisa» se rompía —todas las habitaciones pasaban
+    # a tener fila, así que la que alguien había apartado a propósito dejaba de
+    # distinguirse de las demás y el grupo se la llevaba de vuelta—. Lo encontró la
+    # prueba a_quien_ya_separaron_a_mano_no_se_le_pisa.
+    def puesto_a_mano(cn):
+        m = manuales.get((cn, comida))
+        return m["restaurante"] if m and not m.get("congelado") else None
+
+    anterior = puesto_a_mano(conf_no)
 
     def escribir(cn):
+        # 'congelado = 0' también al actualizar: la fila que sostenía la foto pasa a ser
+        # una decisión de una persona en cuanto alguien mueve esa habitación. Sin esa
+        # línea, el cambio se guardaba bien pero la pantalla no lo marcaba como manual
+        # —y «volver al reparto automático» se lo habría llevado por delante—.
         conn.execute(
-            """INSERT INTO restaurante_cambio (fecha, conf_no, comida, restaurante, motivo)
-               VALUES (?,?,?,?,?)
+            """INSERT INTO restaurante_cambio
+                 (fecha, conf_no, comida, restaurante, motivo, congelado)
+               VALUES (?,?,?,?,?,0)
                ON CONFLICT(fecha, conf_no, comida) DO UPDATE SET
                  restaurante = excluded.restaurante, motivo = excluded.motivo,
-                 creado_en = datetime('now')""",
+                 congelado = 0, creado_en = datetime('now')""",
             (_iso(fecha), cn, comida, restaurante, motivo))
 
     escribir(conf_no)
@@ -677,7 +788,7 @@ def mover_grupo(conn, fecha, conf_no, comida, restaurante, solo_esta=False,
         if cn in privadas:
             excepciones.append(dict(c, motivo="tiene cena privada"))
             continue
-        suyo = (manuales.get((cn, comida)) or {}).get("restaurante")
+        suyo = puesto_a_mano(cn)
         if suyo and suyo != anterior and suyo != restaurante:
             excepciones.append(dict(c, motivo=f"ya estaba puesta a mano en {suyo}"))
             continue
@@ -701,6 +812,15 @@ def distribuir(conn, fecha, cache=None):
     hist = _historial(conn, fecha)
     manuales = _cambios_manuales(conn, fecha)
     privadas = _cenas_privadas(conn, fecha)
+
+    # Las filas CONGELADAS clavan igual que las manuales —para eso están— pero nadie las
+    # pidió: solo sostienen la foto del día (ver fijar_el_resto). En pantalla no se
+    # enseñan como un cambio, o el salonero vería treinta habitaciones «movidas a mano»
+    # la noche en que recepción movió una.
+    a_mano = {k for k, v in manuales.items() if not v.get("congelado")}
+    congelada = {c: any(k[1] == c.upper() and v.get("congelado")
+                        for k, v in manuales.items())
+                 for c in ("cena", "almuerzo")}
 
     notas = []          # movimientos explicados, para que el salonero tenga el contexto
     avisos = []
@@ -840,6 +960,8 @@ def distribuir(conn, fecha, cache=None):
         out = []
         for r in sorted(lista, key=lambda x: int(x["room_no"]) if (x["room_no"] or "").isdigit() else 999):
             fijo = fijos.get(r["conf_no"]) if comida == "cena" else None
+            if fijo and fijo[1] == MOTIVO_CONGELADO:
+                fijo = None          # sostiene la foto, no es una decisión que enseñar
             out.append({
                 "conf_no": r["conf_no"], "room_no": r["room_no"],
                 "nombre": r["nombre_principal"], "pax": r["pax"], "tipo": r["tipo"],
@@ -847,7 +969,7 @@ def distribuir(conn, fecha, cache=None):
                 "grupo": r["clave_grupo"] if not r["clave_grupo"].startswith("r") else None,
                 "hora": horas.get(r["conf_no"]) if comida == "cena" else None,
                 "fijo": fijo[1] if fijo else None,
-                "manual": (r["conf_no"], comida.upper()) in manuales,
+                "manual": (r["conf_no"], comida.upper()) in a_mano,
                 # Para el salonero: qué trae pagado y si ESTA comida le corresponde.
                 "regimen": r.get("regimen"),
                 "regimen_texto": texto_regimen(r.get("regimen")),
@@ -874,6 +996,10 @@ def distribuir(conn, fecha, cache=None):
             # sola dirección.
             "comedor_staff": salida(staff_cena, "cena"),
             "pax_staff": _pax(_agrupar(staff_cena)),
+            # La noche quedó fijada por un movimiento manual: nadie más se reacomoda
+            # solo. La pantalla lo dice y ofrece devolverla al reparto automático —si no
+            # se dijera, el día dejaría de equilibrarse en silencio.
+            "fijada_a_mano": congelada["cena"],
         },
         "almuerzo": {
             "terra_kitchen": salida(alm_tk, "almuerzo"), "bar_el_bosque": salida(alm_bosque, "almuerzo"),
@@ -882,6 +1008,7 @@ def distribuir(conn, fecha, cache=None):
             "cap_tk": CAP_ALMUERZO_TK,
             "comedor_staff": salida(alm_staff, "almuerzo"),
             "pax_staff": _pax(_agrupar(alm_staff)),
+            "fijada_a_mano": congelada["almuerzo"],
         },
         "notas": notas,
         "avisos": avisos,

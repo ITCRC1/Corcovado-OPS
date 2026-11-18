@@ -700,6 +700,12 @@ CREATE TABLE IF NOT EXISTS restaurante_cambio (
     comida TEXT NOT NULL,          -- 'ALMUERZO' | 'CENA'
     restaurante TEXT NOT NULL,     -- 'Terra Kitchen' | 'Bar el Bosque'
     motivo TEXT,
+    -- ESTA FILA NO LA DECIDIÓ NADIE. El reparto no se guarda: se recalcula entero cada
+    -- vez, así que al mover UNA habitación a mano el equilibrio se rehacía desde cero y
+    -- el hueco lo llenaba otra —«de Bar el Bosque a Terra Kitchen»— sin que nadie lo
+    -- pidiera. Al hacer un movimiento manual se anota dónde estaba cada quien con esta
+    -- marca, y así la noche queda tal como se dejó. Ver restaurantes.fijar_el_resto.
+    congelado INTEGER NOT NULL DEFAULT 0,
     creado_en TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (fecha, conf_no, comida),
     FOREIGN KEY (conf_no) REFERENCES reserva(conf_no) ON DELETE CASCADE

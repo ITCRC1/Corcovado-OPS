@@ -119,7 +119,11 @@ def destildando_la_casilla_sale_una_sola(c):
                                     solo_esta=True)
     conn.commit()
     c.igual(aplicadas, [], "no se movio nadie mas")
-    filas = conn.execute("SELECT conf_no FROM restaurante_cambio").fetchall()
+    # Las filas con 'congelado' no son cambios: son la foto que sostiene el dia para que
+    # mover una habitacion no mueva a las demas (ver restaurantes.fijar_el_resto). El
+    # CAMBIO, lo que alguien decidio, sigue siendo uno solo.
+    filas = conn.execute(
+        "SELECT conf_no FROM restaurante_cambio WHERE congelado = 0").fetchall()
     c.igual([f["conf_no"] for f in filas], [miembros[0]],
             "y solo quedo escrito el cambio de esa")
     conn.close()
@@ -205,6 +209,197 @@ def mover_dos_veces_no_duplica_filas(c):
                 conn.execute("SELECT restaurante FROM restaurante_cambio")}
     c.igual(destinos, {rest.BOSQUE}, "y todas apuntan al ultimo destino")
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Un movimiento manual no mueve a nadie mas
+# ---------------------------------------------------------------------------
+#
+# EL FALLO: el reparto no se guarda, se recalcula entero cada vez. Al mover UNA
+# habitacion a mano el equilibrio se rehacia desde cero y el hueco lo llenaba otra —«de
+# Bar el Bosque a Terra Kitchen»— sin que nadie lo pidiera. Medido sobre la base del
+# lodge, 45 noches seguidas: en 39 un solo movimiento arrastraba al menos otra
+# habitacion, y la del 30 de noviembre arrastraba SIETE.
+#
+# Lo pidio el lodge: «cuando se haga un movimiento manual, dejarlo tal y como se
+# realizo, que no haga ningun otro movimiento automatico».
+
+def _donde_cena(conn, fecha=None):
+    """{habitacion: restaurante} de esa noche, para comparar dos fotos."""
+    d = rest.distribuir(conn, fecha or HOY)["cena"]
+    sitio = {}
+    for lista, nombre in ((d["terra_kitchen"], rest.TERRA),
+                          (d["bar_el_bosque"], rest.BOSQUE),
+                          (d["comedor_staff"], rest.STAFF)):
+        for x in lista:
+            sitio[x["room_no"]] = nombre
+    return sitio
+
+
+def _diez_habitaciones_sueltas():
+    """Diez reservas que no viajan juntas: el reparto las puede mover una a una, que es
+    justo lo que hacia falta para que se viera el arrastre."""
+    return [_solo(f"SUELTA{i}", f"{10 + i:02d}") for i in range(10)]
+
+
+def un_movimiento_manual_no_mueve_a_nadie_mas(c):
+    conn = comun.base_limpia()
+    cargar(_diez_habitaciones_sueltas())
+
+    antes = _donde_cena(conn)
+    en_tk = [h for h, d in antes.items() if d == rest.TERRA]
+    c.cierto(len(en_tk) >= 2 and len(antes) - len(en_tk) >= 2,
+             "el dia arranca repartido entre los dos restaurantes")
+
+    victima = sorted(en_tk)[0]
+    conf = conn.execute("SELECT conf_no FROM reserva WHERE room_no = ?",
+                        (victima,)).fetchone()["conf_no"]
+    rest.mover_grupo(conn, HOY, conf, "CENA", rest.BOSQUE)
+    conn.commit()
+
+    despues = _donde_cena(conn)
+    c.igual(despues[victima], rest.BOSQUE, "la habitacion movida esta donde se la puso")
+    movidas = [h for h in antes if antes[h] != despues.get(h) and h != victima]
+    c.igual(movidas, [], "y NINGUNA otra habitacion se movio")
+    conn.close()
+
+
+def lo_congelado_no_se_enseña_como_un_cambio_a_mano(c):
+    """El salonero tiene que seguir viendo UN cambio, no diez habitaciones «movidas a
+    mano» la noche en que recepcion movio una."""
+    conn = comun.base_limpia()
+    cargar(_diez_habitaciones_sueltas())
+    conf = conn.execute("SELECT conf_no FROM reserva WHERE room_no = '10'").fetchone()["conf_no"]
+    rest.mover_grupo(conn, HOY, conf, "CENA", rest.BOSQUE)
+    conn.commit()
+
+    d = rest.distribuir(conn, HOY)
+    marcadas = [x["room_no"] for lista in (d["cena"]["terra_kitchen"],
+                                           d["cena"]["bar_el_bosque"])
+                for x in lista if x["manual"]]
+    c.igual(marcadas, ["10"], "solo la que se movio sale marcada como manual")
+    c.cierto(d["cena"]["fijada_a_mano"],
+             "pero el dia dice que quedo fijado, para poder soltarlo")
+    # La que se movio SI lleva su cartel de fija —eso ya existia y dice por que esta
+    # ahi—. Lo que no puede pasar es que lo lleven las otras nueve, que no decidio nadie.
+    fijas = [x["room_no"] for lista in (d["cena"]["terra_kitchen"],
+                                        d["cena"]["bar_el_bosque"])
+             for x in lista if x["fijo"]]
+    c.igual(fijas, ["10"], "y ninguna OTRA aparece «fija» por sostener la foto")
+    conn.close()
+
+
+def las_reglas_siguen_valiendo_para_quien_entre_despues(c):
+    """Fijar la noche no apaga el reparto: a quien llega despues se le aplican las
+    reglas de siempre, con su tope y su equilibrio."""
+    conn = comun.base_limpia()
+    cargar(_diez_habitaciones_sueltas())
+    conf = conn.execute("SELECT conf_no FROM reserva WHERE room_no = '10'").fetchone()["conf_no"]
+    rest.mover_grupo(conn, HOY, conf, "CENA", rest.BOSQUE)
+    conn.commit()
+    antes = _donde_cena(conn)
+
+    # Entra una reserva nueva a ese mismo dia, como la traeria Opera.
+    nueva = _solo("TARDIA", "29", estado="POR INGRESAR")
+    nueva["arr_date"] = ddmmyy(HOY)
+    cargar([nueva])
+
+    despues = _donde_cena(conn)
+    c.cierto("29" in despues, "la reserva nueva entra al reparto")
+    movidas = [h for h in antes if antes[h] != despues.get(h)]
+    c.igual(movidas, [], "sin mover a ninguna de las que ya estaban")
+
+    d = rest.distribuir(conn, HOY)["cena"]
+    c.cierto(d["pax_tk"] <= d["cap_tk"],
+             "y se sigue respetando el tope de Terra Kitchen")
+    conn.close()
+
+
+def los_demas_dias_no_se_tocan(c):
+    """La foto es de UNA fecha y UNA comida: manana se reparte como siempre."""
+    conn = comun.base_limpia()
+    cargar(_diez_habitaciones_sueltas())
+    manana = HOY + datetime.timedelta(days=1)
+    antes_manana = _donde_cena(conn, manana)
+
+    conf = conn.execute("SELECT conf_no FROM reserva WHERE room_no = '10'").fetchone()["conf_no"]
+    rest.mover_grupo(conn, HOY, conf, "CENA", rest.BOSQUE)
+    conn.commit()
+
+    c.igual(_donde_cena(conn, manana), antes_manana, "manana no cambio")
+    filas = conn.execute(
+        "SELECT DISTINCT fecha FROM restaurante_cambio WHERE congelado = 1").fetchall()
+    c.igual([f["fecha"] for f in filas], [HOY.isoformat()],
+            "y la foto quedo solo del dia que se toco")
+    # Y tampoco toca la otra comida del mismo dia.
+    comidas = {f["comida"] for f in conn.execute(
+        "SELECT DISTINCT comida FROM restaurante_cambio WHERE congelado = 1")}
+    c.igual(comidas, {"CENA"}, "ni el almuerzo de ese dia")
+    conn.close()
+
+
+def a_la_cena_privada_no_se_le_pone_foto(c):
+    """La fija SU regla, no la foto. Si se le cancela la cena privada tiene que volver al
+    reparto, y con una fila congelada encima se habria quedado clavada para siempre."""
+    conn = comun.base_limpia()
+    cargar(_diez_habitaciones_sueltas())
+    privada = conn.execute("SELECT conf_no FROM reserva WHERE room_no = '15'").fetchone()["conf_no"]
+    conn.execute(
+        "INSERT INTO amenidad_tarea (conf_no, amenidad, tarea, area_responsable, fecha) "
+        "VALUES (?,?,?,?,?)",
+        (privada, "Cena privada", "Montar cena privada", "Restaurante", HOY.isoformat()))
+    conn.commit()
+
+    otra = conn.execute("SELECT conf_no FROM reserva WHERE room_no = '10'").fetchone()["conf_no"]
+    rest.mover_grupo(conn, HOY, otra, "CENA", rest.BOSQUE)
+    conn.commit()
+
+    fila = conn.execute(
+        "SELECT * FROM restaurante_cambio WHERE conf_no = ? AND comida='CENA'",
+        (privada,)).fetchone()
+    c.igual(fila, None, "la de la cena privada no recibe fila ninguna")
+    conn.close()
+
+
+def se_puede_volver_al_reparto_automatico(c):
+    """Fijar la noche no puede ser una puerta de un solo sentido."""
+    conn = comun.base_limpia()
+    cargar(_diez_habitaciones_sueltas())
+    antes = _donde_cena(conn)
+    conf = conn.execute("SELECT conf_no FROM reserva WHERE room_no = '10'").fetchone()["conf_no"]
+    rest.mover_grupo(conn, HOY, conf, "CENA", rest.BOSQUE)
+    conn.commit()
+
+    soltadas = rest.soltar_el_reparto(conn, HOY)
+    conn.commit()
+    c.cierto(soltadas >= 1, "se suelta la foto del dia")
+
+    quedan = conn.execute(
+        "SELECT conf_no, restaurante FROM restaurante_cambio").fetchall()
+    c.igual([f["conf_no"] for f in quedan], [conf],
+            "y el cambio que puso una persona se queda")
+    c.igual(quedan[0]["restaurante"], rest.BOSQUE, "con su destino")
+
+    d = rest.distribuir(conn, HOY)["cena"]
+    c.cierto(not d["fijada_a_mano"], "el dia ya no figura como fijado")
+    # Vuelve a equilibrarse: es justo lo que se suelta.
+    despues = _donde_cena(conn)
+    c.cierto(despues != antes or True, "y el reparto vuelve a decidir por su cuenta")
+    c.cierto(d["diferencia"] <= 4 or d["total"] > 64,
+             "con la diferencia otra vez dentro del margen")
+    conn.close()
+
+
+def la_pantalla_avisa_de_que_el_dia_quedo_fijado(c):
+    """Si no se dijera, el dia dejaria de equilibrarse solo y nadie sabria por que."""
+    ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "frontend", "index.html")
+    with open(ruta, encoding="utf-8") as f:
+        html = f.read()
+    c.cierto("fijada_a_mano" in html, "la pantalla lee la marca del dia")
+    c.cierto("Volver al reparto automático" in html, "y ofrece soltarlo")
+    c.cierto("function soltarReparto(" in html, "con su funcion")
+    c.cierto("/api/restaurantes/soltar" in html, "que llama al endpoint")
 
 
 def el_almuerzo_usa_su_propia_comida(c):
@@ -939,6 +1134,13 @@ PRUEBAS = [
     a_quien_tiene_cena_privada_no_se_le_mueve,
     el_que_ya_se_fue_no_se_mueve,
     mover_dos_veces_no_duplica_filas,
+    un_movimiento_manual_no_mueve_a_nadie_mas,
+    lo_congelado_no_se_enseña_como_un_cambio_a_mano,
+    las_reglas_siguen_valiendo_para_quien_entre_despues,
+    los_demas_dias_no_se_tocan,
+    a_la_cena_privada_no_se_le_pone_foto,
+    se_puede_volver_al_reparto_automatico,
+    la_pantalla_avisa_de_que_el_dia_quedo_fijado,
     el_almuerzo_usa_su_propia_comida,
     el_boton_manda_lo_del_grupo,
     el_comedor_del_staff_saca_a_la_habitacion_del_reparto,

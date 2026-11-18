@@ -5327,6 +5327,20 @@ async function loadRestaurantes(fecha) {
         Diferencia: ${c.diferencia} pax · ${c.dentro_margen ? "dentro del margen de 4 ✓" : "fuera del margen de 4"}
       </p>
 
+      <!-- Al mover una habitación a mano, el día queda tal como se dejó: ninguna otra
+           se reacomoda sola. Hay que DECIRLO, porque la consecuencia es que esa noche
+           deja de equilibrarse por su cuenta — y porque fijarla no puede ser una puerta
+           de un solo sentido. -->
+      ${(c.fijada_a_mano || a.fijada_a_mano) ? `
+        <div style="background:var(--card-alt,#F4F1E8);border:1px dashed var(--border);border-radius:var(--r-sm);
+                    padding:9px 12px;margin-top:10px;font-size:12.5px;display:flex;
+                    flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;">
+          <span>Este día está <strong>fijado como se dejó</strong>: se movió una habitación a mano
+            y las demás ya no se reacomodan solas.</span>
+          ${puedeEscribir("restaurantes") ? `
+            <button class="btn" onclick="soltarReparto('${F.fecha}')">Volver al reparto automático</button>` : ""}
+        </div>` : ""}
+
       <!-- Se reparten solas en las que quepan, en vez de un número fijo de columnas:
            con ocho tarjetas y «repeat(8,1fr)» cada cifra quedaba en una tira y los
            títulos largos —«Almuerzo · Terra Kitchen»— se partían en cuatro renglones.
@@ -5786,6 +5800,25 @@ async function devolverAlReparto(fecha, confNo, comida) {
   avisar("Vuelve al reparto automático");
   await loadRestaurantes(fecha);
   detalleRest("comedor_staff");
+}
+
+// Suelta la foto del día: vuelve a equilibrarse solo, conservando los cambios que puso
+// una persona. Se pregunta antes porque mueve habitaciones que ya estaban colocadas y
+// el salonero puede tener la hoja impresa.
+async function soltarReparto(fecha) {
+  if (!confirm("El día vuelve a repartirse solo.\n\nLos cambios que hiciste a mano se "
+             + "mantienen, pero las demás habitaciones se pueden reacomodar para "
+             + "equilibrar los restaurantes.\n\n¿Seguir?")) return;
+  const res = await fetchAuth(`${API}/api/restaurantes/soltar`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fecha }),
+  });
+  if (!res.ok) {
+    avisar((await res.json().catch(() => ({}))).detail || "No se pudo soltar", true);
+    return;
+  }
+  avisar("El día vuelve al reparto automático");
+  await loadRestaurantes(fecha);
 }
 
 // El detalle del régimen. Sin argumento los enseña TODOS —es la tarjeta de Full board,

@@ -243,6 +243,9 @@ COLUMNAS_NUEVAS = [
     # en schema.sql: sin esto, la corrección duraba hasta el siguiente ciclo de Opera.
     ("reserva", "punto_entrada_a_mano", "INTEGER NOT NULL DEFAULT 0"),
     ("reserva", "punto_salida_a_mano", "INTEGER NOT NULL DEFAULT 0"),
+    # La foto del reparto de restaurantes que sostiene un movimiento manual, para que
+    # mover una habitación no mueva a las demás. Ver restaurantes.fijar_el_resto.
+    ("restaurante_cambio", "congelado", "INTEGER NOT NULL DEFAULT 0"),
     # Quién maneja el bote de cada corrida y quién lo acompaña. La tabla 'traslado' ya
     # existe en la base instalada, así que el CREATE TABLE IF NOT EXISTS no corre y estas
     # dos no aparecerían solas.
