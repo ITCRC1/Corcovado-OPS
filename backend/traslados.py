@@ -121,6 +121,21 @@ def hora_de_traslado(fila, es_entrada):
     import catalogo_itinerario as cat
     import itinerario as _itin
 
+    # LA RECOGIDA EN OTRO LODGE MANDA SOBRE LAS DOS REGLAS DE ARRIBA.
+    #
+    # Cuando la reserva no dice «Sierpe» ni «Drake» sino el nombre de otro hotel o de
+    # una playa —«Aguila de Osa 10 am», «playa Agujitas»— y recepción confirma el punto,
+    # esa hora ya es la del BOTE: es una cita acordada con otro operador, no un huésped
+    # que va a tomar un avión. Las dos reglas normales son correctas para quien vuela y
+    # las dos mandarían el bote a una hora que nadie acordó —a las 8 para una cita a las
+    # 10, o al horario fijo de Sierpe—. Lo pidió el lodge con la hab 18 del 18-11-26.
+    # La marca la pone recepción al confirmar el punto (ver main.confirmar_transporte).
+    fija = fila.get("hora_entrada_fija") if es_entrada else fila.get("hora_salida_fija")
+    escrita = (fila.get("hora_vuelo_entrada") or fila.get("arr_time")) if es_entrada \
+        else fila.get("hora_vuelo_salida")
+    if fija and escrita:
+        return escrita, "la hora que dice la reserva"
+
     if es_entrada:
         punto = (fila.get("punto_entrada") or "").lower()
         if punto == "sierpe":
@@ -195,10 +210,17 @@ def horas_acordadas(movimientos):
     Solo toca las SALIDAS. Las entradas van con su hora tal cual —ver la cabecera de
     arriba— y los BT no se juntan con nadie: cada uno es un viaje de SU reserva, pedido
     para engancharse con otro operador a una hora concreta.
+
+    TAMPOCO SE JUNTA UNA RECOGIDA EN OTRO LODGE. Cada movimiento puede venir con un
+    quinto dato —'fija'— que dice que esa hora la acordó alguien con otro operador y no
+    sale de ningún vuelo. Esas no entran en el racimo: juntarlas movería la cita, que es
+    justo lo que el lodge pidió que no pasara.
     """
     por_grupo = {}
-    for fecha, tipo, punto, hora in movimientos:
-        if tipo != "salida" or not hora:
+    for mov in movimientos:
+        fecha, tipo, punto, hora = mov[:4]
+        fija = mov[4] if len(mov) > 4 else False
+        if tipo != "salida" or not hora or fija:
             continue
         minutos = minutos_de(hora)
         if minutos is None:
@@ -342,12 +364,12 @@ def corridas(conn, desde, hasta, capacidades=None):
     """
     filas_e = conn.execute(
         """SELECT conf_no, room_no, nombre_principal, adl, chl, arr_date AS fecha_pms,
-                  punto_entrada, arr_time, hora_vuelo_entrada
+                  punto_entrada, arr_time, hora_vuelo_entrada, hora_entrada_fija
            FROM reserva
            WHERE punto_entrada IS NOT NULL AND res_status != 'CANCELADA'""").fetchall()
     filas_s = conn.execute(
         """SELECT conf_no, room_no, nombre_principal, adl, chl, dep_date AS fecha_pms,
-                  punto_salida, hora_vuelo_salida
+                  punto_salida, hora_vuelo_salida, hora_salida_fija
            FROM reserva
            WHERE punto_salida IS NOT NULL AND res_status != 'CANCELADA'""").fetchall()
 
@@ -366,15 +388,19 @@ def corridas(conn, desde, hasta, capacidades=None):
             if not punto:
                 continue
             hora, origen = hora_de_traslado(d, tipo == "entrada")
-            movimientos.append((d, tipo, fecha, punto, hora, origen))
+            fija = bool(d.get("hora_entrada_fija") if tipo == "entrada"
+                        else d.get("hora_salida_fija"))
+            movimientos.append((d, tipo, fecha, punto, hora, origen, fija))
+    # La recogida en otro lodge no se junta con nadie: su hora la acordó una persona.
     acordadas = horas_acordadas(
-        [(fecha, tipo, punto, hora) for _d, tipo, fecha, punto, hora, _o in movimientos])
+        [(fecha, tipo, punto, hora, fija)
+         for _d, tipo, fecha, punto, hora, _o, fija in movimientos])
 
     # SEGUNDA VUELTA: ya con la hora acordada, que es la que decide en qué bote va cada
     # quien.
     grupos = {}
-    for d, tipo, fecha, punto, hora, origen in movimientos:
-        acordada = acordadas.get((fecha, tipo, punto, hora))
+    for d, tipo, fecha, punto, hora, origen, fija in movimientos:
+        acordada = None if fija else acordadas.get((fecha, tipo, punto, hora))
         hora_propia = hora if acordada else None
         if acordada:
             hora = acordada

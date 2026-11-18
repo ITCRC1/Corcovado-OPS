@@ -206,6 +206,93 @@ def por_drake_el_ingreso_lleva_la_hora_del_vuelo_sin_tocar(c):
     conn.close()
 
 
+def una_recogida_en_otro_lodge_mantiene_su_hora(c):
+    """LO PIDIO EL LODGE con la hab 18 del 18-11-26.
+
+    La reserva no dice «Sierpe» ni «Drake» sino «Aguila de Osa 10 am» —o playa Agujitas,
+    o cualquier otro hotel de la costa— y recepcion lo confirma como Drake. Eso NO es un
+    huesped que va a tomar un avion: es una recogida acordada con otro operador a una
+    hora concreta.
+
+    Las dos reglas normales son correctas para quien vuela y las dos mandan el bote a
+    una hora que nadie acordo: por Drake restaria dos horas y saldria a las 8 para una
+    cita a las 10; por Sierpe le pondria el horario fijo.
+    """
+    import asyncio
+    import main
+    limpiar()
+    sale_dia = MANANA + datetime.timedelta(days=2)
+    cargar([reserva("REC1", "18", ddmmyy(MANANA), ddmmyy(sale_dia),
+                    punto_salida_sin_confirmar="Aguila de Osa 10 am",
+                    hora_vuelo_salida="10:00 a.m.")])
+
+    # Recepcion aprieta «Es Drake» en el panel de pendientes.
+    main.confirmar_transporte("REC1", "salida", "Drake",
+                              user={"usuario": "pruebas"})
+
+    conn = conexion()
+    fila = dict(conn.execute(
+        "SELECT * FROM reserva WHERE conf_no = 'REC1'").fetchone())
+    c.igual(fila["punto_salida"], "Drake", "el punto queda confirmado")
+    c.igual(fila["hora_salida_fija"], 1, "y la hora queda marcada como la del bote")
+
+    sale = [x for x in tr.corridas(conn, iso(sale_dia), iso(sale_dia))
+            if x["tipo"] == "salida"]
+    c.igual([x["hora"] for x in sale], ["10:00 a.m."],
+            "el bote sale a las 10, la hora acordada, sin restar las dos horas")
+    if sale:
+        c.igual(sale[0]["hora_origen"], "la hora que dice la reserva",
+                "y se dice de donde sale")
+    conn.close()
+
+
+def el_vuelo_de_verdad_sigue_restando_dos_horas(c):
+    """La contraparte, que es la que evita pasarse: si el punto ya venia reconocido en la
+    reserva —«Via Drake RZ1118 11:00»— no hay ninguna recogida que respetar y la regla de
+    las dos horas se aplica igual que siempre. Confundirlas dejaria a alguien en el lodge
+    mientras su avion despega."""
+    import main
+    limpiar()
+    sale_dia = MANANA + datetime.timedelta(days=2)
+    cargar([reserva("VUE1", "07", ddmmyy(MANANA), ddmmyy(sale_dia),
+                    punto_salida="Drake", vuelo_salida="RZ1118",
+                    hora_vuelo_salida="11:00 a.m.")])
+    # Aunque recepcion confirme el punto a mano, no habia nada pendiente que confirmar:
+    # la reserva ya decia Drake.
+    main.confirmar_transporte("VUE1", "salida", "Drake", user={"usuario": "pruebas"})
+
+    conn = conexion()
+    c.igual(dict(conn.execute(
+        "SELECT hora_salida_fija h FROM reserva WHERE conf_no='VUE1'").fetchone())["h"],
+        0, "no se marca como recogida")
+    sale = [x for x in tr.corridas(conn, iso(sale_dia), iso(sale_dia))
+            if x["tipo"] == "salida"]
+    c.igual([x["hora"] for x in sale], ["9:00 a.m."],
+            "y el bote sigue saliendo dos horas antes del vuelo")
+    conn.close()
+
+
+def una_recogida_no_se_junta_con_las_demas_salidas(c):
+    """La regla de los 45 minutos existe porque la pista de Drake esta a la misma
+    distancia para todos. Una cita en otro lodge no es eso: moverla es llegar tarde a
+    una hora que alguien acordo por telefono."""
+    c.igual(tr.horas_acordadas([
+        ("2026-11-20", "salida", "Drake", "9:00 a.m.", False),
+        ("2026-11-20", "salida", "Drake", "9:30 a.m.", True),
+    ]), {}, "la recogida de las 9:30 no se adelanta a las 9:00")
+    # Y tampoco arrastra a los demas: sale del racimo entera.
+    c.igual(tr.horas_acordadas([
+        ("2026-11-20", "salida", "Drake", "9:00 a.m.", True),
+        ("2026-11-20", "salida", "Drake", "9:30 a.m.", False),
+    ]), {}, "ni sirve de ancla para mover a otro")
+    # Sin la marca, las dos se juntan como siempre.
+    c.igual(tr.horas_acordadas([
+        ("2026-11-20", "salida", "Drake", "9:00 a.m."),
+        ("2026-11-20", "salida", "Drake", "9:30 a.m."),
+    ]), {("2026-11-20", "salida", "Drake", "9:30 a.m."): "9:00 a.m."},
+        "dos vuelos de verdad se siguen juntando")
+
+
 def el_que_no_tiene_hora_no_se_esconde(c):
     """Drake sin hora de vuelo no se puede ubicar en ninguna corrida. Tiene que salir
     igual, marcado: es justo el que hay que resolver. Una lista que solo muestre a los
@@ -777,6 +864,58 @@ def el_privado_y_el_compartido_son_dos_salidas(c):
     conn.close()
 
 
+def dos_habitaciones_ligadas_en_un_privado_no_son_un_choque(c):
+    """LO REPORTO EL LODGE: «el guia PABLO esta asignado a dos salidas que coinciden el
+    2026-11-19: PNC privado (07:00) y PNC privado (07:00)… las habitaciones estan ligadas
+    y si se permite el privado de esta forma».
+
+    Una familia en dos cuartos contrata UN privado: un guia, un bote, una salida. El
+    detector tomaba cada habitacion como una salida aparte —la modalidad privada era por
+    reserva— asi que inventaba un choque cada vez. Un aviso que sale siempre se deja de
+    mirar, y entonces tampoco se mira el que si importaba.
+    """
+    import validations
+    limpiar()
+    # Las dos ligadas por el mismo codigo de bloque, que es como viajan juntas.
+    a = reserva("820001", "07", "01-01-26", "06-01-26", adl=2, block_code="FAMILIA1",
+                operacion=[{"dia": 2, "tour": "PNC", "privado": True}])
+    b = reserva("820002", "08", "01-01-26", "06-01-26", adl=2, block_code="FAMILIA1",
+                operacion=[{"dia": 2, "tour": "PNC", "privado": True}])
+    cargar([a, b])
+    conn = conexion()
+    conn.execute("INSERT OR IGNORE INTO guia (nombre) VALUES ('PABLO')")
+    conn.execute("UPDATE tour_asignado SET guia_nombre = 'PABLO'")
+    conn.commit()
+    fecha = conn.execute("SELECT fecha FROM tour_asignado LIMIT 1").fetchone()["fecha"]
+    conn.close()
+
+    choques = validations.detectar_conflictos_asignacion(fecha)
+    c.igual(choques, [], "las dos habitaciones ligadas son UNA salida privada")
+
+
+def dos_privados_de_huespedes_distintos_si_chocan(c):
+    """La contraparte: dos familias SIN relacion con el mismo guia a la misma hora son
+    dos salidas de verdad, y ahi el aviso tiene que seguir saliendo."""
+    import validations
+    limpiar()
+    a = reserva("820010", "07", "01-01-26", "06-01-26", adl=2, block_code="FAMILIA1",
+                operacion=[{"dia": 2, "tour": "PNC", "privado": True}])
+    b = reserva("820011", "08", "01-01-26", "06-01-26", adl=2, block_code="OTRA",
+                operacion=[{"dia": 2, "tour": "PNC", "privado": True}])
+    cargar([a, b])
+    conn = conexion()
+    conn.execute("INSERT OR IGNORE INTO guia (nombre) VALUES ('PABLO')")
+    conn.execute("UPDATE tour_asignado SET guia_nombre = 'PABLO'")
+    conn.commit()
+    fecha = conn.execute("SELECT fecha FROM tour_asignado LIMIT 1").fetchone()["fecha"]
+    conn.close()
+
+    choques = validations.detectar_conflictos_asignacion(fecha)
+    c.igual(len(choques), 1, "dos privados de huespedes distintos si chocan")
+    if choques:
+        c.cierto("PABLO" in choques[0]["mensaje"], "y el aviso nombra al guia")
+
+
 def el_bote_del_privado_no_se_le_pone_al_compartido(c):
     """Si la modalidad no entrara en la llave del guardado, poner el bote de uno se lo
     pondria al otro — justo lo que el huesped pago por evitar."""
@@ -1301,6 +1440,9 @@ PRUEBAS = [
     sierpe_usa_el_horario_fijo_del_bote,
     por_sierpe_la_hora_fija_manda_sobre_la_de_la_reserva,
     por_drake_el_ingreso_lleva_la_hora_del_vuelo_sin_tocar,
+    una_recogida_en_otro_lodge_mantiene_su_hora,
+    el_vuelo_de_verdad_sigue_restando_dos_horas,
+    una_recogida_no_se_junta_con_las_demas_salidas,
     el_que_no_tiene_hora_no_se_esconde,
     una_reserva_cancelada_sale_de_su_corrida,
     se_asigna_guia_y_bote_a_una_corrida,
@@ -1316,6 +1458,8 @@ PRUEBAS = [
     un_tour_de_una_reserva_cancelada_no_pide_bote,
     la_modalidad_privada_llega_a_la_base,
     el_privado_y_el_compartido_son_dos_salidas,
+    dos_habitaciones_ligadas_en_un_privado_no_son_un_choque,
+    dos_privados_de_huespedes_distintos_si_chocan,
     el_bote_del_privado_no_se_le_pone_al_compartido,
     la_capacidad_no_suma_el_privado_con_el_compartido,
     dos_privados_del_mismo_dia_no_van_en_el_mismo_bote,

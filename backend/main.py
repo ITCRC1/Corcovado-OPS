@@ -1307,13 +1307,15 @@ def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: di
         # pueda ofrecer «volver a lo que diga la reserva» solo cuando hay algo que
         # soltar, y para marcar la fila que tocó recepción.
         f"SELECT conf_no, room_no, nombre_principal, punto_entrada, punto_entrada_a_mano,"
-        f" arr_time, hora_vuelo_entrada, adl, chl, arr_date FROM reserva WHERE {cond_e}"
+        f" hora_entrada_fija, arr_time, hora_vuelo_entrada, adl, chl, arr_date"
+        f" FROM reserva WHERE {cond_e}"
         f" AND res_status != 'CANCELADA' ORDER BY rowid",
         params_e,
     ).fetchall()
     salidas = conn.execute(
         f"SELECT conf_no, room_no, nombre_principal, punto_salida, punto_salida_a_mano,"
-        f" hora_vuelo_salida, adl, chl, dep_date FROM reserva WHERE {cond_s}"
+        f" hora_salida_fija, hora_vuelo_salida, adl, chl, dep_date"
+        f" FROM reserva WHERE {cond_s}"
         f" AND res_status != 'CANCELADA' ORDER BY rowid",
         params_s,
     ).fetchall()
@@ -1344,10 +1346,18 @@ def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: di
         # hora. Se resuelve con el día entero delante —no se puede saber mirando una
         # reserva— y con la MISMA función que arma las corridas: si esta pantalla dijera
         # una hora y la corrida se armara con otra, alguien se quedaría fuera del bote.
+        # La recogida en otro lodge va con su hora y no se junta con nadie: ver
+        # traslados.horas_acordadas.
+        def _fija(d):
+            return bool(d.get("hora_entrada_fija") if es_entrada
+                        else d.get("hora_salida_fija"))
+
         acordadas = _tras.horas_acordadas(
-            [(d["_fecha"], tipo, d["_punto"], d["hora_efectiva"]) for d in salida])
+            [(d["_fecha"], tipo, d["_punto"], d["hora_efectiva"], _fija(d))
+             for d in salida])
         for d in salida:
-            nueva = acordadas.get((d["_fecha"], tipo, d["_punto"], d["hora_efectiva"]))
+            nueva = (None if _fija(d) else
+                     acordadas.get((d["_fecha"], tipo, d["_punto"], d["hora_efectiva"])))
             if nueva:
                 d["hora_propia"] = d["hora_efectiva"]
                 d["hora_efectiva"] = nueva
@@ -4374,22 +4384,34 @@ def confirmar_transporte(conf_no: str, tipo: str, punto: str,
             detail="El punto es «Sierpe», «Drake» o «automatico» para volver a lo que diga la reserva.")
 
     conn = get_connection()
-    existe = conn.execute("SELECT 1 FROM reserva WHERE conf_no = ?", (conf_no,)).fetchone()
+    existe = conn.execute(
+        f"""SELECT punto_{tipo}_sin_confirmar AS pendiente FROM reserva
+            WHERE conf_no = ?""", (conf_no,)).fetchone()
     if not existe:
         conn.close()
         raise HTTPException(status_code=404, detail="No existe esa reserva")
+
+    # ¿LA HORA ESCRITA ES LA DEL BOTE? Lo es cuando el punto venía PENDIENTE, o sea
+    # cuando la reserva no decía «Sierpe» ni «Drake» sino el nombre de otro lodge o de
+    # una playa —«Aguila de Osa 10 am», «playa Agujitas»—: eso es una recogida acordada
+    # con otro operador a una hora concreta, no alguien que va a tomar un avión. Con el
+    # punto ya reconocido no se marca nada: ahí la hora es la del vuelo y las reglas de
+    # siempre (horario fijo por Sierpe, dos horas antes por Drake) son las correctas.
+    # Ver traslados.hora_de_traslado y el comentario de la columna en schema.sql.
+    era_una_recogida = bool((dict(existe).get("pendiente") or "").strip())
 
     if punto == "automatico":
         # Se suelta la marca y se deja el valor como está: el siguiente ciclo de Opera
         # lo reescribirá con lo que diga la reserva. Borrarlo aquí dejaría la pantalla
         # en blanco durante media hora.
-        conn.execute(f"UPDATE reserva SET punto_{tipo}_a_mano = 0 WHERE conf_no = ?",
-                     (conf_no,))
+        conn.execute(
+            f"""UPDATE reserva SET punto_{tipo}_a_mano = 0, hora_{tipo}_fija = 0
+                WHERE conf_no = ?""", (conf_no,))
     else:
         conn.execute(
             f"""UPDATE reserva SET punto_{tipo} = ?, punto_{tipo}_sin_confirmar = NULL,
-                                   punto_{tipo}_a_mano = 1
-                WHERE conf_no = ?""", (punto, conf_no))
+                                   punto_{tipo}_a_mano = 1, hora_{tipo}_fija = ?
+                WHERE conf_no = ?""", (punto, 1 if era_una_recogida else 0, conf_no))
 
     # El aviso de ESTA reserva y de ESTE lado. Antes el filtro era solo «%de {tipo} de%»,
     # así que confirmar una habitación cerraba de golpe el aviso de todas las demás:

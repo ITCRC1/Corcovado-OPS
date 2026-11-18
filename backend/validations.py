@@ -362,7 +362,7 @@ def detectar_conflictos_asignacion(fecha=None):
         f"""SELECT ta.id, ta.fecha, ta.tour_codigo, ta.guia_nombre, ta.bote_nombre,
                    ta.grupo_operativo, ta.pax, ta.es_privado, ta.conf_no,
                    tc.horario_inicio, tc.horario_fin,
-                   r.room_no, r.nombre_principal
+                   r.room_no, r.nombre_principal, r.grupo_id, r.block_code
             FROM tour_asignado ta
             JOIN reserva r ON r.conf_no = ta.conf_no
             LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
@@ -378,13 +378,26 @@ def detectar_conflictos_asignacion(fecha=None):
     # mismo día caían en la misma casilla y el segundo pisaba al primero: dos salidas
     # distintas con el MISMO guía a la misma hora —que es el error que esta función
     # existe para encontrar— se leían como una sola y no se avisaba de nada.
+    import grupos as _grupos
+
     salidas = {}
     for f in filas:
         priv = 1 if f["es_privado"] else 0
-        # Una salida privada es POR RESERVA: va sola, por definición. Dos privadas del
-        # mismo día con el mismo guía son un choque de verdad y hay que avisarlo.
+        # Una salida privada es POR GRUPO, no por habitación.
+        #
+        # Era por habitación, y eso inventaba un choque cada vez que una familia en dos
+        # cuartos contrataba un privado: salían dos salidas, el mismo guía en las dos y
+        # el aviso «PABLO está asignado a dos salidas que coinciden: PNC privado (07:00)
+        # y PNC privado (07:00)». Lo reportó el lodge —«las habitaciones están ligadas y
+        # sí se permite el privado de esta forma»— y tiene razón: es UN privado para esa
+        # familia, con un guía y un bote.
+        #
+        # Se usa la MISMA clave de grupo que el reparto del comedor y la agenda
+        # (grupos.clave_de), para que no pueda pasar que una pantalla las considere
+        # juntas y otra separadas. Dos privados de huéspedes DISTINTOS a la misma hora
+        # siguen siendo un choque de verdad: ahí la clave es distinta.
         clave = (f["fecha"], f["tour_codigo"], priv, f["grupo_operativo"],
-                 f["conf_no"] if priv else "")
+                 _grupos.clave_de(f) if priv else "")
         if clave not in salidas:
             salidas[clave] = {**f, "reservas": [], "pax_total": 0}
         salidas[clave]["reservas"].append(f"{f['room_no']} {f['nombre_principal']}")

@@ -243,6 +243,10 @@ COLUMNAS_NUEVAS = [
     # en schema.sql: sin esto, la corrección duraba hasta el siguiente ciclo de Opera.
     ("reserva", "punto_entrada_a_mano", "INTEGER NOT NULL DEFAULT 0"),
     ("reserva", "punto_salida_a_mano", "INTEGER NOT NULL DEFAULT 0"),
+    # La hora escrita es la del bote y no la de un vuelo: una recogida en otro lodge.
+    # Ver el comentario de las columnas en schema.sql.
+    ("reserva", "hora_entrada_fija", "INTEGER NOT NULL DEFAULT 0"),
+    ("reserva", "hora_salida_fija", "INTEGER NOT NULL DEFAULT 0"),
     # La foto del reparto de restaurantes que sostiene un movimiento manual, para que
     # mover una habitación no mueva a las demás. Ver restaurantes.fijar_el_resto.
     ("restaurante_cambio", "congelado", "INTEGER NOT NULL DEFAULT 0"),

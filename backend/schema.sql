@@ -125,6 +125,20 @@ CREATE TABLE IF NOT EXISTS reserva (
     -- no sea una puerta de un solo sentido.
     punto_entrada_a_mano INTEGER NOT NULL DEFAULT 0,
     punto_salida_a_mano INTEGER NOT NULL DEFAULT 0,
+    -- LA HORA ESCRITA ES LA DEL BOTE, no la de un vuelo.
+    --
+    -- Pasa cuando la reserva no dice «Sierpe» ni «Drake» sino el nombre de otro lodge o
+    -- de una playa —«Aguila de Osa 10 am», «playa Agujitas», «Copa de Árbol 14:30»— y
+    -- recepción lo confirma. Eso es una RECOGIDA acordada con otro operador a una hora
+    -- concreta, no un huésped que va a tomar un avión.
+    --
+    -- Importa porque por Drake la hora del bote se calcula dos horas antes del vuelo, y
+    -- por Sierpe se usa el horario fijo. Las dos reglas son correctas para quien vuela,
+    -- y las dos mandan el bote a una hora que nadie acordó cuando lo que hay es una
+    -- recogida: a las 8 para una cita a las 10. Lo pidió el lodge con la hab 18 del
+    -- 18-11-26. Con esta marca la hora escrita se respeta tal cual, en los dos sentidos.
+    hora_entrada_fija INTEGER NOT NULL DEFAULT 0,
+    hora_salida_fija INTEGER NOT NULL DEFAULT 0,
     -- Código de bloque del PMS (ej. 2608RUSSTI). Sirve para agrupar reservas que
     -- viajan juntas y que no traen la nota "viene con rsv".
     block_code TEXT,
