@@ -110,6 +110,81 @@ def _funcion(html, nombre):
 
 # ---------------------------------------------------------------------------
 
+def el_estado_del_dia_tiene_un_solo_color_en_toda_la_app(c):
+    """Entra dorado, en casa verde, sale terracota. Lo pidio el lodge para leer un dia de
+    un vistazo.
+
+    POR QUE HAY QUE FIJARLO. Habia DOS sistemas de color a la vez: unas pantallas pintaban
+    la fila con otro criterio —azul para «en casa», verde para «por ingresar»— que es justo
+    al reves de lo que el verde significa en el resto del sistema. Y el mismo color decia
+    cosas distintas segun la pantalla, que es la forma de equivocarse que nadie reporta:
+    el dato es correcto y el color miente.
+    """
+    html = _html()
+    for token in ("--entra-bg", "--entra-filo", "--encasa-bg", "--encasa-filo",
+                  "--sale-bg", "--sale-filo"):
+        c.cierto(token in html, f"existe el token {token}")
+
+    # Los fondos pastel de antes, con el criterio viejo.
+    c.cierto("#E6F0FA" not in html, "ya no hay fondo azul para «en casa»")
+    c.cierto("#E8F5E9" not in html, "ni fondo verde para «por ingresar»")
+
+    fn = _funcion(html, "pintarEstados")
+    c.cierto(fn is not None, "pintarEstados() existe")
+    if not fn:
+        return
+    # El estado del PMS NO se pinta: dice en que punto del papeleo va la reserva, no si
+    # se mueve hoy. Pintarlo haria leer «entra hoy» a quien entra el jueves.
+    for ajeno in ("POR INGRESAR", "CKIN", "SALIO"):
+        c.cierto(ajeno not in html.split("const ESTADOS")[1].split("]")[0],
+                 f"«{ajeno}» no entra en los estados que se pintan")
+
+    # El orden en el observador: primero se pinta y despues se adapta. Al reves, la
+    # insignia entraria despues de medir y la ficha del telefono quedaria con la etiqueta
+    # de la columna equivocada.
+    obs = html.split("new MutationObserver")[1][:400]
+    c.cierto(obs.find("pintarEstados()") < obs.find("adaptarTablasMovil()"),
+             "se pintan los estados ANTES de adaptar las tablas")
+
+
+def ni_una_alergia_ni_un_plazo_se_pintan_como_un_movimiento(c):
+    """Las clases de fila se reusaban para otra cosa: una alergia iba con «fila-sale» y un
+    plazo del SINAC urgente con «fila-entra». Con el color unificado eso pasa a leerse como
+    que ese huesped se va hoy, o que entra."""
+    html = _html()
+    c.cierto('VENCIDA:"fila-vencida"' in html.replace("'", '"'),
+             "el plazo vencido tiene su propia clase")
+    c.cierto('URGENTE:"fila-urgente"' in html.replace("'", '"'),
+             "y el urgente tambien")
+    c.cierto('restricciones_cocina.map(x => `<tr class="fila-aviso">' in html,
+             "la alergia de cocina va como aviso, no como salida")
+    for clase in ("fila-aviso", "fila-urgente", "fila-vencida"):
+        c.cierto(f".{clase}" in html, f"y {clase} tiene su estilo")
+
+
+def los_botones_se_pueden_tocar_con_el_dedo(c):
+    """En el telefono median 30 px de alto y se tocaban con la punta de la uña."""
+    html = _html()
+    movil = html.split("@media (max-width: 760px) {")[-1]
+    c.cierto("min-height: 40px" in movil.split(".topbar")[0],
+             "en el telefono el boton mide al menos 40 px")
+    c.cierto(".btn-peligro" in html,
+             "y lo que borra se distingue de lo que guarda")
+
+
+def los_iconos_del_menu_dicen_lo_que_abren(c):
+    """Lo reporto el lodge: «para tours hay un zapato, lo que es confuso»."""
+    html = _html()
+    nav = html.split("<nav>")[1].split("</nav>")[0]
+    c.cierto("🥾" not in nav, "la bota ya no esta en el menu")
+    c.cierto('data-icono="🧭"' in nav, "Tours lleva una brujula")
+    c.cierto('data-icono="🚤"' in nav, "y Transporte sigue con su bote")
+    # Dos pantallas distintas no pueden compartir icono: en la barra del telefono es lo
+    # unico que se ve.
+    iconos = re.findall(r'data-icono="([^"]+)"', nav)
+    c.igual(len(iconos), len(set(iconos)), "ningun icono se repite en el menu")
+
+
 def las_etiquetas_del_telefono_cuentan_el_rowspan(c):
     """En el telefono las tablas se vuelven tarjetas y cada dato lleva su etiqueta.
 
@@ -1101,6 +1176,10 @@ def el_resumen_se_puede_ver_por_rango_de_fechas(c):
 
 
 PRUEBAS = [
+    el_estado_del_dia_tiene_un_solo_color_en_toda_la_app,
+    ni_una_alergia_ni_un_plazo_se_pintan_como_un_movimiento,
+    los_botones_se_pueden_tocar_con_el_dedo,
+    los_iconos_del_menu_dicen_lo_que_abren,
     el_resumen_se_puede_ver_por_rango_de_fechas,
     no_contestar_no_es_decir_que_no,
     el_perfil_se_guarda_para_poder_entrar_sin_senal,

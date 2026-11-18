@@ -36,7 +36,24 @@
     /* Escala general, ajustable por el usuario */
     --escala: 1;
     --border: #E3DFD3; --text: #24291F; --muted: #6E6A5C;
-    --warn-bg: #FFF4E5; --warn-text: #92400E;
+
+    /* LOS TRES ESTADOS DEL DÍA. Un solo significado en las quince pantallas: quien
+       llega es dorado, quien está en casa es el verde del lodge, quien se va es
+       terracota. El verde no agrega un color nuevo —es el de la marca— y el dorado va
+       siempre como FONDO con la letra en ámbar oscuro: amarillo sobre blanco no se lee.
+       Lo pidió el lodge para poder leer un día de un vistazo. */
+    --entra-bg: #FBEFCF; --entra-text: #7A5200; --entra-filo: #D99E12;
+    --encasa-bg: #E4EFE7; --encasa-text: #1F6B45; --encasa-filo: #2C7A52;
+    --sale-bg: #FAE7DC;  --sale-text: #9A3412;  --sale-filo: #C2410C;
+
+    /* EL AVISO NO ES UN ESTADO: es algo que alguien tiene que mirar. Va en CIRUELA, que
+       está fuera de la familia cálida de los tres estados, para que un aviso no se
+       confunda con una salida ni con una llegada. Antes era ámbar —el mismo tono que
+       ahora significa «entra»— y el rojo quedaba para los dos a la vez.
+       Los nombres de los tokens no cambian: los usan más de cien sitios. */
+    --warn-bg: #F5EAF1; --warn-text: #6B2E5A; --warn-filo: #8B3F76;
+    /* El ROJO queda solo para lo que destruye o falla: borrar, un guardado que no pudo
+       ser. Usado en pocos sitios vuelve a querer decir algo. */
     --danger-bg: #FDECEC; --danger-text: #B91C1C;
     --ok-bg: #E7F1EA; --ok-text: #1F6B45;
   }
@@ -234,7 +251,18 @@
     color:#9C9683; }
   td.empty::before { display:none; }
   td.empty { padding: 20px 12px; }
-  .btn { font-size: calc(var(--t-sm) * var(--escala)); padding: 7px 13px; border-radius: var(--r-sm); border: 1px solid var(--border); background: white; cursor: pointer; margin-right: 6px; color: var(--text); transition: background .12s, color .12s, border-color .12s; }
+  /* EL BOTÓN. Más alto que antes (38 px contra 30) y con borde cálido en vez de gris:
+     en el teléfono se tocaba con la punta del dedo. Sigue siendo rectangular, así que
+     ninguna pantalla se reacomoda. */
+  .btn { font-size: calc(var(--t-sm) * var(--escala)); padding: 9px 15px; font-weight: 600;
+    border-radius: 8px; border: 1px solid #DAD4C4; background: #FBF9F4; cursor: pointer;
+    margin-right: 6px; color: #2E3528; box-shadow: 0 1px 0 rgba(0,0,0,.04);
+    transition: background .12s, color .12s, border-color .12s; }
+  .btn:hover { background: #F2EEE2; }
+  .btn:disabled { opacity: .5; cursor: default; box-shadow: none; }
+  /* Lo que borra o deshace no se pinta igual que lo que guarda. */
+  .btn-peligro { background: #fff; color: var(--danger-text); border-color: #E8C9C9; }
+  .btn-peligro:hover { background: var(--danger-bg); }
   /* Al tocar un botón se pinta de azul un instante, para confirmar que la acción se ejecutó */
   .btn:active, .btn.pulsado { background: #2563EB; color: #fff; border-color: #2563EB; }
   nav button { transition: background .12s, color .12s; }
@@ -243,8 +271,45 @@
   .stat.pulsado { background: #E6EEFC; border-color: #2563EB; }
   .pulsable { transition: background .12s; }
   .pulsable.pulsado { background: #E6EEFC; }
-  .btn-primary { background: var(--forest); color: white; border-color: var(--forest); }
+  .btn-primary { background: var(--forest); color: white; border-color: #24402F;
+    box-shadow: 0 1px 2px rgba(28,51,42,.3); }
+  .btn-primary:hover { background: var(--forest-dark); }
   .filterbar { display: flex; align-items: center; gap: 8px; font-size: 13px; flex-wrap: wrap; }
+
+  /* ==========================================================================
+     LOS ESTADOS DEL DÍA
+     Entra / en casa / sale, con el mismo color en todas las pantallas. Las pone
+     pintarEstados() leyendo la tabla, así valen para las quince sin tocar ninguna.
+
+     El color NUNCA va solo: la insignia lleva siempre su palabra. Quien no distingue
+     el dorado del terracota —y en el muelle, a pleno sol, es cualquiera— sigue
+     leyendo «Entra» y «Sale».
+     ========================================================================== */
+  .est { display: inline-flex; align-items: center; gap: 5px; font-size: 11px;
+    font-weight: 600; padding: 3px 9px; border-radius: var(--r-pill); white-space: nowrap; }
+  .est::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
+    background: currentColor; opacity: .8; flex: none; }
+  .est-ent { background: var(--entra-bg); color: var(--entra-text); }
+  .est-enc { background: var(--encasa-bg); color: var(--encasa-text); }
+  .est-sal { background: var(--sale-bg); color: var(--sale-text); }
+  .est-ale { background: var(--warn-bg); color: var(--warn-text); }
+
+  /* El filo de 3 px al borde de la fila: se reconoce el día de lejos sin teñir fondos,
+     así el aviso sigue siendo lo único que pinta superficie. */
+  tr.fila-ent > td:first-child { border-left: 3px solid var(--entra-filo); }
+  tr.fila-enc > td:first-child { border-left: 3px solid var(--encasa-filo); }
+  tr.fila-sal > td:first-child { border-left: 3px solid var(--sale-filo); }
+  tr[class*="fila-"] > td:first-child { padding-left: 9px; }
+
+  /* Las tarjetas de conteo, con una línea de color arriba y el número en su tono. */
+  .stat-ent { border-top: 3px solid var(--entra-filo); }
+  .stat-enc { border-top: 3px solid var(--encasa-filo); }
+  .stat-sal { border-top: 3px solid var(--sale-filo); }
+  .stat-ale { border-top: 3px solid var(--warn-filo); }
+  .stat-ent .stat-value { color: var(--entra-text); }
+  .stat-enc .stat-value { color: var(--encasa-text); }
+  .stat-sal .stat-value { color: var(--sale-text); }
+  .stat-ale .stat-value { color: var(--warn-text); }
 
   /* ==========================================================================
      CELULAR
@@ -266,6 +331,15 @@
     /* Debajo de la barra fija tiene que quedar aire, o el último botón de la pantalla
        queda tapado. El env() es para los teléfonos con barra de gestos. */
     .container { padding: 12px 10px calc(86px + env(safe-area-inset-bottom)); max-width: 100%; }
+
+    /* El dedo pide 40 px. En computadora 38 alcanza, pero en el teléfono un botón de
+       30 se toca con la punta de la uña y es la pantalla donde más se toca. */
+    .btn { min-height: 40px; padding: 10px 16px; }
+    /* El filo del estado pasa al borde de la ficha, que en el teléfono es toda la fila. */
+    table tr.fila-ent { border-left: 3px solid var(--entra-filo); }
+    table tr.fila-enc { border-left: 3px solid var(--encasa-filo); }
+    table tr.fila-sal { border-left: 3px solid var(--sale-filo); }
+    table tr[class*="fila-"] > td:first-child { border-left: none; padding-left: 0; }
 
     .topbar { padding: 10px 12px; padding-top: calc(10px + env(safe-area-inset-top)); }
     .topbar-title { display: none; }          /* el logo ya identifica al lodge */
@@ -459,12 +533,31 @@
   .review-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
   .review-card.attn { border-color: #F2C777; background: var(--warn-bg); }
   .cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  /* Colores pastel por estado de la reserva (relativo al día de hoy) */
-  .fila-entra   { background: #FFF8DC; }  /* amarillo pastel */
-  .fila-sale    { background: #FDE8E8; }  /* rojo pastel */
-  .fila-encasa  { background: #E6F0FA; }  /* azul pastel */
-  .fila-poringresar { background: #E8F5E9; } /* verde pastel */
-  .fila-salio   { background: #F2F2F0; color: var(--muted); } /* gris: ya salió */
+  /* EL ESTADO DE LA FILA, relativo al día de hoy. Un filo de 3 px en el color del
+     estado, el mismo de toda la app.
+     Antes eran cinco fondos pastel con otro criterio: azul para «en casa» y verde para
+     «por ingresar», justo al revés de lo que el verde significa en el resto del
+     sistema. Teñir la fila entera, además, dejaba la pantalla con cinco colores de
+     fondo permanentes y un aviso ya no resaltaba sobre ellos. */
+  .fila-entra  > td:first-child { border-left: 3px solid var(--entra-filo); }
+  .fila-encasa > td:first-child { border-left: 3px solid var(--encasa-filo); }
+  .fila-sale   > td:first-child { border-left: 3px solid var(--sale-filo); }
+  .fila-entra > td:first-child, .fila-encasa > td:first-child,
+  .fila-sale > td:first-child, .fila-salio > td:first-child { padding-left: 9px; }
+  /* «Por ingresar» no es un movimiento de hoy: llega otro día y no lleva color. */
+  .fila-poringresar { background: transparent; }
+  /* Lo que ya pasó se apaga, que es lo contrario de señalarlo. */
+  .fila-salio   { color: var(--muted); }
+  .fila-salio > td:first-child { border-left: 3px solid #D9D5C8; }
+  /* Estas DOS no son movimientos del día y por eso no comparten color con ellos: una
+     fila que hay que mirar (una alergia, un plazo que corre) y una que ya se venció.
+     Antes reusaban «fila-sale» y «fila-entra», así que una alergia se leía como una
+     salida y un plazo urgente como una llegada. */
+  .fila-aviso   > td:first-child { border-left: 3px solid var(--warn-filo); }
+  .fila-urgente > td:first-child { border-left: 3px solid var(--warn-filo); }
+  .fila-vencida > td:first-child { border-left: 3px solid var(--danger-text); }
+  .fila-aviso > td:first-child, .fila-urgente > td:first-child,
+  .fila-vencida > td:first-child { padding-left: 9px; }
   .leyenda { display:flex; gap:14px; flex-wrap:wrap; font-size:11px; color:var(--muted); margin:10px 0 4px; }
   .leyenda span { display:flex; align-items:center; gap:5px; }
   .leyenda i { width:14px; height:14px; border-radius:3px; display:inline-block; border:1px solid rgba(0,0,0,0.08); }
@@ -549,7 +642,10 @@
            la barra con solo sus pantallas. -->
       <button class="active" data-icono="🏠" onclick="irAPantalla(0)"><span class="largo">Dashboard</span><span class="corto">Hoy</span></button>
       <button data-icono="🛏️" onclick="irAPantalla(1)"><span class="largo">Reservas</span><span class="corto">Reservas</span></button>
-      <button data-icono="🥾" onclick="irAPantalla(2)"><span class="largo">Agenda de tours</span><span class="corto">Tours</span></button>
+      <!-- Brújula y no bota: el lodge lo reportó —«para tours hay un zapato, lo que es
+           confuso»—. La bota se lee como «caminata», y en esta pantalla se reparten
+           guías y botes de TODAS las salidas, la mayoría por mar. -->
+      <button data-icono="🧭" onclick="irAPantalla(2)"><span class="largo">Agenda de tours</span><span class="corto">Tours</span></button>
       <button data-icono="🚤" onclick="irAPantalla(3)"><span class="largo">Transporte</span><span class="corto">Transporte</span></button>
       <button data-icono="🎫" onclick="irAPantalla(4)"><span class="largo">Entradas SINAC</span><span class="corto">SINAC</span></button>
       <button data-icono="🎁" onclick="irAPantalla(5)"><span class="largo">Amenidades</span><span class="corto">Amenidades</span></button>
@@ -557,7 +653,9 @@
       <button data-icono="💆" onclick="irAPantalla(7)"><span class="largo">Spa</span><span class="corto">Spa</span></button>
       <button data-icono="📊" onclick="irAPantalla(8)"><span class="largo">Analítica</span><span class="corto">Analítica</span></button>
       <button data-icono="📋" onclick="irAPantalla(9)"><span class="largo">Resumen operación</span><span class="corto">Resumen</span></button>
-      <button id="nav-importar" data-icono="📄" onclick="irAPantalla(10)"><span class="largo">Importar PDF</span><span class="corto">Importar</span></button>
+      <!-- Bandeja de entrada y no una hoja suelta: lo que se hace aquí es METER el
+           reporte, y el icono de hoja era el mismo que el de «Resumen». -->
+      <button id="nav-importar" data-icono="📥" onclick="irAPantalla(10)"><span class="largo">Importar PDF</span><span class="corto">Importar</span></button>
       <button id="nav-usuarios" data-icono="👤" onclick="irAPantalla(11)"><span class="largo">Usuarios</span><span class="corto">Usuarios</span></button>
       <button id="nav-catalogo" data-icono="📚" onclick="irAPantalla(12)"><span class="largo">Catálogo</span><span class="corto">Catálogo</span></button>
       <button id="nav-publicacion" data-icono="📱" onclick="irAPantalla(13)"><span class="largo">Publicación</span><span class="corto">QR</span></button>
@@ -1060,10 +1158,51 @@ function adaptarTablasMovil(raiz) {
   });
 }
 
+// ---------- El color de los estados ----------
+//
+// Entra / en casa / sale, con el mismo color en las quince pantallas. Se pone LEYENDO LA
+// TABLA, igual que las etiquetas del teléfono, y por el mismo motivo: pintarlo pantalla
+// por pantalla serían quince sitios que después dicen cosas distintas.
+//
+// SOLO SE PINTA LO QUE NO DEJA DUDA: las palabras del movimiento del día. El estado del
+// PMS —«POR INGRESAR», «CKIN», «SALIO»— NO se toca: dice otra cosa (en qué punto del
+// papeleo va la reserva, no si se mueve hoy), y pintarlo de dorado haría leer «entra
+// hoy» a quien entra el jueves.
+const ESTADOS = [
+  [/^(ENTRA|ENTRADA)$/i, "ent", "Entra"],
+  [/^(SALE|SALIDA)$/i, "sal", "Sale"],
+  [/^(EN CASA|EN_CASA)$/i, "enc", "En casa"],
+];
+
+function pintarEstados(raiz) {
+  (raiz || document).querySelectorAll("table:not([data-estados])").forEach(tabla => {
+    tabla.setAttribute("data-estados", "1");
+    tabla.querySelectorAll("tr").forEach(fila => {
+      if (fila.hasAttribute("data-encabezado")) return;
+      [...fila.children].forEach(celda => {
+        if (celda.tagName !== "TD") return;
+        // Solo una celda que sea EXACTAMENTE la palabra. Si trae algo más —un nombre,
+        // una hora, otro cartel— no es la columna del estado y no se toca.
+        const texto = celda.textContent.trim();
+        const halla = ESTADOS.find(([re]) => re.test(texto));
+        if (!halla || celda.querySelector(".est, input, select, button")) return;
+        const [, clave, palabra] = halla;
+        celda.innerHTML = `<span class="est est-${clave}">${palabra}</span>`;
+        fila.classList.add(`fila-${clave}`);
+      });
+    });
+  });
+}
+
 // Las pantallas se dibujan en momentos distintos (al cargar, al abrir un detalle, en un
 // modal), así que en vez de llamar a la adaptación en cada lugar se observa el documento.
+//
+// EL ORDEN IMPORTA: primero se pintan los estados y después se adaptan las tablas. La
+// adaptación lee el texto de cada celda para etiquetarla, así que tiene que ver la celda
+// ya con su insignia; al revés, la insignia entraría después de medir y la ficha del
+// teléfono quedaría con la etiqueta de la columna equivocada.
 new MutationObserver(cambios => {
-  if (cambios.some(c => c.addedNodes.length)) adaptarTablasMovil();
+  if (cambios.some(c => c.addedNodes.length)) { pintarEstados(); adaptarTablasMovil(); }
 }).observe(document.body, { childList: true, subtree: true });
 
 // ---------- Ofrecer la instalación ----------
@@ -1324,9 +1463,13 @@ async function ejecutarBusqueda(texto) {
     panel.className = "buscar-panel";
     document.body.appendChild(panel);
   }
+  // El mismo color que en el resto de la app: dorado entra, verde en casa, terracota
+  // sale. Antes «entra hoy» y «sale hoy» compartían el ámbar, así que el buscador no
+  // distinguía las dos cosas que más importa distinguir.
   const colorEstado = {
-    "Entra hoy": "badge-warn", "Sale hoy": "badge-warn", "En casa": "badge-ok",
-    "Por ingresar": "badge-tour", "Ya salió": "badge-tour", "Cancelada": "badge-warn",
+    "Entra hoy": "est est-ent", "Sale hoy": "est est-sal", "En casa": "est est-enc",
+    "Por ingresar": "badge badge-tour", "Ya salió": "badge badge-tour",
+    "Cancelada": "badge badge-warn",
   };
   if (!d.resultados || !d.resultados.length) {
     panel.innerHTML = `<p class="empty" style="padding:14px;text-align:center;">Sin resultados para "${texto}".</p>`;
@@ -1335,7 +1478,7 @@ async function ejecutarBusqueda(texto) {
   panel.innerHTML = d.resultados.map((r, i) => `
     <div class="buscar-item" data-i="${i}" onclick="abrirDesdeBusqueda('${r.conf_no}')">
       <div class="linea1">Hab. ${r.room_no} · ${r.nombre_principal}
-        <span class="badge ${colorEstado[r.estado_estadia] || 'badge-tour'}" style="margin-left:6px;">${r.estado_estadia}</span>
+        <span class="${colorEstado[r.estado_estadia] || 'badge badge-tour'}" style="margin-left:6px;">${r.estado_estadia}</span>
       </div>
       <div class="linea2">Reserva ${r.conf_no} · ${r.arr_date} – ${r.dep_date} · ${r.pax} pax
         · ${r.tours} tour${r.tours === 1 ? '' : 's'}
@@ -1573,10 +1716,10 @@ async function loadDashboard(fecha) {
         </div>
       </div>
       <div class="stats">
-        <div class="stat" onclick="mostrarListaDash('entran_hoy')"><p class="stat-label">Entran hoy</p><p class="stat-value">${d.entran_hoy.length}</p></div>
-        <div class="stat" onclick="mostrarListaDash('salen_hoy')"><p class="stat-label">Salen hoy</p><p class="stat-value">${d.salen_hoy.length}</p></div>
-        <div class="stat" onclick="mostrarListaDash('en_casa')"><p class="stat-label">En casa</p><p class="stat-value">${d.en_casa.length}</p></div>
-        <div class="stat" onclick="mostrarListaDash('alertas')"><p class="stat-label">Alertas del día</p><p class="stat-value">${d.alertas.length}</p></div>
+        <div class="stat stat-ent" onclick="mostrarListaDash('entran_hoy')"><p class="stat-label">Entran hoy</p><p class="stat-value">${d.entran_hoy.length}</p></div>
+        <div class="stat stat-sal" onclick="mostrarListaDash('salen_hoy')"><p class="stat-label">Salen hoy</p><p class="stat-value">${d.salen_hoy.length}</p></div>
+        <div class="stat stat-enc" onclick="mostrarListaDash('en_casa')"><p class="stat-label">En casa</p><p class="stat-value">${d.en_casa.length}</p></div>
+        <div class="stat stat-ale" onclick="mostrarListaDash('alertas')"><p class="stat-label">Alertas del día</p><p class="stat-value">${d.alertas.length}</p></div>
       </div>
       <div id="dash-detalle"></div>
       ${(d.sinac_vencidas?.length || d.sinac_urgentes?.length) ? `
@@ -1953,11 +2096,11 @@ async function loadReservas(fecha, desde, hasta) {
           </tr>`; }).join("")}
       </table>
       <div class="leyenda">
-        <span><i style="background:#FFF8DC;"></i>Entra hoy</span>
-        <span><i style="background:#FDE8E8;"></i>Sale hoy</span>
-        <span><i style="background:#E6F0FA;"></i>En casa</span>
-        <span><i style="background:#E8F5E9;"></i>Por ingresar</span>
-        <span><i style="background:#F2F2F0;"></i>Ya salió</span>
+        <span><i style="background:var(--entra-filo);"></i>Entra hoy</span>
+        <span><i style="background:var(--sale-filo);"></i>Sale hoy</span>
+        <span><i style="background:var(--encasa-filo);"></i>En casa</span>
+        <span><i style="background:#FAF8F2;"></i>Por ingresar</span>
+        <span><i style="background:#D9D5C8;"></i>Ya salió</span>
       </div>
       ${puedeEscribir("reservas") ? `
       <div style="margin-top:16px;">
@@ -2680,9 +2823,10 @@ function seccionGuiasDeCorridas(d) {
     const k = [c.fecha, c.tipo, c.punto, c.hora].map(x => encodeURIComponent(x)).join("|");
     const quienes = c.huespedes.map(h =>
       `${escaparHTML(h.room_no || "?")} ${escaparHTML((h.nombre || "").split(",")[0])}`).join(" · ");
-    return `<tr>
+    const lado = c.tipo === "entrada" ? "ent" : "sal";
+    return `<tr class="fila-${lado}">
       <td>${escaparHTML(c.fecha)}</td>
-      <td><span class="badge ${c.tipo === "entrada" ? "badge-ok" : "badge-warn"}">${c.tipo === "entrada" ? "Entra" : "Sale"}</span></td>
+      <td><span class="est est-${lado}">${c.tipo === "entrada" ? "Entra" : "Sale"}</span></td>
       <td><strong>${escaparHTML(c.punto)}</strong></td>
       <td>${c.hora
             ? escaparHTML(c.hora)
@@ -2777,11 +2921,14 @@ function seccionTraslados(d) {
     // nadie. Se marca distinto porque se coordina distinto: suele engancharse con otro
     // operador a una hora concreta, y lo que dice la reserva está en la nota.
     const esBT = c.tipo === "extra";
+    // El color del movimiento es el MISMO de toda la app: dorado quien llega, terracota
+    // quien se va. Antes iban con badge-ok y badge-warn —verde y ámbar— que ahora
+    // significan otra cosa.
     const etiqueta = esBT ? "BT" : (c.tipo === "entrada" ? "Entra" : "Sale");
-    const clase = esBT ? "" : (c.tipo === "entrada" ? "badge-ok" : "badge-warn");
-    return `<tr>
+    const clase = esBT ? "badge" : `est est-${c.tipo === "entrada" ? "ent" : "sal"}`;
+    return `<tr class="${esBT ? "" : "fila-" + (c.tipo === "entrada" ? "ent" : "sal")}">
       <td>${escaparHTML(c.fecha)}</td>
-      <td><span class="badge ${clase}" ${esBT ? 'style="background:var(--forest, #2C4A3E);color:#fff;" title="Boat transfer: viaje extra que pidió la reserva"' : ""}>${etiqueta}</span></td>
+      <td><span class="${clase}" ${esBT ? 'style="background:var(--forest, #2C4A3E);color:#fff;" title="Boat transfer: viaje extra que pidió la reserva"' : ""}>${etiqueta}</span></td>
       <td><strong>${esBT ? "hab. " + escaparHTML(c.punto) : escaparHTML(c.punto)}</strong></td>
       <td>${c.hora
             ? escaparHTML(c.hora)
@@ -4058,7 +4205,10 @@ async function loadEntradas(desde, hasta) {
   // Sin esperar: deja en el teléfono los comprobantes de los próximos días mientras hay
   // señal, para que se abran en el puesto del parque. Ver precargarTiquetes.
   precargarTiquetes(tiquetes);
-  const colorUrg = { VENCIDA:"fila-sale", URGENTE:"fila-entra", A_TIEMPO:"", OK:"", PASADA:"fila-salio", SIN_FECHA:"" };
+  // La urgencia del plazo NO es un movimiento del día: tiene sus propias clases. Antes
+  // reusaba las de entra y sale, así que un plazo urgente se pintaba igual que una
+  // llegada y uno vencido igual que una salida.
+  const colorUrg = { VENCIDA:"fila-vencida", URGENTE:"fila-urgente", A_TIEMPO:"", OK:"", PASADA:"fila-salio", SIN_FECHA:"" };
   const textoUrg = (e) => {
     if (e.estado === "COMPRADA") return "—";
     if (e.urgencia === "PASADA") return "Tour ya pasó";
@@ -4118,9 +4268,9 @@ async function loadEntradas(desde, hasta) {
           </tr>`).join("") || `<tr><td colspan="9" class="empty">Sin entradas SINAC en estas fechas. Amplía el rango para ver las de los próximos meses.</td></tr>`}
       </table>
       <div class="leyenda">
-        <span><i style="background:#FDE8E8;"></i>Plazo de compra vencido</span>
-        <span><i style="background:#FFF8DC;"></i>Urgente (7 días o menos)</span>
-        <span><i style="background:#F2F2F0;"></i>Tour ya pasó</span>
+        <span><i style="background:var(--danger-text);"></i>Plazo de compra vencido</span>
+        <span><i style="background:var(--warn-filo);"></i>Urgente (7 días o menos)</span>
+        <span><i style="background:#D9D5C8;"></i>Tour ya pasó</span>
       </div>
     </div>
   `;
@@ -5518,7 +5668,7 @@ function detalleAlergias() {
         return `
         <tr>
           <td><strong>${habs.filter(Boolean).map(escaparHTML).join(" · ") || "—"}</strong>${etiquetaGrupo(x.conf_no)}</td>
-          <td>${nombres.filter(Boolean).map(escaparHTML).join(" · ") || "—"}${x.tipo === "ENTRA" ? ' <span class="badge badge-warn" style="font-size:10px;">entra hoy</span>' : ""}
+          <td>${nombres.filter(Boolean).map(escaparHTML).join(" · ") || "—"}${x.tipo === "ENTRA" ? ' <span class="est est-ent">entra hoy</span>' : ""}
             ${x.en_cuantas_reservas > 1 ? `<br><span style="font-size:10.5px;color:var(--muted);">misma nota en ${x.en_cuantas_reservas} reservas</span>` : ""}</td>
           <td><span class="badge badge-warn">${escaparHTML(x.amenidad || "Restricción")}</span></td>
           <td style="font-size:12.5px;">${x.detalle
@@ -5859,7 +6009,7 @@ function detalleRegimen(soloEste) {
                incluidas y la cortesía: son lo mismo —qué trae pagado la reserva— y
                tenerlas en dos pantallas distintas obliga a cruzarlas de memoria. -->
           <td>${notasReserva(x) || '<span style="font-size:11px;color:var(--muted);">—</span>'}</td>
-          <td>${x.tipo === 'ENTRA' ? '<span class="badge badge-warn">entra</span>' : ''}</td>
+          <td>${x.tipo === 'ENTRA' ? '<span class="est est-ent">entra</span>' : ''}</td>
         </tr>`).join("")}
       </table>`).join("")}
 
@@ -5975,7 +6125,7 @@ function detalleRest(cual) {
         <td>${x.pax}</td>
         <td style="font-size:11.5px;color:var(--muted);">${x.noche_estadia || 1} de ${x.noches}</td>
         <td>${celdaComida(x)}${notasReserva(x)}</td>
-        <td>${x.tipo === 'ENTRA' ? '<span class="badge badge-warn">entra</span>' : ''}
+        <td>${x.tipo === 'ENTRA' ? '<span class="est est-ent">entra</span>' : ''}
             ${x.fijo ? `<span class="badge badge-tour">${x.fijo}</span>` : ''}
             ${x.manual ? '<span class="badge badge-ok">cambio manual</span>' : ''}</td>
         ${esCena ? `<td><input type="time" value="${x.hora || ''}" data-hora="${x.conf_no}"
@@ -7387,7 +7537,7 @@ function vistaResumenDia(d, fecha, F) {
       ${d.restricciones_cocina.length ? `
       <table>
         <tr><th>Hab.</th><th>Huésped</th><th>Qué</th><th>Detalle</th></tr>
-        ${d.restricciones_cocina.map(x => `<tr class="fila-sale">
+        ${d.restricciones_cocina.map(x => `<tr class="fila-aviso">
           <td><strong>${x.room_no}</strong>${etiquetaGrupo(x.conf_no)}</td><td>${x.nombre_principal}</td>
           <!-- El nombre de la amenidad va en su propia columna. Antes solo se veía el
                detalle, y con las bebidas incluidas eso se leía al revés: «jugo natural»
