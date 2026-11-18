@@ -297,8 +297,24 @@ def hora_legible(hhmm):
     return f"{doce}:{m:02d} {sufijo}"
 
 
+# Lo que se le enseña al huésped cuando todavía no se sabe por dónde viaja.
+#
+# SIN PUNTO NO SE ELIGE UNO. Hasta hace poco, cualquier cosa que no fuera «drake» caía
+# en el bloque de Sierpe: una reserva sin punto le prometía al huésped el bote de las
+# 11:30 desde La Hacienda, con total seguridad y sin marca de revisar. Medido sobre la
+# base del lodge: 50 reservas vivas no tienen punto, y de las que sí lo tienen la
+# mayoría es DRAKE (136 contra 84), así que el que se inventaba era además el menos
+# probable. El huésped recibía un documento que decía otra cosa que la operación.
+SIN_PUNTO_TODAVIA = "Transfer to be confirmed:\nSierpe (boat) or Drake (flight)"
+
+
 def texto_llegada(punto, vuelo=None, hora=None):
-    """Bloque del día de llegada, distinto según sea por Drake (avión) o Sierpe (bote)."""
+    """Bloque del día de llegada, distinto según sea por Drake (avión) o Sierpe (bote).
+
+    Sin punto se devuelve el bloque «por confirmar», marcado para revisar: es la misma
+    regla que el resto del sistema —mandar un bote por suposición es el error caro— solo
+    que aquí lo que se manda equivocado es el documento del huésped.
+    """
     if (punto or "").lower() == "drake":
         horario = f"Flight: {vuelo}\n{hora}" if vuelo else (hora or "___")
         return {
@@ -308,18 +324,29 @@ def texto_llegada(punto, vuelo=None, hora=None):
             "detalles": "Drake Bay Airport\nto CWL",
             "requiere_revision": not (vuelo and hora),
         }
+    if (punto or "").lower() == "sierpe":
+        return {
+            "nombre": "Arrival Day",
+            "duracion": "",
+            "horario": f"Boat departure around\n{hora or SIERPE_BOTE_LLEGADA}",
+            "detalles": "From La Hacienda, Sierpe\nto CWL",
+            "requiere_revision": False,
+        }
     return {
         "nombre": "Arrival Day",
         "duracion": "",
-        "horario": f"Boat departure around\n{hora or SIERPE_BOTE_LLEGADA}",
-        "detalles": "From La Hacienda, Sierpe\nto CWL",
-        "requiere_revision": False,
+        "horario": hora or "___",
+        "detalles": SIN_PUNTO_TODAVIA,
+        "requiere_revision": True,
     }
 
 
 def texto_salida(punto, vuelo=None, hora=None, logistica=None):
     """Bloque del día de salida. Por Sierpe los horarios son fijos; por Drake dependen
-    del vuelo, así que se calculan hacia atrás o los completa recepción."""
+    del vuelo, así que se calculan hacia atrás o los completa recepción.
+
+    Sin punto, lo mismo que en la llegada: por confirmar y marcado para revisar.
+    """
     if (punto or "").lower() == "drake":
         if logistica:
             horario = (f"Luggage pick-up in your room at {logistica['equipaje']}\n"
@@ -335,14 +362,23 @@ def texto_salida(punto, vuelo=None, hora=None, logistica=None):
             "nombre": "Departure Day", "duracion": "", "horario": horario,
             "detalles": detalles, "requiere_revision": logistica is None,
         }
+    if (punto or "").lower() == "sierpe":
+        return {
+            "nombre": "Departure Day",
+            "duracion": "",
+            "horario": (f"Luggage pick-up in your room at {SIERPE_SALIDA['equipaje']}\n"
+                        f"Check-out at {SIERPE_SALIDA['checkout']}\n"
+                        f"Boat departure at {SIERPE_SALIDA['bote']}"),
+            "detalles": "From CWL to\nLa Hacienda, Sierpe",
+            "requiere_revision": False,
+        }
     return {
         "nombre": "Departure Day",
         "duracion": "",
-        "horario": (f"Luggage pick-up in your room at {SIERPE_SALIDA['equipaje']}\n"
-                    f"Check-out at {SIERPE_SALIDA['checkout']}\n"
-                    f"Boat departure at {SIERPE_SALIDA['bote']}"),
-        "detalles": "From CWL to\nLa Hacienda, Sierpe",
-        "requiere_revision": False,
+        "horario": ("Luggage pick-up in your room at ___\n"
+                    "Check-out at ___\nBoat departure at ___"),
+        "detalles": SIN_PUNTO_TODAVIA,
+        "requiere_revision": True,
     }
 
 

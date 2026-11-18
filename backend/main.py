@@ -4394,8 +4394,42 @@ def confirmar_transporte(conf_no: str, tipo: str, punto: str,
         "AND resuelto = 0 AND referencia_texto = ? AND mensaje LIKE ?",
         (str(conf_no), f"%punto de {tipo} de%"))
     conn.commit()
+    # EL ITINERARIO DEL HUÉSPED DICE POR DÓNDE LLEGA Y POR DÓNDE SALE, así que cambiar
+    # el punto y no rehacerlo deja dos papeles diciendo cosas distintas: Transporte
+    # manda el bote a un sitio y el huésped tiene en la mano otro. Es lo que se vio en
+    # la hab 13 —el itinerario decía Sierpe y la pantalla Drake— y no daba ningún error
+    # porque el itinerario se guarda escrito y solo se rehace cuando la reserva cambia
+    # en Opera, cosa que al tocar el punto desde aquí no pasa.
+    itinerario = _reflejar_punto_en_itinerario(conn, conf_no, tipo)
+    conn.commit()
     conn.close()
-    return {"status": "ok"}
+    return {"status": "ok", "itinerario": itinerario}
+
+
+def _reflejar_punto_en_itinerario(conn, conf_no, tipo):
+    """Pone al día el itinerario del huésped tras cambiarle el punto de embarque.
+
+    Si nadie lo editó a mano se rehace entero y queda exacto. Si sí, NO se toca —ahí hay
+    texto de una persona— pero se avisa en la pantalla de Itinerario: el día de llegada
+    o de salida de ese itinerario quedó diciendo el punto viejo, y lo cambia quien lo
+    escribió. Es la misma regla que ya se aplica al quitar un tour o una cita de spa.
+    """
+    fila = conn.execute("SELECT * FROM itinerario WHERE conf_no = ?", (conf_no,)).fetchone()
+    if not fila:
+        return "sin itinerario guardado"
+    datos = itin.datos_de_reserva(conn, conf_no)
+    if not datos:
+        return "sin datos"
+    if not dict(fila)["editado"]:
+        filas, _ = itin.construir_itinerario(datos)
+        _guardar_itinerario(conn, conf_no, datos["nombre_bienvenida"], filas, editado=0)
+        return "regenerado"
+    dia = "llegada" if tipo == "entrada" else "salida"
+    conn.execute(
+        "UPDATE itinerario SET aviso_cambios = ? WHERE conf_no = ?",
+        (f"Cambió el punto de {tipo}, pero el itinerario fue editado a mano y no se "
+         f"ajustó solo. Revisá el día de {dia} antes de enviarlo.", conf_no))
+    return "requiere revisión manual"
 
 
 @app.get("/api/transporte/pendientes")

@@ -475,6 +475,92 @@ def un_punto_que_no_existe_no_se_guarda(c):
         c.igual(e.status_code, 404, "y una reserva inexistente, 404")
 
 
+def sin_punto_el_itinerario_no_promete_sierpe(c):
+    """El itinerario del huesped elegia Sierpe para TODO lo que no fuera Drake.
+
+    Una reserva sin punto le prometia al huesped el bote de las 11:30 desde La
+    Hacienda, con seguridad y sin marca de revisar. Medido sobre la base del lodge: 50
+    reservas vivas no tienen punto, y de las que si lo tienen la mayoria es DRAKE (136
+    contra 84), asi que el punto que se inventaba era ademas el menos probable.
+    """
+    import catalogo_itinerario as cat
+
+    for sin in (None, "", "TRB", "PTE"):
+        llegada = cat.texto_llegada(sin)
+        c.cierto(llegada["requiere_revision"], f"llegada con «{sin}» queda por revisar")
+        c.cierto("Sierpe (boat) or Drake" in llegada["detalles"],
+                 "y dice que esta por confirmar en vez de elegir uno")
+        c.cierto("La Hacienda" not in llegada["detalles"],
+                 "sin prometer el muelle de Sierpe")
+        salida = cat.texto_salida(sin)
+        c.cierto(salida["requiere_revision"], f"salida con «{sin}» queda por revisar")
+        c.cierto("La Hacienda" not in salida["detalles"],
+                 "y tampoco promete el de la salida")
+
+    # Y lo que si se sabe sigue igual que siempre.
+    sierpe = cat.texto_llegada("Sierpe")
+    c.cierto("La Hacienda, Sierpe" in sierpe["detalles"], "por Sierpe, lo de siempre")
+    c.cierto(cat.SIERPE_BOTE_LLEGADA in sierpe["horario"], "con su hora fija")
+    c.cierto(not sierpe["requiere_revision"], "y sin nada que revisar")
+    drake = cat.texto_llegada("Drake", vuelo="RZ1068", hora="9:15 a.m.")
+    c.cierto("Drake Bay Airport" in drake["detalles"], "por Drake, lo de siempre")
+    c.cierto(not drake["requiere_revision"], "y con vuelo y hora, nada que revisar")
+    c.cierto(cat.texto_salida("Sierpe")["horario"].count("___") == 0,
+             "la salida por Sierpe conserva sus horarios fijos")
+
+
+def al_cambiar_el_punto_se_rehace_el_itinerario_del_huesped(c):
+    """LO QUE SE VIO EN LA HAB 13: el itinerario decia Sierpe y Transporte decia Drake.
+
+    El itinerario se guarda escrito y solo se rehace cuando la reserva cambia en Opera.
+    Al tocar el punto desde la pantalla eso no pasaba, asi que quedaban dos papeles
+    diciendo cosas distintas: el bote iba a un sitio y el huesped tenia en la mano otro.
+    """
+    import json
+    conn = comun.base_limpia()
+    conn.close()
+    lote = _lote_de_opera(punto_entrada=None, pendiente="TRB")
+    comun.cargar(lote, vistas=lote)
+
+    conn = comun.conexion()
+    guardado = conn.execute(
+        "SELECT filas_json FROM itinerario WHERE conf_no = '880001'").fetchone()
+    c.cierto(guardado, "la carga deja un itinerario guardado")
+    if guardado:
+        texto = guardado["filas_json"]
+        c.cierto("La Hacienda" not in texto,
+                 "que sin punto no promete el muelle de Sierpe")
+    conn.close()
+
+    import main
+    main.confirmar_transporte("880001", "entrada", "Sierpe", user=USUARIO)
+
+    conn = comun.conexion()
+    filas = json.loads(conn.execute(
+        "SELECT filas_json FROM itinerario WHERE conf_no = '880001'").fetchone()["filas_json"])
+    llegada = [f for f in filas if "Arrival" in (f.get("actividad") or "")]
+    c.igual(len(llegada), 1, "sigue habiendo un dia de llegada")
+    if llegada:
+        c.cierto("La Hacienda, Sierpe" in (llegada[0].get("detalles") or ""),
+                 "y ahora dice Sierpe, como la pantalla de Transporte")
+    conn.close()
+
+    # Si el itinerario lo escribio una persona NO se toca, pero se avisa.
+    conn = comun.conexion()
+    conn.execute("UPDATE itinerario SET editado = 1 WHERE conf_no = '880001'")
+    conn.commit()
+    conn.close()
+    main.confirmar_transporte("880001", "entrada", "Drake", user=USUARIO)
+    conn = comun.conexion()
+    f = dict(conn.execute(
+        "SELECT * FROM itinerario WHERE conf_no = '880001'").fetchone())
+    c.cierto("La Hacienda, Sierpe" in f["filas_json"],
+             "lo editado a mano no se reescribe solo")
+    c.cierto(f["aviso_cambios"] and "punto de entrada" in f["aviso_cambios"],
+             "pero la pantalla avisa que hay que revisarlo")
+    conn.close()
+
+
 def la_pantalla_deja_cambiar_el_punto_siempre(c):
     """No solo en «Pendientes de confirmar», que es como estaba."""
     ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -522,6 +608,8 @@ PRUEBAS = [
     se_puede_devolver_el_mando_a_la_reserva,
     confirmar_una_habitacion_no_cierra_los_avisos_de_las_demas,
     un_punto_que_no_existe_no_se_guarda,
+    sin_punto_el_itinerario_no_promete_sierpe,
+    al_cambiar_el_punto_se_rehace_el_itinerario_del_huesped,
     la_pantalla_deja_cambiar_el_punto_siempre,
 ]
 
