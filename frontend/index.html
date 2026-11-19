@@ -7111,7 +7111,12 @@ async function guardarNotaCita(id) {
  * imprimen una vez— así que un huésped anterior podría abrir el enlace del siguiente.
  */
 async function mostrarEnlacesSpa() {
-  const res = await fetchAuth(`${API}/api/spa/enlaces`);
+  // La lista es la del DÍA que se está mirando en la pantalla, no la de las próximas
+  // dos semanas: la misma habitación tiene varias reservas por delante y salían todas,
+  // sin forma de saber cuál es la del huésped que está en el cuarto ahora.
+  const F = FILTROS.spa;
+  const dia = F.modo === "dia" ? F.fecha : F.desde;
+  const res = await fetchAuth(`${API}/api/spa/enlaces?fecha=${encodeURIComponent(dia)}`);
   if (!res.ok) { avisar("No se pudieron cargar los enlaces", true); return; }
   const d = await res.json();
   const base = d.base_url || location.origin;
@@ -7123,8 +7128,10 @@ async function mostrarEnlacesSpa() {
       <button class="modal-cerrar" onclick="this.closest('.modal-fondo').remove()">×</button>
       <p style="font-weight:600;font-size:17px;margin:0;color:var(--forest-dark);">Enlace para el huésped</p>
       <p style="font-size:13px;color:var(--muted);margin:2px 0 14px;">
-        Se copia y se le manda por WhatsApp. Al abrirlo pide su tratamiento y contesta la
-        ficha médica; la cita entra aquí como «por confirmar».</p>
+        Los que están en el lodge el <strong>${escaparHTML(d.fecha || dia)}</strong>:
+        quien llega ese día y quien ya está en casa. Se copia y se le manda por WhatsApp.
+        Al abrirlo pide su tratamiento y contesta la ficha médica; la cita entra aquí como
+        «por confirmar». Para los de otro día, cambiá la fecha de la pantalla.</p>
       ${!d.base_url ? `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:11px 13px;margin-bottom:12px;font-size:12.5px;">
         Todavía no hay una dirección de internet configurada, así que el enlace se armó con
         <code>${escaparHTML(location.origin)}</code>. Si el huésped lo va a abrir desde fuera del
@@ -7150,7 +7157,8 @@ async function mostrarEnlacesSpa() {
           El idioma viene del <strong>itinerario</strong> de cada huésped, y se puede
           cambiar aquí antes de copiar. La página abre en inglés por omisión y el
           huésped puede cambiarla él mismo con el botón EN/ES.</p>`
-        : `<p class="empty">No hay huéspedes en casa ni por llegar en las próximas dos semanas.</p>`}
+        : `<p class="empty">Ese día no hay nadie en casa ni llegando.<small>Cambiá la
+             fecha de la pantalla para ver otro día.</small></p>`}
     </div>`;
   document.body.appendChild(modal);
   // Se guardan la base y la ruta por separado para poder rearmar el enlace al cambiar

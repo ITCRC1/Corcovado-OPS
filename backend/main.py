@@ -3284,32 +3284,41 @@ async def nota_cita_spa(cita_id: int, payload: dict,
 
 
 @app.get("/api/spa/enlaces")
-def enlaces_spa(desde: str = None, hasta: str = None,
-                user: dict = Depends(exige("spa", escribir=True))):
-    """Los enlaces personales de los huéspedes que están o llegan en esas fechas.
+def enlaces_spa(fecha: str = None, user: dict = Depends(exige("spa", escribir=True))):
+    """Los enlaces personales de los huéspedes que están en el lodge ESE DÍA.
 
     De aquí se copia el enlace y se le manda por WhatsApp, igual que hoy se manda el del
     formulario de Google. La diferencia es que este enlace ya sabe quién es el huésped:
     no escribe su nombre ni su habitación, y solo se le ofrecen días de su estadía.
 
+    UN SOLO DÍA, no dos semanas. Antes listaba desde hoy hasta catorce días por delante,
+    así que la misma habitación aparecía tres y cuatro veces —una por cada reserva que
+    le viene— y había que adivinar cuál era la del huésped que está en el cuarto ahora.
+    Lo reportó el lodge: «despliega de la misma habitación todas las reservas próximas a
+    llegar, lo cual es confuso». Para preparar los de mañana se mueve la fecha de la
+    pantalla, que es como se mira todo lo demás.
+
+    QUIEN SE VA ESE DÍA NO ESTÁ: salió en el bote de la mañana y no le queda ninguna
+    noche que reservar. Es la misma regla que ya usan el Resumen, la ocupación y el
+    reparto del comedor.
+
     Va por RESERVA. El código de la habitación no sirve para esto: no cambia nunca
     —los QR se imprimen una vez— así que un huésped anterior podría abrir el del
     siguiente.
     """
-    hoy = datetime.date.today().isoformat()
-    desde = desde or hoy
-    hasta = hasta or (datetime.date.today() + datetime.timedelta(days=14)).isoformat()
+    fecha = fecha or datetime.date.today().isoformat()
+    yy = yymmdd(fecha)
     conn = get_connection()
     try:
-        # Los que están en casa o llegan en el rango: a esos se les manda el enlace.
+        # Quien llega ese día y quien ya está en casa: a esos se les manda el enlace.
         filas = conn.execute(
             f"""SELECT conf_no, room_no, nombre_principal, arr_date, dep_date
                 FROM reserva
                 WHERE res_status != 'CANCELADA'
                   AND {sql_fecha('arr_date')} <= ?
-                  AND {sql_fecha('dep_date')} >= ?
+                  AND (dep_date IS NULL OR {sql_fecha('dep_date')} > ?)
                 ORDER BY CAST(room_no AS INTEGER)""",
-            (yymmdd(hasta), yymmdd(desde))).fetchall()
+            (yy, yy)).fetchall()
         import spa_pagina as _pag
         salida = []
         for f in filas:
@@ -3329,7 +3338,9 @@ def enlaces_spa(desde: str = None, hasta: str = None,
         # La dirección base es la misma que ya se configuró para los itinerarios QR: si
         # el hotel ya la puso ahí, esto funciona sin configurar nada más.
         base = (pub.cargar_config().get("base_url") or "").rstrip("/")
-        return {"base_url": base, "huespedes": salida}
+        # La fecha vuelve para que la pantalla pueda decir de qué día es la lista: una
+        # lista de habitaciones sin fecha se lee como «todas».
+        return {"base_url": base, "fecha": fecha, "huespedes": salida}
     finally:
         conn.close()
 

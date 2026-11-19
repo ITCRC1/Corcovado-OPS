@@ -417,6 +417,54 @@ def sin_nombre_escrito_el_enlace_se_queda_con_el_titular(c):
     conn.close()
 
 
+def el_enlace_se_ofrece_solo_para_los_del_dia(c):
+    """LO REPORTO EL LODGE: «a la hora de enviar el link despliega de la misma habitacion
+    todas las reservas proximas a llegar, lo cual es confuso».
+
+    Y tenia razon: la lista iba de hoy a catorce dias por delante, asi que una habitacion
+    con tres reservas encadenadas salia tres veces y no habia forma de saber cual es la
+    del huesped que esta en el cuarto AHORA. Mandar el enlace equivocado es mandarle a
+    alguien el de otro: la pagina lleva el nombre y la estadia de esa reserva.
+    """
+    import main
+    conn = comun.base_limpia()
+    hoy = HOY
+
+    def _reserva(conf, hab, llega, sale):
+        conn.execute(
+            """INSERT INTO reserva (conf_no, room_no, nombre_principal, arr_date,
+                                    dep_date, adl, chl, rooms, res_status)
+               VALUES (?,?,?,?,?,2,0,1,'POR INGRESAR')""",
+            (conf, hab, f"Huesped/{conf}", _pms(llega), _pms(sale)))
+
+    # La 12, con TRES reservas encadenadas: la de ahora y dos que vienen.
+    _reserva("910101", "12", hoy - datetime.timedelta(days=2), hoy + datetime.timedelta(days=2))
+    _reserva("910102", "12", hoy + datetime.timedelta(days=3), hoy + datetime.timedelta(days=6))
+    _reserva("910103", "12", hoy + datetime.timedelta(days=8), hoy + datetime.timedelta(days=11))
+    # Una que llega HOY: esa si va, es a quien hay que mandarle el enlace al entrar.
+    _reserva("910104", "14", hoy, hoy + datetime.timedelta(days=3))
+    # Y una que se va hoy: salio en el bote de la manana, no le queda noche que reservar.
+    _reserva("910105", "16", hoy - datetime.timedelta(days=3), hoy)
+    conn.commit()
+    conn.close()
+
+    d = main.enlaces_spa(fecha=hoy.isoformat(), user={"usuario": "pruebas"})
+    confs = [h["conf_no"] for h in d["huespedes"]]
+    c.igual(sorted(confs), ["910101", "910104"],
+            "solo la reserva que esta en el cuarto hoy y la que llega hoy")
+    c.cierto("910102" not in confs and "910103" not in confs,
+             "las proximas de esa misma habitacion no se ofrecen")
+    c.cierto("910105" not in confs, "ni la que se va hoy, que ya no tiene noches")
+    c.igual(d.get("fecha"), hoy.isoformat(),
+            "y la lista dice de que dia es, para que no se lea como «todas»")
+
+    # Para preparar los de otro dia se mueve la fecha, que es como se mira todo lo demas.
+    otro = main.enlaces_spa(fecha=(hoy + datetime.timedelta(days=4)).isoformat(),
+                            user={"usuario": "pruebas"})
+    c.igual([h["conf_no"] for h in otro["huespedes"]], ["910102"],
+            "ese dia la 12 es la otra reserva, y es la unica que sale")
+
+
 def el_formulario_pregunta_el_nombre_de_primero(c):
     """Y lo pide VACIO.
 
@@ -465,6 +513,7 @@ PRUEBAS = [
     el_nombre_escrito_manda_sobre_el_titular,
     el_enlace_del_huesped_guarda_el_nombre_que_escribio,
     sin_nombre_escrito_el_enlace_se_queda_con_el_titular,
+    el_enlace_se_ofrece_solo_para_los_del_dia,
     el_formulario_pregunta_el_nombre_de_primero,
 ]
 
