@@ -465,6 +465,71 @@ def el_enlace_se_ofrece_solo_para_los_del_dia(c):
             "ese dia la 12 es la otra reserva, y es la unica que sale")
 
 
+def el_enlace_saluda_a_todos_los_de_la_habitacion(c):
+    """LO PIDIO EL LODGE: «que aparezcan los 2 nombres o los que correspondan a las
+    personas que estan en la habitacion en el encabezado, no solo 1 nombre».
+
+    En una doble, saludar solo al titular deja al otro fuera de un enlace que tambien es
+    suyo — y es justo quien puede estar pidiendo el masaje. Los nombres salen de la
+    MISMA funcion que escribe el nombre en la hoja del dia, para que el enlace y la hoja
+    no nombren a gente distinta.
+
+    Y SIN LAS FECHAS DE LA ESTADIA, que las quito el lodge: «eliminar la fecha de
+    estadia que esta en azul, para no causar confusion». Se confundian con la fecha de
+    la cita, que es la que el huesped elige justo abajo.
+    """
+    import main
+    conn = comun.base_limpia()
+    conn.execute(
+        """INSERT INTO reserva (conf_no, room_no, nombre_principal, arr_date, dep_date,
+                                adl, chl, rooms, res_status)
+           VALUES ('910201','12','Magorian/Flynn',?,?,2,2,1,'POR INGRESAR')""",
+        (_pms(HOY), _pms(HOY + datetime.timedelta(days=4))))
+    for nombre in ("Flynn Magorian", "Alasdair Magorian"):
+        conn.execute("INSERT INTO huesped (conf_no, nombre_completo) VALUES ('910201',?)",
+                     (nombre,))
+    conn.commit()
+    reserva = dict(conn.execute(
+        "SELECT * FROM reserva WHERE conf_no='910201'").fetchone())
+    d = main._datos_publicos_spa(conn, reserva)
+    conn.close()
+
+    c.igual(d["nombres"], "Flynn Magorian y Alasdair Magorian",
+            "el encabezado nombra a los dos")
+    c.cierto("MAGORIAN" not in d["nombres"],
+             "y no a gritos: la pagina la lee el huesped, no el staff")
+
+    # La estadia se sigue mandando —el calendario la necesita para no dejar elegir un
+    # dia fuera— pero ya no se escribe en el encabezado.
+    import spa_pagina as pag
+    c.cierto("{desde}" not in pag.TEXTOS["es"]["habitacion"]
+             and "{hasta}" not in pag.TEXTOS["es"]["habitacion"],
+             "la linea de la habitacion ya no lleva fechas (es)")
+    c.cierto("{desde}" not in pag.TEXTOS["en"]["habitacion"],
+             "ni en ingles")
+    c.cierto(d["estadia_desde"] and d["estadia_hasta"],
+             "pero la estadia sigue viajando, que el calendario la usa")
+    c.cierto("D.nombres" in pag._PLANTILLA, "la pagina usa los nombres de la habitacion")
+
+
+def una_reserva_sin_rooming_saluda_al_titular(c):
+    """La contraparte: si Opera no mando la lista de acompanantes no hay nada que
+    componer, y el enlace tiene que seguir saludando igual que antes."""
+    import main
+    conn = comun.base_limpia()
+    conn.execute(
+        """INSERT INTO reserva (conf_no, room_no, nombre_principal, arr_date, dep_date,
+                                adl, chl, rooms, res_status)
+           VALUES ('910202','14','Perez/Juan',?,?,2,0,1,'POR INGRESAR')""",
+        (_pms(HOY), _pms(HOY + datetime.timedelta(days=2))))
+    conn.commit()
+    reserva = dict(conn.execute(
+        "SELECT * FROM reserva WHERE conf_no='910202'").fetchone())
+    d = main._datos_publicos_spa(conn, reserva)
+    conn.close()
+    c.igual(d["nombres"], "Juan Perez", "se saluda al titular, con su nombre de pila")
+
+
 def el_formulario_pregunta_el_nombre_de_primero(c):
     """Y lo pide VACIO.
 
@@ -514,6 +579,8 @@ PRUEBAS = [
     el_enlace_del_huesped_guarda_el_nombre_que_escribio,
     sin_nombre_escrito_el_enlace_se_queda_con_el_titular,
     el_enlace_se_ofrece_solo_para_los_del_dia,
+    el_enlace_saluda_a_todos_los_de_la_habitacion,
+    una_reserva_sin_rooming_saluda_al_titular,
     el_formulario_pregunta_el_nombre_de_primero,
 ]
 

@@ -51,7 +51,11 @@ TEXTOS = {
         "enlace_malo_t": "This link is no longer valid",
         "enlace_malo_d": "The reservation may have ended. Ask reception for a new one.",
         "hola": "Hello, {nombre}",
-        "habitacion": "Room {hab} · {desde} to {hasta}",
+        # SIN LAS FECHAS DE LA ESTADÍA. Las quitó el lodge: «eliminar la fecha de
+        # estadía que está en azul, para no causar confusión». Al huésped se le
+        # confundían con la fecha de la cita, que es la que elige justo abajo — y para
+        # eso ya está el calendario, que solo le deja escoger días de su estadía.
+        "habitacion": "Room {hab}",
         "ya_pedido": "What you have booked",
         "confirmada": "confirmed",
         "por_confirmar": "awaiting confirmation",
@@ -111,7 +115,7 @@ TEXTOS = {
         "enlace_malo_t": "Este enlace ya no sirve",
         "enlace_malo_d": "Puede que la reserva haya terminado. Pídele uno nuevo a recepción.",
         "hola": "Hola, {nombre}",
-        "habitacion": "Habitación {hab} · del {desde} al {hasta}",
+        "habitacion": "Habitación {hab}",      # sin fechas: ver el comentario en inglés
         "ya_pedido": "Lo que ya tienes pedido",
         "confirmada": "confirmada",
         "por_confirmar": "por confirmar",
@@ -362,13 +366,16 @@ async function cargar() {
 function dibujar(mensaje) {
   const s = D.servicios || [];
   const mias = (D.mis_citas || []);
-  const nombre = (D.nombre || "").split("/")[1] || D.nombre || "";
+  // Los nombres de TODOS los que están en el cuarto, no solo el del titular: en una
+  // doble, saludar a uno solo deja fuera al otro de un enlace que también es suyo. Los
+  // arma el servidor con la misma regla que la hoja del día. Si por lo que fuera no
+  // vinieran, se saluda con el nombre de pila del titular, como antes.
+  const nombre = D.nombres || (D.nombre || "").split("/")[1] || D.nombre || "";
   document.getElementById("pantalla").innerHTML = `
     ${mensaje || ""}
     <div class="tarjeta">
       <h2>${esc(T("hola", { nombre: nombre }))}</h2>
-      <p class="sub">${esc(T("habitacion", { hab: D.room_no || "",
-        desde: D.estadia_desde, hasta: D.estadia_hasta }))}</p>
+      <p class="sub">${esc(T("habitacion", { hab: D.room_no || "" }))}</p>
       ${mias.length ? `<div class="mias">
         <p style="font-weight:600;">${esc(T("ya_pedido"))}</p>
         ${mias.map(c => `<p>${esc(c.fecha)}${c.hora ? " · " + esc(c.hora) : ""} ·

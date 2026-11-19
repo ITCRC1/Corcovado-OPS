@@ -3365,10 +3365,23 @@ def _datos_publicos_spa(conn, reserva):
            FROM spa_cita c LEFT JOIN spa_servicio s ON s.codigo = c.servicio_codigo
            WHERE c.conf_no = ? AND c.estado != 'CANCELADA'
            ORDER BY c.fecha, c.hora""", (reserva["conf_no"],)).fetchall()
+    # TODOS LOS QUE ESTÁN EN EL CUARTO, no solo el titular. Lo pidió el lodge: «que
+    # aparezcan los 2 nombres o los que correspondan a las personas que están en la
+    # habitación». En una doble, saludar solo al titular deja fuera al otro de un enlace
+    # que también es suyo — y es justo quien puede estar pidiendo el masaje.
+    #
+    # La composición sale de la MISMA función que escribe el nombre en la hoja del día,
+    # para que el enlace y la hoja no nombren a gente distinta. Allá va en mayúsculas
+    # porque es una hoja de operación; aquí no, que la lee el huésped.
+    import hoja_dia as _hoja
+    acompanantes = _hoja._acompanantes(conn, [reserva["conf_no"]])
     return {
         "conf_no": reserva["conf_no"],
         "room_no": reserva["room_no"],
         "nombre": reserva["nombre_principal"],
+        "nombres": _hoja._nombre_legible(acompanantes.get(reserva["conf_no"]),
+                                         reserva["nombre_principal"],
+                                         mayusculas=False),
         "estadia_desde": llegada,
         "estadia_hasta": salida,
         "servicios": servicios,

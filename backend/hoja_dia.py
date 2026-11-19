@@ -206,12 +206,17 @@ RANURAS_ARRIBA_MM = (150, 78)         # lo que mide cada caja con su aire alrede
 GRUPOS = [("HUÉSPEDES", 4), ("INGRESOS Y SALIDAS", 6), ("ACTIVIDADES", 3)]
 
 
-def _nombre_legible(acompanantes, principal):
+def _nombre_legible(acompanantes, principal, mayusculas=True):
     """«Johnson/Derek» -> «DEREK JOHNSON», y los acompañantes unidos por Y.
 
     Es como lo escribe el lodge en su hoja —«DEREK JOHNSON Y ANDREA OGG»— y no es un
     capricho: quien la lee busca por el nombre de pila con el que saluda al huésped, no
     por el apellido del sistema.
+
+    Con mayusculas=False devuelve «Derek Johnson y Andrea Ogg». Lo usa la página del spa,
+    que la lee el huésped y no el staff: ahí las mayúsculas se leen como un grito. La
+    COMPOSICIÓN es la misma a propósito —quién va en el cuarto y en qué orden— para que
+    la hoja y el enlace no nombren a gente distinta.
     """
     nombres = [n.strip() for n in (acompanantes or []) if n and n.strip()]
     if not nombres:
@@ -220,7 +225,9 @@ def _nombre_legible(acompanantes, principal):
             nombres = [f"{nombre.strip()} {apellido.strip()}"]
         elif principal:
             nombres = [principal]
-    return " Y ".join(n.upper() for n in nombres)
+    if mayusculas:
+        return " Y ".join(n.upper() for n in nombres)
+    return " y ".join(n.title() for n in nombres)
 
 
 def _acompanantes(conn, conf_nos):
