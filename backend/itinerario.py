@@ -20,6 +20,23 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 import catalogo_itinerario as cat
+import horas as _horas
+
+# Lo que no dice hora va al final de su día: no se le puede adivinar una, y ponerla de
+# primera diría algo que nadie comprobó.
+SIN_HORA = 24 * 60 + 1
+
+
+def _minuto_de_inicio(horario):
+    """A qué hora empieza lo que dice esa casilla, en minutos desde la medianoche.
+
+    Se lee del TEXTO que ve el huésped, no del catálogo, y es a propósito: es la hora
+    que está impresa en la columna de la derecha, así que el orden del documento se
+    puede comprobar leyéndolo. Además es la única que hay para las filas que recepción
+    escribió o editó a mano, y esas también tienen que caer en su sitio.
+    """
+    minutos = _horas.primera_en(horario)
+    return SIN_HORA if minutos is None else minutos
 
 # --- Colores exactos medidos del documento original ---
 VERDE = colors.Color(0.1216, 0.2275, 0.1804)   # #1F3A2E
@@ -204,20 +221,42 @@ def texto_cita_spa(cita):
 
 
 def construir_filas(datos):
-    filas = []
+    """Las filas del itinerario, EN EL ORDEN EN QUE PASAN LAS COSAS.
+
+    La llegada abre el documento y la salida lo cierra; en medio van los tours y el spa
+    ordenados por fecha y, dentro del mismo día, por hora: de la más temprana a la más
+    tarde. Lo pidió el lodge y es lo que espera quien lo lee — un itinerario se lee como
+    la agenda del día, no como una lista.
+
+    Antes no era así por dos motivos, y los dos se arreglan aquí: los tours venían en el
+    orden que los devolvía la base (por fecha, pero sin mirar la hora), así que un
+    pajareo de las 6 de la mañana se imprimía debajo de la caminata nocturna del mismo
+    día; y las citas de spa se pegaban TODAS al final, después del último tour, aunque
+    fueran del segundo día de la estadía.
+    """
     llegada = cat.texto_llegada(datos.get("punto_entrada"), datos.get("vuelo_entrada"),
                                 datos.get("hora_vuelo_entrada"))
-    filas.append((_fecha_larga(datos["arr_date_iso"]), llegada))
+    filas = [(_fecha_larga(datos["arr_date_iso"]), llegada)]
 
+    # (fecha, hora, cuántas van) : lo tercero mantiene el orden original entre dos
+    # actividades que empiezan a la misma hora, en vez de dejarlo al azar.
+    enmedio = []
     for t in datos.get("tours", []):
         externo = (t.get("guia_nombre") or "").upper() == "EXTERNO"
         info = cat.texto_tour(t["tour_codigo"], guia_es_externo=externo,
                               horario_del_catalogo=t.get("horario_inicio"),
                               privado=t.get("es_privado"))
-        filas.append((_fecha_larga(t["fecha"]), info))
+        enmedio.append((t["fecha"] or "", _minuto_de_inicio(info["horario"]),
+                        len(enmedio), info))
 
     for s in datos.get("spa", []):
-        filas.append((_fecha_larga(s["fecha"]), texto_cita_spa(s)))
+        info = texto_cita_spa(s)
+        enmedio.append((s["fecha"] or "", _minuto_de_inicio(info["horario"]),
+                        len(enmedio), info))
+
+    enmedio.sort(key=lambda x: (x[0], x[1], x[2]))
+    for fecha, _hora, _n, info in enmedio:
+        filas.append((_fecha_larga(fecha), info))
 
     logistica = datos.get("logistica_salida")
     if logistica is None and (datos.get("punto_salida") or "").lower() == "drake":
@@ -506,8 +545,39 @@ def generar_pdf_de_filas(nombre_bienvenida_txt, filas, idioma="en"):
 _MES_NUM = {m: i + 1 for i, m in enumerate(MESES_EN)}
 
 
+def _tramo(fila):
+    """La llegada abre su día y la salida lo cierra, digan lo que digan las horas.
+
+    Hace falta porque el día de llegada puede traer una actividad más temprana que el
+    bote —medido en la base del lodge: una reserva con el snorkel de las 7:15 a.m. el
+    mismo día que el bote de Sierpe de las 11:30—, y ordenando solo por hora el
+    documento abriría con el tour, como si el huésped lo hiciera antes de llegar. El día
+    de salida es lo mismo al revés: el pajareo de las 6 se hace ANTES de irse, aunque el
+    equipaje se recoja a las 5:45.
+    """
+    nombre = " ".join((fila.get("actividad") or "").split()).lower()
+    if nombre.startswith("arrival day"):
+        return 0
+    if nombre.startswith("departure day"):
+        return 2
+    return 1
+
+
+def _sin_fecha(fila):
+    """Una fila que recepción escribió sin día reconocible. Van al final, como siempre."""
+    return _clave_orden(fila)[:2] == (0, 0)
+
+
 def _clave_orden(fila):
-    """Permite ordenar las filas por fecha aunque el día venga como 'August 14'."""
+    """Ordena por fecha —aunque el día venga como 'August 14'— y, dentro del día, por
+    hora: de la más temprana a la más tarde.
+
+    La hora se agregó porque el lodge lo pidió y porque el documento se lee como la
+    agenda del día: un pajareo de las 6 de la mañana impreso debajo de la caminata
+    nocturna del mismo día se lee como si fuera al día siguiente. Medido en la base del
+    lodge: de 270 itinerarios guardados, 15 tienen dos actividades el mismo día y 3
+    estaban en desorden.
+    """
     texto = (fila.get("dia") or "").strip()
     partes = texto.replace(",", " ").split()
     mes = dia = 0
@@ -516,7 +586,30 @@ def _clave_orden(fila):
             mes = _MES_NUM[p]
         elif p.isdigit():
             dia = int(p)
-    return (mes, dia)
+    return (mes, dia, _tramo(fila), _minuto_de_inicio(fila.get("horario")))
+
+
+def _ordenar(filas):
+    """Las filas de un itinerario en el orden en que pasan las cosas.
+
+    EL AÑO NO ESTÁ ESCRITO EN LAS FILAS. Dicen «December 29» y «January 01», porque así
+    es como se imprime el día en el documento del huésped. Ordenando por (mes, día) a
+    secas, enero va antes que diciembre y el itinerario de quien pasa aquí el Fin de Año
+    sale al revés: primero el día de salida y después el de llegada. Medido en la base
+    del lodge: 20 reservas de esta temporada cruzan el 31 de diciembre.
+
+    Como una estadía dura días y no medio año, basta con mirar qué meses hay en la
+    lista: si aparecen a la vez uno de fin de año y uno de principio, los de principio
+    son del año siguiente.
+    """
+    meses = {_clave_orden(f)[0] for f in filas}
+    cruza_el_ano = any(m >= 10 for m in meses) and any(1 <= m <= 3 for m in meses)
+
+    def clave(fila):
+        mes, dia, tramo, hora = _clave_orden(fila)
+        return (mes + 12 if cruza_el_ano and 1 <= mes <= 3 else mes, dia, tramo, hora)
+
+    return sorted(filas, key=clave)
 
 
 def _identidad(fila):
@@ -538,11 +631,10 @@ def incorporar_faltantes(filas_guardadas, faltantes):
     """Agrega las filas nuevas al itinerario editado, en su lugar por fecha, sin
     tocar nada de lo que recepción ya había ajustado."""
     combinadas = list(filas_guardadas) + list(faltantes)
-    # Se ordena por fecha, dejando al final las filas sin fecha reconocible
-    con_fecha = [f for f in combinadas if _clave_orden(f) != (0, 0)]
-    sin_fecha = [f for f in combinadas if _clave_orden(f) == (0, 0)]
-    con_fecha.sort(key=_clave_orden)
-    return con_fecha + sin_fecha
+    # Se ordena por fecha y por hora, dejando al final las filas sin fecha reconocible
+    con_fecha = [f for f in combinadas if not _sin_fecha(f)]
+    sin_fecha = [f for f in combinadas if _sin_fecha(f)]
+    return _ordenar(con_fecha) + sin_fecha
 
 
 def _fecha_en_idioma(texto_dia, idioma):
@@ -596,11 +688,11 @@ def reconciliar_itinerario(filas_guardadas, filas_nuevas):
     pendientes = {}
     for f in filas_nuevas:
         pendientes.setdefault(_normalizar_actividad(f.get("actividad")), []).append(f)
-    for lista in pendientes.values():
-        lista.sort(key=_clave_orden)
+    for clave_act, lista in pendientes.items():
+        pendientes[clave_act] = _ordenar(lista)
 
     resultado, movidas = [], []
-    for guardada in sorted(filas_guardadas, key=_clave_orden):
+    for guardada in _ordenar(filas_guardadas):
         clave = _normalizar_actividad(guardada.get("actividad"))
         candidatas = pendientes.get(clave)
         nueva = candidatas.pop(0) if candidatas else None

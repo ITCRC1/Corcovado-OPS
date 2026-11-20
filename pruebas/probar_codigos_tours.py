@@ -594,6 +594,255 @@ def la_hora_del_catalogo_llega_al_itinerario_del_huesped(c):
     c.igual(cat.hora_legible(None), "", "y lo que no es una hora no revienta")
 
 
+# ---------------------------------------------------------------------------
+# El orden del documento que recibe el huesped
+# ---------------------------------------------------------------------------
+
+def _datos(tours=(), spa=(), llega="2026-11-16", sale="2026-11-20",
+           entrada="Drake", salida="Drake"):
+    return {
+        "nombre_bienvenida": "Prueba",
+        "arr_date_iso": llega, "dep_date_iso": sale,
+        "punto_entrada": entrada, "punto_salida": salida,
+        "vuelo_entrada": "RZ1068", "hora_vuelo_entrada": "12:50 p.m.",
+        "vuelo_salida": "RZ1069", "hora_vuelo_salida": "9:00 a.m.",
+        "tours": list(tours), "spa": list(spa),
+    }
+
+
+def _tour(fecha, codigo, horario_inicio=None):
+    return {"fecha": fecha, "tour_codigo": codigo, "guia_nombre": None,
+            "es_privado": 0, "horario_inicio": horario_inicio}
+
+
+def _actividades(filas):
+    return [" ".join(info["nombre"].split()) for _fecha, info in filas]
+
+
+def el_dia_con_dos_tours_va_de_la_hora_mas_temprana_a_la_mas_tarde(c):
+    """LO PIDIO EL LODGE: «cuando hay 2 tours el mismo dia, que se ordenen o aparezcan
+    por horario, el mas temprano al mas tarde, para que se vea mucho mejor y mas claro».
+
+    Y tenia razon: los tours salian en el orden que los devuelve la base —por fecha, sin
+    mirar la hora—, asi que la caminata NOCTURNA de las 5:45 p.m. se imprimia encima del
+    pajareo de las 6:00 a.m. del MISMO dia. El huesped lee su itinerario como la agenda
+    del dia, y asi leido el pajareo parece del dia siguiente.
+
+    Medido en la base del lodge: de 270 itinerarios guardados, 15 tienen dos actividades
+    el mismo dia y 2 estaban en desorden por esto.
+    """
+    import itinerario as itin
+    filas = itin.construir_filas(_datos(tours=[
+        _tour("2026-11-17", "NW"),        # 5:45 p.m.
+        _tour("2026-11-17", "PAJAREO"),   # 6:00 a.m.
+    ]))
+    c.igual(_actividades(filas),
+            ["Arrival Day", "Bird Watching Tour", "Night Walk", "Departure Day"],
+            "el pajareo de las 6 va antes que la caminata nocturna")
+
+    # Y el orden no depende de como vengan: al reves da lo mismo.
+    al_reves = itin.construir_filas(_datos(tours=[
+        _tour("2026-11-17", "PAJAREO"), _tour("2026-11-17", "NW")]))
+    c.igual(_actividades(al_reves), _actividades(filas),
+            "venga como venga de la base, sale igual")
+
+    # Lo que NO cambia: los dias siguen en orden de fecha.
+    tres = itin.construir_filas(_datos(tours=[
+        _tour("2026-11-19", "PNC"), _tour("2026-11-17", "NW"),
+        _tour("2026-11-18", "SNORKEL")]))
+    c.igual([f for f, _ in tres][1:-1], ["November 17", "November 18", "November 19"],
+            "y los dias en su orden")
+
+
+def la_cita_de_spa_cae_en_su_dia_y_no_al_final(c):
+    """El otro desorden, que estaba ahi desde siempre: las citas de spa se pegaban TODAS
+    al final de la lista, despues del ultimo tour, aunque fueran del segundo dia. Una
+    reserva con masaje el martes y caminata el jueves recibia el masaje escrito debajo
+    de la caminata."""
+    import itinerario as itin
+    filas = itin.construir_filas(_datos(
+        tours=[_tour("2026-11-19", "PNC")],                       # 7:00 a.m.
+        spa=[{"fecha": "2026-11-17", "hora": "14:00", "minutos": 60,
+              "tratamiento": "Deep Connection"}]))
+    c.igual(_actividades(filas),
+            ["Arrival Day", "Spa Treatment", "Hike in Corcovado National Park\nSan Pedrillo"
+             .replace("\n", " "), "Departure Day"],
+            "el masaje del martes va antes que la caminata del jueves")
+
+    # Y el mismo dia, el masaje de la tarde despues del tour de la manana.
+    mismo = itin.construir_filas(_datos(
+        tours=[_tour("2026-11-17", "PAJAREO")],                   # 6:00 a.m.
+        spa=[{"fecha": "2026-11-17", "hora": "14:00", "minutos": 60,
+              "tratamiento": "Deep Connection"}]))
+    c.igual(_actividades(mismo)[1:3], ["Bird Watching Tour", "Spa Treatment"],
+            "el pajareo de las 6 y despues el masaje de las 2")
+
+
+def la_llegada_abre_y_la_salida_cierra_aunque_la_hora_diga_otra_cosa(c):
+    """El documento empieza el dia que el huesped llega y termina el dia que se va. Si
+    se ordenara SOLO por hora no seria asi, y no es un caso inventado: en la base del
+    lodge hay una reserva con el snorkel de las 7:15 a.m. el mismo dia que el bote de
+    Sierpe de las 11:30, y el itinerario abriria con el snorkel — como si lo hiciera
+    antes de llegar.
+
+    El dia de salida es lo mismo al reves: el pajareo de las 6:00 a.m. se hace ANTES de
+    irse, aunque el equipaje se recoja a las 5:45.
+    """
+    import itinerario as itin
+    llega = itin.construir_filas(_datos(
+        entrada="Sierpe", tours=[_tour("2026-11-16", "SNORKEL")]))   # el dia de llegada
+    c.igual(_actividades(llega)[0], "Arrival Day",
+            "la llegada abre el itinerario aunque el tour sea mas temprano")
+
+    sale = itin.construir_filas(_datos(tours=[_tour("2026-11-20", "PAJAREO")]))
+    c.igual(_actividades(sale)[-1], "Departure Day",
+            "y la salida lo cierra, aunque el equipaje se recoja antes del pajareo")
+    c.igual(_actividades(sale)[-2], "Bird Watching Tour",
+            "con el pajareo del dia de salida justo encima")
+
+
+def el_fin_de_ano_no_da_vuelta_el_itinerario(c):
+    """BUG QUE YA ESTABA: las filas dicen «December 29» y «January 01» —sin el año,
+    porque asi se imprime— y al reordenarlas enero se iba antes que diciembre. El
+    itinerario de quien pasa el Fin de Año aqui salia al reves: primero el dia de salida.
+
+    Se veia al mover un tour de fecha, que es cuando las filas se reordenan. Medido en la
+    base del lodge: 20 reservas de esta temporada cruzan el 31 de diciembre.
+    """
+    import itinerario as itin
+    filas = [
+        {"dia": "December 29", "actividad": "Arrival Day",
+         "horario": "Boat departure around\n11:30 a.m."},
+        {"dia": "December 31", "actividad": "Snorkeling at Caño Island",
+         "horario": "Be at the dive center at 7:15 a.m."},
+        {"dia": "January 01", "actividad": "Departure Day",
+         "horario": "Luggage pick-up in your room at 7:00 a.m."},
+    ]
+    puestas = itin.incorporar_faltantes(filas, [])
+    c.igual([f["dia"] for f in puestas], ["December 29", "December 31", "January 01"],
+            "diciembre antes que enero")
+
+    # Y una estadia que NO cruza el año se sigue ordenando igual que siempre.
+    normal = itin.incorporar_faltantes([
+        {"dia": "January 05", "actividad": "Departure Day", "horario": "7:00 a.m."},
+        {"dia": "January 02", "actividad": "Arrival Day", "horario": "11:30 a.m."}], [])
+    c.igual([f["dia"] for f in normal], ["January 02", "January 05"],
+            "enero con enero, en su orden")
+
+
+def la_hora_se_lee_del_texto_que_ve_el_huesped(c):
+    """El orden sale de la hora IMPRESA en la columna de la derecha, no del catalogo:
+    asi se puede comprobar leyendo el documento, y asi tambien caen en su sitio las filas
+    que recepcion escribio a mano.
+
+    Lo delicado es lo que NO es una hora: el numero de vuelo, la duracion del tour o el
+    numero de un bungalow. Si alguno se leyera como hora, el orden saldria peor que antes.
+    """
+    import horas
+    c.igual(horas.primera_en("Be at the guide house at 6:00 a.m."), 360, "6:00 a.m.")
+    c.igual(horas.primera_en("Be at the guide house at 5:45 p.m.\n"
+                             "Dinner will be around 7:30 p.m."), 1065,
+            "manda la PRIMERA: la hora de estar ahi, no la de la cena")
+    c.igual(horas.primera_en("Be at Terra Kitchen at 9:00 a.m. / 4:00 p.m."), 540,
+            "con dos horarios, el primero")
+    c.igual(horas.primera_en("14:00"), 840, "la cita del spa, en 24 horas")
+    c.igual(horas.primera_en("12:50 p.m."), 770, "el mediodia no se va a la madrugada")
+    c.igual(horas.primera_en("12:30 a.m."), 30, "ni la medianoche al mediodia")
+
+    # Lo que no es una hora
+    c.igual(horas.primera_en("Flight: RZ1070\n12:50 p.m."), 770,
+            "el numero de vuelo no es una hora")
+    c.igual(horas.primera_en("(5 HOURS TOUR)"), None, "la duracion tampoco")
+    c.igual(horas.primera_en("Be at Bungalow #29 at ___"), None,
+            "ni el numero del bungalow")
+    c.igual(horas.primera_en("Be at the guide house at ___"), None,
+            "y un tour sin hora no se inventa una")
+    c.igual(horas.primera_en(""), None, "el vacio no revienta")
+    c.igual(horas.primera_en(None), None, "ni la falta de texto")
+
+    # Y lo que no dice hora va al FINAL de su dia, no al principio.
+    import itinerario as itin
+    filas = itin.construir_filas(_datos(tours=[
+        _tour("2026-11-17", "CLARO"),     # «at ___»: la coordina recepcion
+        _tour("2026-11-17", "PAJAREO")]))
+    c.igual(_actividades(filas)[1:3],
+            ["Bird Watching Tour", "Claro del Bosque Experience"],
+            "lo que todavia no tiene hora queda de ultimo en su dia")
+
+
+def los_itinerarios_ya_guardados_tambien_se_ponen_en_hora(c):
+    """El itinerario se guarda UNA vez y despues se lee de la base: el PDF, la pagina del
+    QR y la pantalla salen todos de ahi. Arreglar solo el armado dejaria en desorden a los
+    que ya existen hasta que alguien le diera a «Rehacer automatico» — y nadie se lo da,
+    porque el desorden no se ve en la pantalla de recepcion, se ve en el documento que
+    recibe el huesped.
+
+    La migracion solo REORDENA: no toca una palabra de lo que dice cada fila, asi que lo
+    que recepcion escribio a mano se conserva igual.
+    """
+    import json
+    import init_db
+    conn = comun.base_limpia()
+
+    def _guardar(conf, filas):
+        conn.execute(
+            """INSERT INTO reserva (conf_no, room_no, nombre_principal, arr_date,
+                                    dep_date, adl, chl, rooms, res_status)
+               VALUES (?,'12','Prueba/Ana','16-11-26','20-11-26',2,0,1,'POR INGRESAR')""",
+            (conf,))
+        conn.execute(
+            """INSERT INTO itinerario (conf_no, nombre_bienvenida, filas_json, editado)
+               VALUES (?,'Prueba',?,1)""", (conf, json.dumps(filas)))
+
+    def _leer(conf):
+        return json.loads(conn.execute(
+            "SELECT filas_json FROM itinerario WHERE conf_no = ?", (conf,)).fetchone()[0])
+
+    _guardar("940101", [
+        {"dia": "November 16", "actividad": "Arrival Day",
+         "horario": "Flight: RZ1068\n12:50 p.m."},
+        {"dia": "November 17", "actividad": "Night Walk",
+         "horario": "Be at the guide house at 5:45 p.m.",
+         "detalles": "LO QUE ESCRIBIO RECEPCION"},
+        {"dia": "November 17", "actividad": "Bird Watching Tour",
+         "horario": "Be at the guide house at 6:00 a.m."},
+        {"dia": "November 20", "actividad": "Departure Day",
+         "horario": "Luggage pick-up in your room at 6:00 a.m."},
+    ])
+    # EL CASO REAL de la base del lodge: un tour de las 7:15 a.m. el MISMO dia que el
+    # bote de llegada de las 11:30. Ordenando solo por hora, el itinerario abriria con
+    # el snorkel — como si el huesped lo hiciera antes de llegar.
+    _guardar("940102", [
+        {"dia": "November 24", "actividad": "Arrival Day",
+         "horario": "Boat departure around\n11:30 a.m."},
+        {"dia": "November 24", "actividad": "Snorkeling at Caño Island",
+         "horario": "Be at the dive center at 7:15 a.m."},
+        {"dia": "November 27", "actividad": "Departure Day",
+         "horario": "Luggage pick-up in your room at 7:00 a.m."},
+    ])
+    conn.commit()
+
+    # Por _migrar, que es por donde pasa de verdad: corre en cada arranque. Llamando a
+    # la funcion a mano la prueba pasaria igual aunque nadie la hubiera conectado.
+    with contextlib.redirect_stdout(io.StringIO()):
+        init_db._migrar(conn)
+
+    guardado = _leer("940101")
+    c.igual([f["actividad"] for f in guardado],
+            ["Arrival Day", "Bird Watching Tour", "Night Walk", "Departure Day"],
+            "al arrancar queda en hora en la base, no solo en la pantalla")
+    c.igual([f for f in guardado if f["actividad"] == "Night Walk"][0].get("detalles"),
+            "LO QUE ESCRIBIO RECEPCION",
+            "con el texto de recepcion intacto: solo se movio de sitio")
+
+    c.igual([f["actividad"] for f in _leer("940102")][0], "Arrival Day",
+            "y la llegada sigue abriendo el documento, aunque el tour sea mas temprano")
+
+    c.igual(init_db._ordenar_los_itinerarios_por_hora(conn), 0,
+            "y correrla de nuevo no cambia nada")
+    conn.close()
+
+
 def la_modalidad_no_se_pierde_al_reconocer_por_alias(c):
     """El «C-» se leia buscando el codigo CANONICO en la linea: «SNORKEL» en «14: C-CIS».
     No estaba, asi que TODOS los codigos de la nomenclatura 2027 perdian su privado y su
@@ -882,6 +1131,12 @@ PRUEBAS = [
     un_alias_creado_a_mano_no_vuelve_a_entrar,
     todo_tour_reconocido_tiene_ficha_de_itinerario,
     la_hora_del_catalogo_llega_al_itinerario_del_huesped,
+    el_dia_con_dos_tours_va_de_la_hora_mas_temprana_a_la_mas_tarde,
+    la_cita_de_spa_cae_en_su_dia_y_no_al_final,
+    la_llegada_abre_y_la_salida_cierra_aunque_la_hora_diga_otra_cosa,
+    el_fin_de_ano_no_da_vuelta_el_itinerario,
+    la_hora_se_lee_del_texto_que_ve_el_huesped,
+    los_itinerarios_ya_guardados_tambien_se_ponen_en_hora,
     la_modalidad_no_se_pierde_al_reconocer_por_alias,
     la_pesca_deportiva_es_privada_aunque_no_lo_diga,
     los_codigos_que_aparecieron_en_octubre_caen_en_su_tour,

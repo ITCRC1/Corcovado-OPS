@@ -457,6 +457,7 @@ def _migrar(conn):
     _limpiar_grupos_sueltos(conn)
     _quitar_bebidas_de_amenidades(conn)
     _sin_tumbar_el_arranque(conn, _unificar_tours_de_la_nomenclatura)
+    _sin_tumbar_el_arranque(conn, _ordenar_los_itinerarios_por_hora)
     _purgar_sesiones(conn)
     # Al final, con las tablas ya creadas y los duplicados ya limpios.
     _crear_indices(conn)
@@ -510,6 +511,47 @@ def _quitar_bebidas_de_amenidades(conn):
     if n:
         conn.commit()
         print(f"Se quitaron {n} amenidades de «Bebidas incluidas»: ahora van con el régimen.")
+
+
+def _ordenar_los_itinerarios_por_hora(conn):
+    """Pone en hora las filas de los itinerarios YA GUARDADOS.
+
+    El orden por hora se arregló donde se arma el itinerario, pero eso solo alcanza a
+    los que se armen de ahora en adelante: el itinerario se guarda una vez y después se
+    lee de la base —el PDF, la página del QR y la pantalla salen todos de ahí—, así que
+    sin esto los que ya existen seguirían saliendo en desorden hasta que alguien le
+    diera a «Rehacer automático». Y nadie se lo da, porque el desorden no se ve en la
+    pantalla de recepción: se ve en el documento que recibe el huésped.
+
+    Solo REORDENA. No toca una palabra de lo que dice cada fila, así que lo que
+    recepción haya escrito a mano se conserva igual, en su sitio.
+
+    Medido en la base del lodge: 270 itinerarios guardados, 15 con dos actividades el
+    mismo día, 3 de ellos en desorden.
+    """
+    if not {r[1] for r in conn.execute("PRAGMA table_info(itinerario)")}:
+        return 0
+    import json as _json
+    import itinerario as _itin
+
+    cambiados = 0
+    for fila in conn.execute("SELECT conf_no, filas_json FROM itinerario").fetchall():
+        try:
+            filas = _json.loads(fila["filas_json"])
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(filas, list):
+            continue
+        ordenadas = _itin.incorporar_faltantes(filas, [])
+        if ordenadas == filas:
+            continue
+        conn.execute("UPDATE itinerario SET filas_json = ? WHERE conf_no = ?",
+                     (_json.dumps(ordenadas, ensure_ascii=False), fila["conf_no"]))
+        cambiados += 1
+    if cambiados:
+        conn.commit()
+        print(f"Itinerarios reordenados por hora: {cambiados}")
+    return cambiados
 
 
 def _sin_tumbar_el_arranque(conn, limpieza):

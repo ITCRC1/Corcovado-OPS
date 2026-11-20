@@ -69,6 +69,48 @@ def a_minutos(texto):
     return hora * 60 + minutos
 
 
+# Una hora escrita DENTRO DE UNA FRASE: «Be at the guide house at 6:00 a.m.». Es un
+# patrón aparte del de arriba a propósito: aquel EXIGE que el texto sea la hora y nada
+# más —así una hora mal escrita en el catálogo se rechaza en vez de leerse a medias—, y
+# este tiene que encontrarla en medio de palabras.
+#
+# Lo delicado aquí es lo que NO es una hora: el número de vuelo («Flight: RZ1070»), la
+# duración («(5 HOURS TOUR)») o el número de un bungalow. Por eso cada forma pide algo
+# que la identifique: o la marca de mañana/tarde, o los dos puntos del reloj.
+_EN_UNA_FRASE = re.compile(
+    r"(\d{1,2})(?:\s*[:.]\s*(\d{2}))?\s*([ap])\s*\.?\s*m\s*\.?"   # 6:00 a.m., 6 p.m.
+    r"|(\d{1,2})\s*:\s*(\d{2})",                                  # 14:00
+    re.IGNORECASE)
+
+
+def primera_en(texto):
+    """La PRIMERA hora que aparece en un texto, en minutos. None si no hay ninguna.
+
+    «Be at the guide house at 5:45 p.m. Dinner will be around 7:30 p.m.» -> 1065.
+
+    La primera y no otra porque es la que manda: es la hora a la que el huésped tiene
+    que estar en algún lado. Las que vienen después son consecuencia (el almuerzo, la
+    cena), y ordenar por ellas pondría un tour de la mañana que almuerza tarde después
+    de uno de la tarde.
+    """
+    m = _EN_UNA_FRASE.search(str(texto or ""))
+    if not m:
+        return None
+    if m.group(1) is not None:
+        hora, minutos = int(m.group(1)), int(m.group(2) or 0)
+        marca = (m.group(3) or "").lower()
+        if hora <= 12:
+            if marca == "p" and hora != 12:
+                hora += 12
+            elif marca == "a" and hora == 12:
+                hora = 0
+    else:
+        hora, minutos = int(m.group(4)), int(m.group(5))
+    if hora > 23 or minutos > 59:
+        return None
+    return hora * 60 + minutos
+
+
 def hhmm(minutos):
     """840 -> «14:00»."""
     return f"{minutos // 60:02d}:{minutos % 60:02d}"
