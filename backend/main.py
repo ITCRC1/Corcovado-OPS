@@ -4610,30 +4610,65 @@ def transporte_pendientes(fecha: str = None, desde: str = None, hasta: str = Non
     Una fila pendiente puede serlo por la ENTRADA o por la SALIDA, y cada una tiene su
     propia fecha. Así que entra en el periodo si cualquiera de las dos cae dentro —y se
     mira la fecha que corresponde a lo que está pendiente, no las dos a ciegas.
+
+    PENDIENTE ES NO TENER PUNTO, NO SOLO TENER UN TEXTO RARO. Esto miraba
+    `punto_*_sin_confirmar`, que solo se llena cuando la reserva SÍ habla de la entrada
+    o la salida pero sin nombrar Sierpe ni Drake. La reserva que no dice nada —porque la
+    nota no llegó, o porque nadie la escribió— no tiene ese texto, así que no salía aquí
+    ni en ninguna otra lista: el sistema no sabía por dónde viaja y no se lo decía a
+    nadie. Lo reportó el lodge con una reserva que en Opera dice «Entrada: Sierpe» y en
+    la hoja del día salía en DRAKE.
+
+    Las dos cosas son lo mismo para quien tiene que mandar el bote: no se sabe. La única
+    diferencia es qué se le puede enseñar al confirmar, y eso va en el texto.
     """
     conn = get_connection()
     cond, params = "", []
     if fecha:
-        cond = (" AND ((punto_entrada_sin_confirmar IS NOT NULL AND arr_date = ?)"
-                "   OR (punto_salida_sin_confirmar IS NOT NULL AND dep_date = ?))")
+        cond = (" AND ((punto_entrada IS NULL AND arr_date = ?)"
+                "   OR (punto_salida IS NULL AND dep_date = ?))")
         params = [ddmmyy(fecha), ddmmyy(fecha)]
     elif desde and hasta:
-        cond = (f" AND ((punto_entrada_sin_confirmar IS NOT NULL"
+        cond = (f" AND ((punto_entrada IS NULL"
                 f"        AND {sql_fecha('arr_date')} BETWEEN ? AND ?)"
-                f"   OR (punto_salida_sin_confirmar IS NOT NULL"
+                f"   OR (punto_salida IS NULL"
                 f"        AND {sql_fecha('dep_date')} BETWEEN ? AND ?))")
         params = [yymmdd(desde), yymmdd(hasta), yymmdd(desde), yymmdd(hasta)]
     rows = conn.execute(
         f"""SELECT conf_no, room_no, nombre_principal, arr_date, dep_date,
+                   punto_entrada, punto_salida,
                    punto_entrada_sin_confirmar, punto_salida_sin_confirmar
             FROM reserva
-            WHERE (punto_entrada_sin_confirmar IS NOT NULL
-                   OR punto_salida_sin_confirmar IS NOT NULL)
+            WHERE (punto_entrada IS NULL OR punto_salida IS NULL)
               AND res_status != 'CANCELADA'{cond}
             ORDER BY arr_date""", params
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+
+    # CADA LADO SE MARCA SOLO SI SU PROPIA FECHA CAE EN LO QUE SE ESTÁ MIRANDO. Sin esto,
+    # quien llega hoy sin punto arrastraría también su salida de dentro de cuatro días a
+    # la lista de hoy, y la lista volvería a ser imposible de cerrar — que es justo lo
+    # que el lodge ya había reportado.
+    def dentro(cuando):
+        if not cuando:
+            return False
+        if fecha:
+            return cuando == ddmmyy(fecha)
+        if desde and hasta:
+            # sql_fecha_py devuelve ISO; se compara contra el rango en ISO, que es como
+            # se comparan las fechas en todo el resto del archivo.
+            iso = sql_fecha_py(cuando)
+            return bool(iso) and desde <= iso <= hasta
+        return True
+
+    salida = []
+    for fila in rows:
+        d = dict(fila)
+        d["falta_entrada"] = d["punto_entrada"] is None and dentro(d["arr_date"])
+        d["falta_salida"] = d["punto_salida"] is None and dentro(d["dep_date"])
+        if d["falta_entrada"] or d["falta_salida"]:
+            salida.append(d)
+    return salida
 
 
 @app.get("/api/reservas/{conf_no}/detalle")

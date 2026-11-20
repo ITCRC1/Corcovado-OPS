@@ -4189,23 +4189,33 @@ async function loadTransporte(fecha, desde, hasta) {
       ${d.salidas.length ? `<table><tr><th>Fecha</th><th>Hab.</th><th>Huésped</th><th>Punto</th><th>Hora</th><th>Guía / bote</th><th>Pax</th></tr>${d.salidas.map(filaS).join("")}</table>` : `<p class="empty">Nadie sale este día.</p>`}
       ${pendientes.length && puedeEscribir("transporte") ? `
         <p style="font-weight:600;font-size:14px;margin-top:20px;color:var(--warn-text);">⚠ Pendientes de confirmar (${pendientes.length})</p>
-        <p style="font-size:12px;color:var(--muted);margin:0 0 8px;">De ${fecha ? "este día" : "este rango"}. La reserva menciona un ingreso o salida, pero no dice si es por Sierpe o Drake.</p>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 8px;">De ${fecha ? "este día" : "este rango"}. El sistema no sabe si es por Sierpe o por Drake, así que no se puede apartar el bote. Sin confirmarlo, en la hoja del día queda la casilla vacía.</p>
         ${pendientes.map(p => `
-          ${p.punto_entrada_sin_confirmar ? `
-            <div style="background:var(--warn-bg);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
-              <span style="color:var(--warn-text);"><strong>Entrada</strong> · ${p.nombre_principal} (hab. ${p.room_no}, ${p.arr_date}): "${p.punto_entrada_sin_confirmar}"</span>
-              <button class="btn" style="margin-left:8px;" onclick="confirmarTransporte('${p.conf_no}','entrada','Sierpe')">Es Sierpe</button>
-              <button class="btn" onclick="confirmarTransporte('${p.conf_no}','entrada','Drake')">Es Drake</button>
-            </div>` : ""}
-          ${p.punto_salida_sin_confirmar ? `
-            <div style="background:var(--warn-bg);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
-              <span style="color:var(--warn-text);"><strong>Salida</strong> · ${p.nombre_principal} (hab. ${p.room_no}, ${p.dep_date}): "${p.punto_salida_sin_confirmar}"</span>
-              <button class="btn" style="margin-left:8px;" onclick="confirmarTransporte('${p.conf_no}','salida','Sierpe')">Es Sierpe</button>
-              <button class="btn" onclick="confirmarTransporte('${p.conf_no}','salida','Drake')">Es Drake</button>
-            </div>` : ""}
+          ${p.falta_entrada ? bloquePendiente(p, "entrada", p.arr_date, p.punto_entrada_sin_confirmar) : ""}
+          ${p.falta_salida ? bloquePendiente(p, "salida", p.dep_date, p.punto_salida_sin_confirmar) : ""}
         `).join("")}` : ""}
     </div>
   `;
+}
+
+// Un pendiente de la lista. Hay DOS motivos para estarlo y la casilla tiene que
+// distinguirlos, porque lo que recepción hace con cada uno es distinto:
+//   · la reserva dice algo que no es Sierpe ni Drake («Aguila de Osa 10 am») — se lee y
+//     se decide;
+//   · la reserva no dice NADA de ese lado — hay que ir a preguntar a Opera o a la
+//     agencia. Este caso no salía antes en ninguna lista: el sistema no sabía por dónde
+//     viaja el huésped y no se lo decía a nadie.
+function bloquePendiente(p, tipo, cuando, texto) {
+  const titulo = tipo === "entrada" ? "Entrada" : "Salida";
+  const dice = texto
+    ? `: "${escaparHTML(texto)}"`
+    : ` — <em>la reserva no dice por dónde</em>`;
+  return `
+    <div style="background:var(--warn-bg);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
+      <span style="color:var(--warn-text);"><strong>${titulo}</strong> · ${escaparHTML(p.nombre_principal || "")} (hab. ${escaparHTML(p.room_no || "")}, ${escaparHTML(cuando || "")})${dice}</span>
+      <button class="btn" style="margin-left:8px;" onclick="confirmarTransporte('${p.conf_no}','${tipo}','Sierpe')">Es Sierpe</button>
+      <button class="btn" onclick="confirmarTransporte('${p.conf_no}','${tipo}','Drake')">Es Drake</button>
+    </div>`;
 }
 
 async function confirmarTransporte(confNo, tipo, punto) {

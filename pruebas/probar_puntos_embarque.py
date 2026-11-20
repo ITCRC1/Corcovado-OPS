@@ -475,6 +475,136 @@ def un_punto_que_no_existe_no_se_guarda(c):
         c.igual(e.status_code, 404, "y una reserva inexistente, 404")
 
 
+def la_hoja_del_dia_no_pone_en_drake_lo_que_no_sabe(c):
+    """LO REPORTO EL LODGE con una reserva que en Opera dice «Entrada: Sierpe / Salida:
+    Sierpe» y en la hoja del dia salia en la columna DRAKE.
+
+    La hoja repartia asi: «la columna SIERPE si el punto empieza por sierpe, y si no, la
+    de DRAKE». El resumen agrupa bajo «Sin definir» a las reservas cuyo punto el sistema
+    NO SABE, y ese grupo no empieza por sierpe: su pax se imprimia en DRAKE con la misma
+    seguridad que los demas.
+
+    Es el error caro de este sistema puesto en papel —el bote va a la pista y el huesped
+    espera en el muelle— y falla en silencio: esa hoja no se distingue de una correcta.
+    Es ademas el MISMO fallo que ya estaba arreglado en el itinerario del huesped (ver
+    sin_punto_el_itinerario_no_promete_sierpe), solo que aqui elegia el otro muelle.
+
+    Medido sobre la base del lodge: 50 reservas vivas no tienen punto de entrada y 50 no
+    tienen el de salida. Todas se imprimian bajo DRAKE el dia que se mueven.
+    """
+    import datetime
+    import main
+    import hoja_dia as hd
+
+    conn = comun.base_limpia()
+    ayer = HOY - datetime.timedelta(days=3)
+
+    def reserva(conf, hab, p_ent, p_sal, pax=2):
+        conn.execute(
+            """INSERT INTO reserva (conf_no, room_no, nombre_principal, arr_date,
+                                    dep_date, adl, chl, rooms, res_status,
+                                    punto_entrada, punto_salida)
+               VALUES (?,?,?,?,?,?,0,1,'POR INGRESAR',?,?)""",
+            (conf, hab, f"Prueba/{conf}", _ddmmyy(ayer), _ddmmyy(HOY), pax, p_ent, p_sal))
+
+    reserva("880101", "03", None, None, pax=1)        # la de la foto: no se sabe
+    reserva("880102", "02", "Sierpe", "Sierpe", pax=2)
+    conn.commit()
+    conn.close()
+
+    resumen = main._datos_del_resumen(HOY.isoformat())
+    conn = comun.conexion()
+    d = hd.definicion(conn, HOY.isoformat(), resumen)
+    conn.close()
+    filas = {f["hab"]: f for f in d["filas"]}
+
+    c.igual((filas["03"]["sierpe"], filas["03"]["drake"]), ("", ""),
+            "sin muelle conocido, las DOS casillas quedan vacias")
+    c.cierto("MUELLE" in hd.nota_de_la_fila(filas["03"]).upper(),
+             "y la hoja lo dice en NOTAS, en vez de callarlo")
+    c.cierto(hd.nota_de_la_fila(filas["03"]).startswith(hd.FALTA_EL_MUELLE),
+             "delante de todo lo demas: sin eso no hay nada que ejecutar")
+
+    # Y lo que SI se sabe sigue igual que siempre.
+    c.igual((filas["02"]["sierpe"], filas["02"]["drake"]), (2, ""),
+            "la que sale por Sierpe sigue contando en Sierpe")
+    c.igual(hd.nota_de_la_fila(filas["02"]), "", "y sin aviso de nada")
+
+    # La funcion que reparte, por si alguien la reusa.
+    c.igual(hd.columna_del_punto("Sierpe"), "sierpe", "Sierpe a su columna")
+    c.igual(hd.columna_del_punto("Drake"), "drake", "Drake a la suya")
+    c.igual(hd.columna_del_punto("Sin definir"), None, "y lo que no se sabe, a ninguna")
+    c.igual(hd.columna_del_punto(None), None, "ni lo que no es nada")
+
+
+def quien_no_dice_nada_tambien_sale_en_los_pendientes(c):
+    """La otra mitad: poder arreglarlo.
+
+    La lista de «Pendientes de confirmar» de Transporte miraba
+    `punto_*_sin_confirmar`, que SOLO se llena cuando la reserva habla de la entrada o
+    la salida pero sin nombrar Sierpe ni Drake. La reserva que no dice nada de ese lado
+    —porque la nota no llego o porque nadie la escribio— no tenia ese texto, asi que no
+    salia en esa lista ni en ninguna otra: el sistema no sabia por donde viaja el
+    huesped y no se lo decia a nadie.
+
+    Medido sobre la base del lodge: de las 50 sin punto de entrada, 9 no dicen nada; de
+    las 50 sin punto de salida, 8. Invisibles por completo.
+    """
+    import datetime
+    import main
+
+    conn = comun.base_limpia()
+    ayer = HOY - datetime.timedelta(days=3)
+    pasado = HOY + datetime.timedelta(days=4)
+
+    def reserva(conf, hab, llega, sale, p_ent, p_sal, texto_ent=None):
+        conn.execute(
+            """INSERT INTO reserva (conf_no, room_no, nombre_principal, arr_date,
+                                    dep_date, adl, chl, rooms, res_status,
+                                    punto_entrada, punto_salida,
+                                    punto_entrada_sin_confirmar)
+               VALUES (?,?,?,?,?,2,0,1,'POR INGRESAR',?,?,?)""",
+            (conf, hab, f"Prueba/{conf}", _ddmmyy(llega), _ddmmyy(sale),
+             p_ent, p_sal, texto_ent))
+
+    # Sale HOY y no se sabe por donde, sin que la reserva diga nada: el caso nuevo.
+    reserva("880201", "03", ayer, HOY, "Sierpe", None)
+    # Entra HOY diciendo algo que no es un punto: el caso que ya salia.
+    reserva("880202", "05", HOY, pasado, None, "Drake", texto_ent="Aguila de Osa 10 am")
+    # Entra HOY, sin punto de entrada Y sin el de salida, pero su salida es en 4 dias.
+    reserva("880203", "06", HOY, pasado, None, None)
+    # Y una completa, que no tiene por que aparecer.
+    reserva("880204", "07", ayer, HOY, "Sierpe", "Sierpe")
+    conn.commit()
+    conn.close()
+
+    hoy = main.transporte_pendientes(fecha=HOY.isoformat(), user=USUARIO)
+    por_conf = {p["conf_no"]: p for p in hoy}
+
+    c.cierto("880201" in por_conf, "la que sale hoy sin punto YA sale en la lista")
+    c.igual((por_conf["880201"]["falta_salida"], por_conf["880201"]["falta_entrada"]),
+            (True, False), "y solo por la salida, que es lo que falta")
+    c.igual(por_conf["880201"]["punto_salida_sin_confirmar"], None,
+            "sin texto que enseñar: la reserva no dice nada de la salida")
+
+    c.cierto("880202" in por_conf, "la que dice algo raro sigue saliendo, como antes")
+    c.igual(por_conf["880202"]["punto_entrada_sin_confirmar"], "Aguila de Osa 10 am",
+            "con su texto, para poder decidir leyendolo")
+
+    c.igual(por_conf["880203"]["falta_entrada"], True, "la de hoy entra sin punto")
+    c.igual(por_conf["880203"]["falta_salida"], False,
+            "pero su salida es de otro dia y NO se arrastra al de hoy: una lista que "
+            "mezcla dias no se puede cerrar")
+
+    c.cierto("880204" not in por_conf, "y la que esta completa no estorba")
+
+    # El dia de la salida de la 880203 si aparece su lado de salida.
+    otro = main.transporte_pendientes(fecha=pasado.isoformat(), user=USUARIO)
+    suya = next((p for p in otro if p["conf_no"] == "880203"), None)
+    c.cierto(suya is not None and suya["falta_salida"],
+             "cada lado sale el dia que le toca")
+
+
 def sin_punto_el_itinerario_no_promete_sierpe(c):
     """El itinerario del huesped elegia Sierpe para TODO lo que no fuera Drake.
 
@@ -608,6 +738,8 @@ PRUEBAS = [
     se_puede_devolver_el_mando_a_la_reserva,
     confirmar_una_habitacion_no_cierra_los_avisos_de_las_demas,
     un_punto_que_no_existe_no_se_guarda,
+    la_hoja_del_dia_no_pone_en_drake_lo_que_no_sabe,
+    quien_no_dice_nada_tambien_sale_en_los_pendientes,
     sin_punto_el_itinerario_no_promete_sierpe,
     al_cambiar_el_punto_se_rehace_el_itinerario_del_huesped,
     la_pantalla_deja_cambiar_el_punto_siempre,

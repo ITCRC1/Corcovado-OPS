@@ -49,6 +49,10 @@ def etiqueta_tour(t):
 TOPE_NOTA_AUTO = 110     # la nota libre que viene de Opera
 TOPE_AVISO = 200         # una alerta de Opera (mediana medida: 106; el 81% entra entera)
 
+# Lo que dice el renglón de quien se mueve hoy y no se sabe por dónde. Corto a propósito:
+# la casilla de NOTAS mide 46 mm y esto tiene que entrar entero, delante de todo lo demás.
+FALTA_EL_MUELLE = "FALTA MUELLE: ¿SIERPE O DRAKE?"
+
 
 def _nota_del_estado(r, estado):
     """La nota de la reserva que le toca a ESTE renglón, según lo que pase hoy.
@@ -81,15 +85,21 @@ def _componer_nota(f):
 
     El orden, de lo que no se puede perder a lo que sí:
 
-      1. EL AVISO DE OPERA. Es lo que el lodge escribe para que no se pase por alto, y
+      1. QUE FALTE EL MUELLE. Va primero porque sin eso no hay nada que ejecutar: no se
+         sabe si el bote va a Sierpe o a la pista de Drake. Antes esto no se decía — el
+         pax se imprimía en la columna DRAKE por descarte y la hoja se leía como segura.
+         Ver columna_del_punto.
+      2. EL AVISO DE OPERA. Es lo que el lodge escribe para que no se pase por alto, y
          hasta ahora no llegaba a esta hoja: medido, 43 de las 51 reservas con alerta
          tenían su texto en 'nota_en_casa', que la hoja del día no usa. Lo reportó el
          lodge con la reserva 600382440 —«te adjunto una que se omitió por completo»—.
-      2. El VUELO con su hora de avión.
-      3. El BT, que es un bote apartado a una hora.
-      4. La nota libre de la reserva, que es la única que se recorta.
+      3. El VUELO con su hora de avión.
+      4. El BT, que es un bote apartado a una hora.
+      5. La nota libre de la reserva, que es la única que se recorta.
     """
     partes = []
+    if f.get("falta_punto"):
+        partes.append(FALTA_EL_MUELLE)
     for texto in (f.get("avisos") or []):
         texto = str(texto).strip()
         if texto:
@@ -204,6 +214,31 @@ RANURAS_ARRIBA_MM = (150, 78)         # lo que mide cada caja con su aire alrede
 
 # Los tres grupos de la cabecera superior, con cuántas columnas abarca cada uno.
 GRUPOS = [("HUÉSPEDES", 4), ("INGRESOS Y SALIDAS", 6), ("ACTIVIDADES", 3)]
+
+
+def columna_del_punto(nombre):
+    """«Sierpe» -> la columna SIERPE, «Drake» -> la columna DRAKE. Cualquier otra cosa,
+    ninguna de las dos.
+
+    SIN MUELLE NO SE ELIGE UNO. Esto decía «sierpe si el nombre empieza por sierpe, y si
+    no, drake», así que una reserva cuyo punto el sistema NO SABE —el resumen las agrupa
+    bajo «Sin definir»— se imprimía con su pax en la columna DRAKE, con la misma
+    seguridad que las demás. Lo reportó el lodge con una reserva que en Opera dice
+    «Entrada: Sierpe / Salida: Sierpe» y en la hoja salía en DRAKE.
+
+    Es el error caro de este sistema puesto en papel: el bote se manda a la pista y el
+    huésped espera en el muelle. Y falla en silencio — esa hoja no se distingue en nada
+    de una correcta, así que nadie la revisa.
+
+    Ahora la casilla queda vacía y el aviso va en NOTAS. Una casilla vacía se pregunta;
+    un número en la columna equivocada se ejecuta.
+    """
+    clave = str(nombre or "").strip().lower()
+    if clave.startswith("sierpe"):
+        return "sierpe"
+    if clave.startswith("drake"):
+        return "drake"
+    return None
 
 
 def _nombre_legible(acompanantes, principal, mayusculas=True):
@@ -355,8 +390,13 @@ def definicion(conn, fecha, resumen):
                 or por_hab.get(str(det.get("room_no")))
             if not fila:
                 continue
-            col = "sierpe" if nombre_punto.lower().startswith("sierpe") else "drake"
-            fila[col] = det.get("pax") or ""
+            col = columna_del_punto(nombre_punto)
+            if col:
+                fila[col] = det.get("pax") or ""
+            else:
+                # Ni Sierpe ni Drake: el sistema NO SABE por dónde se mueve. Las dos
+                # casillas quedan vacías y se dice en NOTAS. Ver columna_del_punto.
+                fila["falta_punto"] = True
             # EL HORARIO ES EL DEL TRASLADO, NO EL DEL VUELO. Es la hora a la que el
             # huésped se mueve, que es lo único que el staff puede ejecutar: por Sierpe
             # el bote sale a su hora fija, y por Drake sale DOS HORAS ANTES del vuelo —la

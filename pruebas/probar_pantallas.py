@@ -316,7 +316,11 @@ def el_filtro_de_fecha_manda_en_toda_la_pantalla(c):
     for parametro in ("fecha", "desde", "hasta"):
         c.cierto(parametro in firma, f"los pendientes reciben «{parametro}»")
 
-    cuerpo = servidor[i:i + 2000]
+    # Hasta el final de la funcion, no a tantos caracteres: con un tope fijo, escribir un
+    # parrafo mas en el comentario de arriba tumbaba esta prueba sin que el codigo
+    # hubiera cambiado en nada. Ya paso.
+    fin = servidor.find("\n@app.", i)
+    cuerpo = servidor[i:fin if fin > 0 else i + 4000]
     c.cierto("res_status != 'CANCELADA'" in cuerpo,
              "y tampoco muestran las canceladas")
 
