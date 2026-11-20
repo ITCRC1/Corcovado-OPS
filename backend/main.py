@@ -3083,7 +3083,8 @@ def listar_citas_spa(fecha: str = None, desde: str = None, hasta: str = None,
                 continue
             c["choques"] = _spa.revisar_choque(
                 por_dia.get(c["fecha"], []), c["hora"], c.get("minutos"), terapeutas,
-                cfg, excluir_id=c["id"], terapeuta=c.get("terapeuta"))
+                cfg, excluir_id=c["id"], terapeuta=c.get("terapeuta"),
+                room_no=c.get("room_no"))
         pendientes = [c for c in citas if c["estado"] == "SOLICITADA"]
         return {"citas": citas, "config": cfg, "terapeutas": terapeutas,
                 "solicitudes_pendientes": len(pendientes)}
@@ -3093,7 +3094,8 @@ def listar_citas_spa(fecha: str = None, desde: str = None, hasta: str = None,
 
 @app.get("/api/spa/disponibilidad")
 def disponibilidad_spa(fecha: str, servicio: str = None, minutos: int = None,
-                       excluir: int = None, user: dict = Depends(exige("spa"))):
+                       excluir: int = None, room_no: str = None,
+                       user: dict = Depends(exige("spa"))):
     """Las horas en que ese tratamiento cabe ese día.
 
     Se usa para SUGERIR. El huésped pide y el spa confirma, así que esto no reserva
@@ -3109,7 +3111,10 @@ def disponibilidad_spa(fecha: str, servicio: str = None, minutos: int = None,
         cfg = _spa.cargar_config()
         citas = _citas_spa(conn, fecha, fecha, incluir_canceladas=False)
         terapeutas = _terapeutas_spa(conn)
-        libres = _spa.horas_libres(citas, dura or 60, terapeutas, cfg, excluir_id=excluir)
+        # Con la habitación: quien ya tiene una cita puede encadenar la siguiente sin el
+        # espacio de limpieza, y esas horas tienen que aparecer en la lista.
+        libres = _spa.horas_libres(citas, dura or 60, terapeutas, cfg,
+                                   excluir_id=excluir, room_no=room_no)
         return {"fecha": fecha, "minutos": dura or 60, "horas": libres,
                 "terapeutas": len(terapeutas), "config": cfg}
     finally:
@@ -3135,7 +3140,8 @@ async def crear_cita_spa(payload: dict, user: dict = Depends(exige("spa", escrib
         if nueva and nueva.get("hora"):
             avisos = _spa.revisar_choque(citas, nueva["hora"], nueva.get("minutos"),
                                          terapeutas, cfg, excluir_id=cita_id,
-                                         terapeuta=nueva.get("terapeuta"))
+                                         terapeuta=nueva.get("terapeuta"),
+                                         room_no=nueva.get("room_no"))
         salud = _spa.avisos_de_salud(nueva or {}, _buceo_de(conn, payload.get("conf_no")))
     finally:
         conn.close()
@@ -3247,15 +3253,20 @@ async def mover_cita_spa(cita_id: int, payload: dict,
         citas = _citas_spa(conn, fecha, fecha, incluir_canceladas=False)
         terapeutas = _terapeutas_spa(conn)
         avisos = []
+        # La habitación sale de la lista ya armada y no de la fila de la cita: ahí es la
+        # de la RESERVA, que es la que vale si el huésped se cambió de cuarto.
+        hab = next((c.get("room_no") for c in citas if c["id"] == cita_id),
+                   d.get("room_no"))
         # Con los minutos NUEVOS: el choque hay que mirarlo con lo que va a durar la
         # cita ahora, no con lo que duraba antes.
         if hora:
             avisos = _spa.revisar_choque(citas, hora, minutos, terapeutas, cfg,
-                                         excluir_id=cita_id, terapeuta=terapeuta)
+                                         excluir_id=cita_id, terapeuta=terapeuta,
+                                         room_no=hab)
         sugerida = None
         if hora and not terapeuta:
             sugerida = _spa.terapeuta_sugerida(citas, hora, minutos, terapeutas,
-                                               cfg, excluir_id=cita_id)
+                                               cfg, excluir_id=cita_id, room_no=hab)
         # Si la cita ya estaba confirmada, su fila del itinerario tiene la hora vieja.
         itinerario = None
         if d["estado"] in ("CONFIRMADA", "HECHA"):
@@ -3408,7 +3419,8 @@ def spa_publico_horas(conf_no: str, token: str, fecha: str, servicio: str):
     """Las horas libres de ese día, para que el huésped no pida una que no existe."""
     conn = get_connection()
     try:
-        if not _spa.reserva_de_token(conn, conf_no, token):
+        reserva = _spa.reserva_de_token(conn, conf_no, token)
+        if not reserva:
             raise HTTPException(status_code=404, detail="Enlace no válido")
         s = conn.execute("SELECT minutos FROM spa_servicio WHERE codigo = ? AND activo = 1",
                          (servicio.upper(),)).fetchone()
@@ -3416,7 +3428,11 @@ def spa_publico_horas(conf_no: str, token: str, fecha: str, servicio: str):
             raise HTTPException(status_code=404, detail="Ese tratamiento no está disponible")
         cfg = _spa.cargar_config()
         citas = _citas_spa(conn, fecha, fecha, incluir_canceladas=False)
-        libres = _spa.horas_libres(citas, s["minutos"], _terapeutas_spa(conn), cfg)
+        # Con SU habitación: quien ya tiene una cita puede encadenar la siguiente justo
+        # después, sin el espacio de limpieza. Si no se pasara, esa hora no saldría en la
+        # lista aunque al pedirla entrara — y la lista es todo lo que el huésped ve.
+        libres = _spa.horas_libres(citas, s["minutos"], _terapeutas_spa(conn), cfg,
+                                   room_no=reserva["room_no"])
         return {"fecha": fecha, "minutos": s["minutos"], "horas": libres}
     finally:
         conn.close()
@@ -3485,7 +3501,8 @@ async def spa_publico_pedir(conf_no: str, token: str, payload: dict):
                 choques = _spa.revisar_choque(
                     _citas_spa(conn, datos.get("fecha"), datos.get("fecha"),
                                incluir_canceladas=False),
-                    hora, servicio["minutos"], _terapeutas_spa(conn), cfg)
+                    hora, servicio["minutos"], _terapeutas_spa(conn), cfg,
+                    room_no=reserva["room_no"])
                 if choques:
                     conn.rollback()
                     raise HTTPException(

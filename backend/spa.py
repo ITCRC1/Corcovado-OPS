@@ -135,17 +135,42 @@ def nombre_de_la_cita(escrito, titular):
             or None)
 
 
-def _ocupa(cita, cfg):
+def _ocupa(cita, cfg, con_espacio=True):
     """(desde, hasta) en minutos del día que esta cita le quita a una terapeuta.
 
     Se le suma el espacio entre citas AL FINAL: la terapeuta no queda libre en el
-    momento en que termina el masaje.
+    momento en que termina el masaje —hay que limpiar la cabina, cambiar sábanas y
+    recibir al siguiente huésped.
+
+    `con_espacio=False` la deja en su duración pelada. Es para dos citas seguidas de la
+    MISMA HABITACIÓN, donde ese tiempo no se usa en nada: no hay siguiente huésped que
+    recibir ni cabina que voltear. Ver revisar_choque.
     """
     inicio = _minutos(cita.get("hora"))
     if inicio is None:
         return None
     dura = int(cita.get("minutos") or 60)
-    return inicio, inicio + dura + int(cfg.get("minutos_entre", 30))
+    fin = inicio + dura
+    return inicio, (fin + int(cfg.get("minutos_entre", 30)) if con_espacio else fin)
+
+
+def _hab(valor):
+    """La habitación comparable: «02» y «2» son la misma."""
+    texto = str(valor or "").strip().upper()
+    return texto.lstrip("0") or texto
+
+
+def _es_la_misma_habitacion(cita, room_no):
+    """¿Esa cita es de la misma habitación que la que se está mirando?
+
+    POR HABITACIÓN Y NO POR NOMBRE, a propósito. El nombre lo escribe el huésped en el
+    enlace y en una doble las dos citas suelen entrar a nombre del titular —es justo el
+    caso que el lodge reportó—, así que comparando nombres se eximirían unas sí y otras
+    no, sin ninguna lógica que el spa pueda seguir. Y la habitación es además lo que de
+    verdad importa: el espacio entre citas existe para cambiar de cuarto y de huésped.
+    """
+    propia = _hab(cita.get("room_no"))
+    return bool(propia) and propia == _hab(room_no)
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +178,7 @@ def _ocupa(cita, cfg):
 # ---------------------------------------------------------------------------
 
 def revisar_choque(citas_del_dia, hora, minutos, terapeutas, cfg, excluir_id=None,
-                   terapeuta=None):
+                   terapeuta=None, room_no=None):
     """¿Cabe una cita a esa hora? Devuelve una lista de avisos (vacía si cabe).
 
     Dos comprobaciones distintas, y las dos importan:
@@ -163,6 +188,20 @@ def revisar_choque(citas_del_dia, hora, minutos, terapeutas, cfg, excluir_id=Non
       · La CAPACIDAD. Con dos terapeutas caben dos citas a la vez y no tres. Si la cita
         trae terapeuta asignada, se mira solo la de ella: puede haber hueco en general
         y no con la persona que se eligió.
+
+    DOS CITAS SEGUIDAS DE LA MISMA HABITACIÓN NO CHOCAN. Lo pidió el lodge sobre un caso
+    real: la hab. 02 con «Soul and Body» de 30′ a las 15:45 y «Jungle Bliss» de 40′ a
+    las 16:15, las dos con Hellen. No se solapan ni un minuto —la primera termina
+    exactamente cuando empieza la segunda—; lo que saltaba era el espacio ENTRE citas,
+    que son 30 minutos para limpiar la cabina y recibir al siguiente huésped. Aquí no
+    hay siguiente huésped: es la misma gente en el mismo cuarto, encadenando sus
+    tratamientos. Por eso entre citas de la misma habitación se mira solo la duración.
+
+    Lo que sí sigue siendo choque es que se SOLAPEN de verdad, misma habitación o no:
+    una terapeuta no puede estar en dos camillas a la vez.
+
+    `room_no` es la habitación de la cita que se está mirando. Sin ella el espacio se
+    aplica contra todas, como antes.
 
     No lo impide, avisa. Es la misma decisión que en la Agenda de tours: el spa sabe si
     puede absorber algo que el sistema ve apretado, y bloquearlo obligaría a inventar
@@ -182,15 +221,28 @@ def revisar_choque(citas_del_dia, hora, minutos, terapeutas, cfg, excluir_id=Non
         avisos.append(
             f"Terminaría a las {_hhmm(fin)} y el spa cierra a las {cfg['cierra']}.")
 
-    nueva = (inicio, inicio + dura + int(cfg.get("minutos_entre", 30)))
+    entre = int(cfg.get("minutos_entre", 30))
     activas = [c for c in citas_del_dia
                if c.get("estado") in ESTADOS_QUE_OCUPAN and c.get("id") != excluir_id]
 
+    def le_quita_el_hueco(c):
+        """¿Esa cita y esta no caben juntas?
+
+        El espacio entre citas se quita de LOS DOS LADOS cuando son de la misma
+        habitación, porque cualquiera de las dos puede ser la primera: el aviso salía
+        por duplicado —una vez desde cada cita— y arreglarlo de un solo lado habría
+        dejado la mitad en pie.
+        """
+        seguida = _es_la_misma_habitacion(c, room_no)
+        otra = _ocupa(c, cfg, con_espacio=not seguida)
+        if not otra:
+            return False
+        mia = (inicio, fin if seguida else fin + entre)
+        return mia[0] < otra[1] and otra[0] < mia[1]
+
     if terapeuta:
-        suyas = [c for c in activas if (c.get("terapeuta") or "") == terapeuta]
-        for c in suyas:
-            otra = _ocupa(c, cfg)
-            if otra and nueva[0] < otra[1] and otra[0] < nueva[1]:
+        for c in activas:
+            if (c.get("terapeuta") or "") == terapeuta and le_quita_el_hueco(c):
                 avisos.append(
                     f"{terapeuta} ya tiene una cita a las {c.get('hora')} "
                     f"({c.get('servicio_nombre') or c.get('servicio_codigo')}, "
@@ -198,11 +250,7 @@ def revisar_choque(citas_del_dia, hora, minutos, terapeutas, cfg, excluir_id=Non
                 break
     else:
         # Sin terapeuta elegida: se cuenta cuántas citas se solapan con esta.
-        solapan = 0
-        for c in activas:
-            otra = _ocupa(c, cfg)
-            if otra and nueva[0] < otra[1] and otra[0] < nueva[1]:
-                solapan += 1
+        solapan = sum(1 for c in activas if le_quita_el_hueco(c))
         libres = max(len(terapeutas), 0) - solapan
         if libres <= 0:
             avisos.append(
@@ -211,11 +259,16 @@ def revisar_choque(citas_del_dia, hora, minutos, terapeutas, cfg, excluir_id=Non
     return avisos
 
 
-def horas_libres(citas_del_dia, minutos, terapeutas, cfg, excluir_id=None):
+def horas_libres(citas_del_dia, minutos, terapeutas, cfg, excluir_id=None, room_no=None):
     """Las horas de inicio en que esa duración cabe con alguna terapeuta.
 
     Se usa para SUGERIR, no para reservar: el huésped pide una hora y el spa confirma.
     Aun así vale mucho, porque evita que pida una hora que no existe.
+
+    `room_no` va porque las horas que se OFRECEN tienen que ser las mismas que después
+    se ACEPTAN: quien ya tiene una cita a las 15:45 puede encadenar la siguiente a las
+    16:15, y sin la habitación esa hora no aparecería en la lista aunque al pedirla
+    entrara sin problema.
     """
     abre, cierra = _minutos(cfg["abre"]), _minutos(cfg["cierra"])
     paso = int(cfg.get("paso_minutos", 15))
@@ -224,21 +277,23 @@ def horas_libres(citas_del_dia, minutos, terapeutas, cfg, excluir_id=None):
     hora = abre
     while hora + dura <= cierra:
         if not revisar_choque(citas_del_dia, _hhmm(hora), dura, terapeutas, cfg,
-                              excluir_id=excluir_id):
+                              excluir_id=excluir_id, room_no=room_no):
             libres.append(_hhmm(hora))
         hora += paso
     return libres
 
 
-def terapeuta_sugerida(citas_del_dia, hora, minutos, terapeutas, cfg, excluir_id=None):
+def terapeuta_sugerida(citas_del_dia, hora, minutos, terapeutas, cfg, excluir_id=None,
+                       room_no=None):
     """La primera terapeuta que tiene el hueco libre. None si ninguna.
 
     Sirve para que el spa no tenga que ir probando: al confirmar una cita se le propone
-    quién puede tomarla.
+    quién puede tomarla. Con la habitación, dos citas seguidas del mismo cuarto le caen
+    a la MISMA terapeuta — que es lo que el lodge hace y lo que el huésped espera.
     """
     for t in terapeutas:
         if not revisar_choque(citas_del_dia, hora, minutos, terapeutas, cfg,
-                              excluir_id=excluir_id, terapeuta=t):
+                              excluir_id=excluir_id, terapeuta=t, room_no=room_no):
             return t
     return None
 

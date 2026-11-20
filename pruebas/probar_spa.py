@@ -41,7 +41,8 @@ def _pms(fecha):
     return fecha.strftime("%d-%m-%y")
 
 
-def _cita(conn, servicio="JUNGLE", hora="10:00", estado="CONFIRMADA"):
+def _cita(conn, servicio="JUNGLE", hora="10:00", estado="CONFIRMADA",
+          room_no="12", terapeuta=None):
     """Una cita con ficha medica, como las que crea el huesped desde su enlace."""
     minutos = conn.execute(
         "SELECT minutos FROM spa_servicio WHERE codigo = ?", (servicio,)).fetchone()[0]
@@ -49,9 +50,9 @@ def _cita(conn, servicio="JUNGLE", hora="10:00", estado="CONFIRMADA"):
         """INSERT INTO spa_cita (conf_no, room_no, nombre_huesped, servicio_codigo,
                                  fecha, hora, minutos, terapeuta, estado, origen,
                                  condicion_medica, alergias, cirugia_reciente)
-           VALUES (NULL, '12', 'Prueba/Ana', ?, ?, ?, ?, NULL, ?, 'HUESPED',
+           VALUES (NULL, ?, 'Prueba/Ana', ?, ?, ?, ?, ?, ?, 'HUESPED',
                    'hipertension', 'ninguna', 0)""",
-        (servicio, HOY.isoformat(), hora, minutos, estado))
+        (room_no, servicio, HOY.isoformat(), hora, minutos, terapeuta, estado))
     conn.commit()
     return cur.lastrowid
 
@@ -181,6 +182,166 @@ def el_choque_se_mira_con_la_duracion_NUEVA(c):
     c.cierto(len(choques) > 0,
              "con 90 minutos SI se avisa del choque, que es lo que hay que ver")
     conn.close()
+
+
+def dos_citas_seguidas_de_la_misma_habitacion_no_chocan(c):
+    """EL CASO QUE REPORTO EL LODGE, con sus numeros: la hab. 02 con «Soul and Body» de
+    30' a las 15:45 y «Jungle Bliss» de 40' a las 16:15, las dos con Hellen. El sistema
+    las marcaba como «2 citas que no caben como estan».
+
+    «En casos asi si es posible que sea la misma terapista, porque si notas es la misma
+    habitacion, misma persona, no habria conflicto».
+
+    Y no lo hay: no se solapan ni un minuto —la primera termina exactamente cuando
+    empieza la segunda—. Lo que saltaba era el espacio ENTRE citas, que son 30 minutos
+    para limpiar la cabina y recibir al siguiente huesped. Aqui no hay siguiente huesped:
+    es la misma gente en el mismo cuarto encadenando sus tratamientos.
+    """
+    conn = comun.base_limpia()
+    cfg = _spa.cargar_config()
+    primera = _cita(conn, "SOUL", hora="15:45", room_no="02", terapeuta="Hellen")
+    segunda = _cita(conn, "JUNGLE", hora="16:15", room_no="02", terapeuta="Hellen")
+    citas = [dict(r) for r in conn.execute("SELECT * FROM spa_cita")]
+    conn.close()
+
+    # Las dos direcciones: el aviso salia por duplicado, una vez desde cada cita.
+    c.igual(_spa.revisar_choque(citas, "16:15", 40, ["Hellen"], cfg,
+                                excluir_id=segunda, terapeuta="Hellen", room_no="02"),
+            [], "la de las 16:15 cabe detras de la de las 15:45")
+    c.igual(_spa.revisar_choque(citas, "15:45", 30, ["Hellen"], cfg,
+                                excluir_id=primera, terapeuta="Hellen", room_no="02"),
+            [], "y mirado desde la otra, tampoco choca")
+
+    # Y con UNA sola terapeuta en todo el spa, por capacidad, tambien caben.
+    c.igual(_spa.revisar_choque(citas, "16:15", 40, ["Hellen"], cfg,
+                                excluir_id=segunda, room_no="02"),
+            [], "sin terapeuta elegida, la capacidad tampoco las cuenta como dos a la vez")
+
+
+def dos_citas_que_se_solapan_de_verdad_siguen_chocando(c):
+    """LA OTRA MITAD, y es la que hace que el cambio se pueda aplicar sin romper nada:
+    una terapeuta no puede estar en dos camillas a la vez, sea la misma habitacion o no.
+    Lo que se quito es el espacio de limpieza entre citas seguidas, no la comprobacion
+    de que no se monten una encima de otra.
+    """
+    conn = comun.base_limpia()
+    cfg = _spa.cargar_config()
+    _cita(conn, "RAIN", hora="15:45", room_no="02", terapeuta="Hellen")   # 60': hasta 16:45
+    segunda = _cita(conn, "JUNGLE", hora="16:15", room_no="02", terapeuta="Hellen")
+    citas = [dict(r) for r in conn.execute("SELECT * FROM spa_cita")]
+    conn.close()
+
+    avisos = _spa.revisar_choque(citas, "16:15", 40, ["Hellen"], cfg,
+                                 excluir_id=segunda, terapeuta="Hellen", room_no="02")
+    c.cierto(len(avisos) > 0,
+             "a las 16:15 con la de las 15:45 corriendo hasta las 16:45 SI hay choque")
+    c.cierto("15:45" in avisos[0], "y el aviso dice con cual")
+
+
+def entre_habitaciones_distintas_el_espacio_sigue_valiendo(c):
+    """Lo que no cambia: entre dos cuartos la terapeuta si necesita sus 30 minutos —hay
+    que limpiar la cabina, cambiar sabanas y recibir a otro huesped—. Si esto se hubiera
+    quitado de paso, el spa quedaria con una agenda imposible de cumplir.
+    """
+    conn = comun.base_limpia()
+    cfg = _spa.cargar_config()
+    _cita(conn, "SOUL", hora="15:45", room_no="02", terapeuta="Hellen")
+    segunda = _cita(conn, "JUNGLE", hora="16:15", room_no="03", terapeuta="Hellen")
+    citas = [dict(r) for r in conn.execute("SELECT * FROM spa_cita")]
+    conn.close()
+
+    avisos = _spa.revisar_choque(citas, "16:15", 40, ["Hellen"], cfg,
+                                 excluir_id=segunda, terapeuta="Hellen", room_no="03")
+    c.cierto(len(avisos) > 0, "de la 02 a la 03 sigue haciendo falta el espacio")
+    c.cierto("hab. 02" in avisos[0], "y se dice de que habitacion es la otra cita")
+
+
+def la_hora_que_se_le_ofrece_al_huesped_es_la_que_se_le_acepta(c):
+    """Las dos puertas tienen que decir lo mismo. La lista de horas libres es TODO lo que
+    el huesped ve en su enlace: si las 16:15 no aparecieran ahi, de nada valdria que el
+    sistema las aceptara — nadie las pediria. Y al reves seria peor: ofrecerle una hora
+    que al tocarla se rechaza.
+    """
+    conn = comun.base_limpia()
+    cfg = _spa.cargar_config()
+    _cita(conn, "SOUL", hora="15:45", room_no="02", terapeuta="Hellen")
+    citas = [dict(r) for r in conn.execute("SELECT * FROM spa_cita")]
+    conn.close()
+
+    suyas = _spa.horas_libres(citas, 40, ["Hellen"], cfg, room_no="02")
+    c.cierto("16:15" in suyas, "a la 02 se le ofrecen las 16:15, justo detras de la suya")
+    ajenas = _spa.horas_libres(citas, 40, ["Hellen"], cfg, room_no="03")
+    c.cierto("16:15" not in ajenas, "y a otra habitacion no, que ahi si hay que limpiar")
+
+    # Y la terapeuta que se propone para la segunda es LA MISMA, que es lo que el lodge
+    # hace y lo que el huesped espera.
+    c.igual(_spa.terapeuta_sugerida(citas, "16:15", 40, ["Hellen", "Rocío"], cfg,
+                                    room_no="02"),
+            "Hellen", "la segunda cita del cuarto le cae a la misma terapeuta")
+
+
+def la_agenda_del_spa_no_marca_las_dos_citas_del_mismo_cuarto(c):
+    """EL CAMINO COMPLETO, por la pantalla de la foto.
+
+    La regla vive en spa.revisar_choque, pero la AGENDA arma su propia llamada: si no le
+    pasara la habitacion, el aviso seguiria encendido con la regla ya arreglada y
+    probando solo la funcion esto daria verde. Es el error que mas se repite en este
+    sistema —una regla arreglada en un sitio y otra pantalla que arma su propio SQL— asi
+    que se comprueba por donde se ve.
+    """
+    import main
+    conn = comun.base_limpia()
+    _cita(conn, "SOUL", hora="15:45", room_no="02", terapeuta="Hellen")
+    _cita(conn, "JUNGLE", hora="16:15", room_no="02", terapeuta="Hellen")
+    conn.close()
+
+    d = main.listar_citas_spa(fecha=HOY.isoformat(), user={"usuario": "pruebas"})
+    marcadas = [x for x in d["citas"] if x.get("choques")]
+    c.igual(marcadas, [], "la agenda no marca ninguna de las dos")
+
+    # Y lo contrario: si de verdad se montan, la agenda SI lo marca.
+    conn = comun.conexion()
+    conn.execute("UPDATE spa_cita SET hora = '16:00' WHERE hora = '16:15'")
+    conn.commit()
+    conn.close()
+    d = main.listar_citas_spa(fecha=HOY.isoformat(), user={"usuario": "pruebas"})
+    c.cierto(any(x.get("choques") for x in d["citas"]),
+             "con las citas montadas de verdad, el aviso sigue estando")
+
+
+def el_enlace_del_huesped_deja_encadenar_la_segunda_cita(c):
+    """La otra puerta, y la que mas pesa: al huesped su enlace le BLOQUEA la hora, no se
+    la avisa. Con el espacio de limpieza aplicado a su propia cita anterior, pedir la
+    segunda le daba un 409 —«esa hora ya se ocupo»— sobre una hora que estaba libre para
+    el. Y antes de eso ni siquiera la veia: la lista de horas es todo lo que tiene.
+    """
+    import asyncio
+    import main
+    conn = comun.base_limpia()
+    conn.execute(
+        """INSERT INTO reserva (conf_no, room_no, nombre_principal, arr_date, dep_date,
+                                adl, chl, rooms, res_status)
+           VALUES ('910301','02','Smith/Ruth',?,?,2,0,1,'POR INGRESAR')""",
+        (_pms(HOY), _pms(HOY + datetime.timedelta(days=3))))
+    # Su primera cita, con la unica terapeuta que queda activa.
+    conn.execute("UPDATE spa_terapeuta SET activo = 0 WHERE nombre != 'Hellen'")
+    conn.execute(
+        """INSERT INTO spa_cita (conf_no, room_no, nombre_huesped, servicio_codigo,
+                                 fecha, hora, minutos, terapeuta, estado, origen)
+           VALUES ('910301','02','Ruth Smith','SOUL',?, '15:45', 30, 'Hellen',
+                   'CONFIRMADA','HUESPED')""", (HOY.isoformat(),))
+    token = _spa.token_de_reserva(conn, "910301")
+    conn.commit()
+    conn.close()
+
+    horas = main.spa_publico_horas("910301", token, HOY.isoformat(), "JUNGLE")
+    c.cierto("16:15" in horas["horas"],
+             "se le ofrecen las 16:15, justo cuando termina la suya")
+
+    respuesta = asyncio.run(main.spa_publico_pedir("910301", token, {
+        "servicio_codigo": "JUNGLE", "fecha": HOY.isoformat(), "hora": "16:15",
+        "nombre_huesped": "Ruth Smith", "acepto_terminos": True}))
+    c.igual(len(respuesta["mis_citas"]), 2, "y al pedirlas quedan sus dos citas")
 
 
 def las_terapeutas_tienen_nombre(c):
@@ -570,6 +731,12 @@ PRUEBAS = [
     sin_cambio_no_pasa_nada,
     sin_duracion_en_el_catalogo_se_conserva_la_que_tenia,
     el_choque_se_mira_con_la_duracion_NUEVA,
+    dos_citas_seguidas_de_la_misma_habitacion_no_chocan,
+    dos_citas_que_se_solapan_de_verdad_siguen_chocando,
+    entre_habitaciones_distintas_el_espacio_sigue_valiendo,
+    la_hora_que_se_le_ofrece_al_huesped_es_la_que_se_le_acepta,
+    la_agenda_del_spa_no_marca_las_dos_citas_del_mismo_cuarto,
+    el_enlace_del_huesped_deja_encadenar_la_segunda_cita,
     las_terapeutas_tienen_nombre,
     agregar_una_terapeuta_sube_cuantas_citas_caben,
     a_la_base_ya_instalada_le_entran_las_nuevas,

@@ -6901,7 +6901,8 @@ async function mostrarFormCita(confNo) {
           <input type="text" id="nc-conf" value="${escaparHTML(confNo || "")}" placeholder="ej. 600012147"
             onchange="datosDeReservaSpa()" style="width:140px;"></div>
         <div><label style="display:block;font-size:11px;color:var(--muted);">Habitación</label>
-          <input type="text" id="nc-hab" placeholder="si no hay reserva" style="width:110px;"></div>
+          <input type="text" id="nc-hab" placeholder="si no hay reserva" style="width:110px;"
+            onchange="horasLibresSpa()"></div>
         <div><label style="display:block;font-size:11px;color:var(--muted);">Tratamiento</label>
           <select id="nc-serv" onchange="horasLibresSpa()" style="width:220px;">
             ${cat.servicios.map(s => `<option value="${s.codigo}">${escaparHTML(s.nombre)} · ${s.minutos}′</option>`).join("")}
@@ -6934,7 +6935,10 @@ async function datosDeReservaSpa() {
     if (!res.ok) return;
     const d = await res.json();
     const hab = (d.reserva || d).room_no;
-    if (hab) document.getElementById("nc-hab").value = hab;
+    if (hab) {
+      document.getElementById("nc-hab").value = hab;
+      horasLibresSpa();   // ya se sabe el cuarto: las horas pueden cambiar
+    }
   } catch (e) { /* si no se puede, se escribe a mano */ }
 }
 
@@ -6944,9 +6948,15 @@ async function horasLibresSpa() {
   const fecha = document.getElementById("nc-fecha").value;
   const serv = document.getElementById("nc-serv").value;
   if (!fecha || !serv) { caja.textContent = ""; return; }
+  // La habitación va porque dos citas seguidas del MISMO cuarto no llevan el espacio de
+  // limpieza entre medio: sin ella, a quien ya tiene una cita no se le ofrecería la hora
+  // de la siguiente aunque el sistema la acepte.
+  const hab = (document.getElementById("nc-hab")?.value || "").trim();
+  const q = { fecha, servicio: serv };
+  if (hab) q.room_no = hab;
   try {
     const res = await fetchAuth(
-      `${API}/api/spa/disponibilidad?${new URLSearchParams({ fecha, servicio: serv })}`);
+      `${API}/api/spa/disponibilidad?${new URLSearchParams(q)}`);
     if (!res.ok) { caja.textContent = ""; return; }
     const d = await res.json();
     caja.innerHTML = d.horas.length
