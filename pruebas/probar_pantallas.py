@@ -162,6 +162,55 @@ def ni_una_alergia_ni_un_plazo_se_pintan_como_un_movimiento(c):
         c.cierto(f".{clase}" in html, f"y {clase} tiene su estilo")
 
 
+def la_cifra_de_cada_tarjeta_se_lee_de_golpe(c):
+    """LO REPORTO EL LODGE: «poner los numeros del resumen de un color mas visible, que
+    no cueste distinguir el numero».
+
+    Medido sobre el pantallazo, el color NO era el problema: la cifra ya se dibujaba en
+    #1D332A —casi negro— con 12.7:1 de contraste contra la tarjeta, muy por encima del
+    4.5:1 que pide la norma. Lo que costaba era el TRAZO. Las cifras iban en Playfair,
+    que es una didone: alterna astas gruesas con enlaces finisimos, y en un «30» de 25 px
+    los finos casi desaparecen. En un titulo eso se lee como elegancia; en un dato que
+    alguien mira de reojo entre dos tareas, se lee mal.
+
+    Asi que las cifras salen de la serif de titulos y pasan a la tipografia de DATOS, que
+    es de trazo uniforme —la misma que ya llevan todas las tablas— y al negro de texto
+    del sistema. Los titulos se quedan en la serif: ahi si es lo que se quiere.
+    """
+    html = _html()
+    sin = _sin_comentarios(html)
+
+    # La regla que pone la serif ya no alcanza a las cifras.
+    #
+    # Se mira el SELECTOR —lo que hay entre el ultimo «}» o «*/» y el «{»— y no una
+    # ventana de tantos caracteres hacia atras: con un tope fijo, escribir un comentario
+    # que NOMBRA la clase tumbaba esta prueba con el CSS correcto. Paso al escribirla.
+    i = sin.find("font-family: 'Display', Georgia, serif")
+    c.cierto(i > 0, "existe la regla de la tipografia de titulos")
+    selector = sin[:i].rsplit("}", 1)[-1].rsplit("*/", 1)[-1]
+    c.cierto(".stat-value" not in selector,
+             "la cifra de la tarjeta ya NO hereda la serif de titulos")
+    for titulo in (".title", "h1, h2, h3, h4"):
+        c.cierto(titulo in selector, f"y los titulos siguen en la serif ({titulo})")
+
+    # Y tiene la suya, de trazo uniforme y en negro.
+    j = sin.find(".stat-value {")
+    c.cierto(j > 0, "existe la regla de la cifra")
+    cifra = sin[j:j + 400]
+    c.cierto("'Datos'" in cifra, "la cifra va en la tipografia de datos")
+    c.cierto("var(--text)" in cifra, "y en el negro del sistema, no en el verde")
+    c.cierto("tabular-nums" in cifra,
+             "con cifras de ancho fijo, para que las columnas de digitos se alineen")
+
+    # La cifra grande de los restaurantes es el mismo dato y sigue el mismo criterio: si
+    # una se arreglara y la otra no, la misma pantalla tendria dos clases de numero.
+    k = sin.find(".rest-col .cifra {")
+    c.cierto(k > 0, "existe la cifra grande de restaurantes")
+    grande = sin[k:k + 400]
+    c.cierto("'Datos'" in grande and "var(--text)" in grande,
+             "la cifra grande de cada restaurante va igual que la de las tarjetas")
+
+
 def los_botones_se_pueden_tocar_con_el_dedo(c):
     """En el telefono median 30 px de alto y se tocaban con la punta de la uña."""
     html = _html()
@@ -1223,6 +1272,7 @@ def el_resumen_se_puede_ver_por_rango_de_fechas(c):
 PRUEBAS = [
     el_estado_del_dia_tiene_un_solo_color_en_toda_la_app,
     ni_una_alergia_ni_un_plazo_se_pintan_como_un_movimiento,
+    la_cifra_de_cada_tarjeta_se_lee_de_golpe,
     los_botones_se_pueden_tocar_con_el_dedo,
     los_iconos_del_menu_dicen_lo_que_abren,
     los_ninos_se_ven_donde_se_mira_el_pax,

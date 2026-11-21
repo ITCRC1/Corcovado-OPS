@@ -30,7 +30,10 @@
   :root {
     --forest: #2C4A3E; --forest-dark: #1D332A; --sand: #F5F1E8; --card: #FFFFFF;
     /* Escala de texto: un solo sistema en vez de tamaños sueltos */
-    --t-xs: 11px; --t-sm: 12.5px; --t-md: 14px; --t-lg: 16px; --t-xl: 19px; --t-xxl: 25px;
+    /* --t-xxl es SOLO el de las cifras de las tarjetas. Sube de 25 a 28 porque esas
+       cifras pasaron a la tipografía condensada: a igual altura ocupa menos ancho, y sin
+       compensarlo el número habría quedado más pequeño justo cuando se pedía lo contrario. */
+    --t-xs: 11px; --t-sm: 12.5px; --t-md: 14px; --t-lg: 16px; --t-xl: 19px; --t-xxl: 28px;
     /* Radios: tres valores para todo el sistema */
     --r-sm: 6px; --r-md: 10px; --r-pill: 999px;
     /* Escala general, ajustable por el usuario */
@@ -62,7 +65,15 @@
     font-family: 'Datos', -apple-system, "Segoe UI", Arial, sans-serif;
     font-size: calc(var(--t-sm) * var(--escala)); }
   input, select, textarea, button { font-family: inherit; }
-  h1, h2, h3, h4, .title, .stat-value, .titulo-display {
+  /* LAS CIFRAS NO VAN EN LA SERIF, y los títulos sí. Lo reportó el lodge: «poner los
+     números del resumen de un color más visible, que no cueste distinguir el número».
+     Medido sobre el pantallazo, el color ya era casi negro (#1D332A): lo que costaba no
+     era el color sino el TRAZO. Playfair es una didone —alterna trazos gruesos con otros
+     finísimos— y en un «30» de 25 px los finos casi desaparecen. En un título eso se lee
+     como elegancia; en un dato que alguien mira de reojo entre dos tareas, se lee mal.
+     Las cifras pasan a la tipografía de datos, que es de trazo uniforme, y al negro de
+     texto del sistema. Ver .stat-value. */
+  h1, h2, h3, h4, .title, .titulo-display {
     font-family: 'Display', Georgia, serif; font-weight: 700; }
   .container { max-width: 980px; margin: 0 auto; padding: 20px 16px 40px; }
   .topbar { display:flex; align-items:center; justify-content:space-between;
@@ -202,8 +213,11 @@
   .rest-col { background:#fff; border:1px solid var(--border); border-radius:var(--r-md); padding:14px; }
   .rest-col h5 { margin:0; font-family:'Display',Georgia,serif; font-weight:700;
     font-size:calc(var(--t-lg)*var(--escala)); color:var(--forest-dark); }
-  .rest-col .cifra { font-family:'Display',Georgia,serif; font-weight:700;
-    font-size:calc(var(--t-xxl)*var(--escala)); color:var(--forest-dark); line-height:1.1; }
+  /* La cifra grande de cada restaurante, con el mismo criterio que .stat-value: es un
+     dato y no un título, así que va en la tipografía de datos y en negro. */
+  .rest-col .cifra { font-family:'Datos','Archivo Narrow',system-ui,sans-serif;
+    font-weight:600; font-size:calc(var(--t-xxl)*var(--escala)); color:var(--text);
+    line-height:1.1; letter-spacing:.4px; font-variant-numeric:tabular-nums; }
   .rest-barra { background:#EFEBE0; border-radius:5px; height:10px; margin-top:8px; overflow:hidden; }
   .rest-barra div { height:100%; border-radius:5px; }
   .rest-nota { font-size:calc(var(--t-xs)*var(--escala)); color:var(--muted);
@@ -222,8 +236,15 @@
   .stat.selected { border-color: var(--forest); background: #EAF1EC; }
   .stat-label { font-size: calc(var(--t-xs) * var(--escala)); color: var(--muted); margin: 0 0 6px;
     letter-spacing: .3px; text-transform: uppercase; }
-  .stat-value { font-size: calc(var(--t-xxl) * var(--escala)); font-weight: 700; margin: 0;
-    color: var(--forest-dark); line-height: 1.1; }
+  /* LA CIFRA DE CADA TARJETA: es el dato que se mira de reojo, así que gana trazo.
+     'Datos' (Archivo Narrow SemiBold) en vez de la serif de títulos, y el negro del
+     sistema en vez del verde: el verde no se distinguía del título de la tarjeta.
+     tabular-nums alinea las columnas de dígitos entre tarjetas; el letter-spacing es
+     porque la condensada pega los números entre sí («11» parecía una sola cifra). */
+  .stat-value { font-size: calc(var(--t-xxl) * var(--escala)); margin: 0;
+    font-family: 'Datos', 'Archivo Narrow', system-ui, sans-serif; font-weight: 600;
+    color: var(--text); line-height: 1.1;
+    letter-spacing: .4px; font-variant-numeric: tabular-nums; }
   table { width: 100%; border-collapse: collapse; font-size: calc(var(--t-sm) * var(--escala)); }
   th { text-align: left; color: var(--muted); font-weight: 600; padding: 9px 6px;
     border-bottom: 1px solid var(--border); font-size: calc(var(--t-xs) * var(--escala));
