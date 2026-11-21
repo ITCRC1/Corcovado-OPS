@@ -1973,12 +1973,17 @@ function lineaDelDia(tours, conflictos, fecha) {
       </div>
       ${sinHora.length ? `
         <div class="jornada-sinhora" onclick="loadAgenda('${fecha}')"
-             title="El horario de cada tour se pone en la pantalla de Catálogo">
+             title="Escribí la hora en el itinerario de esa reserva, o en Catálogo si el tour sale siempre a la misma">
           <b>Sin hora</b>
           ${sinHora.map(t => escaparHTML(
               `${t.tour_codigo}${(t.grupo_operativo && t.grupo_operativo !== "A") ? " " + t.grupo_operativo : ""} ${t.pax}p`
             )).join(" · ")}
-          <span>— ponele horario en Catálogo y se dibuja en la línea</span>
+          <!-- EL CLARO DEL BOSQUE NO LLEVA HORA EN EL CATÁLOGO: la suya cambia cada día
+               y se acuerda con el huésped. Este cartel decía «ponele horario en
+               Catálogo», que para esos tours es el consejo equivocado —se la pondría a
+               todos los Claros de todos los días—. Ahora el sistema lee la que recepción
+               escribe en el itinerario de la reserva, así que el cartel dice eso. -->
+          <span>— escribile la hora en el itinerario de la reserva y se dibuja acá</span>
         </div>` : ""}
       <div class="jornada-leyenda">
         <span><i style="background:var(--forest);"></i>Asignado</span>

@@ -353,13 +353,26 @@ def _a_minutos(hora):
 def _se_solapan(inicio_a, fin_a, inicio_b, fin_b):
     """Dos tours se solapan si comparten cualquier momento. Si a alguno le falta
     horario definido, se asume que sí podrían coincidir (mejor avisar que callar)."""
+    return _como_se_solapan(inicio_a, fin_a, inicio_b, fin_b) is not None
+
+
+def _como_se_solapan(inicio_a, fin_a, inicio_b, fin_b):
+    """None si NO chocan; «coinciden» si de verdad se pisan; «sin_hora» si no se sabe.
+
+    LA DIFERENCIA IMPORTA PARA EL AVISO. Cuando a una salida no se le sabe la hora, esto
+    devuelve que podrían coincidir —es la red de seguridad, y se queda— pero el mensaje
+    no puede seguir afirmando que «coinciden»: lo reportó el lodge con el Claro del
+    Bosque, que no tiene hora en el catálogo porque se acuerda cada día, y salía
+    chocando con el pajareo de las 6 del mismo guía. Quien lee «coinciden a las 06:00 y
+    ?» no tiene forma de saber que lo que falta es escribir una hora.
+    """
     ia, fa = _a_minutos(inicio_a), _a_minutos(fin_a)
     ib, fb = _a_minutos(inicio_b), _a_minutos(fin_b)
     if ia is None or ib is None:
-        return True
+        return "sin_hora"
     fa = fa if fa is not None else ia + 60
     fb = fb if fb is not None else ib + 60
-    return ia < fb and ib < fa
+    return "coinciden" if (ia < fb and ib < fa) else None
 
 
 def detectar_conflictos_asignacion(fecha=None):
@@ -380,6 +393,13 @@ def detectar_conflictos_asignacion(fecha=None):
             {filtro}
             {'AND' if filtro else 'WHERE'} r.res_status != 'CANCELADA'
             ORDER BY ta.fecha, tc.horario_inicio""", params).fetchall()]
+    # LA HORA ESCRITA A MANO TAMBIÉN CUENTA AQUÍ. Sin esto, el Claro del Bosque —que no
+    # tiene hora en el catálogo porque se acuerda cada día— entraba sin hora, y una
+    # salida sin hora se supone que PODRÍA coincidir con cualquier otra: el guía del
+    # pajareo de las 6 salía en rojo por un choque que no existe. Lo reportó el lodge.
+    # Es la misma función que usan la línea del día, la agenda y el resumen.
+    import itinerario as _itin
+    _itin.completar_horas(conn, filas)
     conn.close()
 
     # Cada salida es una combinación de fecha + tour + modalidad + grupo operativo: varias
@@ -421,8 +441,9 @@ def detectar_conflictos_asignacion(fecha=None):
             a, b = lista[i], lista[j]
             if a["fecha"] != b["fecha"]:
                 continue
-            if not _se_solapan(a["horario_inicio"], a["horario_fin"],
-                               b["horario_inicio"], b["horario_fin"]):
+            como = _como_se_solapan(a["horario_inicio"], a["horario_fin"],
+                                    b["horario_inicio"], b["horario_fin"])
+            if not como:
                 continue
             for campo, etiqueta in (("guia_nombre", "guía"), ("bote_nombre", "bote")):
                 valor = a.get(campo)
@@ -437,17 +458,29 @@ def detectar_conflictos_asignacion(fecha=None):
                     gr = "" if x["grupo_operativo"] == "A" else f" grupo {x['grupo_operativo']}"
                     return f"{x['tour_codigo']}{priv}{gr}"
 
+                # EL MENSAJE DICE QUÉ PASA DE VERDAD. Si una de las dos no tiene hora, no
+                # se sabe si chocan: lo que hay que hacer es escribirle la hora, y el
+                # aviso tiene que pedir eso en vez de afirmar que coinciden.
+                if como == "sin_hora":
+                    sin = a if not str(a["horario_inicio"] or "").strip() else b
+                    texto = (f"El {etiqueta} {valor} podría chocar el {a['fecha']}: "
+                             f"{como_se_llama(a)} y {como_se_llama(b)}. "
+                             f"A {como_se_llama(sin)} no se le sabe la hora — "
+                             f"escribila en el itinerario del huésped o en Catálogo.")
+                else:
+                    texto = (f"El {etiqueta} {valor} está asignado a dos salidas que coinciden "
+                             f"el {a['fecha']}: {como_se_llama(a)} ({a['horario_inicio'] or '?'}) "
+                             f"y {como_se_llama(b)} ({b['horario_inicio'] or '?'}).")
                 conflictos.append({
                     "fecha": a["fecha"],
                     "tipo": etiqueta,
                     "nombre": valor,
+                    "por_falta_de_hora": como == "sin_hora",
                     "salida_a": como_se_llama(a),
                     "horario_a": f"{a['horario_inicio'] or '?'}–{a['horario_fin'] or '?'}",
                     "salida_b": como_se_llama(b),
                     "horario_b": f"{b['horario_inicio'] or '?'}–{b['horario_fin'] or '?'}",
-                    "mensaje": (f"El {etiqueta} {valor} está asignado a dos salidas que coinciden "
-                                f"el {a['fecha']}: {como_se_llama(a)} ({a['horario_inicio'] or '?'}) "
-                                f"y {como_se_llama(b)} ({b['horario_inicio'] or '?'})."),
+                    "mensaje": texto,
                 })
     return conflictos
 

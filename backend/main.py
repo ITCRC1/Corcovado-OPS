@@ -281,8 +281,8 @@ def dashboard(fecha: str, user: dict = Depends(exige("dashboard"))):
         (yy, yy),
     ).fetchall()
 
-    tours = conn.execute(
-        f"""SELECT ta.fecha, ta.tour_codigo, ta.grupo_operativo, ta.es_privado,
+    tours = [dict(r) for r in conn.execute(
+        f"""SELECT ta.fecha, ta.conf_no, ta.tour_codigo, ta.grupo_operativo, ta.es_privado,
                    tc.horario_inicio, tc.horario_fin, tc.requiere_bote, ta.pax,
                    ta.guia_nombre, ta.bote_nombre, r.nombre_principal, r.room_no
             FROM tour_asignado ta
@@ -291,7 +291,12 @@ def dashboard(fecha: str, user: dict = Depends(exige("dashboard"))):
             WHERE ta.fecha = ? AND {viva()}
             ORDER BY tc.horario_inicio""",
         (fecha,),
-    ).fetchall()
+    ).fetchall()]
+    # El Claro del Bosque no tiene hora en el catálogo porque cambia cada día: la acuerda
+    # recepción con el huésped y la escribe en SU itinerario. Sin mirar ahí, esta salida
+    # se caía de la línea del día. Ver itinerario.completar_horas.
+    itin.completar_horas(conn, tours)
+    tours.sort(key=lambda t: (t.get("horario_inicio") or "99:99", t.get("tour_codigo") or ""))
 
     # LOS AVISOS SON DEL DÍA QUE SE ESTÁ MIRANDO, igual que todo lo demás en esta
     # pantalla. Antes solo los de Opera se acotaban al día y el resto salía entero, de
@@ -803,6 +808,16 @@ def _datos_del_resumen(fecha):
                     COALESCE(ta.es_privado, 0)
            ORDER BY tc.horario_inicio""", (fecha, *no_caben))
 
+    # La hora escrita a mano para los tours que no la tienen en el catálogo. Aquí la
+    # salida junta VARIAS habitaciones, así que se mira el itinerario de todas: basta con
+    # que una la tenga escrita. Ver itinerario.completar_horas.
+    for t in tours:
+        t["fecha"] = fecha
+    itin.completar_horas(conn, tours,
+                         conf_nos=lambda t: str(t.get("reservas") or "").split(","))
+    tours.sort(key=lambda t: (t.get("horario_inicio") or "99:99",
+                              t.get("tour_codigo") or ""))
+
     # Lo descartado se devuelve, no se traga. Esconder sin decirlo es justo lo que hace
     # que nadie arregle la reserva: la hoja sale tranquila y el tour sigue mal puesto.
     tours_fuera_por_salida = list(no_caben.values())
@@ -1267,6 +1282,11 @@ def agenda(fecha: str = None, desde: str = None, hasta: str = None, user: dict =
         params = (desde, hasta)
     query += " ORDER BY ta.fecha, tc.horario_inicio, ta.conf_no"
     rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+    # La hora que recepción le escribió en el itinerario a los tours que no la tienen en
+    # el catálogo —el Claro del Bosque y compañía—. Ver itinerario.completar_horas.
+    itin.completar_horas(conn, rows)
+    rows.sort(key=lambda r: (r.get("fecha") or "", r.get("horario_inicio") or "99:99",
+                             str(r.get("conf_no") or "")))
     conn.close()
 
     agrupado = {}

@@ -708,3 +708,110 @@ def reconciliar_itinerario(filas_guardadas, filas_nuevas):
     faltantes = [f for lista in pendientes.values() for f in lista]
     resultado = incorporar_faltantes(resultado, [])   # reordena por fecha
     return resultado, movidas, faltantes
+
+
+# ---------------------------------------------------------------------------
+# La hora que recepción escribió en el itinerario
+# ---------------------------------------------------------------------------
+
+def hora_escrita_del_tour(filas, tour_codigo, fecha_iso):
+    """La hora que el itinerario del huésped dice para ese tour ese día, en «HH:MM».
+
+    POR QUÉ HACE FALTA. Hay tours cuya hora NO puede estar en el catálogo porque cambia
+    cada día: el Claro del Bosque, la clase de cocina, el spa. El catálogo los trae con
+    la hora en blanco a propósito —está escrito en init_db— y recepción la acuerda con
+    cada huésped y la escribe en SU itinerario.
+
+    Hasta ahora nadie más miraba ahí. La línea del día dejaba esas salidas fuera del
+    dibujo, en el renglón de «Sin hora», pidiendo «ponele horario en Catálogo» — que es
+    justo lo que no hay que hacer: una hora en el catálogo se la pondría a TODOS los
+    Claros de todos los días. Lo reportó el lodge: «Claro no aparece en el dashboard y
+    tira ese mensaje, pero sí está la hora en el itinerario».
+
+    La hora sale del MISMO texto que lee el huésped —«Be at the guide house at 3:00
+    p.m.»— con el mismo lector que ordena el itinerario por hora, así que la línea del
+    día y el documento del huésped no pueden decir horas distintas.
+
+    Devuelve None si no hay fila para ese día, si no se reconoce el tour o si la casilla
+    todavía dice «___»: eso es no saber la hora, y no se inventa.
+    """
+    if not filas or not tour_codigo or not fecha_iso:
+        return None
+    try:
+        dia = _fecha_larga(fecha_iso).strip().lower()
+    except Exception:
+        return None
+    nombre = _normalizar_actividad(cat.texto_tour(tour_codigo)["nombre"])
+    if not nombre:
+        return None
+    for f in filas:
+        if (f.get("dia") or "").strip().lower() != dia:
+            continue
+        act = _normalizar_actividad(f.get("actividad"))
+        # El mismo emparejamiento flexible que usa el movimiento de un tour de fecha:
+        # recepción le agrega texto al nombre («Claro del Bosque — con Andrey») y sigue
+        # siendo el mismo tour.
+        if not (act == nombre or nombre in act or act.startswith(nombre[:14])):
+            continue
+        minutos = _horas.primera_en(f.get("horario"))
+        if minutos is not None:
+            return _horas.hhmm(minutos)
+    return None
+
+
+def completar_horas(conn, filas, conf_nos=None):
+    """A las salidas SIN hora de catálogo les pone la que recepción escribió a mano.
+
+    SE HACE EN UNA SOLA FUNCIÓN y se llama desde las CUATRO cosas que miran la hora de
+    una salida —la línea del día, la agenda, el resumen y el detector de choques de
+    guía—, porque si cada una lo resolviera por su lado la misma salida saldría a las 3
+    en una y «sin hora» en otra. Es exactamente lo que ya pasó dos veces en este sistema:
+    una regla arreglada en una función y rota donde otra pantalla arma su propio SQL.
+
+    `filas` son los tours, cada uno con 'tour_codigo', 'fecha' y 'horario_inicio'.
+    `conf_nos` dice de qué reservas es cada fila (por omisión, su 'conf_no'): en el
+    resumen una salida junta varias habitaciones y la hora puede estar escrita en el
+    itinerario de cualquiera de ellas.
+
+    Solo RELLENA el hueco: una hora de catálogo nunca se pisa. A lo que completa le deja
+    la marca 'hora_del_itinerario', para que la pantalla pueda decir de dónde salió.
+
+    Devuelve cuántas completó.
+    """
+    import json as _json
+    sacar = conf_nos or (lambda f: [f.get("conf_no")])
+    pendientes = [f for f in filas if not str(f.get("horario_inicio") or "").strip()]
+    if not pendientes:
+        return 0
+
+    # El itinerario de cada reserva implicada, de una vez. Son pocas: medido en la base
+    # del lodge, 6 salidas sin hora de catálogo en toda la temporada.
+    quienes = sorted({str(c) for f in pendientes for c in sacar(f) if c})
+    guardados = {}
+    for i in range(0, len(quienes), 400):
+        lote = quienes[i:i + 400]
+        marcas = ",".join("?" * len(lote))
+        try:
+            filas_db = conn.execute(
+                f"SELECT conf_no, filas_json FROM itinerario WHERE conf_no IN ({marcas})",
+                lote).fetchall()
+        except Exception:
+            return 0      # una base sin la tabla no puede dejar sin agenda a nadie
+        for r in filas_db:
+            d = dict(r)
+            try:
+                guardados[d["conf_no"]] = _json.loads(d["filas_json"])
+            except (TypeError, ValueError):
+                pass
+
+    puestas = 0
+    for f in pendientes:
+        for conf in sacar(f):
+            hora = hora_escrita_del_tour(guardados.get(str(conf)),
+                                         f.get("tour_codigo"), f.get("fecha"))
+            if hora:
+                f["horario_inicio"] = hora
+                f["hora_del_itinerario"] = True
+                puestas += 1
+                break
+    return puestas

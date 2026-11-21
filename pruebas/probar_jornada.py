@@ -317,6 +317,192 @@ def la_salida_llega_a_la_pantalla_con_su_hora(c):
 
 
 # ---------------------------------------------------------------------------
+# La hora que NO esta en el catalogo porque cambia cada dia
+# ---------------------------------------------------------------------------
+# LO REPORTO EL LODGE: «Claro no aparece en el dashboard y tira ese mensaje, pero si esta
+# la hora en el itinerario», y despues: «el no tener horario esta causando conflicto con
+# el guia Jose en la parte de tours».
+#
+# El Claro del Bosque entra al catalogo SIN hora a proposito —esta escrito en init_db—
+# porque su hora se acuerda con cada huesped. Recepcion la escribe en el itinerario de
+# esa reserva, y hasta ahora nadie mas miraba ahi. Dos consecuencias, las dos reportadas:
+# la salida se caia de la linea del dia, y como una salida sin hora se supone que PODRIA
+# coincidir con cualquier otra, el guia salia en rojo por un choque que no existe.
+
+
+def _itinerario(conn, conf_no, dia, actividad, horario):
+    """El itinerario guardado de una reserva, como lo deja recepcion."""
+    import json
+    conn.execute(
+        """INSERT INTO itinerario (conf_no, nombre_bienvenida, filas_json, editado)
+           VALUES (?,'Prueba',?,1)""",
+        (str(conf_no), json.dumps([
+            {"dia": dia, "actividad": actividad, "horario": horario, "detalles": ""}])))
+
+
+def la_hora_escrita_en_el_itinerario_saca_la_salida_del_limbo(c):
+    """El Claro del Bosque, con su hora escrita a mano, SE DIBUJA en la linea del dia.
+
+    Hasta ahora el cartel decia «ponele horario en Catalogo», que para este tour es el
+    consejo equivocado: una hora en el catalogo se la pondria a TODOS los Claros de todos
+    los dias. La hora de ESTE Claro vive en el itinerario de ESTA reserva.
+    """
+    import main
+    import itinerario as itin
+    conn = comun.base_limpia()
+    _reserva(conn, 700101, room="08")
+    _salida(conn, 700101, "CLARO", guia="JOSE", pax=2)
+    _itinerario(conn, 700101, itin._fecha_larga(HOY.isoformat()),
+                "Claro del Bosque Experience", "Be at the guide house at 3:00 p.m.")
+    conn.commit()
+    conn.close()
+
+    d = main.dashboard(HOY.isoformat(), user=USUARIO)
+    suyo = [t for t in d["tours"] if t["tour_codigo"] == "CLARO"]
+    c.igual(len(suyo), 1, "la salida llega al Dashboard")
+    c.igual(suyo[0]["horario_inicio"], "15:00",
+            "con la hora que recepcion escribio en el itinerario")
+    c.igual(suyo[0].get("hora_del_itinerario"), True,
+            "y marcada, para poder decir de donde salio")
+
+    # LA MISMA HORA EN LA AGENDA Y EN EL RESUMEN. Si cada pantalla lo resolviera por su
+    # lado, la misma salida saldria a las 3 en una y «sin hora» en otra: es el error que
+    # este sistema ya cometio dos veces.
+    # La agenda devuelve una fila por RESERVA, con sus tours dentro.
+    agenda = main.agenda(fecha=HOY.isoformat(), user=USUARIO)
+    tours_agenda = [t for r in agenda for t in r["tours"]
+                    if t["tour_codigo"] == "CLARO"]
+    c.igual([t["horario_inicio"] for t in tours_agenda], ["15:00"],
+            "la agenda la enseña igual")
+    resumen = main._datos_del_resumen(HOY.isoformat())
+    c.igual([t["horario_inicio"] for t in resumen["tours"]
+             if t["tour_codigo"] == "CLARO"], ["15:00"],
+            "y el resumen, de donde sale la hoja del dia")
+
+
+def sin_hora_escrita_la_salida_sigue_avisando(c):
+    """Lo que NO cambia: si no hay hora en ninguna parte, no se inventa una.
+
+    La salida sigue saliendo aparte en la linea del dia. Tirarla en silencio seria la
+    otra forma de perderla, y ponerle una hora a ojo mandaria gente a una hora que nadie
+    acordo.
+    """
+    import main
+    import itinerario as itin
+    conn = comun.base_limpia()
+    _reserva(conn, 700102, room="08")
+    _salida(conn, 700102, "CLARO", pax=2)
+    # Con itinerario, pero con la casilla todavia en «___».
+    _itinerario(conn, 700102, itin._fecha_larga(HOY.isoformat()),
+                "Claro del Bosque Experience", "Be at the guide house at ___")
+    conn.commit()
+    conn.close()
+
+    d = main.dashboard(HOY.isoformat(), user=USUARIO)
+    suyo = [t for t in d["tours"] if t["tour_codigo"] == "CLARO"]
+    c.igual(len(suyo), 1, "la salida sigue llegando al Dashboard")
+    c.igual(suyo[0]["horario_inicio"], None, "sin hora inventada")
+    c.igual(suyo[0].get("hora_del_itinerario"), None, "y sin marca de que la tenga")
+
+
+def la_hora_del_catalogo_manda_sobre_la_del_itinerario(c):
+    """Un tour que SI tiene hora de catalogo no se deja pisar por lo que diga una fila.
+
+    La del catalogo es la de operacion —la hora a la que sale la salida— y la del
+    itinerario puede decir otra cosa a proposito: el PNC sale a las 07:30 y al huesped se
+    le pide estar en la casa de guias a las 07:00. Confundirlas moveria la salida.
+    """
+    import main
+    import itinerario as itin
+    conn = comun.base_limpia()
+    _reserva(conn, 700103, room="08")
+    _salida(conn, 700103, "PNC", pax=2)
+    _itinerario(conn, 700103, itin._fecha_larga(HOY.isoformat()),
+                "Hike in Corcovado National Park San Pedrillo",
+                "Be at the guide house at 7:00 a.m.")
+    conn.commit()
+    conn.close()
+
+    d = main.dashboard(HOY.isoformat(), user=USUARIO)
+    suyo = [t for t in d["tours"] if t["tour_codigo"] == "PNC"][0]
+    c.igual(suyo["horario_inicio"], "07:30", "la hora del catalogo se queda")
+    c.igual(suyo.get("hora_del_itinerario"), None, "y no se marca como del itinerario")
+
+
+def con_la_hora_escrita_el_guia_deja_de_chocar(c):
+    """EL SEGUNDO SINTOMA, que reporto el lodge aparte: «el no tener horario esta
+    causando conflicto con el guia Jose en la parte de tours».
+
+    Una salida sin hora se supone que PODRIA coincidir con cualquier otra —es una red de
+    seguridad deliberada y se queda— asi que el Claro sin hora chocaba con el pajareo de
+    las 6 del mismo guia. Con la hora escrita en el itinerario, el choque desaparece
+    solo, porque es verdad que no chocan.
+    """
+    import validations
+    import itinerario as itin
+    conn = comun.base_limpia()
+    conn.execute("INSERT OR IGNORE INTO guia (nombre) VALUES ('JOSE')")
+    _reserva(conn, 700104, room="08")
+    _salida(conn, 700104, "PAJAREO", guia="JOSE", pax=2)
+    _salida(conn, 700104, "CLARO", guia="JOSE", pax=2)
+    conn.commit()
+    conn.close()
+
+    # Sin la hora: se avisa, pero el aviso DICE que es por falta de hora.
+    choques = validations.detectar_conflictos_asignacion(HOY.isoformat())
+    c.igual(len(choques), 1, "sin hora se sigue avisando: puede ser un choque de verdad")
+    c.igual(choques[0]["por_falta_de_hora"], True, "y se sabe por que se aviso")
+    c.cierto("no se le sabe la hora" in choques[0]["mensaje"],
+             "el aviso dice QUE PASA en vez de afirmar que coinciden")
+    c.cierto("CLARO" in choques[0]["mensaje"], "y a cual le falta la hora")
+
+    # Con la hora escrita en el itinerario, el choque desaparece.
+    conn = comun.conexion()
+    _itinerario(conn, 700104, itin._fecha_larga(HOY.isoformat()),
+                "Claro del Bosque Experience", "Be at the guide house at 3:00 p.m.")
+    conn.commit()
+    conn.close()
+    c.igual(validations.detectar_conflictos_asignacion(HOY.isoformat()), [],
+            "con la hora escrita, el pajareo de las 6 y el Claro de las 3 no chocan")
+
+    # Y un choque DE VERDAD se sigue viendo: el mismo guia en dos salidas de la mañana.
+    conn = comun.conexion()
+    _salida(conn, 700104, "SNORKEL", guia="JOSE", pax=2)
+    conn.commit()
+    conn.close()
+    choques = validations.detectar_conflictos_asignacion(HOY.isoformat())
+    c.cierto(any(not x["por_falta_de_hora"] for x in choques),
+             "el pajareo y el snorkel, que si se pisan, se siguen avisando")
+
+
+def la_hora_sale_del_mismo_texto_que_lee_el_huesped(c):
+    """La lee el MISMO lector que ordena el itinerario por hora, asi que la linea del dia
+    y el documento del huesped no pueden decir horas distintas."""
+    import itinerario as itin
+    dia = itin._fecha_larga(HOY.isoformat())
+    filas = [{"dia": dia, "actividad": "Claro del Bosque Experience",
+              "horario": "Be at the guide house at 3:00 p.m."}]
+    c.igual(itin.hora_escrita_del_tour(filas, "CLARO", HOY.isoformat()), "15:00",
+            "«3:00 p.m.» en la frase se lee como las 15:00")
+
+    filas[0]["actividad"] = "Claro del Bosque Experience — con Andrey"
+    c.igual(itin.hora_escrita_del_tour(filas, "CLARO", HOY.isoformat()), "15:00",
+            "y el nombre con texto agregado tambien se reconoce")
+
+    filas[0]["horario"] = "Be at the guide house at ___"
+    c.igual(itin.hora_escrita_del_tour(filas, "CLARO", HOY.isoformat()), None,
+            "la casilla sin completar no da hora")
+    filas[0]["horario"] = "Be at the guide house at 3:00 p.m."
+    otro = (HOY + datetime.timedelta(days=1)).isoformat()
+    c.igual(itin.hora_escrita_del_tour(filas, "CLARO", otro), None,
+            "ni la fila de OTRO dia")
+    c.igual(itin.hora_escrita_del_tour(filas, "SNORKEL", HOY.isoformat()), None,
+            "ni la de otro tour")
+    c.igual(itin.hora_escrita_del_tour([], "CLARO", HOY.isoformat()), None,
+            "y sin itinerario, nada")
+
+
+# ---------------------------------------------------------------------------
 # La linea del dia (se lee el HTML como texto: no hay navegador aqui)
 #
 # La comprobacion de verdad, con un navegador y la funcion real, esta en
@@ -418,6 +604,11 @@ PRUEBAS = [
     el_arranque_arregla_las_horas_que_ya_estaban_guardadas,
     una_hora_ilegible_ya_no_inventa_un_conflicto,
     la_salida_llega_a_la_pantalla_con_su_hora,
+    la_hora_escrita_en_el_itinerario_saca_la_salida_del_limbo,
+    sin_hora_escrita_la_salida_sigue_avisando,
+    la_hora_del_catalogo_manda_sobre_la_del_itinerario,
+    con_la_hora_escrita_el_guia_deja_de_chocar,
+    la_hora_sale_del_mismo_texto_que_lee_el_huesped,
     la_linea_del_dia_estira_la_ventana_en_vez_de_recortar,
     ninguna_salida_se_dibuja_debajo_de_otra,
     una_salida_sin_hora_se_enseña_en_vez_de_desaparecer,
