@@ -623,6 +623,41 @@ def _resumen_del_periodo(desde, hasta):
     }
 
 
+def desayunos_del_dia(conn, fecha):
+    """Quién desayuna ese día: el que SALE y el que está EN CASA, sin los que ingresan.
+
+    El que se va desayuna antes del bote —por eso cuenta— y el que llega todavía no está:
+    el primer desayuno de una llegada es el del día siguiente.
+
+    ESTÁ EN SU PROPIA FUNCIÓN porque la miran DOS pantallas: el Resumen —de donde sale
+    también la hoja del día que circula por WhatsApp— y Restaurantes, que es donde el
+    lodge la pidió para el control del salón. Con una consulta copiada en cada una, el día
+    que alguien ajustara una el papel diría un número y la pantalla otro, y no habría
+    forma de saber cuál creer. Es la misma razón por la que existe _datos_del_resumen.
+
+    Cada fila trae `servido`: si alguien del salón ya marcó que esa habitación desayunó.
+    """
+    dd, yy = ddmmyy(fecha), yymmdd(fecha)
+    filas = [dict(r) for r in conn.execute(
+        f"""SELECT conf_no, room_no, nombre_principal, adl, chl, regimen, dep_date
+            FROM reserva
+            WHERE res_status != 'CANCELADA' AND (
+              dep_date = ? OR ({sql_fecha('arr_date')} < ?
+                               AND (dep_date IS NULL OR {sql_fecha('dep_date')} >= ?)))
+            ORDER BY CAST(room_no AS INTEGER)""", (dd, yy, yy)).fetchall()]
+    import sqlite3 as _sq
+    try:
+        servidos = {r[0] for r in conn.execute(
+            "SELECT conf_no FROM desayuno_servido WHERE fecha = ?", (fecha,))}
+    except _sq.OperationalError:
+        # Una base que todavía no migró no puede dejar sin desayunos a la pantalla.
+        servidos = set()
+    for f in filas:
+        f["servido"] = f["conf_no"] in servidos
+        f["sale_hoy"] = f.get("dep_date") == dd
+    return filas
+
+
 def _datos_del_resumen(fecha):
     """El cálculo del resumen, aparte del endpoint.
 
@@ -657,12 +692,8 @@ def _datos_del_resumen(fecha):
                   hora_salida_fija, vuelo_salida, hora_vuelo_salida, nota_salida
            FROM reserva WHERE dep_date = ? AND res_status != 'CANCELADA'
            ORDER BY CAST(room_no AS INTEGER)""", (dd,))
-    desayunos = lista(
-        f"""SELECT conf_no, room_no, nombre_principal, adl, chl FROM reserva
-           WHERE res_status != 'CANCELADA' AND (
-             dep_date = ? OR ({sql_fecha('arr_date')} < ?
-                              AND (dep_date IS NULL OR {sql_fecha('dep_date')} >= ?)))
-           ORDER BY CAST(room_no AS INTEGER)""", (dd, yy, yy))
+    # La cuenta vive en desayunos_del_dia, que es la que mira también Restaurantes.
+    desayunos = desayunos_del_dia(conn, fecha)
     en_casa = lista(
         f"""SELECT conf_no, room_no, nombre_principal, adl, chl, punto_salida, dep_date FROM reserva
            WHERE res_status != 'CANCELADA' AND (
@@ -6676,9 +6707,63 @@ def restaurantes_dia(fecha: str, user: dict = Depends(exige("restaurantes"))):
         # recuperarla es de las cosas caras de esta pantalla.
         datos["restricciones_quitadas"] = rest.restricciones_del_dia(
             conn, fecha, comen, solo_quitadas=True)
+        # EL DESAYUNO VIVE AQUÍ, no en el Resumen. Lo movió el lodge, y es su sitio: el
+        # desayuno es una comida, y esta es la pantalla del comedor. En el Resumen era un
+        # número que nadie podía usar para nada —ahí no se sirve a nadie— y aquí es la
+        # lista con la que el salón va marcando quién ya bajó.
+        #
+        # La cuenta es la MISMA función que usa el Resumen para su total y para la hoja
+        # del día: ver desayunos_del_dia.
+        datos["desayunos"] = desayunos_del_dia(conn, fecha)
+        datos["pax_desayunos"] = sum((x["adl"] or 0) + (x["chl"] or 0)
+                                     for x in datos["desayunos"])
     finally:
         conn.close()
     return datos
+
+
+@app.post("/api/restaurantes/desayuno")
+def restaurantes_marcar_desayuno(payload: dict,
+                                 user: dict = Depends(exige("restaurantes",
+                                                            escribir=True))):
+    """Marca (o desmarca) que una habitación ya desayunó.
+
+    Lo pidió el lodge: «una cajita para agregar un check al lado de cada habitación para
+    indicar que esa reserva ya desayunó y el salón lleve un control».
+
+    SE PUEDE DESMARCAR. Un check es un gesto de una sola pulsación que se hace con el
+    salón lleno y se pone en la fila de al lado sin querer; si no se pudiera quitar, la
+    única salida sería dejar el error puesto y dejar de confiar en la lista entera.
+
+    Destildar BORRA la fila: ver el comentario de la tabla en schema.sql.
+    """
+    fecha = (payload.get("fecha") or "").strip()
+    conf_no = str(payload.get("conf_no") or "").strip()
+    servido = payload.get("servido")
+    servido = True if servido is None else bool(servido)
+    if not fecha or not conf_no:
+        raise HTTPException(status_code=400, detail="Faltan la fecha o la reserva.")
+    conn = get_connection()
+    try:
+        if not conn.execute("SELECT 1 FROM reserva WHERE conf_no = ?",
+                            (conf_no,)).fetchone():
+            raise HTTPException(status_code=404, detail="No existe esa reserva")
+        if servido:
+            conn.execute(
+                """INSERT INTO desayuno_servido (fecha, conf_no, servido_en, servido_por)
+                   VALUES (?,?,datetime('now'),?)
+                   ON CONFLICT(fecha, conf_no) DO UPDATE SET
+                     servido_en = excluded.servido_en, servido_por = excluded.servido_por""",
+                (fecha, conf_no, user.get("usuario")))
+        else:
+            conn.execute("DELETE FROM desayuno_servido WHERE fecha = ? AND conf_no = ?",
+                         (fecha, conf_no))
+        conn.commit()
+        servidos = [r[0] for r in conn.execute(
+            "SELECT conf_no FROM desayuno_servido WHERE fecha = ?", (fecha,))]
+    finally:
+        conn.close()
+    return {"status": "ok", "servido": servido, "servidos": servidos}
 
 
 @app.post("/api/amenidades/{amenidad_id}/devolver")

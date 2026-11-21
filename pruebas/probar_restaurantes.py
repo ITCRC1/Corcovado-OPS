@@ -19,6 +19,7 @@ from comun import cargar, reserva
 import restaurantes as rest
 
 HOY = datetime.date.today()
+USUARIO = {"usuario": "pruebas", "rol": "ADMIN"}
 
 
 def ddmmyy(d):
@@ -532,6 +533,171 @@ def el_boton_de_solo_desayunos_usa_el_mismo_detalle_que_full_board(c):
                  f"la tarjeta de {cual} cuenta con la funcion compartida")
     c.cierto("function paxFullBoard" not in pantalla,
              "y ya no queda la pareja de funciones vieja, que solo servia para una")
+
+
+# ---------------------------------------------------------------------------
+# El desayuno: se mudo del Resumen a Restaurantes, y el salon lo marca
+# ---------------------------------------------------------------------------
+
+def _dia_de_comedor():
+    """Tres habitaciones: una que sale hoy, una en casa y una que entra hoy."""
+    ayer = HOY - datetime.timedelta(days=2)
+    luego = HOY + datetime.timedelta(days=3)
+    cargar([
+        reserva("D0001", "03", ddmmyy(ayer), ddmmyy(HOY), estado="EN CASA", adl=2),
+        reserva("D0002", "08", ddmmyy(ayer), ddmmyy(luego), estado="EN CASA", adl=2),
+        reserva("D0003", "13", ddmmyy(HOY), ddmmyy(luego), estado="POR INGRESAR", adl=2),
+    ])
+
+
+def el_desayuno_lo_cuenta_UNA_funcion_para_las_dos_pantallas(c):
+    """Lo pidio el lodge: «pasar el boton de total desayunos de la pantalla de resumen a
+    la de restaurante, quitandolo del resumen y que pase a restaurante con todas sus
+    funcionalidades».
+
+    LA CUENTA NO SE MUDA, SE COMPARTE. El total de desayunos sigue saliendo en la hoja
+    del dia que circula por WhatsApp —ahi es donde cocina lo lee— asi que si Restaurantes
+    hiciera su propia consulta, el papel diria un numero y la pantalla otro y no habria
+    forma de saber cual creer. Es la misma razon por la que existe _datos_del_resumen.
+
+    Y la regla de quien desayuna no cambia: el que SALE (desayuna antes del bote) y el
+    que esta EN CASA. El que llega hoy desayuna mañana.
+    """
+    conn = comun.base_limpia()
+    conn.close()
+    _dia_de_comedor()
+
+    import main
+    conn = comun.conexion()
+    lista = main.desayunos_del_dia(conn, HOY.isoformat())
+    conn.close()
+    c.igual(sorted(x["room_no"] for x in lista), ["03", "08"],
+            "desayunan la que sale hoy y la que esta en casa")
+    c.cierto(all(x["conf_no"] != "D0003" for x in lista),
+             "y NO la que llega hoy: su primer desayuno es el de mañana")
+    c.igual([x["sale_hoy"] for x in lista if x["room_no"] == "03"], [True],
+            "la que sale hoy se marca, que es la que hay que atender temprano")
+
+    # Las dos pantallas, mismo numero.
+    resumen = main._datos_del_resumen(HOY.isoformat())
+    rest_dia = main.restaurantes_dia(fecha=HOY.isoformat(), user=USUARIO)
+    c.igual(resumen["pax_desayunos"], rest_dia["pax_desayunos"],
+            "el Resumen y Restaurantes cuentan el mismo pax")
+    c.igual(resumen["total_desayunos"], len(rest_dia["desayunos"]),
+            "y las mismas habitaciones")
+    c.igual(sorted(x["room_no"] for x in rest_dia["desayunos"]), ["03", "08"],
+            "Restaurantes trae la lista, que es lo que el salon necesita")
+
+
+def el_salon_marca_quien_ya_desayuno(c):
+    """Lo pidio el lodge: «poner una cajita para agregar un check al lado de cada
+    habitacion para indicar que esa reserva ya desayuno y el salon lleve un control».
+
+    SE PUEDE DESMARCAR. Un check es un gesto de una sola pulsacion que se hace de pie en
+    la puerta del comedor; si no se pudiera deshacer, la unica salida seria dejar el
+    error puesto y dejar de confiar en la lista entera.
+    """
+    conn = comun.base_limpia()
+    conn.close()
+    _dia_de_comedor()
+    import main
+    hoy = HOY.isoformat()
+
+    def desayunos():
+        return {x["room_no"]: x["servido"]
+                for x in main.restaurantes_dia(fecha=hoy, user=USUARIO)["desayunos"]}
+
+    c.igual(desayunos(), {"03": False, "08": False}, "la mañana empieza en blanco")
+
+    main.restaurantes_marcar_desayuno({"fecha": hoy, "conf_no": "D0002", "servido": True},
+                                      user=USUARIO)
+    c.igual(desayunos(), {"03": False, "08": True}, "queda marcada la que desayuno")
+
+    main.restaurantes_marcar_desayuno({"fecha": hoy, "conf_no": "D0002", "servido": False},
+                                      user=USUARIO)
+    c.igual(desayunos(), {"03": False, "08": False},
+            "y se puede destildar: un check se pone sin querer")
+
+    # Marcar dos veces no duplica ni revienta: el salon puede tocar la casilla varias
+    # veces sin pensarlo.
+    for _ in range(3):
+        main.restaurantes_marcar_desayuno({"fecha": hoy, "conf_no": "D0002"}, user=USUARIO)
+    conn = comun.conexion()
+    c.igual(conn.execute("SELECT COUNT(*) FROM desayuno_servido").fetchone()[0], 1,
+            "una sola fila por reserva y dia")
+    c.igual(conn.execute("SELECT servido_por FROM desayuno_servido").fetchone()[0],
+            USUARIO["usuario"], "y queda quien la marco, para poder preguntarle")
+    conn.close()
+
+    # EL CONTROL ES DE CADA DIA. Sin la fecha en la clave, lo marcado el lunes saldria
+    # marcado el martes y el salon serviria mirando una lista que ya estaba llena.
+    manana = (HOY + datetime.timedelta(days=1)).isoformat()
+    c.cierto(all(not x["servido"]
+                 for x in main.restaurantes_dia(fecha=manana, user=USUARIO)["desayunos"]),
+             "lo de hoy no sale marcado mañana")
+
+    from fastapi import HTTPException
+    try:
+        main.restaurantes_marcar_desayuno({"fecha": hoy, "conf_no": "NOEXISTE"},
+                                          user=USUARIO)
+        c.cierto(False, "una reserva inexistente tenia que dar 404")
+    except HTTPException as e:
+        c.igual(e.status_code, 404, "una reserva inexistente da 404")
+
+
+def el_resumen_ya_no_ensena_la_tarjeta_de_desayunos(c):
+    """La mitad de «quitandolo del resumen». El DATO se queda —la hoja del dia lo imprime
+    en TOTAL + BKF y cocina lo lee ahi— lo que se va es la tarjeta."""
+    raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+
+    i = pantalla.find("function vistaResumenDia(")
+    c.cierto(i > 0, "existe la vista del resumen del dia")
+    vista = pantalla[i:pantalla.find("function vistaResumenPeriodo(", i)]
+    c.cierto("tarjeta('desayunos'" not in vista,
+             "la tarjeta de desayunos ya no esta en el Resumen")
+    for queda in ("tarjeta('ingresos'", "tarjeta('salidas'", "tarjeta('en_casa'"):
+        c.cierto(queda in vista, f"y las demas siguen ({queda})")
+    c.cierto("Restaurantes" in vista, "el Resumen dice donde quedaron los desayunos")
+
+    c.cierto("detalleRest('desayunos')" in pantalla, "la tarjeta esta en Restaurantes")
+    c.cierto("function detalleDesayunos(" in pantalla, "con su lista")
+    c.cierto("marcarDesayuno(" in pantalla, "y con la casilla del salon")
+
+    with open(os.path.join(raiz, "backend", "hoja_dia.py"), encoding="utf-8") as f:
+        c.cierto("pax_desayunos" in f.read(),
+                 "la hoja del dia sigue contando los desayunos")
+
+
+def cada_boton_dice_que_habitaciones_tiene(c):
+    """Lo pidio el lodge: «agregar en la parte inferior visible del boton la lista de
+    habitaciones que pertenecen a cada lugar, de forma no tan invasiva pero visible,
+    ejemplo hab 08-23-04-13, de esta forma se sabe que almacena cada boton de forma
+    rapida».
+
+    Hasta ahora habia que abrir cada tarjeta y cerrarla para ver donde cayo una
+    habitacion: con cuatro servicios, cuatro aperturas para una sola pregunta.
+    """
+    raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+
+    c.cierto("function habsDelBoton(" in pantalla, "existe la funcion")
+    i = pantalla.find("function habsDelBoton(")
+    fn = pantalla[i:i + 900]
+    c.cierto("hab " in fn, "escribe «hab» delante, como lo pidio el lodge")
+    c.cierto('join("-")' in fn, "y las separa con guiones")
+    c.cierto("parseInt" in fn and ".sort(" in fn,
+             "ordenadas por numero: asi la misma hab esta siempre en el mismo sitio "
+             "(y la 4 no queda despues de la 23)")
+
+    i = pantalla.find("detalleRest('cena_tk')")
+    bloque = pantalla[i - 900:i + 1200]
+    for cual in ("d.desayunos", "c.terra_kitchen", "c.bar_el_bosque",
+                 "a.terra_kitchen", "a.bar_el_bosque"):
+        c.cierto(f"habsDelBoton({cual}" in bloque,
+                 f"el boton de {cual} enseña sus habitaciones")
 
 
 def el_boton_manda_lo_del_grupo(c):
@@ -1147,6 +1313,10 @@ PRUEBAS = [
     el_comedor_del_staff_va_por_comida,
     el_comedor_del_staff_esta_en_la_pantalla_y_se_puede_deshacer,
     el_boton_de_solo_desayunos_usa_el_mismo_detalle_que_full_board,
+    el_desayuno_lo_cuenta_UNA_funcion_para_las_dos_pantallas,
+    el_salon_marca_quien_ya_desayuno,
+    el_resumen_ya_no_ensena_la_tarjeta_de_desayunos,
+    cada_boton_dice_que_habitaciones_tiene,
     la_alergia_sale_en_restaurantes_y_NO_en_amenidades,
     la_alergia_que_no_es_de_comida_va_como_alerta,
     la_alerta_de_la_alergia_no_alimentaria_llega_a_la_base,

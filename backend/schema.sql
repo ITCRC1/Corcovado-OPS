@@ -745,6 +745,30 @@ CREATE TABLE IF NOT EXISTS restaurante_hora (
     PRIMARY KEY (fecha, conf_no)
 );
 
+-- QUIÉN YA DESAYUNÓ. Lo pidió el lodge: «poner una cajita para agregar un check al lado
+-- de cada habitación para indicar que esa reserva ya desayunó y el salón lleve un
+-- control».
+--
+-- Es un registro de lo que PASÓ, no una lista de lo que debería pasar: quién desayuna
+-- cada día se calcula de las reservas (sale hoy + está en casa) y no se guarda. Aquí solo
+-- se anota la marca, que es lo único que nadie puede deducir.
+--
+-- POR RESERVA Y NO POR HABITACIÓN, como en todo lo demás de este sistema: el número de
+-- cuarto se reutiliza y el día que cambia de huésped la marca del que se fue se le
+-- quedaría puesta al que llega.
+--
+-- Solo existe la fila de lo marcado. Destildar BORRA la fila en vez de guardar un cero:
+-- «no está marcado» y «nadie lo ha mirado» son lo mismo para el salón, y con una columna
+-- de sí/no habría que decidir qué significa una fila que no existe.
+CREATE TABLE IF NOT EXISTS desayuno_servido (
+    fecha TEXT NOT NULL,              -- ISO (2026-11-21), el día del desayuno
+    conf_no TEXT NOT NULL,
+    servido_en TEXT DEFAULT (datetime('now')),
+    servido_por TEXT,                 -- quién lo marcó, para poder preguntarle
+    PRIMARY KEY (fecha, conf_no),
+    FOREIGN KEY (conf_no) REFERENCES reserva(conf_no) ON DELETE CASCADE
+);
+
 -- Log de sincronización (para el modelo offline-first Sierpe/Drake)
 CREATE TABLE IF NOT EXISTS sync_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

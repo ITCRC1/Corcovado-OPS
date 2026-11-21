@@ -289,10 +289,15 @@ def quien_se_va_hoy_no_esta_en_casa(c):
 
     # Y las otras dos de main.py siguen igual, que es con lo que tiene que coincidir.
     # 'desayunos' es la excepcion a proposito: el que se va SI desayuna.
-    i = servidor.find("desayunos = lista(")
+    #
+    # La consulta ya no esta pegada dentro del Resumen: vive en desayunos_del_dia, que es
+    # la que miran las DOS pantallas que la necesitan —el Resumen, de donde sale la hoja
+    # del dia, y Restaurantes, donde el lodge la pidio para el control del salon—. Lo que
+    # se comprueba sigue siendo lo mismo: que ahi el que se va cuenta.
+    i = servidor.find("def desayunos_del_dia(")
     c.cierto(i > 0, "se encuentra la consulta de los desayunos")
     if i > 0:
-        c.cierto(">= ?" in servidor[i:i + 500],
+        c.cierto(">= ?" in servidor[i:i + 1600],
                  "los desayunos SI incluyen a quien se va: desayuna antes del bote")
 
     with open(os.path.join(RAIZ, "backend", "informe.py"), encoding="utf-8") as f:

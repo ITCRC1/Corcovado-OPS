@@ -5575,10 +5575,16 @@ async function loadRestaurantes(fecha) {
            títulos largos —«Almuerzo · Terra Kitchen»— se partían en cuatro renglones.
            En el teléfono manda la regla de dos columnas del CSS, que lleva !important. -->
       <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(145px,1fr));margin-top:16px;">
-        <div class="stat" onclick="detalleRest('cena_tk')"><p class="stat-label">Cena · Terra Kitchen</p><p class="stat-value">${c.pax_tk}</p></div>
-        <div class="stat" onclick="detalleRest('cena_bosque')"><p class="stat-label">Cena · Bar el Bosque</p><p class="stat-value">${c.pax_bosque}</p></div>
-        <div class="stat" onclick="detalleRest('alm_tk')"><p class="stat-label">Almuerzo · Terra Kitchen</p><p class="stat-value">${a.pax_tk}</p></div>
-        <div class="stat" onclick="detalleRest('alm_bosque')"><p class="stat-label">Almuerzo · Bar el Bosque</p><p class="stat-value">${a.pax_bosque}</p></div>
+        <!-- EL DESAYUNO, que lo movió el lodge desde el Resumen: ahí era un número que
+             nadie podía usar —no se sirve a nadie en esa pantalla— y aquí es la lista
+             con la que el salón marca quién ya bajó. -->
+        <div class="stat" onclick="detalleRest('desayunos')"><p class="stat-label">Total desayunos</p>
+          <p class="stat-value">${d.pax_desayunos || 0}</p>
+          ${habsDelBoton(d.desayunos, `${(d.desayunos || []).filter(x => x.servido).length} de ${(d.desayunos || []).length} servidos`)}</div>
+        <div class="stat" onclick="detalleRest('cena_tk')"><p class="stat-label">Cena · Terra Kitchen</p><p class="stat-value">${c.pax_tk}</p>${habsDelBoton(c.terra_kitchen)}</div>
+        <div class="stat" onclick="detalleRest('cena_bosque')"><p class="stat-label">Cena · Bar el Bosque</p><p class="stat-value">${c.pax_bosque}</p>${habsDelBoton(c.bar_el_bosque)}</div>
+        <div class="stat" onclick="detalleRest('alm_tk')"><p class="stat-label">Almuerzo · Terra Kitchen</p><p class="stat-value">${a.pax_tk}</p>${habsDelBoton(a.terra_kitchen)}</div>
+        <div class="stat" onclick="detalleRest('alm_bosque')"><p class="stat-label">Almuerzo · Bar el Bosque</p><p class="stat-value">${a.pax_bosque}</p>${habsDelBoton(a.bar_el_bosque)}</div>
         <div class="stat" onclick="detalleRest('regimen')"><p class="stat-label">Full board</p>
           <p class="stat-value">${paxDeRegimen(d, "PENSION_COMPLETA")}</p>
           <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${habsDeRegimen(d, "PENSION_COMPLETA")} hab. de ${enCasaHoy(d).length}</p></div>
@@ -6050,6 +6056,135 @@ async function soltarReparto(fecha) {
   await loadRestaurantes(fecha);
 }
 
+// EL CONTROL DEL DESAYUNO. Lo pidió el lodge: «poner una cajita para agregar un check al
+// lado de cada habitación para indicar que esa reserva ya desayunó y el salón lleve un
+// control».
+//
+// La casilla va PRIMERO en la fila, antes del número de cuarto: quien la usa está de pie
+// en la puerta del comedor con la lista en el teléfono, y lo que hace es tocar. Lo demás
+// de la fila es para saber a quién está tocando.
+//
+// NO SE RECARGA LA PANTALLA al marcar. Son veinte toques seguidos: redibujar el día
+// entero entre uno y otro perdería el scroll cada vez y haría la lista inusable justo en
+// el momento en que se usa.
+function detalleDesayunos() {
+  const d = window._restData;
+  const F = FILTROS.restaurantes;
+  const lista = d.desayunos || [];
+  const panel = document.getElementById("rest-detalle");
+  if (!lista.length) {
+    panel.innerHTML = `<div class="detail-panel"><p class="empty" style="padding:14px 0;">
+      Nadie desayuna este día.<small>Desayuna quien sale y quien está en casa: los que
+      llegan hoy desayunan mañana.</small></p></div>`;
+    return;
+  }
+  const puede = puedeEscribir("restaurantes");
+  panel.innerHTML = `<div class="detail-panel">
+    <p style="font-weight:600;margin:0 0 4px;">Desayunos · ${F.fecha}
+      <span style="font-weight:400;color:var(--muted);">— ${lista.length} habitación(es),
+        ${lista.reduce((s, x) => s + (x.adl || 0) + (x.chl || 0), 0)} pax</span></p>
+    <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">
+      Desayuna quien <strong>sale</strong> —antes del bote— y quien <strong>está en
+      casa</strong>. Los que llegan hoy desayunan mañana.
+      ${puede ? "Marcá la casilla cuando la habitación ya bajó." : ""}</p>
+    <p id="dsy-cuenta" style="font-size:12.5px;margin:0 0 8px;"></p>
+    <table>
+      <tr>${puede ? "<th></th>" : ""}<th>Hab.</th><th>Huésped</th><th>Pax</th><th>Régimen</th><th></th></tr>
+      ${lista.map(x => `<tr id="dsy-f-${x.conf_no}" class="${x.sale_hoy ? 'fila-sale' : ''}">
+        ${puede ? `<td style="text-align:center;">
+          <input type="checkbox" id="dsy-${x.conf_no}" ${x.servido ? "checked" : ""}
+                 onchange="marcarDesayuno('${F.fecha}','${x.conf_no}',this.checked)"
+                 style="width:20px;height:20px;cursor:pointer;"
+                 title="Ya desayunó"></td>` : ""}
+        <td><strong>${x.room_no || '—'}</strong>${etiquetaGrupo(x.conf_no)}</td>
+        <td>${escaparHTML(x.nombre_principal || "")}</td>
+        <td>${(x.adl || 0) + (x.chl || 0)}${marcaNinos(x.chl)}</td>
+        <td style="font-size:11.5px;color:var(--muted);">${NOMBRE_REGIMEN[x.regimen] || "—"}</td>
+        <td>${x.sale_hoy ? '<span class="est est-sal">sale hoy</span>' : ''}</td>
+      </tr>`).join("")}
+    </table>
+    <p style="font-size:11px;color:var(--muted);margin-top:8px;">El control es de ESTE
+      día: cada mañana empieza en blanco. Si marcás una por equivocación, destildala.</p>
+  </div>`;
+  cuentaDesayunos();
+}
+
+// Cuántos llevan servidos. Se recalcula del DOM y no de los datos: es lo que el salón
+// está mirando, y así no hay dos números que puedan separarse.
+function cuentaDesayunos() {
+  const caja = document.getElementById("dsy-cuenta");
+  if (!caja) return;
+  const todas = document.querySelectorAll('#rest-detalle input[id^="dsy-"]');
+  const hechas = [...todas].filter(x => x.checked).length;
+  const faltan = todas.length - hechas;
+  caja.innerHTML = todas.length
+    ? `<strong>${hechas} de ${todas.length}</strong> ya desayunaron`
+      + (faltan ? ` · <span style="color:var(--warn-text);">faltan ${faltan}</span>`
+                : ` · <span style="color:var(--ok-text);">no falta ninguna ✓</span>`)
+    : "";
+}
+
+async function marcarDesayuno(fecha, confNo, servido) {
+  const caja = document.getElementById(`dsy-${confNo}`);
+  const res = await fetchAuth(`${API}/api/restaurantes/desayuno`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fecha, conf_no: confNo, servido }),
+  });
+  if (!res.ok) {
+    // Se devuelve la casilla a donde estaba: dejarla marcada sin que el servidor lo
+    // sepa es peor que no marcarla, porque el salón la daría por servida.
+    if (caja) caja.checked = !servido;
+    avisar((await res.json().catch(() => ({}))).detail || "No se pudo guardar", true);
+    return;
+  }
+  // La copia en memoria también, para que cerrar y volver a abrir la tarjeta no enseñe
+  // lo de antes.
+  const fila = (window._restData.desayunos || []).find(x => x.conf_no === confNo);
+  if (fila) fila.servido = servido;
+  const tr = document.getElementById(`dsy-f-${confNo}`);
+  if (tr) tr.style.opacity = servido ? ".55" : "";
+  cuentaDesayunos();
+  pintarResumenDesayunosEnLaTarjeta();
+}
+
+// El pie de la tarjeta de arriba, sin redibujar la pantalla.
+function pintarResumenDesayunosEnLaTarjeta() {
+  const lista = (window._restData || {}).desayunos || [];
+  const tarjetas = document.querySelectorAll("#app .stat");
+  for (const t of tarjetas) {
+    const et = t.querySelector(".stat-label");
+    if (!et || et.textContent.trim() !== "Total desayunos") continue;
+    const pie = t.querySelectorAll("p")[2];
+    if (pie) pie.textContent = `${lista.filter(x => x.servido).length} de ${lista.length} servidos`;
+  }
+}
+
+// QUÉ HABITACIONES HAY DETRÁS DE CADA BOTÓN, escritas en el propio botón.
+//
+// Lo pidió el lodge: «agregar en la parte inferior visible del botón la lista de
+// habitaciones que pertenecen a cada lugar, de forma no tan invasiva pero visible, de
+// esta forma se sabe qué almacena cada botón de forma rápida». Y es exacto: hasta ahora
+// había que abrir cada tarjeta y cerrarla para ver dónde cayó una habitación, y eso con
+// cuatro servicios son cuatro aperturas para una sola pregunta.
+//
+// En ORDEN DE HABITACIÓN y no en el que vengan: así la misma habitación está siempre en
+// el mismo sitio de la lista y se la busca con el ojo, que es para lo que sirve esto.
+// Numérico, para que la 4 no quede después de la 23.
+//
+// Pequeñas y en gris: tienen que poder ignorarse. Quien mira la cifra no debería tropezar
+// con ellas, y quien busca una habitación las encuentra sin abrir nada.
+function habsDelBoton(lista, pie) {
+  const habs = (lista || [])
+    .map(x => String(x.room_no || "").trim())
+    .filter(Boolean)
+    .sort((p, q) => (parseInt(p, 10) || 0) - (parseInt(q, 10) || 0));
+  if (!habs.length && !pie) return "";
+  return `
+    <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">${pie || ""}</p>
+    ${habs.length ? `<p style="font-size:10.5px;color:var(--muted);margin:3px 0 0;
+         line-height:1.35;word-break:break-word;opacity:.85;">hab ${habs.map(escaparHTML).join("-")}</p>` : ""}`;
+}
+
 // El detalle del régimen. Sin argumento los enseña TODOS —es la tarjeta de Full board,
 // que es la entrada a la lista completa—; con uno, solo ese.
 //
@@ -6149,6 +6284,7 @@ function detalleRest(cual) {
   if (cual === "solo_desayuno") { detalleRegimen("SOLO_DESAYUNO"); return; }
   if (cual === "comedor_staff") { detalleComedorStaff(); return; }
   if (cual === "alergias") { detalleAlergias(); return; }
+  if (cual === "desayunos") { detalleDesayunos(); return; }
 
   const mapa = {
     cena_tk: ["Cena en Terra Kitchen", d.cena.terra_kitchen, "CENA", "Bar el Bosque"],
@@ -7548,13 +7684,15 @@ function vistaResumenDia(d, fecha, F) {
         </div>
       </div>
 
+      <!-- LOS DESAYUNOS SE FUERON A RESTAURANTES. Lo movió el lodge, y es su sitio: el
+           desayuno es una comida y aquí no se sirve a nadie. Allá es la lista con la que
+           el salón marca quién ya bajó. El total sigue saliendo en la hoja del día. -->
       <div class="summary-grid">
         ${tarjeta('ingresos', 'Total ingresos', d.total_ingresos, d.pax_ingresos)}
         ${tarjeta('salidas', 'Total salidas', d.total_salidas, d.pax_salidas)}
-        ${tarjeta('desayunos', 'Total desayunos', d.total_desayunos, d.pax_desayunos)}
         ${tarjeta('en_casa', 'Total en casa', d.total_en_casa, d.pax_en_casa)}
       </div>
-      <p style="font-size:11px;color:var(--muted);margin-top:-8px;">Desayunos = salen + en casa (sin ingresos) · En casa = ingresos + en casa (sin salidas)</p>
+      <p style="font-size:11px;color:var(--muted);margin-top:-8px;">En casa = ingresos + en casa (sin salidas) · los desayunos están en <a href="#" onclick="loadRestaurantes('${fecha}');return false;" style="color:inherit;">Restaurantes</a></p>
       <div id="res-detalle"></div>
     </div>
 
@@ -7943,8 +8081,9 @@ function detalleResumen(campo) {
     return;
   }
 
+  // «desayunos» ya no está: su tarjeta se fue a Restaurantes, que es donde se sirve.
   const titulos = { ingresos: "Ingresos del día", salidas: "Salidas del día",
-                    desayunos: "Desayunos", en_casa: "En casa" };
+                    en_casa: "En casa" };
   const lista = d[campo] || [];
   if (!lista.length) {
     panel.innerHTML = `<div class="detail-panel">Sin registros.</div>`;
