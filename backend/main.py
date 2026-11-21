@@ -11,6 +11,7 @@ import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
 from importer import build_review_batch
+import habitaciones as _habs
 from loader import load_batch as _load_batch
 from validations import (validar_todos_los_tours, validar_tour_asignado,
                          detectar_conflictos_asignacion, guias_ocupados)
@@ -649,7 +650,7 @@ def desayunos_del_dia(conn, fecha):
             WHERE res_status != 'CANCELADA' AND (
               dep_date = ? OR ({sql_fecha('arr_date')} < ?
                                AND (dep_date IS NULL OR {sql_fecha('dep_date')} >= ?)))
-            ORDER BY CAST(room_no AS INTEGER)""", (dd, yy, yy)).fetchall()]
+            ORDER BY """ + _habs.ORDEN, (dd, yy, yy)).fetchall()]
     import sqlite3 as _sq
     try:
         servidos = {r[0] for r in conn.execute(
@@ -691,12 +692,12 @@ def _datos_del_resumen(fecha):
                   hora_entrada_fija, vuelo_entrada, hora_vuelo_entrada, nota_ingreso,
                   notas_libres
            FROM reserva WHERE arr_date = ? AND res_status != 'CANCELADA'
-           ORDER BY CAST(room_no AS INTEGER)""", (dd,))
+           ORDER BY """ + _habs.ORDEN, (dd,))
     salidas = lista(
         """SELECT conf_no, room_no, nombre_principal, adl, chl, punto_salida,
                   hora_salida_fija, vuelo_salida, hora_vuelo_salida, nota_salida
            FROM reserva WHERE dep_date = ? AND res_status != 'CANCELADA'
-           ORDER BY CAST(room_no AS INTEGER)""", (dd,))
+           ORDER BY """ + _habs.ORDEN, (dd,))
     # La cuenta vive en desayunos_del_dia, que es la que mira también Restaurantes.
     desayunos = desayunos_del_dia(conn, fecha)
     en_casa = lista(
@@ -704,7 +705,7 @@ def _datos_del_resumen(fecha):
            WHERE res_status != 'CANCELADA' AND (
              arr_date = ? OR ({sql_fecha('arr_date')} < ?
                               AND (dep_date IS NULL OR {sql_fecha('dep_date')} > ?)))
-           ORDER BY CAST(room_no AS INTEGER)""", (dd, yy, yy))
+           ORDER BY """ + _habs.ORDEN, (dd, yy, yy))
 
     def pax(l):
         return sum((x["adl"] or 0) + (x["chl"] or 0) for x in l)
@@ -1018,7 +1019,7 @@ def _datos_del_resumen(fecha):
                   r.room_no, r.nombre_principal, r.adl, r.chl
            FROM traslado_extra e JOIN reserva r ON r.conf_no = e.conf_no
            WHERE e.fecha = ? AND r.res_status != 'CANCELADA'
-           ORDER BY IFNULL(e.hora,'zz'), CAST(r.room_no AS INTEGER)""", (fecha,))]
+           ORDER BY IFNULL(e.hora,'zz'), """ + _habs.ORDEN_R, (fecha,))]
     # Quién lo lleva, con la misma clave que usa Transporte: el BT se guarda con la
     # habitación como «punto», porque es un viaje de esa reserva y no de todos los que
     # coinciden en hora.
@@ -1108,6 +1109,10 @@ def ocupacion(desde: str, hasta: str, user: dict = Depends(exige("analitica"))):
                 entran += 1
             if sale == dia:
                 salen += 1
+        # EL CUARTO DE GUÍAS NO SE VENDE, así que no cuenta para la ocupación: con 31
+        # ocupados sobre 30 vendibles el porcentaje habría pasado del 100% sin que nadie
+        # hubiera vendido de más. El guía sigue contando en el pax. Ver habitaciones.py.
+        habitaciones = _habs.solo_las_que_se_venden(habitaciones)
         dias.append({
             "fecha": dia.isoformat(),
             "dia_semana": ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"][dia.weekday()],
@@ -3379,7 +3384,7 @@ def enlaces_spa(fecha: str = None, user: dict = Depends(exige("spa", escribir=Tr
                 WHERE res_status != 'CANCELADA'
                   AND {sql_fecha('arr_date')} <= ?
                   AND (dep_date IS NULL OR {sql_fecha('dep_date')} > ?)
-                ORDER BY CAST(room_no AS INTEGER)""",
+                ORDER BY """ + _habs.ORDEN,
             (yy, yy)).fetchall()
         import spa_pagina as _pag
         salida = []
@@ -6198,7 +6203,7 @@ def qr_config(user: dict = Depends(exige("publicacion"))):
     conn = get_connection()
     habs = [dict(r)["room_no"] for r in conn.execute(
         "SELECT DISTINCT room_no FROM reserva WHERE room_no IS NOT NULL "
-        "ORDER BY CAST(room_no AS INTEGER)")]
+        "ORDER BY " + _habs.ORDEN)]
     conn.close()
     if not cfg.get("habitaciones"):
         cfg["habitaciones"] = habs
@@ -6227,7 +6232,7 @@ def qr_hoja(user: dict = Depends(exige("publicacion"))):
     conn = get_connection()
     habs = cfg.get("habitaciones") or [dict(r)["room_no"] for r in conn.execute(
         "SELECT DISTINCT room_no FROM reserva WHERE room_no IS NOT NULL "
-        "ORDER BY CAST(room_no AS INTEGER)")]
+        "ORDER BY " + _habs.ORDEN)]
     # Las direcciones las arma publicador, que es quien sabe si los enlaces llevan
     # código secreto; si no, el QR impreso apuntaría a una página que no existe.
     pares = [(h, pub.url_habitacion(conn, h)) for h in habs]
@@ -6244,7 +6249,7 @@ def qr_estado(user: dict = Depends(exige("publicacion"))):
     conn = get_connection()
     habs = cfg.get("habitaciones") or [dict(r)["room_no"] for r in conn.execute(
         "SELECT DISTINCT room_no FROM reserva WHERE room_no IS NOT NULL "
-        "ORDER BY CAST(room_no AS INTEGER)")]
+        "ORDER BY " + _habs.ORDEN)]
     resultado = []
     for h in habs:
         r = qrh.ocupante_actual(conn, h)

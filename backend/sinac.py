@@ -14,6 +14,7 @@ encontraba ninguna y la mostraba en cero, sin habitación, como si faltara compr
 
 Aquí está la única definición, para que las dos usen la misma.
 """
+import habitaciones as _habs
 
 # La ausencia de número se compara como cadena vacía a propósito: en SQLite NULL no es
 # igual a NULL, así que 'sin número = sin número' solo funciona normalizando los dos
@@ -29,7 +30,7 @@ def reservas_de(conn, tour_codigo, fecha, conf_entrada):
            WHERE ta.tour_codigo = ? AND ta.fecha = ?
              AND IFNULL(ta.conf_entrada_sinac,'') = ?
              AND r.res_status != 'CANCELADA'
-           ORDER BY CAST(r.room_no AS INTEGER)""",
+           ORDER BY """ + _habs.ORDEN_R,
         (tour_codigo, fecha, conf_entrada or "")).fetchall()]
 
 
@@ -68,7 +69,7 @@ def reservas_de_varias(conn, entradas):
                     WHERE ta.tour_codigo IN ({','.join('?' * len(lote_t))})
                       AND ta.fecha IN ({','.join('?' * len(lote_f))})
                       AND r.res_status != 'CANCELADA'
-                    ORDER BY CAST(r.room_no AS INTEGER)""",
+                    ORDER BY {_habs.ORDEN_R}""",
                 lote_t + lote_f).fetchall()
 
     for f in filas:

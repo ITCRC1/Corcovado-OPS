@@ -1,5 +1,6 @@
 """Inserta el resultado de importer.build_review_batch() en la base de datos."""
 from init_db import get_connection
+import habitaciones as _habs
 
 
 def _iso_de_ddmmyy(valor):
@@ -1002,6 +1003,12 @@ def load_batch(batch, fuente_pdf="Arrivals__Detailed.PDF", marcar_ausentes_como_
 
     for item in batch["reservas"]:
         r = item["reserva"]
+        # EL CUARTO DE GUÍAS, con el número que usa el lodge. Opera lo manda como «31G»
+        # y aquí dentro se llama «G16». Se traduce AL GUARDAR y no al dibujar: hay quince
+        # consultas que ordenan y agrupan por este número, y traducirlo en cada pantalla
+        # habría dejado a una diciendo «31G» y a la de al lado «G16». Ver habitaciones.py.
+        if r.get("room_no"):
+            r["room_no"] = _habs.normalizar(r["room_no"])
         confs_del_lote.append(r["conf_no"])
         if r.get("arr_date"):
             fechas_del_lote.add(r["arr_date"])

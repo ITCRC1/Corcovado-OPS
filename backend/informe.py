@@ -53,6 +53,8 @@ import io
 import os
 import re
 
+import habitaciones as _habs
+
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import A4
@@ -211,7 +213,11 @@ def metricas(conn, desde, hasta, habitaciones=None):
             if llega and llega <= dia and (sale is None or dia < sale):
                 habs.add(r["room_no"])
                 pax_noche += (r["adl"] or 0) + (r["chl"] or 0)
-        hab_noche += len(habs)
+        # EL CUARTO DE GUÍAS NO CUENTA PARA LA OCUPACIÓN: no es una habitación que se
+        # venda. Con 31 cuartos ocupados sobre 30 vendibles el informe habría pasado del
+        # 100% sin que nadie hubiera vendido de más. El guía SÍ sigue contando en el pax
+        # —está durmiendo aquí y come aquí— que es lo que mide esa otra cifra.
+        hab_noche += len(_habs.solo_las_que_se_venden(habs))
     ocupacion = round(100 * hab_noche / (habitaciones * noches)) if noches else 0
 
     tours = [dict(r) for r in conn.execute(

@@ -30,6 +30,8 @@ import time
 import threading
 import datetime
 
+import habitaciones as _habs
+
 PRIVADA = (os.environ.get("HOTEL_PUSH_PRIVADA") or "").strip()
 PUBLICA = (os.environ.get("HOTEL_PUSH_PUBLICA") or "").strip()
 
@@ -404,7 +406,7 @@ def pendientes_para(conn, fecha_iso):
            FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
            WHERE a.estado = 'PENDIENTE' AND a.fecha = ?
              AND r.res_status != 'CANCELADA'
-           ORDER BY CAST(r.room_no AS INTEGER)""", (fecha_iso,)).fetchall()]
+           ORDER BY """ + _habs.ORDEN_R, (fecha_iso,)).fetchall()]
 
 
 def aviso_repaso_del_dia(conn, fecha=None):

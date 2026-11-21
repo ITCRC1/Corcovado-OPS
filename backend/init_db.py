@@ -458,6 +458,7 @@ def _migrar(conn):
     _quitar_bebidas_de_amenidades(conn)
     _sin_tumbar_el_arranque(conn, _unificar_tours_de_la_nomenclatura)
     _sin_tumbar_el_arranque(conn, _ordenar_los_itinerarios_por_hora)
+    _sin_tumbar_el_arranque(conn, _renombrar_los_cuartos_de_guias)
     _purgar_sesiones(conn)
     # Al final, con las tablas ya creadas y los duplicados ya limpios.
     _crear_indices(conn)
@@ -552,6 +553,32 @@ def _ordenar_los_itinerarios_por_hora(conn):
         conn.commit()
         print(f"Itinerarios reordenados por hora: {cambiados}")
     return cambiados
+
+
+def _renombrar_los_cuartos_de_guias(conn):
+    """Las reservas que ya entraron con el número de Opera pasan al del lodge.
+
+    Opera manda los cuartos de la casa de guías como «31G» y «32G»; aquí dentro se
+    llaman «G16» y «G15». La traducción se hace al cargar, pero las que YA estaban
+    cargadas se quedarían con el número de Opera para siempre: el itinerario, el spa y la
+    publicación guardan una copia del número, y en la hoja del día el renglón del guía
+    diría «31G», que no le dice nada a quien la lee en el muelle.
+
+    Ver habitaciones.py, que es donde está el mapa y el porqué.
+    """
+    import habitaciones as _habs
+    cambiadas = 0
+    for viejo, nuevo in _habs.CUARTOS_DE_GUIA.items():
+        for tabla, col in (("reserva", "room_no"), ("spa_cita", "room_no"),
+                           ("spa_cita", "room_no_pedida")):
+            if col not in {r[1] for r in conn.execute(f"PRAGMA table_info({tabla})")}:
+                continue
+            cambiadas += conn.execute(
+                f"UPDATE {tabla} SET {col} = ? WHERE {col} = ?", (nuevo, viejo)).rowcount
+    if cambiadas:
+        conn.commit()
+        print(f"Cuartos de guías renombrados al número del lodge: {cambiadas} fila(s)")
+    return cambiadas
 
 
 def _sin_tumbar_el_arranque(conn, limpieza):

@@ -40,6 +40,7 @@ import os
 import unicodedata
 
 import archivos
+import habitaciones as _habs
 from init_db import DB_PATH
 
 # Lo que se acepta subir. La pantalla ya achica la foto a JPEG antes de mandarla, así que
@@ -254,7 +255,7 @@ def salidas_del_dia(conn, fecha):
              LEFT JOIN tour_catalogo tc ON tc.codigo = ta.tour_codigo
             WHERE ta.fecha = ? AND r.res_status != 'CANCELADA'
             ORDER BY tc.horario_inicio, ta.tour_codigo,
-                     CAST(r.room_no AS INTEGER)""", (fecha,))]
+                     """ + _habs.ORDEN_R, (fecha,))]
 
     salidas = {}
     for f in filas:

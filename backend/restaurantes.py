@@ -42,6 +42,7 @@ restaurante, así se autocorrige cuando una noche no se pudo cumplir.
 import datetime
 
 import grupos
+import habitaciones
 
 TERRA = "Terra Kitchen"
 # Antes se llamaba "Vitrales". El nombre viejo quedó guardado en los cambios manuales,
@@ -516,7 +517,7 @@ def info_cenas_privadas(conn, fecha):
             FROM amenidad_tarea a JOIN reserva r ON r.conf_no = a.conf_no
             WHERE a.fecha = ? AND {_filtro_privada('a')}
               AND r.res_status != 'CANCELADA'
-            ORDER BY CAST(r.room_no AS INTEGER)""",
+            ORDER BY """ + habitaciones.ORDEN_R,
         (_iso(fecha),)).fetchall()
 
     # ¿El huésped CENA esa noche? La noche de salida no: ese día desayuna y se va. Una
@@ -588,7 +589,7 @@ def _privadas_sin_noche(conn, conf_nos):
                     WHERE b.conf_no = a.conf_no AND b.fecha IS NOT NULL
                       AND {_filtro_privada('b')})
             GROUP BY a.conf_no, r.room_no, r.nombre_principal, r.arr_date, r.dep_date
-            ORDER BY CAST(r.room_no AS INTEGER)""",
+            ORDER BY """ + habitaciones.ORDEN_R,
         tuple(conf_nos)).fetchall()
     return [dict(f) for f in filas]
 
