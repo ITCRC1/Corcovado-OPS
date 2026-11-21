@@ -52,6 +52,83 @@ def _un_grupo_con_su_guia(cuarto="31G"):
 
 
 # ---------------------------------------------------------------------------
+# Que lleguen: Opera los marca igual que las PM de facturacion
+# ---------------------------------------------------------------------------
+
+def _crudo_de_opera(conf, hab, tarifa="GUIA", pseudo=True, nombre="Campos/Jimmy"):
+    """Una reserva como la manda Opera. Los valores son los REALES de la ventana del
+    lodge, leidos de la API: ver el comentario de es_cuarto_ficticio."""
+    cuarto = {"pseudoRoom": pseudo, "ratePlanCode": tarifa,
+              "arrivalDate": "2026-11-22", "departureDate": "2026-11-25",
+              "adultCount": 1, "childCount": 0, "numberOfRooms": 1,
+              "roomType": "PI", "linkCode": "589711467 BELITZ PARTY"}
+    if hab:
+        cuarto["roomId"] = hab
+    apellido, _, pila = nombre.partition("/")
+    return {
+        "reservationIdList": [{"type": "Reservation", "id": conf}],
+        "roomStay": cuarto,
+        "reservationGuest": {"profileInfo": {"profile": {"customer": {"personName": [
+            {"surname": apellido, "givenName": pila}]}}}},
+    }
+
+
+def el_cuarto_de_guias_no_se_descarta_como_una_PM(c):
+    """EL FALLO QUE REPORTO EL LODGE: «no aparece, tampoco en restaurantes, tours y
+    demas informaciones donde debe aparecer».
+
+    La reserva se perdia ANTES de entrar, en el filtro de pseudo-rooms, y sin ningun
+    error. Opera marca `pseudoRoom: true` en los cuartos de la casa de guias por lo mismo
+    que en las PM de facturacion —no se venden— pero no se parecen en nada: aqui duerme
+    una persona, con su nombre, que come con un grupo y sale a los tours con el.
+
+    Comprobado contra la API de Opera: de las 226 pseudo-rooms de la ventana, 15 son
+    cuartos de guias que se estaban perdiendo y 211 son PM de verdad.
+    """
+    import opera_mapeo as om
+
+    # El caso exacto que reporto el lodge: 596208023, Campos/Jimmy, cuarto 31G.
+    suya = _crudo_de_opera("596208023", "31G")
+    c.igual(om.es_cuarto_ficticio(suya), False, "el cuarto de guias YA no se descarta")
+    r = om.mapear(suya)
+    c.cierto(r is not None, "y la reserva se mapea")
+    c.igual(r["conf_no"], "596208023", "con su numero")
+    c.igual(r["adl"], 1, "y su pax: hay una persona durmiendo ahi")
+
+    # Las DOS señales, porque ninguna sola alcanza. Medido en la ventana del lodge:
+    # uno llega sin habitacion asignada —solo con la tarifa GUIA— y otro tiene
+    # habitacion «33G» con una tarifa distinta.
+    sin_hab = _crudo_de_opera("600380184", None, nombre="GUIA/STAFF")
+    c.igual(om.es_cuarto_ficticio(sin_hab), False,
+            "el que todavia no tiene cuarto entra por la tarifa GUIA")
+    otra_tarifa = _crudo_de_opera("602723837", "33G", tarifa="HUSR")
+    c.igual(om.es_cuarto_ficticio(otra_tarifa), False,
+            "y el 33G entra por el numero, aunque su tarifa sea otra")
+
+
+def las_PM_de_verdad_se_siguen_descartando(c):
+    """La otra mitad, y la que hace que esto se pueda aplicar sin romper nada.
+
+    Las PM —«posting master»— son las habitaciones de facturacion de un grupo: no hay
+    nadie a quien llevarle una amenidad ni quien salga a un tour. Medido en su dia: el
+    cuarto 9000 entraba a la agenda como una llegada normal con 0 adultos, y recepcion
+    veia un cuarto que no esta en el hotel sin forma de saber por que.
+    """
+    import opera_mapeo as om
+    for conf, hab, tarifa in (("900001", "9000", "PMTR"), ("900002", "PM1", "RACK"),
+                              ("900003", None, "PMTR")):
+        pm = _crudo_de_opera(conf, hab, tarifa=tarifa, nombre="HOLD/HOLD")
+        c.igual(om.es_cuarto_ficticio(pm), True,
+                f"la PM {hab or 'sin cuarto'} se sigue dejando fuera")
+        c.igual(om.mapear(pm), None, "y no se mapea")
+
+    # Una habitacion normal no es pseudo-room y entra, como siempre.
+    normal = _crudo_de_opera("589711467", "13", tarifa="A30OL", pseudo=False,
+                             nombre="Belitz/Party")
+    c.igual(om.es_cuarto_ficticio(normal), False, "una habitacion de hotel entra")
+
+
+# ---------------------------------------------------------------------------
 # Reconocerlos y nombrarlos
 # ---------------------------------------------------------------------------
 
@@ -270,6 +347,8 @@ def ninguna_consulta_se_quedo_ordenando_a_la_vieja(c):
 
 
 PRUEBAS = [
+    el_cuarto_de_guias_no_se_descarta_como_una_PM,
+    las_PM_de_verdad_se_siguen_descartando,
     el_cuarto_de_guias_se_reconoce_y_se_renombra,
     el_numero_se_traduce_AL_CARGAR_y_no_al_dibujar,
     las_que_ya_estaban_cargadas_se_renombran_al_arrancar,

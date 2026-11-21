@@ -24,6 +24,7 @@ huéspedes). Con ese archivo se ajustan las rutas de abajo.
 import datetime
 import re
 
+import habitaciones as _habs
 import pdf_parser
 
 # ---------------------------------------------------------------------------
@@ -601,6 +602,26 @@ def leer_pares(reserva, rutas_nombre, rutas_fecha):
 # Mapeo
 # ---------------------------------------------------------------------------
 
+def es_un_cuarto_de_guias(rs):
+    """Si esa estadía es de la casa de guías: un cuarto que SÍ duerme gente.
+
+    Opera los marca como pseudo-room igual que las PM de facturación —porque no son
+    habitaciones vendibles— pero no se parecen en nada: aquí hay una persona, con su
+    nombre, que llega, desayuna, come con un grupo y se va. Se distinguen por el número
+    («31G», «32G», «33G») y por la tarifa GUIA.
+
+    Las dos señales y no una: medido sobre la ventana del lodge, de los 15 cuartos de
+    guías hay uno que llega SIN habitación asignada todavía —solo con la tarifa GUIA— y
+    otro con habitación «33G» y una tarifa distinta. Con una sola de las dos reglas, uno
+    de los dos se seguiría perdiendo.
+    """
+    if not isinstance(rs, dict):
+        return False
+    if str(rs.get("ratePlanCode") or "").strip().upper() == "GUIA":
+        return True
+    return _habs.es_de_guia(rs.get("roomId") or rs.get("roomNumber") or "")
+
+
 def es_cuarto_ficticio(cruda):
     """Si la reserva es de una habitación que no existe en el hotel.
 
@@ -612,9 +633,22 @@ def es_cuarto_ficticio(cruda):
     marcadas así, y una de ellas —cuarto 9000, estado Reserved— entraba a la agenda
     como una llegada normal del 5 de septiembre con 0 adultos. Recepción vería un
     cuarto que no está en el hotel, y no tendría forma de saber por qué.
+
+    LOS CUARTOS DE GUÍAS NO SON ESO, aunque Opera los marque igual. Lo reportó el lodge:
+    el guía que entraba al día siguiente no salía en Reservas, ni en Restaurantes, ni en
+    tours — no salía en ninguna parte, y sin ningún error. La reserva se descartaba aquí,
+    en silencio, porque «31G» viene con pseudoRoom en true: no se vende, solo se habilita
+    cuando Reservas mete ahí a un guía. Pero duerme una persona, que come con su grupo y
+    sale a los tours con él.
+
+    Medido sobre la ventana del lodge (710 reservas, de 30 días atrás a 60 adelante):
+    226 pseudo-rooms, de las cuales 15 son cuartos de guías que se estaban perdiendo y
+    211 son PM de verdad, que se siguen descartando.
     """
     rs = cruda.get("roomStay") if isinstance(cruda, dict) else None
-    return bool(isinstance(rs, dict) and rs.get("pseudoRoom"))
+    if not (isinstance(rs, dict) and rs.get("pseudoRoom")):
+        return False
+    return not es_un_cuarto_de_guias(rs)
 
 
 def mapear(cruda):
