@@ -502,9 +502,17 @@ def _avisos_de_transporte(cur, r, a_mano=(), fijados=None):
     """
     # 1. Un ingreso o salida sin un punto reconocido (Sierpe/Drake): lo confirma
     #    recepción, porque adivinarlo manda un bote al muelle equivocado.
+    import pdf_parser as _pp
+
     for tipo, texto in (("entrada", r.get("punto_entrada_sin_confirmar")),
                         ("salida", r.get("punto_salida_sin_confirmar"))):
         mensaje = None
+        # UN CAMBIO DE HABITACIÓN NO LLEVA BOTE, así que no hay nada que confirmar. El
+        # lodge lo escribe en el mismo campo que el punto —«Salida: Se pasan el 24/11 a
+        # Agujas room rsv 597370448»— y de ahí salía un aviso que nadie podía cerrar.
+        # Un aviso que no se puede cerrar enseña a no mirar los avisos.
+        if texto and _pp.es_un_cambio_de_habitacion(texto):
+            texto = None
         if texto and tipo not in a_mano:
             mensaje = (
                 f"Confirmar punto de {tipo} de {r['nombre_principal']} "

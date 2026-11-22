@@ -1468,6 +1468,75 @@ def el_parser_recoge_el_BT_del_itinerario(c):
             "y «C-EBT» no se confunde con uno")
 
 
+# La nota REAL de la habitacion 10 del 23 de noviembre, leida de Opera. Esta entera a
+# proposito: lo que la hizo fallar es justo el contexto —el rooming al lado, un «a
+# solicitud» que habla de otra cosa— y recortarla dejaria la prueba sin el caso.
+NOTA_HAB_10 = (
+    "Paquete 4N/5D-Breakfast Only\nCIS\n"
+    "Entrada: Via Drake se hospedan en The Banana Veranda House pick up 9:00am\n"
+    "Salida: Via Drake drop off en cabinas genesis\n"
+    "-------------------------------\nRooming:\n\n"
+    "Brian Theodore Kamprath - A35596608\n"
+    "------------------------------\nOperacion:\n"
+    "23: In\n24:  transbordo \n25:\n26: CIS 208917\n27: Out\n\n"
+    "a solicitud del cliente SNK 26/11\n"
+    "------------------------------\nNotas:\n"
+    "Organizar transbordo el 24/11 con Rancho Corcovado.\n")
+
+
+def el_BT_tambien_se_llama_transbordo(c):
+    """LO REPORTO EL LODGE: «en la reserva del que ingresa mañana habitacion 10 hay un BT
+    que no esta detectando para la fecha del 24 noviembre».
+
+    Y tenia razon: su itinerario dice «24: transbordo», con todas las letras, y el lector
+    solo buscaba «BT». El viaje no llegaba a Transporte, nadie le asignaba bote ni
+    capitan, y no habia ningun error que mirar — el transbordo sencillamente no existia
+    para el sistema. Es la misma forma de fallar que este modulo existe para no repetir.
+    """
+    import boat_transfer as bt
+    import pdf_parser
+
+    leido = pdf_parser.leer_texto_de_reserva(NOTA_HAB_10)
+    dias = [x["dia"] for x in (leido.get("traslados_extra") or [])]
+    c.igual(dias, ["24"], "el transbordo del itinerario se recoge, con su dia")
+
+    viajes, avisos = bt.leer(dias, NOTA_HAB_10, "2026-11-23", "2026-11-27")
+    c.igual(len(viajes), 1, "sale UNA corrida")
+    c.igual(viajes[0]["fecha"], "2026-11-24", "el 24 de noviembre, como dice la reserva")
+    c.igual(avisos, [], "y sin avisos: el dia lo da el itinerario, no hay que adivinarlo")
+
+    # EL TRANSBORDO NO ES UN TOUR. Si entrara como tour, saldria en la agenda de guias
+    # pidiendo guia y entrada del parque.
+    tours = [t.get("tour") for t in (leido.get("operacion") or []) if t.get("tour")]
+    c.igual(tours, ["SNORKEL"], "el transbordo no se cuela como tour")
+
+    # Y la otra forma de escribirlo.
+    corto = pdf_parser.leer_texto_de_reserva("Operacion:\n06: In\n09: TRB\n11: Out\n")
+    c.igual([x["dia"] for x in (corto.get("traslados_extra") or [])], ["09"],
+            "«TRB» tambien es un traslado en bote")
+
+    # Lo que NO debe confundirse: «C-EBT» es el aviso de cama o almohada extra.
+    ebt = pdf_parser.leer_texto_de_reserva("Operacion:\n07: C-EBT\n11: Out\n")
+    c.igual(ebt.get("traslados_extra"), None, "«C-EBT» no es un transbordo")
+
+
+def la_nota_del_BT_dice_con_quien_se_engancha(c):
+    """Lo que se enseña en la corrida tiene que servirle a quien coordina el bote.
+
+    La hab 10 nombra el transbordo DOS veces —«24: transbordo» en el itinerario y
+    «Organizar transbordo el 24/11 con Rancho Corcovado» en las notas— y las dos ventanas
+    caen junto a una frase que pide. Ganaba la primera por estar antes, y arrastraba el
+    rooming que tiene al lado: la corrida mostraba un numero de pasaporte en vez de con
+    quien se engancha. Es el mismo fallo que ya costo un arreglo con la habitacion 09.
+    """
+    import boat_transfer as bt
+    viajes, _ = bt.leer(["24"], NOTA_HAB_10, "2026-11-23", "2026-11-27")
+    nota = viajes[0]["nota"]
+    c.cierto("Rancho Corcovado" in nota, "la nota dice con quien se coordina")
+    c.cierto("Kamprath" not in nota and "A35596608" not in nota,
+             "y NO arrastra el rooming ni los numeros de pasaporte")
+
+
 def un_BT_sin_dia_no_se_inventa(c):
     """El error caro de esta pantalla. Un bote preparado el dia que no era cuesta lo
     mismo que no prepararlo, y encima nadie lo revisa porque la pantalla ya decia que
@@ -1667,6 +1736,8 @@ PRUEBAS = [
     la_pared_de_escalada_se_reconoce_por_su_nombre,
     el_dia_del_BT_sale_del_itinerario_no_del_texto,
     el_parser_recoge_el_BT_del_itinerario,
+    el_BT_tambien_se_llama_transbordo,
+    la_nota_del_BT_dice_con_quien_se_engancha,
     un_BT_sin_dia_no_se_inventa,
     el_BT_sale_en_transporte_y_se_le_asigna_capitan,
     el_BT_de_una_cancelada_no_pide_bote,

@@ -475,6 +475,122 @@ def un_punto_que_no_existe_no_se_guarda(c):
         c.igual(e.status_code, 404, "y una reserva inexistente, 404")
 
 
+def un_cambio_de_habitacion_no_pide_confirmar_un_muelle(c):
+    """LO REPORTO EL LODGE: «estas notas que aparecen en transporte no corresponden ahi,
+    se refiere a cambios de habitacion».
+
+    El lodge escribe la mudanza en el MISMO campo donde va el punto, porque ahi es donde
+    se escribe lo que pasa ese dia. Las tres notas de abajo son REALES, leidas de Opera:
+
+        Entrada: In house se pasan de treehouse a agujas  rsvs 597482971 y 597484019
+        Salida:  Se pasan el 24/11 a Agujas room rsv 597370448
+
+    El lector hacia lo correcto —no reconocia Sierpe ni Drake— y lo dejaba «pendiente de
+    confirmar». Pero no hay nada que confirmar: ese huesped no coge ningun bote, se muda
+    de cuarto. Pidiendolo, la lista de pendientes se llena de cosas que NO SE PUEDEN
+    CERRAR, y una lista asi se deja de mirar — que es justo lo que ya le paso a esta
+    pantalla con las de diciembre.
+    """
+    import pdf_parser as pp
+
+    SI = ["In house se pasan de treehouse a agujas  rsvs 597482971 y 597484019",
+          "Se pasan el 24/11 a Agujas room rsv 597370448",
+          "CLIENTES In house se pasan de TH a Agujas",
+          "Se cambian de habitacion el 25"]
+    for texto in SI:
+        c.igual(pp.es_un_cambio_de_habitacion(texto), True,
+                f"es una mudanza: «{texto[:46]}»")
+
+    # LO QUE NO ES UNA MUDANZA SIGUE PIDIENDO CONFIRMACION. Si esto se pasara de listo,
+    # el sistema dejaria de pedir el punto de alguien que SI viaja — y eso es un bote
+    # que no se manda.
+    NO = ["Via Drake RZ1118 11:00AM", "Recogerlos en Punta Marenco 03:00 pm", "PTE",
+          "(vacío en la reserva)", "Aguila de Osa 10 am", "TRB", ""]
+    for texto in NO:
+        c.igual(pp.es_un_cambio_de_habitacion(texto), False,
+                f"NO es una mudanza: «{texto[:46]}»")
+    c.igual(pp.es_un_cambio_de_habitacion(None), False, "ni la falta de texto")
+
+
+def la_mudanza_no_sale_en_pendientes_ni_genera_aviso(c):
+    """El camino completo: ni en la lista de Transporte ni como alerta.
+
+    Probar solo es_un_cambio_de_habitacion se detendria en el primer paso: la lista y el
+    aviso los arma cada uno su propio SQL, y los dos tenian que aprender lo mismo.
+    """
+    import datetime
+    import main
+
+    conn = comun.base_limpia()
+    ayer = HOY - datetime.timedelta(days=3)
+
+    def reserva(conf, hab, llega, sale, p_ent, p_sal, t_ent=None, t_sal=None):
+        conn.execute(
+            """INSERT INTO reserva (conf_no, room_no, nombre_principal, arr_date,
+                                    dep_date, adl, chl, rooms, res_status,
+                                    punto_entrada, punto_salida,
+                                    punto_entrada_sin_confirmar,
+                                    punto_salida_sin_confirmar)
+               VALUES (?,?,?,?,?,2,0,1,'EN CASA',?,?,?,?)""",
+            (conf, hab, f"Murray/{conf}", _ddmmyy(llega), _ddmmyy(sale),
+             p_ent, p_sal, t_ent, t_sal))
+
+    # Las tres de la foto: dos que «salen» hoy a otra habitacion y una que «entra».
+    reserva("870001", "21", ayer, HOY, "Drake", None,
+            t_sal="Se pasan el 24/11 a Agujas room rsv 597370448")
+    reserva("870002", "22", ayer, HOY, "Drake", None,
+            t_sal="Se pasan el 24/11 a Agujas room rsv 597370448")
+    reserva("870003", "11", HOY, HOY + datetime.timedelta(days=3), None, "Drake",
+            t_ent="In house se pasan de treehouse a agujas rsvs 597482971 y 597484019")
+    # Y una que SI necesita que alguien decida.
+    reserva("870004", "18", ayer, HOY, "Drake", None, t_sal="Aguila de Osa 10 am")
+    conn.commit()
+    conn.close()
+
+    pendientes = main.transporte_pendientes(fecha=HOY.isoformat(), user=USUARIO)
+    confs = {p["conf_no"] for p in pendientes}
+    c.cierto("870004" in confs, "la que de verdad hay que confirmar sigue saliendo")
+    for conf in ("870001", "870002", "870003"):
+        c.cierto(conf not in confs, f"la mudanza {conf} YA no pide confirmacion")
+
+    # Y la pantalla de Transporte lo dice en vez de poner «sin definir».
+    d = main.transporte(fecha=HOY.isoformat(), user=USUARIO)
+    suya = [x for x in d["salidas"] if x["conf_no"] == "870001"][0]
+    c.igual(suya["cambio_de_habitacion"], True,
+            "la fila sabe que ese dia no viaja, se muda")
+    otra = [x for x in d["salidas"] if x["conf_no"] == "870004"][0]
+    c.igual(otra["cambio_de_habitacion"], False, "y la que viaja, no")
+
+
+def el_aviso_de_confirmar_no_salta_por_una_mudanza(c):
+    """La otra mitad: la alerta. Un aviso que no se puede cerrar enseña a no mirar los
+    avisos, y este saltaba en cada carga."""
+    conn = comun.base_limpia()
+    conn.close()
+    lote = _lote_de_opera(punto_entrada=None,
+                          pendiente="In house se pasan de treehouse a agujas rsvs 1 y 2")
+    comun.cargar(lote, vistas=lote)
+
+    conn = comun.conexion()
+    avisos = [dict(a)["mensaje"] for a in conn.execute(
+        "SELECT mensaje FROM alerta WHERE tipo = 'TRANSPORTE_SIN_CONFIRMAR' "
+        "AND resuelto = 0")]
+    conn.close()
+    c.igual(avisos, [], "una mudanza no genera aviso de confirmar el punto")
+
+    # Y lo que SI hay que confirmar sigue avisando.
+    conn = comun.base_limpia()
+    conn.close()
+    lote = _lote_de_opera(punto_entrada=None, pendiente="Aguila de Osa 10 am")
+    comun.cargar(lote, vistas=lote)
+    conn = comun.conexion()
+    cuantos = conn.execute(
+        "SELECT COUNT(*) FROM alerta WHERE tipo = 'TRANSPORTE_SIN_CONFIRMAR' "
+        "AND resuelto = 0").fetchone()[0]
+    conn.close()
+    c.igual(cuantos, 1, "lo que no es una mudanza sigue pidiendo confirmacion")
+
+
 def la_hoja_del_dia_no_pone_en_drake_lo_que_no_sabe(c):
     """LO REPORTO EL LODGE con una reserva que en Opera dice «Entrada: Sierpe / Salida:
     Sierpe» y en la hoja del dia salia en la columna DRAKE.
@@ -738,6 +854,9 @@ PRUEBAS = [
     se_puede_devolver_el_mando_a_la_reserva,
     confirmar_una_habitacion_no_cierra_los_avisos_de_las_demas,
     un_punto_que_no_existe_no_se_guarda,
+    un_cambio_de_habitacion_no_pide_confirmar_un_muelle,
+    la_mudanza_no_sale_en_pendientes_ni_genera_aviso,
+    el_aviso_de_confirmar_no_salta_por_una_mudanza,
     la_hoja_del_dia_no_pone_en_drake_lo_que_no_sabe,
     quien_no_dice_nada_tambien_sale_en_los_pendientes,
     sin_punto_el_itinerario_no_promete_sierpe,

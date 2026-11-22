@@ -4229,6 +4229,15 @@ async function loadTransporte(fecha, desde, hasta) {
   const celdaPunto = (r, tipo) => {
     const valor = tipo === "entrada" ? r.punto_entrada : r.punto_salida;
     const aMano = tipo === "entrada" ? r.punto_entrada_a_mano : r.punto_salida_a_mano;
+    // ESE DÍA NO VIAJA: se muda de habitación dentro del lodge. Lo reportó el lodge —
+    // «estas notas no corresponden ahí, se refiere a cambios de habitación»— y la fila
+    // decía «sin definir», como si faltara un dato que alguien tuviera que ir a buscar.
+    // No se ofrece el selector: no hay muelle que elegir.
+    if (!valor && r.cambio_de_habitacion) {
+      return `<span style="font-size:11.5px;color:var(--muted);"
+                    title="La reserva dice que ese día cambia de habitación, no que viaje">
+                cambio de habitación</span>`;
+    }
     if (!puedeEscribir("transporte")) {
       return `${valor ? escaparHTML(valor) : '<span style="color:var(--warn-text);">sin definir</span>'}`
            + (aMano ? ` <span title="Lo puso recepción" style="color:var(--muted);">✎</span>` : "");

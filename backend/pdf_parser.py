@@ -5,6 +5,10 @@ Implementa las reglas definidas en el Documento de Requerimientos, sección 6.
 import re
 import pdfplumber
 
+# El patrón de «esto es un traslado en bote» vive en boat_transfer, que es quien los lee.
+# Aquí se usa para reconocer la línea del itinerario que lo pide.
+import boat_transfer as _bt
+
 # --- Líneas de ruido (encabezados/pies de página que se repiten) ---
 NOISE_PATTERNS = [
     r"^Filter Arrival from Date",
@@ -702,6 +706,43 @@ def punto_de(texto):
     return None
 
 
+# UN CAMBIO DE HABITACIÓN NO ES UN VIAJE.
+#
+# Lo reportó el lodge: «estas notas que aparecen en transporte no corresponden ahí, se
+# refiere a cambios de habitación». El lodge escribe el cambio en el MISMO campo donde va
+# el punto de embarque, porque es donde se escribe lo que pasa ese día:
+#
+#     Entrada: In house se pasan de treehouse a agujas  rsvs 597482971 y 597484019
+#     Salida:  Se pasan el 24/11 a Agujas room rsv 597370448
+#
+# El lector hacía lo correcto —no reconocía Sierpe ni Drake— y lo dejaba «pendiente de
+# confirmar». Pero no hay nada que confirmar: ese huésped no coge ningún bote, se muda de
+# cuarto. Pidiendo confirmarlo, la lista de pendientes se llena de cosas que no se pueden
+# cerrar, y una lista así se deja de mirar — que es justo lo que ya pasó con las de
+# diciembre.
+#
+# DOS SEÑALES, y hace falta una de las dos:
+#   · «in house», que dice por sí sola que el huésped ya está dentro;
+#   · que se pasen/muevan/cambien Y se nombre otra reserva o una habitación. Las dos
+#     juntas, porque «se pasan» a secas podría estar en una frase sobre el bote.
+_EN_CASA = re.compile(r"\bin[\s-]?house\b", re.I)
+_SE_MUEVEN = re.compile(r"\bse\s+(?:pasa|pasan|mueve|mueven|cambia|cambian|traslada|"
+                        r"trasladan)\b|\bcambi\w*\s+de\s+(?:habitaci[oó]n|cuarto|hab)\b",
+                        re.I)
+_OTRO_CUARTO = re.compile(r"\brsvs?\b|\breservas?\b|\brooms?\b|\bhab\.?\b|"
+                          r"\bhabitaci[oó]n\w*\b", re.I)
+
+
+def es_un_cambio_de_habitacion(texto):
+    """Si ese texto describe una mudanza dentro del lodge y no un viaje en bote."""
+    if not texto:
+        return False
+    t = str(texto)
+    if _EN_CASA.search(t):
+        return True
+    return bool(_SE_MUEVEN.search(t) and _OTRO_CUARTO.search(t))
+
+
 def es_una_recogida(texto):
     """Si ese texto nombra un sitio donde se RECOGE al huésped (otro lodge, una playa).
 
@@ -1084,9 +1125,13 @@ def procesar_linea(line, current, section):
                     # no reconocida pide más de dos— así que el viaje no llegaba a
                     # Transporte y nadie le asignaba bote ni capitán.
                     #
-                    # «\bBT\b» no caza «C-EBT», que es otra cosa (cama o almohada extra)
-                    # y aparece en la misma reserva.
-                    if re.search(r"\bBT\b", resto, re.IGNORECASE):
+                    # CÓMO SE ESCRIBE. No siempre «BT»: el lodge lo escribe también con
+                    # todas sus letras —«24: transbordo»— y como «TRB». Lo reportó con la
+                    # habitación 10, cuyo transbordo del 24 no llegaba a Transporte. El
+                    # patrón vive en boat_transfer, que es quien lee los BT: con una
+                    # copia aquí, el día que una de las dos aprenda una forma nueva la
+                    # otra seguiría sin verla.
+                    if _bt.BT.search(resto):
                         current.setdefault("traslados_extra", []).append({"dia": dia})
                     if not encontrados:
                         resto_limpio = re.sub(r"\([^)]*\)", " ", resto)

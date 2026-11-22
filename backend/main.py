@@ -1387,6 +1387,7 @@ def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: di
         # pueda ofrecer «volver a lo que diga la reserva» solo cuando hay algo que
         # soltar, y para marcar la fila que tocó recepción.
         f"SELECT conf_no, room_no, nombre_principal, punto_entrada, punto_entrada_a_mano,"
+        f" punto_entrada_sin_confirmar,"
         f" hora_entrada_fija, arr_time, hora_vuelo_entrada, adl, chl, arr_date"
         f" FROM reserva WHERE {cond_e}"
         f" AND res_status != 'CANCELADA' ORDER BY rowid",
@@ -1394,6 +1395,7 @@ def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: di
     ).fetchall()
     salidas = conn.execute(
         f"SELECT conf_no, room_no, nombre_principal, punto_salida, punto_salida_a_mano,"
+        f" punto_salida_sin_confirmar,"
         f" hora_salida_fija, hora_vuelo_salida, adl, chl, dep_date"
         f" FROM reserva WHERE {cond_s}"
         f" AND res_status != 'CANCELADA' ORDER BY rowid",
@@ -1411,11 +1413,19 @@ def transporte(fecha: str = None, desde: str = None, hasta: str = None, user: di
     finally:
         conn2.close()
 
+    import pdf_parser as _pp
+
     def con_hora(filas, es_entrada):
         salida = []
         tipo = "entrada" if es_entrada else "salida"
         for f in filas:
             d = dict(f)
+            # QUE ESE DÍA NO VIAJA: se muda de habitación dentro del lodge. El lodge lo
+            # escribe en el mismo campo que el punto, así que la fila salía como «sin
+            # definir» y parecía que faltaba un dato. Ver pdf_parser.
+            d["cambio_de_habitacion"] = _pp.es_un_cambio_de_habitacion(
+                d.get("punto_entrada_sin_confirmar") if es_entrada
+                else d.get("punto_salida_sin_confirmar"))
             d["hora_efectiva"], d["hora_origen"] = _hora_traslado(d, es_entrada)
             d["_punto"] = _tras.normalizar_punto(
                 d.get("punto_entrada") if es_entrada else d.get("punto_salida"))
@@ -4728,11 +4738,24 @@ def transporte_pendientes(fecha: str = None, desde: str = None, hasta: str = Non
             return bool(iso) and desde <= iso <= hasta
         return True
 
+    # UN CAMBIO DE HABITACIÓN NO SE PUEDE CONFIRMAR, porque no hay bote que mandar. El
+    # lodge escribe la mudanza en el mismo campo que el punto —«Salida: Se pasan el 24/11
+    # a Agujas room rsv 597370448»— y esas filas llenaban esta lista de cosas que nadie
+    # puede cerrar. Lo reportó: «estas notas no corresponden ahí». Ver
+    # pdf_parser.es_un_cambio_de_habitacion.
+    import pdf_parser as _pp
+
     salida = []
     for fila in rows:
         d = dict(fila)
-        d["falta_entrada"] = d["punto_entrada"] is None and dentro(d["arr_date"])
-        d["falta_salida"] = d["punto_salida"] is None and dentro(d["dep_date"])
+        d["cambio_entrada"] = _pp.es_un_cambio_de_habitacion(
+            d.get("punto_entrada_sin_confirmar"))
+        d["cambio_salida"] = _pp.es_un_cambio_de_habitacion(
+            d.get("punto_salida_sin_confirmar"))
+        d["falta_entrada"] = (d["punto_entrada"] is None and dentro(d["arr_date"])
+                              and not d["cambio_entrada"])
+        d["falta_salida"] = (d["punto_salida"] is None and dentro(d["dep_date"])
+                             and not d["cambio_salida"])
         if d["falta_entrada"] or d["falta_salida"]:
             salida.append(d)
     return salida

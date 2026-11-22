@@ -20,9 +20,19 @@ hora», como ya pasa con los vuelos que no se saben— porque ahí la pantalla l
 import datetime
 import re
 
-# «BT» con límites de palabra: así no se cuela dentro de «C-EBT», que es otra cosa (el
-# aviso de cama/almohada extra) y aparece en la misma nota de la habitación 09.
-BT = re.compile(r"\bBT\b", re.I)
+# CÓMO SE ESCRIBE UN BT EN LA RESERVA. No siempre se llama «BT»: el lodge lo escribe
+# también con todas sus letras —«24: transbordo», «Organizar transbordo el 24/11 con
+# Rancho Corcovado»— y con la abreviatura «TRB».
+#
+# Lo reportó el lodge con la habitación 10 del 23 de noviembre: su itinerario pedía un
+# transbordo el 24 y el sistema no lo veía, así que no salía en Transporte y nadie le
+# asignaba bote ni capitán. Buscando solo «BT» se perdía entero y sin ningún error —el
+# viaje sencillamente no existía para el sistema—, que es la forma de fallar que este
+# módulo existe para no repetir.
+#
+# Los límites de palabra importan: así «BT» no se cuela dentro de «C-EBT», que es otra
+# cosa (el aviso de cama o almohada extra) y aparece en la misma nota.
+BT = re.compile(r"\b(?:BT|TRB)\b|\btransbordos?\b", re.I)
 
 # EL DÍA LO DA EL ITINERARIO, no el texto libre.
 #
@@ -43,8 +53,14 @@ _VUELTA = re.compile(r"roundtrip|round\s+trip|ida\s+y\s+vuelta|regresan|retorno|
 
 # Que la reserva PIDE el viaje, y no que el traslado venga incluido en la tarifa.
 # «PAQUETE 3N/4D+FULL BOARD BT INCLUDED» es lo segundo: no hay nada extra que preparar.
-_PIDE = re.compile(r"solicit\w*|pide[nm]?\b|requier\w*|favor\s+(?:coordinar|confirmar)",
-                   re.I)
+#
+# «organizar» entró con la habitación 10: su nota dice «Organizar transbordo el 24/11 con
+# Rancho Corcovado», que es exactamente pedir el viaje y decir con quién se engancha. Sin
+# esa palabra, el trozo que ganaba era el del itinerario —que tiene el rooming al lado— y
+# quien iba a coordinar el bote leía números de pasaporte en vez de «con Rancho
+# Corcovado». Es el mismo fallo que ya está escrito en _fragmento_del_bt.
+_PIDE = re.compile(r"solicit\w*|pide[nm]?\b|requier\w*|organiz\w*|"
+                   r"favor\s+(?:coordinar|confirmar)", re.I)
 
 VENTANA = 260          # cuánto texto alrededor del «BT» se mira
 
@@ -106,11 +122,19 @@ def _fragmento_del_bt(texto):
     en vez de «solicitan BT para tour con Pacheco», que es lo que necesita quien lo
     coordina.
     """
-    mejor, mejor_puntos = "", (-1, -1)
+    mejor, mejor_puntos = "", (-1, -1, -1)
     for m in BT.finditer(texto or ""):
         ini = max(0, m.start() - VENTANA // 2)
         trozo = (texto or "")[ini:m.end() + VENTANA]
-        puntos = (1 if _PIDE.search(trozo) else 0, len(_HORA.findall(trozo)))
+        # El segundo criterio desempata, y hace falta: la habitación 10 nombra el
+        # transbordo DOS veces —«24: transbordo» en el itinerario y «Organizar transbordo
+        # el 24/11 con Rancho Corcovado» en las notas— y las dos ventanas caen junto a
+        # una frase que pide. Ganaba la primera por estar antes, y arrastraba el rooming
+        # que tiene al lado: la corrida mostraba un número de pasaporte en vez de con
+        # quién se engancha el bote.
+        puntos = (1 if _PIDE.search(trozo) else 0,
+                  0 if re.search(r"\brooming\b", trozo, re.I) else 1,
+                  len(_HORA.findall(trozo)))
         if puntos > mejor_puntos:
             mejor, mejor_puntos = trozo, puntos
     return mejor
