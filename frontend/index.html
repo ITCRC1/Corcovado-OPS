@@ -6500,7 +6500,22 @@ async function guardarHoraMesa(fecha, confNo, hora) {
   if (habs) msg += ` — también la hab. ${habs} del grupo`;
   // Una hora distinta puesta a mano no se pisa; se avisa para que sea una decisión.
   if (exc.length) msg += `. Sin cambiar: ${exc.join(", ")}`;
-  avisar(msg, exc.length > 0);
+  // VARIAS MESAS A LA MISMA HORA. Lo pidió el lodge: a la tercera se avisa. No se
+  // bloquea —la hora queda guardada— porque el salón sabe si puede con ella; lo que
+  // hacía falta era que el dato estuviera a la vista para poder decidir.
+  if (d.aviso_horario) msg += `. ⚠ ${d.aviso_horario}`;
+  avisar(msg, exc.length > 0 || !!d.aviso_horario);
+  marcarHorasApretadas(d.aviso_horario ? hora : null);
+}
+
+// La casilla de la hora se queda marcada mientras el aviso está en pie, para que no
+// dependa de haber leído el cartel: el salonero mira la tabla, no el mensaje que pasó.
+function marcarHorasApretadas(hora) {
+  document.querySelectorAll("#rest-detalle input[data-hora]").forEach(i => {
+    const apretada = hora && i.value === hora;
+    i.style.borderColor = apretada ? "var(--warn-text)" : "";
+    i.title = apretada ? "Hay tres o más mesas a esta hora" : (i.title || "");
+  });
 }
 
 // '28-08-26' -> '2026-08-28'. Las fechas de la reserva llegan en el formato del reporte

@@ -7099,9 +7099,15 @@ def restaurantes_hora(payload: dict, user: dict = Depends(current_user)):
             _guardar_hora_mesa(conn, fecha, c["conf_no"], hora)
             aplicadas.append(c)
         conn.commit()
+        # CUÁNTAS MESAS MÁS HAY A ESA HORA. Lo pidió el lodge: a la tercera se avisa, no
+        # se bloquea. Se mira DESPUÉS de guardar y con la hora ya puesta, así que la
+        # propia mesa —y sus compañeras de grupo— no se cuentan a sí mismas. Ver
+        # restaurantes.aviso_de_horario.
+        aviso = rest.aviso_de_horario(conn, fecha, hora, conf_no)
     finally:
         conn.close()
-    return {"status": "ok", "hora": hora, "grupo": aplicadas, "excepciones": excepciones}
+    return {"status": "ok", "hora": hora, "grupo": aplicadas,
+            "excepciones": excepciones, "aviso_horario": aviso}
 
 
 @app.post("/api/restaurantes/cena-privada")

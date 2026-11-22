@@ -639,6 +639,79 @@ def companeros_de_mesa(conn, fecha, conf_no):
             if r["clave_grupo"] == yo["clave_grupo"] and r["conf_no"] != conf_no]
 
 
+# CUÁNTAS MESAS A LA MISMA HORA EMPIEZAN A APRETAR.
+#
+# Lo pidió el lodge: «al momento de tratar de ingresar la tercera reserva a la misma hora
+# en el mismo restaurante, emitir una advertencia de que ya existen 2 reservas a esa hora
+# y debe ser tomada en cuenta, para poder colocarla a otra hora o bien dejar la hora
+# solicitada pero ya queda indicado el tema».
+#
+# O sea: a la TERCERA se avisa. Con dos ya puestas, la siguiente lo dispara.
+MESAS_QUE_APRIETAN = 2
+
+
+def mesas_a_esa_hora(conn, fecha, hora, conf_no, cache=None):
+    """Qué otras mesas tienen reservada esa hora, en el restaurante de esa reserva.
+
+    Devuelve {'restaurante': …, 'mesas': [{'habitaciones': [...], 'pax': n, 'nombre': …}]}
+    o None si esa reserva no cena esa noche.
+
+    SE CUENTAN MESAS, NO HABITACIONES, y es la decisión que hace que el aviso sirva. El
+    reparto nunca separa a un grupo: las tres habitaciones de una familia se sientan
+    juntas y comparten hora, así que contándolas por separado el aviso saltaría SIEMPRE
+    que se le pone la hora a un grupo —justo cuando no hay nada que avisar, porque es una
+    sola mesa—. Y un aviso que salta siempre se deja de mirar.
+
+    LA MESA QUE SE ESTÁ PONIENDO NO SE CUENTA A SÍ MISMA, ni a sus compañeras de grupo:
+    la pregunta es cuántas OTRAS mesas tendría que atender el salón a esa hora.
+    """
+    if not hora:
+        return None
+    datos = distribuir(conn, fecha, cache)
+    cena = datos["cena"]
+    for nombre, lista in ((TERRA, cena["terra_kitchen"]),
+                          (BOSQUE, cena["bar_el_bosque"])):
+        yo = next((x for x in lista if str(x.get("conf_no")) == str(conf_no)), None)
+        if yo is None:
+            continue
+        # 'grupo' es la clave del grupo, o None cuando la reserva va sola: lo que
+        # devuelve distribuir(). Una reserva sola es una mesa de una.
+        mia = yo.get("grupo") or f"r{conf_no}"
+        mesas = {}
+        for x in lista:
+            if (x.get("hora") or "") != hora:
+                continue
+            clave = x.get("grupo") or f"r{x.get('conf_no')}"
+            if clave == mia:
+                continue
+            m = mesas.setdefault(clave, {"habitaciones": [], "pax": 0,
+                                         "nombre": x.get("nombre")})
+            if x.get("room_no"):
+                m["habitaciones"].append(x["room_no"])
+            m["pax"] += x.get("pax") or 0
+        return {"restaurante": nombre, "mesas": list(mesas.values())}
+    return None
+
+
+def aviso_de_horario(conn, fecha, hora, conf_no, cache=None):
+    """El texto que hay que enseñarle al salonero, o None si no hay nada que decir.
+
+    NO BLOQUEA, AVISA. Es la misma decisión que en el spa y en la agenda de tours: el
+    salón sabe si puede con tres mesas a la misma hora —depende de cuánta gente sea y de
+    quién esté sirviendo— y bloquearlo llevaría a poner una hora falsa para saltarse el
+    sistema, que es peor que una mesa apretada.
+    """
+    datos = mesas_a_esa_hora(conn, fecha, hora, conf_no, cache)
+    if not datos or len(datos["mesas"]) < MESAS_QUE_APRIETAN:
+        return None
+    quienes = " · ".join(
+        f"hab. {'+'.join(m['habitaciones']) or '?'} ({m['pax']} pax)"
+        for m in datos["mesas"])
+    return (f"Ya hay {len(datos['mesas'])} mesas a las {hora} en "
+            f"{datos['restaurante']}: {quienes}. Esta sería la "
+            f"{len(datos['mesas']) + 1}ª.")
+
+
 # ---------------------------------------------------------------------------
 # Un movimiento manual no mueve a nadie más
 # ---------------------------------------------------------------------------

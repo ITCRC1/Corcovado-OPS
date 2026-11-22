@@ -19,7 +19,10 @@ from comun import cargar, reserva
 import restaurantes as rest
 
 HOY = datetime.date.today()
-USUARIO = {"usuario": "pruebas", "rol": "ADMIN"}
+# Los endpoints que escriben piden permiso de la REJILLA, no del rol: el rol es solo una
+# etiqueta desde que se separaron. Ver auth.permisos_de.
+USUARIO = {"usuario": "pruebas", "username": "pruebas", "rol": "ADMIN",
+           "permisos_json": '{"restaurantes": "escribir", "resumen": "escribir"}'}
 
 
 def ddmmyy(d):
@@ -533,6 +536,181 @@ def el_boton_de_solo_desayunos_usa_el_mismo_detalle_que_full_board(c):
                  f"la tarjeta de {cual} cuenta con la funcion compartida")
     c.cierto("function paxFullBoard" not in pantalla,
              "y ya no queda la pareja de funciones vieja, que solo servia para una")
+
+
+# ---------------------------------------------------------------------------
+# Tres mesas a la misma hora: se avisa, no se bloquea
+# ---------------------------------------------------------------------------
+
+def _mesa(conn, fecha, conf_no, hora, solo_esta=False):
+    """Pone la hora de una mesa por el endpoint, que es por donde entra de verdad."""
+    import main
+    return main.restaurantes_hora(
+        {"fecha": fecha, "conf_no": conf_no, "hora": hora, "solo_esta": solo_esta},
+        user=USUARIO)
+
+
+def a_la_tercera_mesa_de_la_misma_hora_se_avisa(c):
+    """LO PIDIO EL LODGE: «al momento de tratar de ingresar la tercera reserva a la misma
+    hora en el mismo restaurante, emitir una advertencia de que ya existen 2 reservas a
+    esa hora y debe ser tomada en cuenta, para poder colocarla a otra hora o bien dejar
+    la hora solicitada pero ya queda indicado el tema».
+
+    NO SE BLOQUEA, SE AVISA, y la hora queda guardada. Es la misma decision que en el spa
+    y en la agenda: el salon sabe si puede con tres mesas juntas —depende de cuanta gente
+    sea y de quien este sirviendo— y bloquearlo llevaria a poner una hora falsa para
+    saltarse el sistema, que es peor que una mesa apretada.
+    """
+    conn = comun.base_limpia()
+    conn.close()
+    cargar([_solo("M0001", "02"), _solo("M0002", "03"), _solo("M0003", "04"),
+            _solo("M0004", "05")])
+    fecha = HOY.isoformat()
+
+    # Todas al mismo restaurante, para que el aviso mire el que corresponde.
+    import main
+    for conf in ("M0001", "M0002", "M0003", "M0004"):
+        main.restaurantes_cambiar(
+            {"fecha": fecha, "conf_no": conf, "comida": "CENA",
+             "restaurante": "Terra Kitchen", "solo_esta": True}, user=USUARIO)
+
+    primera = _mesa(conn, fecha, "M0001", "19:00")
+    c.igual(primera["aviso_horario"], None, "la primera mesa no avisa de nada")
+    segunda = _mesa(conn, fecha, "M0002", "19:00")
+    c.igual(segunda["aviso_horario"], None, "la segunda tampoco")
+
+    tercera = _mesa(conn, fecha, "M0003", "19:00")
+    c.cierto(tercera["aviso_horario"], "la TERCERA si avisa")
+    aviso = tercera["aviso_horario"]
+    c.cierto("19:00" in aviso, "el aviso dice la hora")
+    c.cierto("Terra Kitchen" in aviso, "y el restaurante")
+    c.cierto("02" in aviso and "03" in aviso,
+             "y que habitaciones son las otras dos, para poder decidir")
+
+    # LA HORA QUEDA GUARDADA: el aviso no deshace nada.
+    conn = comun.conexion()
+    guardada = conn.execute(
+        "SELECT hora FROM restaurante_hora WHERE fecha = ? AND conf_no = 'M0003'",
+        (fecha,)).fetchone()
+    conn.close()
+    c.igual(guardada[0], "19:00", "y la hora se guarda igual: se avisa, no se bloquea")
+
+    # La cuarta sigue avisando, y dice que ya son tres.
+    cuarta = _mesa(conn, fecha, "M0004", "19:00")
+    c.cierto("3 mesas" in cuarta["aviso_horario"], "la cuarta dice que ya hay tres")
+
+    # Y a OTRA hora no se avisa: el aviso es de esa hora, no del dia.
+    otra = _mesa(conn, fecha, "M0004", "20:00")
+    c.igual(otra["aviso_horario"], None, "a otra hora no hay nada que decir")
+
+
+def un_grupo_es_UNA_mesa_y_no_dispara_el_aviso(c):
+    """SE CUENTAN MESAS, NO HABITACIONES, y es lo que hace que el aviso sirva.
+
+    El reparto nunca separa a un grupo: las tres habitaciones de una familia se sientan
+    juntas y comparten hora. Contandolas por separado, el aviso saltaria SIEMPRE que se
+    le pone la hora a un grupo de tres —justo cuando no hay nada que avisar, porque es
+    una sola mesa— y un aviso que salta siempre se deja de mirar.
+    """
+    import main
+    conn = comun.base_limpia()
+    conn.close()
+    cargar(_grupo(3, bloque="FAMILIA1", desde=10) + [_solo("M0100", "02")])
+    fecha = HOY.isoformat()
+
+    confs = [f"FAMILIA1{i}" for i in range(3)]
+    for conf in confs + ["M0100"]:
+        main.restaurantes_cambiar(
+            {"fecha": fecha, "conf_no": conf, "comida": "CENA",
+             "restaurante": "Terra Kitchen", "solo_esta": True}, user=USUARIO)
+
+    # Al ponerle la hora al grupo se le pone a las tres habitaciones de una vez.
+    r = _mesa(conn, fecha, confs[0], "19:00")
+    c.igual(len(r["grupo"]), 2, "la hora se le pone a las otras dos del grupo")
+    c.igual(r["aviso_horario"], None,
+            "y NO avisa: tres habitaciones de un grupo son UNA mesa")
+
+    # Y una mesa suelta a la misma hora tampoco: son dos mesas, no tres.
+    r = _mesa(conn, fecha, "M0100", "19:00")
+    c.igual(r["aviso_horario"], None, "con el grupo y una suelta son dos mesas")
+
+    # La funcion, por si alguien la reusa.
+    import restaurantes as rest
+    conn = comun.conexion()
+    datos = rest.mesas_a_esa_hora(conn, HOY, "19:00", "M0100")
+    conn.close()
+    c.igual(len(datos["mesas"]), 1, "desde la suelta se ve UNA mesa mas: el grupo")
+    c.igual(sorted(datos["mesas"][0]["habitaciones"]), ["10", "11", "12"],
+            "con sus tres habitaciones juntas")
+
+
+def el_aviso_mira_SOLO_el_mismo_restaurante(c):
+    """Dos mesas a las 19:00 en Bar el Bosque no aprietan Terra Kitchen: son salones
+    distintos, con su propia gente sirviendo."""
+    import main
+    conn = comun.base_limpia()
+    conn.close()
+    cargar([_solo("M0201", "02"), _solo("M0202", "03"), _solo("M0203", "04")])
+    fecha = HOY.isoformat()
+
+    for conf, donde in (("M0201", "Bar el Bosque"), ("M0202", "Bar el Bosque"),
+                        ("M0203", "Terra Kitchen")):
+        main.restaurantes_cambiar(
+            {"fecha": fecha, "conf_no": conf, "comida": "CENA",
+             "restaurante": donde, "solo_esta": True}, user=USUARIO)
+
+    _mesa(conn, fecha, "M0201", "19:00")
+    _mesa(conn, fecha, "M0202", "19:00")
+    r = _mesa(conn, fecha, "M0203", "19:00")
+    c.igual(r["aviso_horario"], None,
+            "las dos del Bosque no cuentan para la de Terra Kitchen")
+
+    # Pero una tercera EN EL BOSQUE si.
+    main.restaurantes_cambiar(
+        {"fecha": fecha, "conf_no": "M0203", "comida": "CENA",
+         "restaurante": "Bar el Bosque", "solo_esta": True}, user=USUARIO)
+    r = _mesa(conn, fecha, "M0203", "19:00")
+    c.cierto(r["aviso_horario"], "y en su propio restaurante si avisa")
+    c.cierto("Bar el Bosque" in r["aviso_horario"], "nombrando el suyo")
+
+
+def borrar_la_hora_no_avisa_de_nada(c):
+    """Sin hora no hay mesa a ninguna hora, asi que no hay nada que contar."""
+    import main
+    conn = comun.base_limpia()
+    conn.close()
+    cargar([_solo("M0301", "02"), _solo("M0302", "03"), _solo("M0303", "04")])
+    fecha = HOY.isoformat()
+    for conf in ("M0301", "M0302", "M0303"):
+        main.restaurantes_cambiar(
+            {"fecha": fecha, "conf_no": conf, "comida": "CENA",
+             "restaurante": "Terra Kitchen", "solo_esta": True}, user=USUARIO)
+    _mesa(conn, fecha, "M0301", "19:00")
+    _mesa(conn, fecha, "M0302", "19:00")
+    r = _mesa(conn, fecha, "M0303", "")
+    c.igual(r["aviso_horario"], None, "borrar la hora no dispara el aviso")
+
+
+def la_pantalla_enseña_el_aviso_del_horario(c):
+    """El aviso tiene que llegar a quien pone la hora, no quedarse en la respuesta."""
+    raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+    i = pantalla.find("async function guardarHoraMesa")
+    c.cierto(i > 0, "existe el manejador de la hora")
+    # Hasta el final de la funcion y no a tantos caracteres: con un tope fijo, escribir
+    # un comentario mas la tumbaba con el codigo correcto. Ya paso dos veces.
+    fin = pantalla.find("\nfunction ", i)
+    fn = pantalla[i:fin if fin > 0 else i + 2500]
+    c.cierto("aviso_horario" in fn, "la pantalla lee el aviso")
+    # Que lo METE EN EL MENSAJE, no solo que lo lee: leerlo y no enseñarlo deja el aviso
+    # en la respuesta del servidor, donde no lo ve nadie.
+    import re as _re
+    c.cierto(_re.search(r"msg\s*\+=.*aviso_horario", fn),
+             "y lo enseña en el cartel que lee el salonero")
+    c.cierto("avisar(msg" in fn, "por el mismo cartel que lo demas, sin pisarse")
+    c.cierto("marcarHorasApretadas" in pantalla,
+             "y deja la casilla marcada, para no depender de haber leido el cartel")
 
 
 # ---------------------------------------------------------------------------
@@ -1313,6 +1491,11 @@ PRUEBAS = [
     el_comedor_del_staff_va_por_comida,
     el_comedor_del_staff_esta_en_la_pantalla_y_se_puede_deshacer,
     el_boton_de_solo_desayunos_usa_el_mismo_detalle_que_full_board,
+    a_la_tercera_mesa_de_la_misma_hora_se_avisa,
+    un_grupo_es_UNA_mesa_y_no_dispara_el_aviso,
+    el_aviso_mira_SOLO_el_mismo_restaurante,
+    borrar_la_hora_no_avisa_de_nada,
+    la_pantalla_enseña_el_aviso_del_horario,
     el_desayuno_lo_cuenta_UNA_funcion_para_las_dos_pantallas,
     el_salon_marca_quien_ya_desayuno,
     el_resumen_ya_no_ensena_la_tarjeta_de_desayunos,
