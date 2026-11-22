@@ -211,6 +211,64 @@ def la_cifra_de_cada_tarjeta_se_lee_de_golpe(c):
              "la cifra grande de cada restaurante va igual que la de las tarjetas")
 
 
+def el_aviso_que_pide_atencion_dura_lo_que_cuesta_leerlo(c):
+    """LO PIDIO EL LODGE despues de ver el de las tres mesas a la misma hora: «haz que el
+    mensaje de alerta se mantenga unos segundos mas».
+
+    Y tenia razon: todos los avisos duraban 2,6 segundos, el mismo tiempo para «Guardado»
+    que para «Ya hay 2 mesas a las 19:00 en Terra Kitchen: hab. 02 (2 pax) · hab. 03
+    (2 pax). Esta seria la 3ª.» — cien caracteres y una decision que tomar. Un aviso que
+    no da tiempo a leer es lo mismo que no darlo.
+
+    SE AJUSTA TAMBIEN AL LARGO. Un tiempo fijo para los de alerta dejaria corto el largo
+    y clavado en pantalla el corto.
+    """
+    html = _html()
+    # La funcion se evalua de verdad, traduciendo los tres renglones de aritmetica: asi
+    # lo que se fija son los TIEMPOS y no el texto con el que estan escritos.
+    cuerpo = _funcion(html, "duracionDelAviso")
+    c.cierto(cuerpo, "existe duracionDelAviso")
+    valores = {}
+    for nombre in ("AVISO_AJENO", "AVISO_NORMAL", "AVISO_ALERTA",
+                   "AVISO_POR_CARACTER", "AVISO_EXTRA_MAX"):
+        m = re.search(rf"\b{nombre}\s*=\s*(\d+)", html)
+        c.cierto(m, f"esta {nombre}")
+        valores[nombre] = int(m.group(1)) if m else 0
+
+    def dura(texto, es_alerta=False, tipo=None):
+        if tipo == "ajeno":
+            return valores["AVISO_AJENO"]
+        base = valores["AVISO_ALERTA"] if es_alerta else valores["AVISO_NORMAL"]
+        extra = min(valores["AVISO_EXTRA_MAX"],
+                    max(0, len(texto) - 60) * valores["AVISO_POR_CARACTER"])
+        return base + extra
+
+    c.cierto(valores["AVISO_ALERTA"] >= 6000,
+             "un aviso que pide atencion dura al menos seis segundos")
+    c.cierto(valores["AVISO_ALERTA"] > valores["AVISO_NORMAL"],
+             "y mas que una confirmacion de las de un vistazo")
+    c.cierto(valores["AVISO_NORMAL"] > valores["AVISO_AJENO"],
+             "y el de otra persona sigue siendo el mas corto: solo hay que enterarse")
+
+    EL_DE_LAS_MESAS = ("Mesa a las 19:00. ⚠ Ya hay 2 mesas a las 19:00 en Terra Kitchen: "
+                       "hab. 02 (2 pax) · hab. 03 (2 pax). Esta sería la 3ª.")
+    c.cierto(dura(EL_DE_LAS_MESAS, es_alerta=True) >= 9000,
+             "el de las tres mesas dura nueve segundos o mas: hay que leerlo entero")
+    c.igual(dura("Guardado"), valores["AVISO_NORMAL"],
+            "y un «Guardado» no se queda mas de lo suyo")
+    # EL TOPE SE FIJA EN SEGUNDOS, no contra la propia constante: comparandolo consigo
+    # mismo, subir el tope a un minuto habria seguido pasando la prueba. Ya paso.
+    c.cierto(dura("x" * 2000, es_alerta=True) <= 12000,
+             "ni el mas largo pasa de doce segundos: un cartel clavado estorba")
+
+    # Y se puede quitar tocandolo, que es lo que hace que durar mas no estorbe: en el
+    # telefono el cartel queda sobre la barra de abajo.
+    c.cierto("el.onclick" in _funcion(html, "avisar"), "el cartel se cierra al tocarlo")
+    i = html.find(".aviso-flotante.visible")
+    c.cierto(i > 0 and "pointer-events:auto" in html[i:i + 160],
+             "y mientras se ve, se deja tocar")
+
+
 def los_botones_se_pueden_tocar_con_el_dedo(c):
     """En el telefono median 30 px de alto y se tocaban con la punta de la uña."""
     html = _html()
@@ -1273,6 +1331,7 @@ PRUEBAS = [
     el_estado_del_dia_tiene_un_solo_color_en_toda_la_app,
     ni_una_alergia_ni_un_plazo_se_pintan_como_un_movimiento,
     la_cifra_de_cada_tarjeta_se_lee_de_golpe,
+    el_aviso_que_pide_atencion_dura_lo_que_cuesta_leerlo,
     los_botones_se_pueden_tocar_con_el_dedo,
     los_iconos_del_menu_dicen_lo_que_abren,
     los_ninos_se_ven_donde_se_mira_el_pax,

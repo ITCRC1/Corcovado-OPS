@@ -108,7 +108,11 @@
     background:var(--forest-dark); color:#fff; font-size:13px; padding:11px 20px;
     border-radius:24px; box-shadow:0 6px 20px rgba(0,0,0,.28); z-index:1200;
     opacity:0; transition:opacity .2s, bottom .2s; pointer-events:none; }
-  .aviso-flotante.visible { opacity:1; bottom:34px; }
+  /* Mientras se ve, se puede tocar para quitarlo. Es la contraparte de que los avisos
+     que piden atención duren más: en el teléfono el cartel queda sobre la barra de
+     abajo, y siete segundos tapando el menú sin poder cerrarlo serían peores que el
+     aviso corto que había antes. */
+  .aviso-flotante.visible { opacity:1; bottom:34px; pointer-events:auto; cursor:pointer; }
   .aviso-flotante.error { background:#B91C1C; }
   /* Alguien más cambió algo y la pantalla se acaba de actualizar. Azul, para que no
      se confunda con "guardado" (verde) ni con un error (rojo), y se va enseguida. */
@@ -939,6 +943,23 @@ function showApp() {
 }
 
 // ---------- Aviso flotante de confirmación ----------
+//
+// CUÁNTO DURA CADA AVISO. No todos dicen lo mismo, así que no todos duran lo mismo:
+//
+//   · el de cambio de OTRA persona solo hace falta para enterarse;
+//   · un «Guardado» se confirma de un vistazo;
+//   · uno que PIDE ATENCIÓN hay que leerlo entero y a veces decidir algo. Lo pidió el
+//     lodge después de ver el de las tres mesas a la misma hora: «haz que el mensaje de
+//     alerta se mantenga unos segundos más». Pasaba antes de poder leerlo, y un aviso
+//     que no da tiempo a leer es lo mismo que no darlo.
+//
+// Y ADEMÁS SE AJUSTA AL LARGO DEL TEXTO. «Ya hay 2 mesas a las 19:00 en Terra Kitchen:
+// hab. 02 (2 pax) · hab. 03 (2 pax). Esta sería la 3ª.» son cien caracteres; el mismo
+// tiempo que para «Guardado» no alcanza. Se suma a razón de lectura, con un tope, para
+// que un mensaje largo no se quede clavado en pantalla.
+const AVISO_AJENO = 1800, AVISO_NORMAL = 2600, AVISO_ALERTA = 7000;
+const AVISO_POR_CARACTER = 45, AVISO_EXTRA_MAX = 4000;
+
 let _avisoTimer = null;
 function avisar(texto, esError, tipo) {
   let el = document.getElementById("aviso-flotante");
@@ -946,6 +967,9 @@ function avisar(texto, esError, tipo) {
     el = document.createElement("div");
     el.id = "aviso-flotante";
     el.className = "aviso-flotante";
+    // Tocarlo lo quita. Hace falta porque los avisos que piden atención duran siete
+    // segundos y en el teléfono el cartel queda sobre la barra de abajo.
+    el.onclick = () => { clearTimeout(_avisoTimer); el.classList.remove("visible"); };
     document.body.appendChild(el);
   }
   el.textContent = texto;
@@ -953,8 +977,18 @@ function avisar(texto, esError, tipo) {
   el.classList.toggle("ajeno", tipo === "ajeno");
   el.classList.add("visible");
   clearTimeout(_avisoTimer);
-  // El aviso de cambio de otra persona dura menos: solo hace falta enterarse.
-  _avisoTimer = setTimeout(() => el.classList.remove("visible"), tipo === "ajeno" ? 1800 : 2600);
+  _avisoTimer = setTimeout(() => el.classList.remove("visible"),
+                           duracionDelAviso(texto, esError, tipo));
+}
+
+function duracionDelAviso(texto, esError, tipo) {
+  if (tipo === "ajeno") return AVISO_AJENO;              // solo enterarse
+  const base = esError ? AVISO_ALERTA : AVISO_NORMAL;
+  // Lo que pasa de un vistazo (60 caracteres) no suma nada; de ahí en adelante, tiempo
+  // de lectura.
+  const extra = Math.min(AVISO_EXTRA_MAX,
+                         Math.max(0, String(texto || "").length - 60) * AVISO_POR_CARACTER);
+  return base + extra;
 }
 
 // ---------- Habitaciones que viajan juntas ----------
