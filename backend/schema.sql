@@ -973,6 +973,17 @@ CREATE TABLE IF NOT EXISTS nota_hoja (
     -- dos NULL no chocan entre si, asi que con NULL cabrian catorce notas del dia.
     destino TEXT NOT NULL DEFAULT '',
     texto TEXT NOT NULL,
+    -- SI LO ESCRITO SUSTITUYE A LO QUE LA HOJA YA DECIA, en vez de ir delante.
+    --
+    -- Lo pidio el lodge: «tambien debes habilitar poder modificar las notas ya
+    -- existentes del sistema». Hasta ahora la nota a mano solo se podia AÑADIR; la que
+    -- trae Opera se enseñaba en gris y no habia forma de corregirla desde la hoja.
+    --
+    -- Sigue sin tocar la reserva: lo que cambia es lo que SALE EN ESTA HOJA Y ESTE DIA.
+    -- Escribir encima de la nota de la reserva tendria los dos fallos de siempre —la
+    -- siguiente importacion lo borraria, y lo escrito para un dia saldria en los otros
+    -- cuatro—, que es justo lo que esta tabla existe para evitar.
+    reemplaza INTEGER NOT NULL DEFAULT 0,
     actualizado_en TEXT NOT NULL,
     actualizado_por TEXT,
     UNIQUE (fecha, destino)

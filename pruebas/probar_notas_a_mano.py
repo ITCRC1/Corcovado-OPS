@@ -33,6 +33,7 @@ from comun import cargar, reserva                # noqa: E402
 HOY = datetime.date.today()
 MANANA = HOY + datetime.timedelta(days=1)
 EN_UN_MES = HOY + datetime.timedelta(days=30)
+USUARIO = {"usuario": "pruebas", "username": "pruebas", "rol": "ADMIN"}
 
 
 def ddmmyy(d):
@@ -226,6 +227,143 @@ def lo_escrito_a_mano_va_delante_y_no_lo_recorta_el_tope(c):
             "sin nota a mano, la casilla no cambia")
     c.igual(hoja_dia.nota_de_la_fila({"nota_mano": "", "notas": ""}), "",
             "y vacia sigue vacia, sin separadores colgando")
+
+
+def la_nota_del_sistema_se_puede_corregir(c):
+    """LO PIDIO EL LODGE: «tambien debes habilitar poder modificar las notas ya
+    existentes del sistema».
+
+    Hasta ahora la nota a mano solo se podia AÑADIR: la que trae Opera se enseñaba en
+    gris, de solo lectura. Una frase equivocada se quedaba ahi y lo unico que se podia
+    hacer era escribir la correccion al lado — dejando el renglon diciendo las dos cosas,
+    la buena y la mala, en el papel que alguien lee en el muelle.
+
+    Con la marca puesta, en la casilla sale SOLO lo que escribio la persona.
+
+    LA RESERVA NO SE TOCA, que es la regla entera de este modulo: lo que cambia es lo que
+    sale en ESTA hoja y ESTE dia. Escribir encima de la nota de la reserva la borraria en
+    la siguiente carga de Opera, y ademas saldria los otros cuatro dias de la estadia.
+    """
+    import hoja_dia
+    import notas_hoja
+
+    f = {"nota_mano": "SALE A LAS 6, NO A LAS 7", "notas": "VUELO RZ1069 · avión 9:00"}
+    c.igual(hoja_dia.nota_de_la_fila(dict(f, nota_mano_reemplaza=False)),
+            "SALE A LAS 6, NO A LAS 7 · VUELO RZ1069 · avión 9:00",
+            "sin la marca, lo escrito va DELANTE, como siempre")
+    c.igual(hoja_dia.nota_de_la_fila(dict(f, nota_mano_reemplaza=True)),
+            "SALE A LAS 6, NO A LAS 7",
+            "con la marca, sustituye a lo que la hoja decia")
+
+    # Una marca sin texto no deja la casilla en blanco: sin nada escrito no hay nada que
+    # sustituir, y el renglon tiene que seguir diciendo lo suyo.
+    c.igual(hoja_dia.nota_de_la_fila({"nota_mano": "", "notas": "VUELO RZ1069",
+                                      "nota_mano_reemplaza": True}),
+            "VUELO RZ1069", "una marca sin texto no borra el renglon")
+
+    # Y de punta a punta, por donde se guarda de verdad.
+    comun.base_limpia().close()
+    cargar([reserva("93001", "07", ddmmyy(HOY), ddmmyy(MANANA), estado="EN CASA")])
+    conn = comun.conexion()
+    notas_hoja.guardar_varias(conn, HOY.isoformat(),
+                              filas={"93001": "LO CORREGIDO"},
+                              reemplazan={"93001"}, usuario="pruebas")
+    leido = notas_hoja.leer(conn, HOY.isoformat())
+    c.igual(leido["filas"]["93001"], "LO CORREGIDO", "se guarda el texto")
+    c.cierto("93001" in leido["reemplazan"], "y la marca de que sustituye")
+
+    notas_hoja.guardar_varias(conn, HOY.isoformat(), filas={"93001": "LO CORREGIDO"},
+                              reemplazan=set(), usuario="pruebas")
+    c.cierto("93001" not in notas_hoja.leer(conn, HOY.isoformat())["reemplazan"],
+             "quitar la marca devuelve el renglon a lo de siempre")
+
+    # BORRAR LA NOTA DEVUELVE EL RENGLON A LO AUTOMATICO, marca incluida. Si la marca
+    # sobreviviera, el renglon se quedaria con la casilla en blanco para siempre y sin
+    # nada que tocar para recuperarla.
+    notas_hoja.guardar_varias(conn, HOY.isoformat(), filas={"93001": "X"},
+                              reemplazan={"93001"}, usuario="pruebas")
+    notas_hoja.guardar_varias(conn, HOY.isoformat(), filas={"93001": ""},
+                              reemplazan={"93001"}, usuario="pruebas")
+    vacio = notas_hoja.leer(conn, HOY.isoformat())
+    c.cierto("93001" not in vacio["filas"], "borrar el texto borra la nota")
+    c.cierto("93001" not in vacio["reemplazan"], "y se lleva la marca con ella")
+    conn.close()
+
+
+def la_hoja_imprime_la_nota_corregida(c):
+    """El camino completo: lo corregido es lo que sale en la hoja, y lo que decia el
+    sistema NO. Probar solo nota_de_la_fila se detendria antes de la hoja."""
+    import hoja_dia
+    import main
+    import notas_hoja
+
+    comun.base_limpia().close()
+    cargar([reserva("93101", "09", ddmmyy(HOY), ddmmyy(MANANA), estado="EN CASA")])
+
+    conn = comun.conexion()
+    # La nota se escribe en la reserva como la deja Opera, para comprobar despues que
+    # corregir la hoja NO la toca.
+    conn.execute("UPDATE reserva SET nota_salida = ? WHERE conf_no = '93101'",
+                 ("REVISAR CON RECEPCION",))
+    conn.commit()
+    notas_hoja.guardar_varias(conn, HOY.isoformat(),
+                              filas={"93101": "LA VERSION BUENA"},
+                              reemplazan={"93101"}, usuario="pruebas")
+    d = hoja_dia.definicion(conn, HOY.isoformat(),
+                            main._datos_del_resumen(HOY.isoformat()))
+    conn.close()
+    nueva = hoja_dia.nota_de_la_fila(
+        [f for f in d["filas"] if f["conf_no"] == "93101"][0])
+    c.igual(nueva, "LA VERSION BUENA", "la hoja imprime SOLO lo corregido")
+
+    # La RESERVA no se toco: la nota sigue en la base tal como vino de Opera.
+    conn = comun.conexion()
+    guardado = conn.execute(
+        "SELECT nota_salida FROM reserva WHERE conf_no = '93101'").fetchone()[0]
+    conn.close()
+    c.igual(guardado, "REVISAR CON RECEPCION",
+            "la nota de la reserva queda intacta: solo cambia lo que sale en la hoja")
+
+    # Y la pantalla recibe las dos cosas para poder dibujar el boton.
+    datos = main._notas_de_la_hoja(HOY.isoformat())
+    suya = [f for f in datos["filas"] if f["conf_no"] == "93101"][0]
+    c.igual(suya["reemplaza"], True, "la pantalla sabe que ese renglon esta corregido")
+    c.cierto(suya["auto"], "y sigue recibiendo lo que decia el sistema, para enseñarlo")
+
+    # POR EL ENDPOINT, que es por donde entra desde la pantalla. Probar solo
+    # guardar_varias se detiene un paso antes: la marca viaja en el cuerpo del POST, y si
+    # ahi se perdiera, todo lo de abajo seguiria pasando y el boton no haria nada.
+    respuesta = main.notas_hoja_guardar(
+        {"fecha": HOY.isoformat(), "filas": {"93101": "DESDE LA PANTALLA"},
+         "reemplazan": ["93101"]}, user=USUARIO)
+    fila = [f for f in respuesta["filas"] if f["conf_no"] == "93101"][0]
+    c.igual(fila["nota"], "DESDE LA PANTALLA", "el endpoint guarda el texto")
+    c.igual(fila["reemplaza"], True, "y la marca que viene con el")
+
+    # Y sin la marca en el cuerpo, el mismo texto vuelve a ir delante.
+    respuesta = main.notas_hoja_guardar(
+        {"fecha": HOY.isoformat(), "filas": {"93101": "DESDE LA PANTALLA"}},
+        user=USUARIO)
+    fila = [f for f in respuesta["filas"] if f["conf_no"] == "93101"][0]
+    c.igual(fila["reemplaza"], False, "sin la marca, el endpoint no la inventa")
+
+
+def la_pantalla_deja_corregir_la_nota_del_sistema(c):
+    """El boton tiene que estar donde se lee la nota, no en otra pantalla."""
+    raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+    c.cierto("editarNotaDelSistema(" in pantalla, "existe el boton")
+    i = pantalla.find("function editarNotaDelSistema(")
+    c.cierto(i > 0, "y su manejador")
+    fn = pantalla[i:i + 1600]
+    c.cierto("f.auto" in fn, "trae la nota del sistema al cuadro para corregirla")
+    c.cierto("f.reemplaza = true" in fn, "y marca el renglon")
+    c.cierto('f.nota = ""' in fn,
+             "volver a la del sistema borra lo escrito: dejarlo lo pondria DELANTE de "
+             "la nota que se queria corregir, o sea las dos cosas a la vez")
+    j = pantalla.find("async function guardarNotasDeLaHoja")
+    c.cierto("reemplazan" in pantalla[j:j + 700], "y se manda al guardar")
 
 
 def el_texto_se_limpia_y_se_recorta_al_guardar(c):
@@ -436,6 +574,9 @@ PRUEBAS = [
     la_carga_de_opera_no_se_lleva_por_delante_lo_escrito,
     se_puede_escribir_para_un_dia_que_todavia_no_llego,
     lo_escrito_a_mano_va_delante_y_no_lo_recorta_el_tope,
+    la_nota_del_sistema_se_puede_corregir,
+    la_hoja_imprime_la_nota_corregida,
+    la_pantalla_deja_corregir_la_nota_del_sistema,
     el_texto_se_limpia_y_se_recorta_al_guardar,
     las_notas_salen_en_la_hoja_y_siguen_cabiendo_en_una_pagina,
     sin_notas_la_hoja_es_exactamente_la_de_siempre,

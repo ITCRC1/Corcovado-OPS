@@ -220,6 +220,9 @@ PRENDAS_HK = [
 # NO aparecen solas: hay que agregarlas explícitamente. Sin esto fallan al importar
 # el PDF, al abrir Restaurantes y al guardar permisos.
 COLUMNAS_NUEVAS = [
+    # Si la nota escrita a mano SUSTITUYE a la que la hoja ya decía, en vez de ir
+    # delante. Lo pidió el lodge; ver el comentario de la columna en schema.sql.
+    ("nota_hoja", "reemplaza", "INTEGER NOT NULL DEFAULT 0"),
     # Lo que el huésped COMPRÓ, según los paquetes de Opera. No son salidas de la agenda
     # —la fecha del paquete es la de facturación— pero sí es lo que permite ver que a una
     # reserva le quedan tours por repartir aunque su itinerario ya tenga alguno. Ver

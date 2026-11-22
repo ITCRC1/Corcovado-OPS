@@ -58,16 +58,19 @@ def _ahora():
 def leer(conn, fecha):
     """Lo escrito a mano para un día: {'dia': texto, 'filas': {conf_no: texto}, …}."""
     filas, dia, cuando, quien = {}, "", None, None
+    reemplazan = set()
     for f in conn.execute(
-            """SELECT destino, texto, actualizado_en, actualizado_por
+            """SELECT destino, texto, reemplaza, actualizado_en, actualizado_por
                  FROM nota_hoja WHERE fecha = ?""", (fecha,)):
         if f["destino"] == DIA:
             dia = f["texto"]
         else:
             filas[str(f["destino"])] = f["texto"]
+            if f["reemplaza"]:
+                reemplazan.add(str(f["destino"]))
         if not cuando or (f["actualizado_en"] or "") > cuando:
             cuando, quien = f["actualizado_en"], f["actualizado_por"]
-    return {"fecha": fecha, "dia": dia, "filas": filas,
+    return {"fecha": fecha, "dia": dia, "filas": filas, "reemplazan": reemplazan,
             "actualizado_en": cuando, "actualizado_por": quien}
 
 
@@ -77,13 +80,13 @@ def leer_varias(conn, fechas):
     Un rango puede ser de 400 días y la hoja se arma día por día; preguntando dentro del
     bucle serían 400 consultas para traer, casi siempre, ninguna fila.
     """
-    salida = {f: {"fecha": f, "dia": "", "filas": {}, "actualizado_en": None,
-                  "actualizado_por": None} for f in fechas}
+    salida = {f: {"fecha": f, "dia": "", "filas": {}, "reemplazan": set(),
+                  "actualizado_en": None, "actualizado_por": None} for f in fechas}
     if not fechas:
         return salida
     marcas = ",".join("?" * len(fechas))
     for f in conn.execute(
-            f"""SELECT fecha, destino, texto, actualizado_en, actualizado_por
+            f"""SELECT fecha, destino, texto, reemplaza, actualizado_en, actualizado_por
                   FROM nota_hoja WHERE fecha IN ({marcas})""", list(fechas)):
         d = salida.get(f["fecha"])
         if d is None:
@@ -92,18 +95,28 @@ def leer_varias(conn, fechas):
             d["dia"] = f["texto"]
         else:
             d["filas"][str(f["destino"])] = f["texto"]
+            if f["reemplaza"]:
+                d["reemplazan"].add(str(f["destino"]))
         if not d["actualizado_en"] or (f["actualizado_en"] or "") > d["actualizado_en"]:
             d["actualizado_en"], d["actualizado_por"] = (f["actualizado_en"],
                                                          f["actualizado_por"])
     return salida
 
 
-def guardar(conn, fecha, destino, texto, usuario=None):
+def guardar(conn, fecha, destino, texto, usuario=None, reemplaza=False):
     """Escribe una nota. Vacía BORRA la fila, que es lo que significa borrar una nota.
 
     Guardar la cadena vacía dejaría una fila que no dice nada y que la pantalla tendría
     que aprender a ignorar; y peor, la hoja llevaría un « · » colgando delante de la nota
     automática, un separador sin nada a la izquierda.
+
+    `reemplaza` dice si lo escrito SUSTITUYE a lo que la hoja ya decía de ese renglón, en
+    vez de ir delante. Lo pidió el lodge para poder corregir una nota del sistema que
+    está mal, sin tener que dejarla puesta y escribir la corrección al lado.
+
+    BORRAR LA NOTA DEVUELVE EL RENGLÓN A LO AUTOMÁTICO. Se borra la fila entera, marca
+    incluida: si no, un renglón sin texto y con la marca puesta dejaría la casilla NOTAS
+    en blanco para siempre y sin nada que tocar para recuperarla.
     """
     destino = str(destino or DIA)
     texto = limpiar(texto, LIMITE_DIA if destino == DIA else LIMITE_FILA)
@@ -111,27 +124,39 @@ def guardar(conn, fecha, destino, texto, usuario=None):
         conn.execute("DELETE FROM nota_hoja WHERE fecha = ? AND destino = ?",
                      (fecha, destino))
         return ""
+    # La nota del DÍA va en su propia caja al pie de la hoja: ahí no hay nada automático
+    # a lo que sustituir, así que la marca no significaría nada.
+    marca = 1 if (reemplaza and destino != DIA) else 0
     conn.execute(
-        """INSERT INTO nota_hoja (fecha, destino, texto, actualizado_en, actualizado_por)
-                VALUES (?, ?, ?, ?, ?)
+        """INSERT INTO nota_hoja (fecha, destino, texto, reemplaza,
+                                  actualizado_en, actualizado_por)
+                VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT (fecha, destino) DO UPDATE
                 SET texto = excluded.texto,
+                    reemplaza = excluded.reemplaza,
                     actualizado_en = excluded.actualizado_en,
                     actualizado_por = excluded.actualizado_por""",
-        (fecha, destino, texto, _ahora(), usuario))
+        (fecha, destino, texto, marca, _ahora(), usuario))
     return texto
 
 
-def guardar_varias(conn, fecha, dia=None, filas=None, usuario=None):
+def guardar_varias(conn, fecha, dia=None, filas=None, usuario=None, reemplazan=None):
     """Guarda la nota del día y las de los renglones que vengan. Devuelve `leer()`.
 
     Solo toca lo que viene: mandar `{"filas": {"73001": "…"}}` no borra la nota del día ni
     la de las otras habitaciones. Así la pantalla puede guardar un renglón suelto sin
     tener que reenviar —y arriesgarse a pisar— lo que no estaba editando.
+
+    `reemplazan` es el conjunto de renglones cuya nota sustituye a la automática. Va
+    aparte del texto y no pegado a él para que la pantalla pueda mandar las dos cosas sin
+    inventarse una marca dentro de la cadena: una marca dentro del texto acabaría saliendo
+    impresa el día que alguien escribiera esos caracteres a propósito.
     """
     if dia is not None:
         guardar(conn, fecha, DIA, dia, usuario)
+    marcados = {str(x) for x in (reemplazan or ())}
     for destino, texto in (filas or {}).items():
-        guardar(conn, fecha, destino, texto, usuario)
+        guardar(conn, fecha, destino, texto, usuario,
+                reemplaza=str(destino) in marcados)
     conn.commit()
     return leer(conn, fecha)

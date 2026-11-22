@@ -3768,7 +3768,8 @@ function panelDeNotasDeLaHoja() {
 
         <p style="font-size:12px;font-weight:600;margin:12px 0 4px;">
           Por habitación <span style="font-weight:400;color:var(--muted);">— se escribe
-          delante de lo que la columna NOTAS ya dice, y en negrita</span></p>
+          delante de lo que la columna NOTAS ya dice, y en negrita. Con
+          <strong>corregirla</strong> se edita lo que ya dice, en lugar de añadir</span></p>
         <div style="max-height:210px;overflow:auto;border:1px solid var(--border);
                     border-radius:8px;padding:8px;">
           ${n.filas.length ? n.filas.map(f => `
@@ -3786,8 +3787,23 @@ function panelDeNotasDeLaHoja() {
                        style="width:100%;font:inherit;font-size:13px;padding:5px 8px;
                               border:1px solid var(--border);border-radius:8px;
                               background:var(--card);color:inherit;">
-                ${f.auto ? `<span style="font-size:10.5px;color:var(--muted);">
-                  la hoja ya dice: ${escaparHTML(f.auto)}</span>` : ""}
+                <!-- CORREGIR LA NOTA DEL SISTEMA. Lo pidió el lodge: «también debes
+                     habilitar poder modificar las notas ya existentes». Antes esto era
+                     un texto gris de solo lectura: una frase equivocada de Opera se
+                     quedaba ahí y lo único que se podía hacer era escribir la corrección
+                     al lado, dejando el renglón diciendo las dos cosas. -->
+                ${f.auto ? `
+                  <div style="display:flex;gap:6px;align-items:flex-start;margin-top:2px;">
+                    <span style="font-size:10.5px;color:var(--muted);flex:1;">
+                      ${f.reemplaza
+                        ? `<s>la hoja decía: ${escaparHTML(f.auto)}</s> — reemplazada`
+                        : `la hoja ya dice: ${escaparHTML(f.auto)}`}</span>
+                    ${puede ? `<button class="btn" style="padding:1px 7px;font-size:10.5px;
+                                 white-space:nowrap;"
+                         onclick="editarNotaDelSistema('${escaparAtributo(f.conf_no)}')"
+                         title="Trae ese texto al cuadro para corregirlo. Lo que quede es lo que sale en la hoja.">
+                         ${f.reemplaza ? "volver a la del sistema" : "✎ corregirla"}</button>` : ""}
+                  </div>` : ""}
               </div>
             </div>`).join("")
           : `<p class="empty">Este día no tiene movimiento.</p>`}
@@ -3850,6 +3866,44 @@ function recogerNotasDeLaHoja() {
 
 function marcarNotasSucias() { if (HOJA) HOJA.sucio = true; }
 
+// CORREGIR LA NOTA QUE YA TRAE LA HOJA.
+//
+// Trae el texto automático al cuadro para poder editarlo, y marca ese renglón como
+// «reemplaza»: en la casilla NOTAS saldrá solo lo que quede escrito. Tocándolo otra vez
+// se deshace y el renglón vuelve a lo que diga el sistema.
+//
+// Se trae el texto EN VEZ de dejar escribir sobre la nota de la reserva, y es a
+// propósito: la nota de la reserva la reescribe la siguiente carga de Opera, y además no
+// tiene fecha, así que lo escrito para hoy saldría también los otros cuatro días que el
+// huésped está alojado. Ver backend/notas_hoja.py.
+function editarNotaDelSistema(confNo) {
+  const n = HOJA && HOJA.notas;
+  if (!n) return;
+  recogerNotasDeLaHoja();
+  const f = n.filas.find(x => String(x.conf_no) === String(confNo));
+  if (!f) return;
+
+  if (f.reemplaza) {
+    // Volver a lo del sistema: se borra lo escrito, que es lo que devuelve el renglón a
+    // su nota automática. Dejar el texto y quitar solo la marca lo pondría DELANTE de la
+    // nota que se quería corregir, o sea las dos cosas a la vez.
+    f.reemplaza = false;
+    f.nota = "";
+  } else {
+    f.reemplaza = true;
+    // Si ya había algo escrito a mano se respeta: alguien lo escribió por algo. Si no,
+    // se trae la nota del sistema para corregirla sin volver a teclearla.
+    if (!(f.nota || "").trim()) f.nota = (f.auto || "").slice(0, n.limite_fila);
+  }
+  marcarNotasSucias();
+  HOJA.visor.ponerPanel(panelDeNotasDeLaHoja());
+  rellenarNotasDeLaHoja();
+  ajustarAltoDeLaHoja();
+  const campo = document.querySelector(
+    `#hoja-notas input.nota-de-fila[data-conf="${CSS.escape(String(confNo))}"]`);
+  if (campo && f.reemplaza) { campo.focus(); campo.select(); }
+}
+
 function alternarNotasDeLaHoja() {
   if (!HOJA || !HOJA.notas) return;
   recogerNotasDeLaHoja();
@@ -3863,10 +3917,13 @@ async function guardarNotasDeLaHoja() {
   if (!HOJA || !HOJA.fecha || !HOJA.notas) return;
   recogerNotasDeLaHoja();
   const filas = {};
+  const reemplazan = [];
   HOJA.notas.filas.forEach(f => {
-    if (f.conf_no) filas[f.conf_no] = f.nota || "";
+    if (!f.conf_no) return;
+    filas[f.conf_no] = f.nota || "";
+    if (f.reemplaza) reemplazan.push(f.conf_no);
   });
-  await mandarNotasDeLaHoja({ dia: HOJA.notas.dia || "", filas });
+  await mandarNotasDeLaHoja({ dia: HOJA.notas.dia || "", filas, reemplazan });
 }
 
 // Borra una nota que se quedó sin renglón. Va por el mismo camino que guardar —texto

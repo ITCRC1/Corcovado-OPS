@@ -418,8 +418,11 @@ def _notas_de_la_hoja(fecha):
     filas = [{"conf_no": f.get("conf_no"), "hab": f.get("hab"),
               "huesped": f.get("huesped"), "estado": f.get("estado"),
               "nota": f.get("nota_mano") or "",
-              # Lo que la hoja ya dice de ese renglón, para no repetirlo a mano.
-              "auto": (f.get("notas") or "")[:hoja_dia.TOPE_NOTA_AUTO]}
+              # Lo que la hoja ya dice de ese renglón, para no repetirlo a mano —y, desde
+              # que se puede corregir, para poder traerlo al cuadro y editarlo.
+              "auto": (f.get("notas") or "")[:hoja_dia.TOPE_NOTA_AUTO],
+              # Si lo escrito SUSTITUYE a eso en vez de ir delante.
+              "reemplaza": bool(f.get("nota_mano_reemplaza"))}
              for f in d["filas"]]
 
     # Las que quedaron sin renglón: la reserva se canceló, se movió de día o cambió de
@@ -463,11 +466,19 @@ def notas_hoja_guardar(payload: dict,
     if not isinstance(filas, dict):
         raise HTTPException(status_code=400,
                             detail="«filas» tiene que venir como {reserva: texto}.")
+    # Los renglones cuya nota SUSTITUYE a la que la hoja ya decía. Van aparte del texto
+    # para no tener que inventarse una marca dentro de la cadena, que acabaría saliendo
+    # impresa el día que alguien escribiera esos caracteres a propósito.
+    reemplazan = (payload or {}).get("reemplazan") or []
+    if not isinstance(reemplazan, (list, tuple, set)):
+        raise HTTPException(status_code=400,
+                            detail="«reemplazan» tiene que venir como una lista.")
     conn = get_connection()
     try:
         notas_hoja.guardar_varias(conn, fecha, dia=(payload or {}).get("dia"),
                                   filas={str(k): v for k, v in filas.items()},
-                                  usuario=user.get("username"))
+                                  usuario=user.get("username"),
+                                  reemplazan={str(x) for x in reemplazan})
     finally:
         conn.close()
     return _notas_de_la_hoja(fecha)

@@ -126,9 +126,21 @@ def nota_de_la_fila(f):
     mano sobre la hoja del día la escribe porque hace falta hoy; perder la mitad por una
     cuenta de caracteres sería tirar justo lo que alguien decidió añadir. Los recortes de
     lo automático ya los hizo `_componer_nota`, cada uno con su propio tope.
+
+    Y PUEDE SUSTITUIRLO EN VEZ DE PRECEDERLO. Lo pidió el lodge: «también debes habilitar
+    poder modificar las notas ya existentes del sistema». Hasta ahora la nota de Opera se
+    podía leer pero no corregir desde la hoja, así que una frase equivocada se quedaba
+    ahí y lo único que se podía hacer era escribir la corrección al lado — dejando el
+    renglón diciendo las dos cosas, la buena y la mala. Con la marca puesta, en la casilla
+    sale SOLO lo que escribió la persona.
+
+    La reserva no se toca: lo que cambia es lo que sale en ESTA hoja y ESTE día. Ver
+    notas_hoja.py, que es donde está el porqué de que esto sea una tabla aparte.
     """
     mano = (f.get("nota_mano") or "").strip()
     auto = (f.get("notas") or "").strip()
+    if mano and f.get("nota_mano_reemplaza"):
+        return mano
     return " · ".join(x for x in (mano, auto) if x)
 
 
@@ -339,6 +351,9 @@ def definicion(conn, fecha, resumen):
             # columna la reescribe la carga de Opera, así que mezclarlos haría que la
             # importación siguiente se llevara por delante lo que escribió una persona.
             "nota_mano": mano["filas"].get(str(clave), ""),
+            # Y si eso SUSTITUYE a lo automático en vez de ir delante. Ver
+            # nota_de_la_fila.
+            "nota_mano_reemplaza": str(clave) in (mano.get("reemplazan") or set()),
             "tours": [],
             "tour": "", "tour_guia": "", "tour_bote": "",
         }
