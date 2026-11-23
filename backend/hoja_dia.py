@@ -113,6 +113,37 @@ def _componer_nota(f):
     return " · ".join(partes)
 
 
+def _piezas_de_la_nota(f):
+    """Qué trozos salen en la casilla NOTAS, en orden: (lo de la mano, lo automático).
+
+    UNA SOLA DECISIÓN, y aquí está el porqué. La casilla se arma en DOS sitios —en texto
+    plano para los dos Excel y con negritas para los dos PDF— y los dos tenían escrita su
+    propia versión de la misma regla. La de abajo aprendió a sustituir la nota del sistema
+    cuando alguien la corrige; la de los PDF no, así que seguía imprimiendo las dos:
+
+        Excel : «SALE POR SIERPE, NO DRAKE»
+        PDF   : «SALE POR SIERPE, NO DRAKE · VUELO RZ1071 @1:00 PM»
+
+    Es decir, justo el renglón diciendo las dos cosas —la buena y la que se vino a
+    corregir— que la corrección existe para evitar, y encima solo en el papel que se mira
+    en pantalla y se manda por WhatsApp. Lo reportó el lodge: «cuando se agrega una nota
+    sobre la que ya existe del sistema, eliminar la del sistema, que no se refleje más».
+
+    Es la cuarta vez en este sistema que una regla escrita dos veces acaba diciendo dos
+    cosas: el muelle que repartía «si no es Sierpe, es Drake», la hora del Claro que una
+    pantalla sabía y la otra no, y el BT que una tabla pintaba como salida. Por eso la
+    decisión queda aquí y las dos salidas solo la visten.
+    """
+    mano = (f.get("nota_mano") or "").strip()
+    auto = (f.get("notas") or "").strip()
+    # Corregida: en la casilla sale SOLO lo que escribió la persona. Sin nada escrito no
+    # hay corrección que valga —la marca sola no puede dejar el renglón en blanco— y por
+    # eso se exige `mano`.
+    if mano and f.get("nota_mano_reemplaza"):
+        return mano, ""
+    return mano, auto
+
+
 def nota_de_la_fila(f):
     """Lo que dice la casilla NOTAS: lo escrito a mano delante, lo automático detrás.
 
@@ -137,11 +168,7 @@ def nota_de_la_fila(f):
     La reserva no se toca: lo que cambia es lo que sale en ESTA hoja y ESTE día. Ver
     notas_hoja.py, que es donde está el porqué de que esto sea una tabla aparte.
     """
-    mano = (f.get("nota_mano") or "").strip()
-    auto = (f.get("notas") or "").strip()
-    if mano and f.get("nota_mano_reemplaza"):
-        return mano
-    return " · ".join(x for x in (mano, auto) if x)
+    return " · ".join(x for x in _piezas_de_la_nota(f) if x)
 
 
 def avisos_de_opera(conn):
@@ -180,9 +207,13 @@ def _notas_con_marcado(f, escape):
     NO SE VUELVE A RECORTAR AQUÍ. Los topes los aplicó `_componer_nota`, uno por pieza;
     cortando otra vez el resultado entero se perdería el vuelo o el BT por culpa de un
     aviso largo, que es justo lo que se vino a arreglar.
+
+    QUÉ SALE Y QUÉ NO lo decide `_piezas_de_la_nota`, no esta función: aquí solo se
+    visten. Esta era la copia que se quedó sin enterarse de que una nota corregida
+    sustituye a la del sistema, y el PDF —el que se previsualiza y se manda— seguía
+    imprimiendo las dos.
     """
-    mano = (f.get("nota_mano") or "").strip()
-    auto = (f.get("notas") or "").strip()
+    mano, auto = _piezas_de_la_nota(f)
     partes = []
     if mano:
         partes.append(f"<b>{escape(mano)}</b>")

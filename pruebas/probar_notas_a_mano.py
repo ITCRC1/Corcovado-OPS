@@ -348,6 +348,105 @@ def la_hoja_imprime_la_nota_corregida(c):
     c.igual(fila["reemplaza"], False, "sin la marca, el endpoint no la inventa")
 
 
+def el_PDF_tambien_sustituye_la_nota_del_sistema(c):
+    """LO REPORTO EL LODGE: «cuando se agrega una nota sobre la que ya existe del
+    sistema, eliminar la del sistema, que no se refleje mas».
+
+    La casilla NOTAS se armaba en DOS sitios —en texto plano para los Excel y con
+    negritas para los PDF— y cada uno tenia escrita su propia version de la regla. El
+    plano aprendio a sustituir la nota corregida; el de los PDF no:
+
+        Excel : «SALE POR SIERPE, NO DRAKE»
+        PDF   : «SALE POR SIERPE, NO DRAKE · VUELO RZ1071 @1:00 PM»
+
+    O sea el renglon diciendo las dos cosas —la buena y la que se vino a corregir— que es
+    exactamente lo que la correccion existe para evitar; y encima solo en el papel, que es
+    el que se mira en la previsualizacion y se manda por WhatsApp al muelle.
+
+    LA PRUEBA DE ANTES SE DETENIA UN PASO ANTES: comprobaba `nota_de_la_fila`, que ya lo
+    hacia bien. Esta llega hasta el PDF de verdad.
+
+    Las palabras son inventadas a proposito: en una columna de 46 mm el texto se parte en
+    varias lineas, y buscar una frase no la encontraria; una palabra que no aparezca en
+    ningun otro sitio de la hoja, si.
+    """
+    import hoja_dia
+    import notas_hoja
+
+    conn = comun.base_limpia()
+    cargar([reserva("93201", "11", ddmmyy(HOY), ddmmyy(MANANA), estado="EN CASA")])
+    conn.close()
+
+    conn = comun.conexion()
+    # La reserva LLEGA hoy, asi que el renglon es ENTRA y la nota que la hoja enseña es
+    # la de ingreso: cada dia enseña lo suyo. Ver _nota_del_estado.
+    conn.execute("UPDATE reserva SET nota_ingreso = ? WHERE conf_no = '93201'",
+                 ("NOTAVIEJA DEL SISTEMA",))
+    conn.commit()
+    notas_hoja.guardar_varias(conn, HOY.isoformat(), filas={"93201": "NOTACORREGIDA"},
+                              reemplazan={"93201"}, usuario="pruebas")
+    d = _hoja(conn, HOY.isoformat())
+    conn.close()
+
+    fila = [f for f in d["filas"] if f["conf_no"] == "93201"][0]
+    c.cierto("NOTAVIEJA" in (fila.get("notas") or ""),
+             "el sistema SI tiene su nota: lo que se prueba es que no se imprima")
+
+    _, texto = _paginas(hoja_dia.pdf(d))
+    c.cierto("NOTACORREGIDA" in texto, "el PDF imprime lo corregido")
+    c.cierto("NOTAVIEJA" not in texto, "y YA NO imprime lo que decia el sistema")
+
+    celdas = _celdas(hoja_dia.excel(d))
+    c.cierto(any("NOTACORREGIDA" in x for x in celdas), "el Excel dice lo mismo")
+    c.cierto(not any("NOTAVIEJA" in x for x in celdas), "y tampoco el viejo")
+
+    # SIN LA MARCA SIGUEN SALIENDO LAS DOS. Añadir no es corregir: quien escribe al lado
+    # de la nota del sistema quiere sumar algo, y borrarle el vuelo seria peor que el
+    # fallo que se vino a arreglar.
+    conn = comun.conexion()
+    notas_hoja.guardar_varias(conn, HOY.isoformat(), filas={"93201": "NOTACORREGIDA"},
+                              reemplazan=set(), usuario="pruebas")
+    d = _hoja(conn, HOY.isoformat())
+    conn.close()
+    _, texto = _paginas(hoja_dia.pdf(d))
+    c.cierto("NOTACORREGIDA" in texto and "NOTAVIEJA" in texto,
+             "sin la marca, el PDF sigue enseñando las dos")
+
+
+def las_dos_formas_de_escribir_la_casilla_dicen_lo_mismo(c):
+    """La regla vive en UN sitio y las dos salidas solo la visten.
+
+    Esta es la comprobacion que impide que vuelvan a separarse. Es la cuarta vez en este
+    sistema que una regla escrita dos veces acaba diciendo dos cosas: el muelle que
+    repartia «si no es Sierpe, es Drake», la hora del Claro que una pantalla sabia y la
+    otra no, y el BT que una tabla pintaba como salida. Comparando las dos salidas sobre
+    los mismos casos, separarlas vuelve a fallar aqui."""
+    import hoja_dia
+
+    casos = [
+        ({"nota_mano": "A MANO", "notas": "DEL SISTEMA"},
+         "añadida: salen las dos"),
+        ({"nota_mano": "A MANO", "notas": "DEL SISTEMA", "nota_mano_reemplaza": True},
+         "corregida: sale solo la de la mano"),
+        ({"nota_mano": "", "notas": "DEL SISTEMA", "nota_mano_reemplaza": True},
+         "marca sin texto: el renglon conserva lo suyo"),
+        ({"nota_mano": "A MANO", "notas": "", "nota_mano_reemplaza": True},
+         "sin nota del sistema que sustituir"),
+        ({"nota_mano": "", "notas": ""},
+         "vacia: sin separadores colgando"),
+    ]
+    for f, que in casos:
+        plano = hoja_dia.nota_de_la_fila(f)
+        marcado = hoja_dia._notas_con_marcado(f, lambda x: x)
+        c.igual(marcado.replace("<b>", "").replace("</b>", ""), plano,
+                f"el Excel y el PDF dicen lo mismo — {que}")
+
+    # Y la negrita sigue distinguiendo quien escribio que, que es para lo que esta.
+    c.igual(hoja_dia._notas_con_marcado(
+        {"nota_mano": "A MANO", "notas": "DEL SISTEMA"}, lambda x: x),
+        "<b>A MANO</b> · DEL SISTEMA", "con lo de la mano en negrita")
+
+
 def la_pantalla_deja_corregir_la_nota_del_sistema(c):
     """El boton tiene que estar donde se lee la nota, no en otra pantalla."""
     raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -576,6 +675,8 @@ PRUEBAS = [
     lo_escrito_a_mano_va_delante_y_no_lo_recorta_el_tope,
     la_nota_del_sistema_se_puede_corregir,
     la_hoja_imprime_la_nota_corregida,
+    el_PDF_tambien_sustituye_la_nota_del_sistema,
+    las_dos_formas_de_escribir_la_casilla_dicen_lo_mismo,
     la_pantalla_deja_corregir_la_nota_del_sistema,
     el_texto_se_limpia_y_se_recorta_al_guardar,
     las_notas_salen_en_la_hoja_y_siguen_cabiendo_en_una_pagina,
