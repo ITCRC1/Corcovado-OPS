@@ -20,6 +20,7 @@ Lo que hay que fijar, y por que cada cosa falla EN SILENCIO si se rompe:
 """
 import datetime
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1537,6 +1538,54 @@ def la_nota_del_BT_dice_con_quien_se_engancha(c):
              "y NO arrastra el rooming ni los numeros de pasaporte")
 
 
+def un_BT_no_se_pinta_como_una_salida(c):
+    """LO REPORTO EL LODGE: «la habitacion 10 ingresa hoy y sale el 27-11-2026, pero por
+    alguna razon esta en salidas de mañana».
+
+    Era su TRANSBORDO del 24 —un viaje de bote extra, el que empezo a detectarse ayer—
+    pintado de rojo como si el huesped se fuera. Hay DOS pantallas que enseñan la misma
+    lista de corridas: «Ingresos y salidas por locacion» en Transporte y «Guia de los
+    ingresos y salidas» en la Agenda de tours. La primera conocia el tipo «extra» y lo
+    enseñaba bien; la segunda repartia con «si no es entrada, es salida», asi que el
+    mismo viaje se veia de dos formas distintas segun por donde se mirara.
+
+    Es el mismo fallo que ya costo dos arreglos esta semana: el muelle que repartia «si
+    no es Sierpe, es Drake», y la hora del Claro que una pantalla sabia y la otra no. Una
+    regla escrita dos veces acaba diciendo dos cosas.
+    """
+    raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+
+    c.cierto("function etiquetaDeCorrida(" in pantalla,
+             "la etiqueta de una corrida se decide en UNA funcion")
+    i = pantalla.find("function etiquetaDeCorrida(")
+    fn = pantalla[i:pantalla.find("\nfunction ", i + 1)]
+    c.cierto('c.tipo === "extra"' in fn, "que conoce el BT")
+    c.cierto(">BT<" in fn, "y lo llama por su nombre")
+    c.cierto('est-${lado}' in fn, "y mantiene el color de entra/sale para los demas")
+
+    # NINGUNA DE LAS DOS TABLAS REPARTE POR SU CUENTA. Esta es la comprobacion que
+    # impide que aparezca una tercera copia: lo de «si no es entrada, es salida» solo
+    # puede estar dentro de etiquetaDeCorrida.
+    fuera = []
+    for m in re.finditer(r'c\.tipo === "entrada"', pantalla):
+        if not (i <= m.start() < i + len(fn)):
+            fuera.append(pantalla[:m.start()].count("\n") + 1)
+    c.igual(fuera, [],
+            "ninguna tabla decide por su cuenta si una corrida es entrada o salida")
+
+    # Y LAS DOS TABLAS LA USAN: la de Transporte y la de la Agenda de tours, que es la
+    # que lo pintaba como salida.
+    for nombre, donde in (("seccionTraslados", "Transporte"),
+                          ("seccionGuiasDeCorridas", "la Agenda de tours")):
+        j = pantalla.find(f"function {nombre}")
+        c.cierto(j > 0, f"existe la tabla de {donde}")
+        cuerpo = pantalla[j:pantalla.find("\nfunction ", j + 1)]
+        c.cierto("etiquetaDeCorrida(" in cuerpo,
+                 f"la tabla de {donde} usa la funcion compartida")
+
+
 def un_BT_sin_dia_no_se_inventa(c):
     """El error caro de esta pantalla. Un bote preparado el dia que no era cuesta lo
     mismo que no prepararlo, y encima nadie lo revisa porque la pantalla ya decia que
@@ -1738,6 +1787,7 @@ PRUEBAS = [
     el_parser_recoge_el_BT_del_itinerario,
     el_BT_tambien_se_llama_transbordo,
     la_nota_del_BT_dice_con_quien_se_engancha,
+    un_BT_no_se_pinta_como_una_salida,
     un_BT_sin_dia_no_se_inventa,
     el_BT_sale_en_transporte_y_se_le_asigna_capitan,
     el_BT_de_una_cancelada_no_pide_bote,
