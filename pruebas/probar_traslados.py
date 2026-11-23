@@ -1661,6 +1661,237 @@ def el_BT_sale_en_transporte_y_se_le_asigna_capitan(c):
     conn.close()
 
 
+# ---------------------------------------------------------------------------
+# El BT en el documento que recibe el huesped
+# ---------------------------------------------------------------------------
+
+def _itinerario_guardado(conn, conf_no):
+    """Las filas del itinerario tal como quedaron guardadas."""
+    import json
+    fila = conn.execute("SELECT filas_json FROM itinerario WHERE conf_no = ?",
+                        (str(conf_no),)).fetchone()
+    if not fila:
+        return None
+    try:
+        return json.loads(fila["filas_json"])
+    except (TypeError, ValueError):
+        return None
+
+
+def el_BT_sale_en_el_itinerario_del_huesped(c):
+    """LO PIDIO EL LODGE: «esta reserva tiene un transbordo el 24/11, ¿es posible que
+    este tipo de acontecimientos los agregue al itinerario en el mismo formato como
+    agrega los tours?».
+
+    Hasta ahora el BT existia solo del lado de la operacion: salia en Transporte para que
+    alguien le asignara bote y capitan, y el documento que recibe el huesped no lo
+    mencionaba. Medido en la base del lodge: la reserva de la habitacion 25 tiene un BT
+    el 08 de noviembre a las 6:25 a.m. y su itinerario guardado NO TIENE NINGUNA FILA ese
+    dia. El huesped leia un dia en blanco y el bote salia a las seis y veinticinco."""
+    limpiar()
+    dia = HOY + datetime.timedelta(days=2)
+    r = dict(reserva(720200, "09", ddmmyy(HOY),
+                     ddmmyy(HOY + datetime.timedelta(days=5)), adl=2),
+             punto_entrada="Sierpe", punto_salida="Sierpe",
+             traslados_extra=[{"dia": f"{dia.day:02d}"}],
+             notas="Clientes solicitan BT para ir al pueblo a las 9:00 AM")
+    cargar([r], vistas=[r])
+
+    conn = conexion()
+    filas = _itinerario_guardado(conn, 720200)
+    conn.close()
+    c.cierto(filas is not None, "la reserva tiene su itinerario guardado")
+    botes = [f for f in (filas or []) if f.get("actividad") == "Boat Transfer"]
+    c.igual(len(botes), 1, "y el itinerario trae el traslado en bote")
+    if botes:
+        import itinerario as itin
+        c.igual(botes[0]["dia"], itin._fecha_larga(dia.isoformat()),
+                "el dia que dice la reserva")
+        c.cierto("9:00 a.m." in botes[0]["horario"],
+                 "con la hora escrita como la lee el huesped, no como «09:00»")
+        c.cierto("Boat departure at" in botes[0]["horario"],
+                 "y con la misma frase que ya usa el bote de llegada y el de salida")
+
+
+def la_nota_interna_del_BT_no_llega_al_huesped(c):
+    """La nota del BT es PARA QUIEN COORDINA EL BOTE, no para el huesped.
+
+    En la base del lodge dice «Clientes solicitan BT el 08 para tour con Pacheco. Llegan
+    a las 6:25 AM y regresan a las 2:00 PM C-EBT 07/11 Pago pendiente»: el nombre del
+    otro operador, el aviso de cama extra y un pago pendiente. Copiarla al documento del
+    huesped seria mandarle por escrito lo que el hotel habla por dentro.
+
+    La fila dice lo que el huesped necesita saber —que hay un bote y a que hora— y manda
+    el resto a recepcion, que es quien sabe el destino."""
+    limpiar()
+    dia = HOY + datetime.timedelta(days=2)
+    r = dict(reserva(720210, "25", ddmmyy(HOY),
+                     ddmmyy(HOY + datetime.timedelta(days=5)), adl=2),
+             punto_entrada="Sierpe", punto_salida="Sierpe",
+             traslados_extra=[{"dia": f"{dia.day:02d}"}],
+             notas=("Clientes solicitan BT el 08 para tour con Pacheco. Llegan a las "
+                    "6:25 AM y regresan a las 2:00 PM C-EBT 07/11 Pago pendiente"))
+    cargar([r], vistas=[r])
+
+    conn = conexion()
+    filas = _itinerario_guardado(conn, 720210)
+    guardada = conn.execute(
+        "SELECT nota FROM traslado_extra WHERE conf_no = ?", ("720210",)).fetchone()
+    conn.close()
+    c.cierto(guardada and "Pacheco" in (guardada["nota"] or ""),
+             "la nota interna SI se guarda, para quien coordina el bote")
+    texto = " ".join(str(v) for f in (filas or []) for v in f.values())
+    for filtrado in ("Pacheco", "Pago pendiente", "C-EBT", "solicitan"):
+        c.cierto(filtrado not in texto,
+                 f"«{filtrado}» no aparece en el documento del huesped")
+
+
+def la_ida_y_vuelta_del_BT_es_una_sola_fila(c):
+    """Para TRANSPORTE son dos corridas: cada movimiento de bote necesita su capitan.
+    Para el HUESPED es un solo acontecimiento: se va a las 6:25 y vuelve a las 2:00.
+
+    Dos filas iguales el mismo dia, con la unica diferencia de la hora, se leen como dos
+    botes distintos — y uno de los dos es el regreso."""
+    import itinerario as itin
+
+    filas = itin.construir_filas({
+        "arr_date_iso": "2026-11-06", "dep_date_iso": "2026-11-11",
+        "punto_entrada": "Sierpe", "punto_salida": "Sierpe", "tours": [], "spa": [],
+        "traslados_extra": [{"fecha": "2026-11-08", "hora": "06:25"},
+                            {"fecha": "2026-11-08", "hora": "14:00"}],
+    })
+    botes = [inf for _fe, inf in filas if inf["nombre"] == "Boat Transfer"]
+    c.igual(len(botes), 1, "la ida y la vuelta son UNA fila del itinerario")
+    if botes:
+        c.igual(botes[0]["horario"],
+                "Boat departure at 6:25 a.m.\nReturn at 2:00 p.m.",
+                "con la salida y el regreso, en ese orden")
+
+    # El mismo BT guardado dos veces —una por el PDF y otra por Opera, que son origenes
+    # distintos y cada uno escribe su fila— no se le enseña dos veces al huesped.
+    filas = itin.construir_filas({
+        "arr_date_iso": "2026-11-06", "dep_date_iso": "2026-11-11",
+        "punto_entrada": "Sierpe", "punto_salida": "Sierpe", "tours": [], "spa": [],
+        "traslados_extra": [{"fecha": "2026-11-08", "hora": "06:25"},
+                            {"fecha": "2026-11-08", "hora": "06:25"}],
+    })
+    botes = [inf for _fe, inf in filas if inf["nombre"] == "Boat Transfer"]
+    c.igual(len(botes), 1, "la hora repetida no duplica la fila")
+    if botes:
+        c.igual(botes[0]["horario"], "Boat departure at 6:25 a.m.",
+                "y queda una sola hora")
+
+
+def el_BT_cae_en_su_hora_entre_los_tours_del_dia(c):
+    """En el MISMO formato que los tours quiere decir tambien en el mismo orden: el
+    itinerario se lee como la agenda del dia, de la hora mas temprana a la mas tarde.
+
+    Un bote de las 9 impreso debajo de la caminata de las 3 de la tarde se lee como si
+    fuera despues, que es justo lo que se arreglo para los tours."""
+    import itinerario as itin
+
+    filas = itin.construir_filas({
+        "arr_date_iso": "2026-11-06", "dep_date_iso": "2026-11-11",
+        "punto_entrada": "Sierpe", "punto_salida": "Sierpe", "spa": [],
+        "tours": [{"fecha": "2026-11-08", "tour_codigo": "TEMPRANO",
+                   "horario_inicio": "06:00", "guia_nombre": None, "es_privado": 0},
+                  {"fecha": "2026-11-08", "tour_codigo": "TARDE",
+                   "horario_inicio": "15:00", "guia_nombre": None, "es_privado": 0}],
+        "traslados_extra": [{"fecha": "2026-11-08", "hora": "09:00"}],
+    })
+    nombres = [inf["nombre"] for _fe, inf in filas]
+    c.igual(nombres, ["Arrival Day", "Temprano", "Boat Transfer", "Tarde",
+                      "Departure Day"],
+            "el bote de las 9 va entre el tour de las 6 y el de las 3")
+
+
+def el_BT_del_itinerario_se_lee_en_el_idioma_del_huesped(c):
+    """El itinerario se guarda en ingles y se traduce al enseñarlo. Una fila nueva sin
+    traducir sale en ingles en medio de un documento en español — y no hay ningun error
+    que lo diga: simplemente se ve mal en el PDF que ya se le mando al huesped."""
+    import traducciones as tr
+
+    c.igual(tr.traducir_actividad("Boat Transfer", "es"), "Traslado en bote",
+            "el nombre de la actividad se traduce")
+    for idioma in ("es", "pt", "fr", "ru"):
+        c.cierto(tr.traducir_actividad("Boat Transfer", idioma) != "Boat Transfer",
+                 f"y tambien al {idioma}")
+
+    horario = tr.traducir_texto("Boat departure at 6:25 a.m.\nReturn at 2:00 p.m.", "es")
+    c.igual(horario, "Salida del bote a las 6:25 a.m.\nRegreso a las 2:00 p.m.",
+            "la salida y el regreso se traducen")
+    detalles = tr.traducir_texto(
+        "Extra boat transfer.\nPlease confirm the details at reception.", "es")
+    c.cierto("ingl" not in detalles.lower() and "Extra boat" not in detalles,
+             "y los detalles no se quedan en ingles")
+    c.igual(detalles,
+            "Traslado en bote adicional.\nPor favor confirme los detalles en recepción.",
+            "con el texto completo")
+
+
+def un_BT_sin_hora_pide_que_la_escriban(c):
+    """La hora del BT puede faltar: boat_transfer la saca del texto libre y no siempre
+    esta. No se inventa —es la regla de toda esta pantalla— pero tampoco se calla: la
+    fila queda marcada para revisar, como un tour sin horario, para que recepcion la
+    escriba antes de mandarle el documento al huesped."""
+    import itinerario as itin
+
+    filas, avisos = itin.construir_itinerario({
+        "nombre_bienvenida": "Test",
+        "arr_date_iso": "2026-11-06", "dep_date_iso": "2026-11-11",
+        "punto_entrada": "Sierpe", "punto_salida": "Sierpe", "tours": [], "spa": [],
+        "traslados_extra": [{"fecha": "2026-11-08", "hora": None}],
+    })
+    botes = [f for f in filas if f["actividad"] == "Boat Transfer"]
+    c.igual(len(botes), 1, "la fila sale igual: el bote existe aunque falte la hora")
+    if botes:
+        c.cierto(botes[0]["revisar"], "marcada para revisar")
+        c.cierto("___" in botes[0]["horario"], "con el hueco donde va la hora")
+    c.cierto(any("Boat Transfer" in a for a in avisos),
+             "y se avisa que falta completar el horario")
+
+
+def los_itinerarios_ya_guardados_reciben_el_bote(c):
+    """El itinerario se guarda UNA VEZ y despues se lee de la base: el PDF, la pagina del
+    QR y la pantalla salen todos de ahi. Sin la migracion, el huesped que ya tiene su
+    itinerario seguiria sin saber que hay un bote hasta que alguien le diera a «Rehacer
+    automatico» — y nadie se lo da, porque la falta no se ve en la pantalla de recepcion:
+    se ve en el documento que recibe el huesped."""
+    import json
+
+    import init_db
+
+    limpiar()
+    dia = HOY + datetime.timedelta(days=2)
+    r = dict(reserva(720220, "09", ddmmyy(HOY),
+                     ddmmyy(HOY + datetime.timedelta(days=5)), adl=2),
+             punto_entrada="Sierpe", punto_salida="Sierpe",
+             traslados_extra=[{"dia": f"{dia.day:02d}"}],
+             notas="Clientes solicitan BT a las 9:00 AM")
+    cargar([r], vistas=[r])
+
+    # Se deja el itinerario COMO ESTABA ANTES del cambio: sin la fila del bote.
+    conn = conexion()
+    filas = _itinerario_guardado(conn, 720220) or []
+    sin_bote = [f for f in filas if f.get("actividad") != "Boat Transfer"]
+    c.igual(len(filas) - len(sin_bote), 1, "el itinerario recien armado trae el bote")
+    conn.execute("UPDATE itinerario SET filas_json = ?, editado = 1 WHERE conf_no = ?",
+                 (json.dumps(sin_bote, ensure_ascii=False), "720220"))
+    conn.commit()
+
+    agregados = init_db._agregar_los_bt_a_los_itinerarios(conn)
+    c.igual(agregados, 1, "la migracion lo agrega al itinerario ya guardado")
+    recuperadas = _itinerario_guardado(conn, 720220) or []
+    botes = [f for f in recuperadas if f.get("actividad") == "Boat Transfer"]
+    c.igual(len(botes), 1, "y queda una sola fila del bote")
+    c.igual(len(recuperadas), len(filas), "sin perder ninguna de las demas")
+
+    # Y NO LO DUPLICA si se vuelve a correr: la migracion se ejecuta en cada arranque.
+    c.igual(init_db._agregar_los_bt_a_los_itinerarios(conn), 0,
+            "correrla dos veces no duplica la fila")
+    conn.close()
+
+
 def el_BT_de_una_cancelada_no_pide_bote(c):
     """Lo mismo que ya valia para las demas corridas: una cancelada no viaja."""
     limpiar()
@@ -1790,6 +2021,13 @@ PRUEBAS = [
     un_BT_no_se_pinta_como_una_salida,
     un_BT_sin_dia_no_se_inventa,
     el_BT_sale_en_transporte_y_se_le_asigna_capitan,
+    el_BT_sale_en_el_itinerario_del_huesped,
+    la_nota_interna_del_BT_no_llega_al_huesped,
+    la_ida_y_vuelta_del_BT_es_una_sola_fila,
+    el_BT_cae_en_su_hora_entre_los_tours_del_dia,
+    el_BT_del_itinerario_se_lee_en_el_idioma_del_huesped,
+    un_BT_sin_hora_pide_que_la_escriban,
+    los_itinerarios_ya_guardados_reciben_el_bote,
     el_BT_de_una_cancelada_no_pide_bote,
     el_codigo_privado_del_catalogo_tambien_cuenta,
     dejar_sin_asignar_es_distinto_de_no_mandar_el_dato,

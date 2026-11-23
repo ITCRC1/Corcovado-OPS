@@ -142,6 +142,10 @@ ACTIVIDADES = {
     # huésped entienda de qué es la línea en su itinerario.
     "Spa Treatment": {"es": "Tratamiento de spa", "pt": "Tratamento de spa",
                       "fr": "Soin au spa", "ru": "Спа-процедура"},
+    # El BT: el viaje de bote EXTRA de mitad de estadía. No es un tour —no lleva guía ni
+    # entra a ningún parque— así que se llama por lo que es.
+    "Boat Transfer": {"es": "Traslado en bote", "pt": "Traslado de barco",
+                      "fr": "Transfert en bateau", "ru": "Трансфер на лодке"},
     "Arrival Day": {"es": "Día de llegada", "pt": "Dia de chegada",
                     "fr": "Jour d'arrivée", "ru": "День заезда"},
     "Departure Day": {"es": "Día de salida", "pt": "Dia de partida",
@@ -280,6 +284,21 @@ FRASES = {
                               "ru": "Отправление лодки примерно в"},
     "Boat departure at": {"es": "Salida del bote a las", "pt": "Saída do barco às",
                           "fr": "Départ du bateau à", "ru": "Отправление лодки в"},
+    # --- El BT (traslado en bote extra) ---
+    "Return at": {"es": "Regreso a las", "pt": "Retorno às",
+                  "fr": "Retour à", "ru": "Возвращение в"},
+    "Extra boat transfer.": {"es": "Traslado en bote adicional.",
+                             "pt": "Traslado de barco adicional.",
+                             "fr": "Transfert en bateau supplémentaire.",
+                             "ru": "Дополнительный трансфер на лодке."},
+    # El destino del BT no está guardado en ninguna parte con forma de dato —la nota de
+    # la reserva lo dice en español y mezclado con el pago pendiente— así que el
+    # documento manda al huésped a quien sí lo sabe en vez de inventarlo.
+    "Please confirm the details at reception.": {
+        "es": "Por favor confirme los detalles en recepción.",
+        "pt": "Por favor confirme os detalhes na recepção.",
+        "fr": "Merci de confirmer les détails à la réception.",
+        "ru": "Пожалуйста, уточните детали на стойке регистрации."},
     "Luggage pick-up in your room at": {
         "es": "Recogida de equipaje en su habitación a las",
         "pt": "Recolha da bagagem no seu quarto às",

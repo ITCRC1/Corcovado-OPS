@@ -462,6 +462,7 @@ def _migrar(conn):
     _sin_tumbar_el_arranque(conn, _unificar_tours_de_la_nomenclatura)
     _sin_tumbar_el_arranque(conn, _ordenar_los_itinerarios_por_hora)
     _sin_tumbar_el_arranque(conn, _renombrar_los_cuartos_de_guias)
+    _sin_tumbar_el_arranque(conn, _agregar_los_bt_a_los_itinerarios)
     _purgar_sesiones(conn)
     # Al final, con las tablas ya creadas y los duplicados ya limpios.
     _crear_indices(conn)
@@ -582,6 +583,62 @@ def _renombrar_los_cuartos_de_guias(conn):
         conn.commit()
         print(f"Cuartos de guías renombrados al número del lodge: {cambiadas} fila(s)")
     return cambiadas
+
+
+def _agregar_los_bt_a_los_itinerarios(conn):
+    """Mete el viaje de bote EXTRA en los itinerarios YA GUARDADOS.
+
+    El BT entró al itinerario donde el itinerario se arma, pero eso solo alcanza a los
+    que se armen de ahora en adelante: el documento se guarda una vez y después se lee de
+    la base —el PDF, la página del QR y la pantalla salen todos de ahí—, así que sin esto
+    el huésped que ya tiene su itinerario impreso seguiría sin saber que hay un bote.
+
+    Medido en la base del lodge: la reserva de la habitación 25 tiene un BT el 08 de
+    noviembre a las 6:25 a.m. y su itinerario guardado no tiene NINGUNA fila ese día.
+
+    SOLO AGREGA LA FILA DEL BOTE. No vuelve a armar el itinerario: si recepción borró un
+    tour a propósito, se queda borrado. Y si la fila del bote ya está —porque el
+    itinerario se regeneró en la última sincronización— no se duplica.
+    """
+    tablas = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if not {"itinerario", "traslado_extra"} <= tablas:
+        return 0
+    import json as _json
+    import itinerario as _itin
+
+    cambiados = 0
+    for fila in conn.execute(
+            "SELECT DISTINCT conf_no FROM traslado_extra WHERE conf_no IS NOT NULL"
+    ).fetchall():
+        conf_no = fila["conf_no"]
+        guardado = conn.execute(
+            "SELECT filas_json FROM itinerario WHERE conf_no = ?", (conf_no,)).fetchone()
+        if not guardado:
+            continue
+        try:
+            guardadas = _json.loads(guardado["filas_json"])
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(guardadas, list):
+            continue
+        datos = _itin.datos_de_reserva(conn, conf_no)
+        if not datos:
+            continue
+        actuales, _avisos = _itin.construir_itinerario(datos)
+        solo_el_bote = [f for f in actuales if f.get("actividad") == "Boat Transfer"]
+        faltan = _itin.detectar_faltantes(guardadas, solo_el_bote)
+        if not faltan:
+            continue
+        conn.execute(
+            "UPDATE itinerario SET filas_json = ? WHERE conf_no = ?",
+            (_json.dumps(_itin.incorporar_faltantes(guardadas, faltan),
+                         ensure_ascii=False), conf_no))
+        cambiados += 1
+    if cambiados:
+        conn.commit()
+        print(f"Itinerarios con el traslado en bote agregado: {cambiados}")
+    return cambiados
 
 
 def _sin_tumbar_el_arranque(conn, limpieza):

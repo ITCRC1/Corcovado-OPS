@@ -220,6 +220,52 @@ def texto_cita_spa(cita):
     }
 
 
+def texto_traslado_extra(horas):
+    """La fila del itinerario para un BT —el viaje de bote EXTRA—, EN INGLÉS.
+
+    QUÉ ES UN BT. Aparte del bote con el que el huésped llega y el que se lo lleva, hay
+    reservas que piden un traslado suelto a mitad de estadía: para un tour con otro
+    operador, para subirse al bote de unos amigos, para ir al pueblo. Ver boat_transfer.
+
+    POR QUÉ ENTRA AL DOCUMENTO DEL HUÉSPED. Hasta ahora el BT existía solo del lado de la
+    operación —salía en Transporte para que alguien le asignara bote y capitán— y el
+    itinerario que recibe el huésped no lo mencionaba. Medido en la base del lodge: la
+    reserva de la habitación 25 tiene un BT el 08 de noviembre a las 6:25 a.m. y su
+    itinerario guardado NO TIENE NINGUNA FILA ese día. El huésped leía un día en blanco y
+    el bote salía a las seis y veinticinco de la mañana. Lo pidió el lodge: «¿es posible
+    que este tipo de acontecimientos los agregue al itinerario en el mismo formato como
+    agrega los tours?».
+
+    `horas` son las de ese día, en «HH:MM». Una sola es un viaje de ida; DOS son ida y
+    vuelta —así las devuelve boat_transfer cuando la nota lo dice— y van en la MISMA fila
+    porque para el huésped es un solo acontecimiento: se va a las 6:25 y vuelve a las
+    2:00. En Transporte sí son dos corridas, y ahí está bien que lo sean: cada movimiento
+    de bote necesita su capitán.
+
+    LA NOTA INTERNA NO SE COPIA. En la base dice «Clientes solicitan BT el 08 para tour
+    con Pacheco… C-EBT 07/11 Pago pendiente»: eso es para quien coordina el bote, no para
+    el huésped. La fila dice lo que el huésped necesita saber —que hay un bote y a qué
+    hora— y manda el resto a recepción, que es quien sabe el destino. Recepción puede
+    editar la fila como cualquier otra del itinerario.
+    """
+    legibles = [cat.hora_legible(h) for h in horas if h]
+    if not legibles:
+        horario = "Boat departure at ___"
+    elif len(legibles) == 2:
+        horario = f"Boat departure at {legibles[0]}\nReturn at {legibles[1]}"
+    else:
+        horario = "\n".join(f"Boat departure at {h}" for h in legibles)
+    return {
+        "nombre": "Boat Transfer",
+        "duracion": "",
+        "horario": horario,
+        "detalles": "Extra boat transfer.\nPlease confirm the details at reception.",
+        # Sin hora el documento diría «Boat departure at ___», que no le sirve a nadie:
+        # se marca para que recepción la escriba, igual que un tour sin horario.
+        "requiere_revision": not legibles,
+    }
+
+
 def construir_filas(datos):
     """Las filas del itinerario, EN EL ORDEN EN QUE PASAN LAS COSAS.
 
@@ -253,6 +299,21 @@ def construir_filas(datos):
         info = texto_cita_spa(s)
         enmedio.append((s["fecha"] or "", _minuto_de_inicio(info["horario"]),
                         len(enmedio), info))
+
+    # Los BT: UNA fila por día, no una por movimiento de bote. Ver texto_traslado_extra.
+    #
+    # Se quitan las horas repetidas antes de agruparlas porque la misma reserva puede
+    # tener el BT guardado dos veces —una por el PDF y otra por Opera, que son orígenes
+    # distintos y cada uno escribe su fila— y el huésped no tiene por qué leer dos veces
+    # el mismo bote.
+    por_dia = {}
+    for t in datos.get("traslados_extra", []):
+        horas = por_dia.setdefault(t.get("fecha") or "", [])
+        if t.get("hora") and t["hora"] not in horas:
+            horas.append(t["hora"])
+    for fecha in sorted(por_dia):
+        info = texto_traslado_extra(sorted(por_dia[fecha]))
+        enmedio.append((fecha, _minuto_de_inicio(info["horario"]), len(enmedio), info))
 
     enmedio.sort(key=lambda x: (x[0], x[1], x[2]))
     for fecha, _hora, _n, info in enmedio:
@@ -482,6 +543,17 @@ def datos_de_reserva(conn, conf_no):
         # itinerario a nadie.
         spa = []
 
+    # Los BT: el viaje de bote EXTRA que pide la reserva a mitad de estadía. Se leen de
+    # la MISMA tabla que usa Transporte, para que el huésped y quien prepara el bote no
+    # puedan leer días ni horas distintas. Es la lección que este sistema ya pagó cuatro
+    # veces: una regla arreglada en una función y rota donde otra pantalla arma su SQL.
+    try:
+        traslados = [dict(t) for t in conn.execute(
+            """SELECT fecha, hora FROM traslado_extra
+               WHERE conf_no = ? ORDER BY fecha, hora""", (conf_no,))]
+    except Exception:
+        traslados = []     # una base sin la tabla no deja sin itinerario a nadie
+
     def a_iso(dd):
         if not dd:
             return None
@@ -499,6 +571,7 @@ def datos_de_reserva(conn, conf_no):
         "vuelo_salida": r.get("vuelo_salida"), "hora_vuelo_salida": r.get("hora_vuelo_salida"),
         "tours": tours,
         "spa": spa,
+        "traslados_extra": traslados,
     }
 
 
