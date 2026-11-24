@@ -653,7 +653,10 @@ def desayunos_del_dia(conn, fecha):
     forma de saber cuál creer. Es la misma razón por la que existe _datos_del_resumen.
 
     Cada fila trae `servido`: si alguien del salón ya marcó que esa habitación desayunó.
+    La marca la lee `restaurantes.servidos_del_dia`, que es la MISMA que usan las dos
+    listas de la cena — el control del salón es uno solo, con la comida como etiqueta.
     """
+    import restaurantes as rest
     dd, yy = ddmmyy(fecha), yymmdd(fecha)
     filas = [dict(r) for r in conn.execute(
         f"""SELECT conf_no, room_no, nombre_principal, adl, chl, regimen, dep_date
@@ -662,15 +665,8 @@ def desayunos_del_dia(conn, fecha):
               dep_date = ? OR ({sql_fecha('arr_date')} < ?
                                AND (dep_date IS NULL OR {sql_fecha('dep_date')} >= ?)))
             ORDER BY """ + _habs.ORDEN, (dd, yy, yy)).fetchall()]
-    import sqlite3 as _sq
-    try:
-        servidos = {r[0] for r in conn.execute(
-            "SELECT conf_no FROM desayuno_servido WHERE fecha = ?", (fecha,))}
-    except _sq.OperationalError:
-        # Una base que todavía no migró no puede dejar sin desayunos a la pantalla.
-        servidos = set()
+    rest.marcar_quien_ya_vino(conn, fecha, [filas], "DESAYUNO")
     for f in filas:
-        f["servido"] = f["conf_no"] in servidos
         f["sale_hoy"] = f.get("dep_date") == dd
     return filas
 
@@ -6776,53 +6772,78 @@ def restaurantes_dia(fecha: str, user: dict = Depends(exige("restaurantes"))):
         datos["desayunos"] = desayunos_del_dia(conn, fecha)
         datos["pax_desayunos"] = sum((x["adl"] or 0) + (x["chl"] or 0)
                                      for x in datos["desayunos"])
+        # Y LA CENA IGUAL. Lo pidió el lodge: «para los botones de cenas de ambos
+        # restaurantes colocquemos la función de los check al igual que en los total de
+        # desayunos, para llevar el control de quién ya vino a cenar y las reservas
+        # faltantes».
+        #
+        # La marca se le pone AQUÍ a las listas que ya calculó distribuir() —no es una
+        # consulta más por restaurante— y por la misma función que el desayuno, así que
+        # las tres listas no pueden contar de formas distintas.
+        #
+        # El comedor del staff entra también: son gente que viene a comer, y dejarlo
+        # fuera haría que una habitación movida ahí perdiera su marca al mirarla.
+        rest.marcar_quien_ya_vino(
+            conn, fecha,
+            [datos["cena"]["terra_kitchen"], datos["cena"]["bar_el_bosque"],
+             datos["cena"]["comedor_staff"]],
+            "CENA")
     finally:
         conn.close()
     return datos
 
 
-@app.post("/api/restaurantes/desayuno")
-def restaurantes_marcar_desayuno(payload: dict,
-                                 user: dict = Depends(exige("restaurantes",
-                                                            escribir=True))):
-    """Marca (o desmarca) que una habitación ya desayunó.
+@app.post("/api/restaurantes/servido")
+def restaurantes_marcar_servido(payload: dict,
+                                user: dict = Depends(exige("restaurantes",
+                                                           escribir=True))):
+    """Marca (o desmarca) que una habitación ya vino a comer.
 
-    Lo pidió el lodge: «una cajita para agregar un check al lado de cada habitación para
-    indicar que esa reserva ya desayunó y el salón lleve un control».
+    Lo pidió el lodge primero para el desayuno —«una cajita para agregar un check al lado
+    de cada habitación para indicar que esa reserva ya desayunó y el salón lleve un
+    control»— y después para las dos cenas, con las mismas palabras: «para llevar el
+    control de quién ya vino a cenar y las reservas faltantes».
 
-    SE PUEDE DESMARCAR. Un check es un gesto de una sola pulsación que se hace con el
-    salón lleno y se pone en la fila de al lado sin querer; si no se pudiera quitar, la
-    única salida sería dejar el error puesto y dejar de confiar en la lista entera.
-
-    Destildar BORRA la fila: ver el comentario de la tabla en schema.sql.
+    UN SOLO ENDPOINT para las dos, con la comida en el cuerpo. Dos endpoints serían dos
+    sitios donde comprobar el permiso, dos donde validar la reserva y dos donde arreglar
+    el día que haga falta deshacer o registrar algo más.
     """
+    import restaurantes as rest
     fecha = (payload.get("fecha") or "").strip()
     conf_no = str(payload.get("conf_no") or "").strip()
     servido = payload.get("servido")
     servido = True if servido is None else bool(servido)
     if not fecha or not conf_no:
         raise HTTPException(status_code=400, detail="Faltan la fecha o la reserva.")
+    try:
+        comida = rest._comida_valida(payload.get("comida") or "DESAYUNO")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     conn = get_connection()
     try:
         if not conn.execute("SELECT 1 FROM reserva WHERE conf_no = ?",
                             (conf_no,)).fetchone():
             raise HTTPException(status_code=404, detail="No existe esa reserva")
-        if servido:
-            conn.execute(
-                """INSERT INTO desayuno_servido (fecha, conf_no, servido_en, servido_por)
-                   VALUES (?,?,datetime('now'),?)
-                   ON CONFLICT(fecha, conf_no) DO UPDATE SET
-                     servido_en = excluded.servido_en, servido_por = excluded.servido_por""",
-                (fecha, conf_no, user.get("usuario")))
-        else:
-            conn.execute("DELETE FROM desayuno_servido WHERE fecha = ? AND conf_no = ?",
-                         (fecha, conf_no))
-        conn.commit()
-        servidos = [r[0] for r in conn.execute(
-            "SELECT conf_no FROM desayuno_servido WHERE fecha = ?", (fecha,))]
+        servidos = rest.marcar_servido(conn, fecha, conf_no, comida, servido,
+                                       user.get("usuario"))
     finally:
         conn.close()
-    return {"status": "ok", "servido": servido, "servidos": servidos}
+    return {"status": "ok", "comida": comida, "servido": servido, "servidos": servidos}
+
+
+@app.post("/api/restaurantes/desayuno")
+def restaurantes_marcar_desayuno(payload: dict,
+                                 user: dict = Depends(exige("restaurantes",
+                                                            escribir=True))):
+    """La dirección vieja del check del desayuno. Hace lo mismo que la de arriba.
+
+    Se mantiene porque la pantalla se guarda en el teléfono —hay un service worker— y un
+    aparato que todavía tenga la versión anterior en caché seguiría llamando aquí. Marcar
+    un desayuno y que no se guarde es justo la forma de fallar que este control existe
+    para evitar: el salón daría la lista por buena.
+    """
+    return restaurantes_marcar_servido({**(payload or {}), "comida": "DESAYUNO"},
+                                       user=user)
 
 
 @app.post("/api/amenidades/{amenidad_id}/devolver")

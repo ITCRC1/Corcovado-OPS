@@ -5735,9 +5735,12 @@ async function loadRestaurantes(fecha) {
              con la que el salón marca quién ya bajó. -->
         <div class="stat" onclick="detalleRest('desayunos')"><p class="stat-label">Total desayunos</p>
           <p class="stat-value">${d.pax_desayunos || 0}</p>
-          ${habsDelBoton(d.desayunos, `${(d.desayunos || []).filter(x => x.servido).length} de ${(d.desayunos || []).length} servidos`)}</div>
-        <div class="stat" onclick="detalleRest('cena_tk')"><p class="stat-label">Cena · Terra Kitchen</p><p class="stat-value">${c.pax_tk}</p>${habsDelBoton(c.terra_kitchen)}</div>
-        <div class="stat" onclick="detalleRest('cena_bosque')"><p class="stat-label">Cena · Bar el Bosque</p><p class="stat-value">${c.pax_bosque}</p>${habsDelBoton(c.bar_el_bosque)}</div>
+          ${habsDelBoton(d.desayunos, pieServidos(d.desayunos))}</div>
+        <!-- LAS DOS CENAS LLEVAN EL MISMO CONTROL que el desayuno. Lo pidió el lodge:
+             «para llevar el control de quién ya vino a cenar y las reservas faltantes».
+             El pie dice cuántos van sin abrir la tarjeta, que es lo que se mira de paso. -->
+        <div class="stat" onclick="detalleRest('cena_tk')"><p class="stat-label">Cena · Terra Kitchen</p><p class="stat-value">${c.pax_tk}</p>${habsDelBoton(c.terra_kitchen, pieServidos(c.terra_kitchen))}</div>
+        <div class="stat" onclick="detalleRest('cena_bosque')"><p class="stat-label">Cena · Bar el Bosque</p><p class="stat-value">${c.pax_bosque}</p>${habsDelBoton(c.bar_el_bosque, pieServidos(c.bar_el_bosque))}</div>
         <div class="stat" onclick="detalleRest('alm_tk')"><p class="stat-label">Almuerzo · Terra Kitchen</p><p class="stat-value">${a.pax_tk}</p>${habsDelBoton(a.terra_kitchen)}</div>
         <div class="stat" onclick="detalleRest('alm_bosque')"><p class="stat-label">Almuerzo · Bar el Bosque</p><p class="stat-value">${a.pax_bosque}</p>${habsDelBoton(a.bar_el_bosque)}</div>
         <div class="stat" onclick="detalleRest('regimen')"><p class="stat-label">Full board</p>
@@ -6245,10 +6248,11 @@ function detalleDesayunos() {
     <p id="dsy-cuenta" style="font-size:12.5px;margin:0 0 8px;"></p>
     <table>
       <tr>${puede ? "<th></th>" : ""}<th>Hab.</th><th>Huésped</th><th>Pax</th><th>Régimen</th><th></th></tr>
-      ${lista.map(x => `<tr id="dsy-f-${x.conf_no}" class="${x.sale_hoy ? 'fila-sale' : ''}">
+      ${lista.map(x => `<tr id="dsy-f-${x.conf_no}" class="${x.sale_hoy ? 'fila-sale' : ''}"
+            style="${x.servido ? 'opacity:.55;' : ''}">
         ${puede ? `<td style="text-align:center;">
           <input type="checkbox" id="dsy-${x.conf_no}" ${x.servido ? "checked" : ""}
-                 onchange="marcarDesayuno('${F.fecha}','${x.conf_no}',this.checked)"
+                 onchange="marcarServido('${F.fecha}','${x.conf_no}','DESAYUNO',this.checked,'dsy')"
                  style="width:20px;height:20px;cursor:pointer;"
                  title="Ya desayunó"></td>` : ""}
         <td><strong>${x.room_no || '—'}</strong>${etiquetaGrupo(x.conf_no)}</td>
@@ -6261,29 +6265,51 @@ function detalleDesayunos() {
     <p style="font-size:11px;color:var(--muted);margin-top:8px;">El control es de ESTE
       día: cada mañana empieza en blanco. Si marcás una por equivocación, destildala.</p>
   </div>`;
-  cuentaDesayunos();
+  cuentaServidos("dsy", "ya desayunaron");
 }
+
+// EL CONTROL DEL SALÓN, UNO SOLO PARA LAS DOS COMIDAS.
+//
+// Empezó siendo solo del desayuno y el lodge lo pidió igual para las dos cenas: «para
+// llevar el control de quién ya vino a cenar y las reservas faltantes». Son las mismas
+// tres piezas —la cuenta, el check y el pie del botón— así que son las mismas funciones
+// con la comida y el prefijo de los identificadores como argumento. Copiadas, el día que
+// una aprendiera algo la otra se quedaría atrás; ya pasó cuatro veces en este sistema.
+//
+// `prefijo` es el de los id de la tabla abierta: 'dsy' el desayuno, 'cna' la cena.
 
 // Cuántos llevan servidos. Se recalcula del DOM y no de los datos: es lo que el salón
 // está mirando, y así no hay dos números que puedan separarse.
-function cuentaDesayunos() {
-  const caja = document.getElementById("dsy-cuenta");
+function cuentaServidos(prefijo, verbo) {
+  const caja = document.getElementById(`${prefijo}-cuenta`);
   if (!caja) return;
-  const todas = document.querySelectorAll('#rest-detalle input[id^="dsy-"]');
+  const todas = document.querySelectorAll(`#rest-detalle input[id^="${prefijo}-"]`);
   const hechas = [...todas].filter(x => x.checked).length;
   const faltan = todas.length - hechas;
   caja.innerHTML = todas.length
-    ? `<strong>${hechas} de ${todas.length}</strong> ya desayunaron`
+    ? `<strong>${hechas} de ${todas.length}</strong> ${verbo}`
       + (faltan ? ` · <span style="color:var(--warn-text);">faltan ${faltan}</span>`
                 : ` · <span style="color:var(--ok-text);">no falta ninguna ✓</span>`)
     : "";
 }
 
-async function marcarDesayuno(fecha, confNo, servido) {
-  const caja = document.getElementById(`dsy-${confNo}`);
-  const res = await fetchAuth(`${API}/api/restaurantes/desayuno`, {
+// Las listas donde puede estar una reserva para esa comida. La cena incluye el comedor
+// del staff: una habitación movida ahí sigue siendo gente que vino a comer, y dejarla
+// fuera le haría perder la marca al mirarla.
+function listasDeLaComida(comida) {
+  const d = window._restData || {};
+  if (comida === "CENA") {
+    const c = d.cena || {};
+    return [c.terra_kitchen, c.bar_el_bosque, c.comedor_staff];
+  }
+  return [d.desayunos];
+}
+
+async function marcarServido(fecha, confNo, comida, servido, prefijo) {
+  const caja = document.getElementById(`${prefijo}-${confNo}`);
+  const res = await fetchAuth(`${API}/api/restaurantes/servido`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fecha, conf_no: confNo, servido }),
+    body: JSON.stringify({ fecha, conf_no: confNo, comida, servido }),
   });
   if (!res.ok) {
     // Se devuelve la casilla a donde estaba: dejarla marcada sin que el servidor lo
@@ -6294,23 +6320,38 @@ async function marcarDesayuno(fecha, confNo, servido) {
   }
   // La copia en memoria también, para que cerrar y volver a abrir la tarjeta no enseñe
   // lo de antes.
-  const fila = (window._restData.desayunos || []).find(x => x.conf_no === confNo);
-  if (fila) fila.servido = servido;
-  const tr = document.getElementById(`dsy-f-${confNo}`);
+  listasDeLaComida(comida).forEach(l => (l || []).forEach(x => {
+    if (String(x.conf_no) === String(confNo)) x.servido = servido;
+  }));
+  const tr = document.getElementById(`${prefijo}-f-${confNo}`);
   if (tr) tr.style.opacity = servido ? ".55" : "";
-  cuentaDesayunos();
-  pintarResumenDesayunosEnLaTarjeta();
+  cuentaServidos(prefijo, comida === "CENA" ? "ya cenaron" : "ya desayunaron");
+  pintarServidosEnLasTarjetas();
 }
 
-// El pie de la tarjeta de arriba, sin redibujar la pantalla.
-function pintarResumenDesayunosEnLaTarjeta() {
-  const lista = (window._restData || {}).desayunos || [];
-  const tarjetas = document.querySelectorAll("#app .stat");
-  for (const t of tarjetas) {
+// El pie de un botón: cuántos de los que comen ahí ya vinieron. Vacío si no come nadie,
+// para no escribir «0 de 0» debajo de una tarjeta que ya dice cero.
+function pieServidos(lista) {
+  const l = lista || [];
+  return l.length ? `${l.filter(x => x.servido).length} de ${l.length} servidos` : "";
+}
+
+// Los pies de las tarjetas de arriba, sin redibujar la pantalla. Son veinte toques
+// seguidos: recargar el día entre uno y otro perdería el scroll cada vez.
+function pintarServidosEnLasTarjetas() {
+  const d = window._restData || {};
+  const c = d.cena || {};
+  const porEtiqueta = {
+    "Total desayunos": d.desayunos,
+    "Cena · Terra Kitchen": c.terra_kitchen,
+    "Cena · Bar el Bosque": c.bar_el_bosque,
+  };
+  for (const t of document.querySelectorAll("#app .stat")) {
     const et = t.querySelector(".stat-label");
-    if (!et || et.textContent.trim() !== "Total desayunos") continue;
+    const lista = et && porEtiqueta[et.textContent.trim()];
+    if (!lista) continue;
     const pie = t.querySelectorAll("p")[2];
-    if (pie) pie.textContent = `${lista.filter(x => x.servido).length} de ${lista.length} servidos`;
+    if (pie) pie.textContent = pieServidos(lista);
   }
 }
 
@@ -6449,6 +6490,10 @@ function detalleRest(cual) {
   };
   const [titulo, lista, comida, destino] = mapa[cual];
   const esCena = comida === "CENA";
+  // EL CONTROL DE QUIÉN YA VINO. Solo en la cena y solo para quien puede escribir: es el
+  // mismo que el del desayuno, y el lodge lo pidió para «ambos restaurantes». En el
+  // almuerzo no, porque nadie lo ha pedido — agregarlo sería inventarle trabajo al salón.
+  const marcaLaCena = esCena && puedeEscribir("restaurantes");
   if (!lista.length) { panel.innerHTML = `<div class="detail-panel">Nadie asignado.</div>`; return; }
 
   // Lo que el salonero necesita saber de un vistazo: si esta comida se la trae pagada.
@@ -6486,10 +6531,20 @@ function detalleRest(cual) {
         <span>Al cambiar de restaurante, mover a todo el grupo
           <span style="color:var(--muted);">— destildá esto para sacar una sola habitación</span></span>
       </label>` : ""}
+    ${marcaLaCena ? `<p id="cna-cuenta" style="font-size:12.5px;margin:0 0 8px;"></p>
+      <p style="font-size:11.5px;color:var(--muted);margin:0 0 9px;">Marcá la casilla
+        cuando la mesa ya vino a cenar. El control es de ESTA noche: mañana empieza en
+        blanco, y si marcás una por equivocación, destildala.</p>` : ""}
     <table>
-      <tr><th>Hab.</th><th>Huésped</th><th>Pax</th><th>Noche</th><th>${esCena ? "Cena" : "Almuerzo"}</th><th></th>
+      <tr>${marcaLaCena ? "<th></th>" : ""}<th>Hab.</th><th>Huésped</th><th>Pax</th><th>Noche</th><th>${esCena ? "Cena" : "Almuerzo"}</th><th></th>
         ${esCena ? "<th>Hora reservada</th>" : ""}${puedeEscribir("restaurantes") ? "<th></th>" : ""}</tr>
-      ${lista.map(x => `<tr class="${x.tipo === 'ENTRA' ? 'fila-entra' : ''}">
+      ${lista.map(x => `<tr ${marcaLaCena ? `id="cna-f-${x.conf_no}"` : ""} class="${x.tipo === 'ENTRA' ? 'fila-entra' : ''}"
+            style="${marcaLaCena && x.servido ? 'opacity:.55;' : ''}">
+        ${marcaLaCena ? `<td style="text-align:center;">
+          <input type="checkbox" id="cna-${x.conf_no}" ${x.servido ? "checked" : ""}
+                 onchange="marcarServido('${d.fecha}','${x.conf_no}','CENA',this.checked,'cna')"
+                 style="width:20px;height:20px;cursor:pointer;"
+                 title="Ya vino a cenar"></td>` : ""}
         <td><strong>${x.room_no || '—'}</strong>${etiquetaGrupo(x.conf_no)}</td>
         <td>${x.nombre}${x.grupo ? ' <span class="badge badge-tour">grupo</span>' : ''}</td>
         <td>${x.pax}${marcaNinos(x.ninos)}</td>
@@ -6511,6 +6566,7 @@ function detalleRest(cual) {
     ${esCena ? '<p style="font-size:11px;color:var(--muted);margin-top:8px;">La hora de cada mesa la registra el salonero en la mañana. Las habitaciones marcadas <span class="badge badge-tour">grupo</span> comparten mesa: al poner la hora a una, se le pone al resto del grupo.</p>' : ""}
     ${lista.some(x => x.grupo) ? '<p style="font-size:11px;color:var(--muted);margin-top:4px;">Lo mismo al cambiar de restaurante: el grupo se mueve entero. No se llevan las habitaciones que ya estén puestas a mano en otro restaurante ni las que tengan cena privada — el cartel las nombra.</p>' : ""}
   </div>`;
+  if (marcaLaCena) cuentaServidos("cna", "ya cenaron");
 }
 
 async function cambiarRestaurante(fecha, confNo, comida, restaurante) {

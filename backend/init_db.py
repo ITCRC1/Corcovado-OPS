@@ -463,6 +463,7 @@ def _migrar(conn):
     _sin_tumbar_el_arranque(conn, _ordenar_los_itinerarios_por_hora)
     _sin_tumbar_el_arranque(conn, _renombrar_los_cuartos_de_guias)
     _sin_tumbar_el_arranque(conn, _agregar_los_bt_a_los_itinerarios)
+    _sin_tumbar_el_arranque(conn, _pasar_los_desayunos_a_la_tabla_de_comidas)
     _purgar_sesiones(conn)
     # Al final, con las tablas ya creadas y los duplicados ya limpios.
     _crear_indices(conn)
@@ -639,6 +640,36 @@ def _agregar_los_bt_a_los_itinerarios(conn):
         conn.commit()
         print(f"Itinerarios con el traslado en bote agregado: {cambiados}")
     return cambiados
+
+
+def _pasar_los_desayunos_a_la_tabla_de_comidas(conn):
+    """Los desayunos ya marcados pasan a la tabla que vale para las dos comidas.
+
+    El control del salón empezó siendo solo del desayuno y tenía su propia tabla. Al
+    pedirse también para las dos cenas, las dos opciones eran una segunda tabla igual
+    —dos esquemas, dos endpoints, dos listas que mantener— o una sola con la comida en la
+    clave. Es lo segundo, y esto trae lo que ya estaba.
+
+    HACE FALTA AUNQUE AQUÍ NO HAYA NADA. La base del lodge lleva días con la versión
+    anterior: lo que el salón marcó esta mañana está en la tabla vieja, y sin esto se
+    quedaría ahí mientras la pantalla enseña la lista en blanco — a media mañana, con el
+    comedor abierto.
+
+    No borra la tabla vieja: si hubiera que volver atrás, lo de antes sigue donde estaba.
+    """
+    tablas = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if not {"desayuno_servido", "comida_servida"} <= tablas:
+        return 0
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO comida_servida
+                  (fecha, conf_no, comida, servido_en, servido_por)
+           SELECT fecha, conf_no, 'DESAYUNO', servido_en, servido_por
+             FROM desayuno_servido""")
+    if cur.rowcount > 0:
+        conn.commit()
+        print(f"Desayunos marcados que pasan al control de comidas: {cur.rowcount}")
+    return cur.rowcount
 
 
 def _sin_tumbar_el_arranque(conn, limpieza):

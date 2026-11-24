@@ -639,6 +639,99 @@ def companeros_de_mesa(conn, fecha, conf_no):
             if r["clave_grupo"] == yo["clave_grupo"] and r["conf_no"] != conf_no]
 
 
+# ---------------------------------------------------------------------------
+# El control del salón: quién ya vino a comer
+# ---------------------------------------------------------------------------
+
+# Las comidas que el salón marca. El desayuno fue la primera; la cena la pidió después el
+# lodge: «para los botones de cenas de ambos restaurantes colocquemos la función de los
+# check al igual que en los total de desayunos, para llevar el control de quién ya vino a
+# cenar y las reservas faltantes».
+#
+# ALMUERZO no está porque nadie lo ha pedido, no porque no quepa: agregarlo aquí lo
+# habilita entero —tabla, endpoint y lista— sin tocar nada más.
+COMIDAS_CON_CONTROL = ("DESAYUNO", "CENA")
+
+
+def _comida_valida(comida):
+    """Normaliza el nombre de la comida, o lanza ValueError.
+
+    Se comprueba y no se confía: una comida escrita de otra forma —«cena», «Cena»,
+    «CENA2»— guardaría una marca que después ninguna lista lee, y el salón vería la
+    casilla destildarse sola sin ningún error de por medio.
+    """
+    limpia = str(comida or "").strip().upper()
+    if limpia not in COMIDAS_CON_CONTROL:
+        raise ValueError(
+            f"«{comida}» no es una comida con control. Son: "
+            + ", ".join(COMIDAS_CON_CONTROL))
+    return limpia
+
+
+def servidos_del_dia(conn, fecha, comida):
+    """{conf_no} de las reservas que ya vinieron a esa comida ese día.
+
+    EN UNA SOLA FUNCIÓN para las dos comidas y para las tres listas que la miran —los
+    desayunos, la cena de Terra Kitchen y la del Bar el Bosque—, por la misma razón de
+    siempre en este sistema: con una consulta copiada en cada sitio, el día que una
+    aprendiera algo las otras se quedarían atrás y la misma habitación saldría servida en
+    una pantalla y pendiente en otra.
+    """
+    import sqlite3 as _sq
+    try:
+        return {r[0] for r in conn.execute(
+            "SELECT conf_no FROM comida_servida WHERE fecha = ? AND comida = ?",
+            (_iso(fecha), _comida_valida(comida)))}
+    except _sq.OperationalError:
+        # Una base que todavía no migró no puede dejar sin lista al salón.
+        return set()
+
+
+def marcar_servido(conn, fecha, conf_no, comida, servido, usuario=None):
+    """Marca (o desmarca) que una reserva ya vino a esa comida. Devuelve los conf_no
+    que quedan marcados para esa comida ese día.
+
+    SE PUEDE DESMARCAR. Un check es un gesto de una sola pulsación que se hace de pie en
+    la puerta del comedor con el salón lleno, y se pone en la fila de al lado sin querer;
+    si no se pudiera quitar, la única salida sería dejar el error puesto y dejar de
+    confiar en la lista entera.
+
+    Destildar BORRA la fila: ver el comentario de la tabla en schema.sql.
+    """
+    comida = _comida_valida(comida)
+    fecha = _iso(fecha)
+    conf_no = str(conf_no)
+    if servido:
+        conn.execute(
+            """INSERT INTO comida_servida (fecha, conf_no, comida, servido_en, servido_por)
+               VALUES (?,?,?,datetime('now'),?)
+               ON CONFLICT(fecha, conf_no, comida) DO UPDATE SET
+                 servido_en = excluded.servido_en, servido_por = excluded.servido_por""",
+            (fecha, conf_no, comida, usuario))
+    else:
+        conn.execute(
+            "DELETE FROM comida_servida WHERE fecha = ? AND conf_no = ? AND comida = ?",
+            (fecha, conf_no, comida))
+    conn.commit()
+    return sorted(servidos_del_dia(conn, fecha, comida))
+
+
+def marcar_quien_ya_vino(conn, fecha, listas, comida):
+    """Le pone `servido` a cada comensal de esas listas. Devuelve cuántos van servidos.
+
+    Las listas son las que devuelve distribuir(): se les añade la marca EN EL SERVIDOR y
+    no en la pantalla, para que el número del botón y la casilla de la fila salgan del
+    mismo sitio. Contándolo en dos lados, uno acabaría diciendo otra cosa.
+    """
+    servidos = servidos_del_dia(conn, fecha, comida)
+    cuantos = 0
+    for lista in listas:
+        for x in lista or []:
+            x["servido"] = str(x.get("conf_no")) in servidos
+            cuantos += bool(x["servido"])
+    return cuantos
+
+
 # CUÁNTAS MESAS A LA MISMA HORA EMPIEZAN A APRETAR.
 #
 # Lo pidió el lodge: «al momento de tratar de ingresar la tercera reserva a la misma hora

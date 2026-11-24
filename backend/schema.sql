@@ -745,9 +745,47 @@ CREATE TABLE IF NOT EXISTS restaurante_hora (
     PRIMARY KEY (fecha, conf_no)
 );
 
--- QUIÉN YA DESAYUNÓ. Lo pidió el lodge: «poner una cajita para agregar un check al lado
--- de cada habitación para indicar que esa reserva ya desayunó y el salón lleve un
--- control».
+-- QUIÉN YA VINO A COMER. Lo pidió el lodge primero para el desayuno —«poner una cajita
+-- para agregar un check al lado de cada habitación para indicar que esa reserva ya
+-- desayunó y el salón lleve un control»— y después para las dos cenas: «colocquemos la
+-- función de los check al igual que en los total de desayunos para llevar el control de
+-- quién ya vino a cenar y las reservas faltantes».
+--
+-- UNA SOLA TABLA PARA LAS DOS COMIDAS, con la comida en la clave. La alternativa era una
+-- tabla por comida, y eso son dos esquemas, dos endpoints y dos listas que marcar: el día
+-- que una aprendiera algo —quién lo marcó, deshacer, un tope— la otra se quedaría atrás.
+-- Es el fallo que este sistema ya ha pagado cuatro veces, la última con la casilla NOTAS
+-- escrita en dos sitios que acabaron diciendo cosas distintas.
+--
+-- 'comida' es DESAYUNO o CENA. ALMUERZO cabe sin tocar nada el día que lo pidan.
+--
+-- NO SE GUARDA EL RESTAURANTE. Una habitación cena UNA vez por noche, y dónde le toca ya
+-- lo decide el reparto: guardarlo aquí sería un segundo sitio donde vive la asignación, y
+-- mover una mesa de Terra Kitchen al Bosque dejaría la marca apuntando al sitio viejo.
+--
+-- Es un registro de lo que PASÓ, no una lista de lo que debería pasar: quién come cada
+-- día se calcula de las reservas y no se guarda. Aquí solo se anota la marca, que es lo
+-- único que nadie puede deducir.
+--
+-- POR RESERVA Y NO POR HABITACIÓN, como en todo lo demás de este sistema: el número de
+-- cuarto se reutiliza y el día que cambia de huésped la marca del que se fue se le
+-- quedaría puesta al que llega.
+--
+-- Solo existe la fila de lo marcado. Destildar BORRA la fila en vez de guardar un cero:
+-- «no está marcado» y «nadie lo ha mirado» son lo mismo para el salón.
+CREATE TABLE IF NOT EXISTS comida_servida (
+    fecha TEXT NOT NULL,              -- ISO (2026-11-24), el día de la comida
+    conf_no TEXT NOT NULL,
+    comida TEXT NOT NULL,             -- DESAYUNO / CENA
+    servido_en TEXT DEFAULT (datetime('now')),
+    servido_por TEXT,                 -- quién lo marcó, para poder preguntarle
+    PRIMARY KEY (fecha, conf_no, comida),
+    FOREIGN KEY (conf_no) REFERENCES reserva(conf_no) ON DELETE CASCADE
+);
+
+-- SUSTITUIDA POR comida_servida. Se deja creada para que una base que venía marcando
+-- desayunos con la versión anterior no pierda lo de hoy al arrancar la nueva: la
+-- migración copia sus filas y después nadie vuelve a escribir aquí. Ver init_db.
 --
 -- Es un registro de lo que PASÓ, no una lista de lo que debería pasar: quién desayuna
 -- cada día se calcula de las reservas (sale hoy + está en casa) y no se guarda. Aquí solo

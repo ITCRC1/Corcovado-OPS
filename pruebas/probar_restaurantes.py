@@ -801,10 +801,12 @@ def el_salon_marca_quien_ya_desayuno(c):
     for _ in range(3):
         main.restaurantes_marcar_desayuno({"fecha": hoy, "conf_no": "D0002"}, user=USUARIO)
     conn = comun.conexion()
-    c.igual(conn.execute("SELECT COUNT(*) FROM desayuno_servido").fetchone()[0], 1,
-            "una sola fila por reserva y dia")
-    c.igual(conn.execute("SELECT servido_por FROM desayuno_servido").fetchone()[0],
+    c.igual(conn.execute("SELECT COUNT(*) FROM comida_servida").fetchone()[0], 1,
+            "una sola fila por reserva, dia y comida")
+    c.igual(conn.execute("SELECT servido_por FROM comida_servida").fetchone()[0],
             USUARIO["usuario"], "y queda quien la marco, para poder preguntarle")
+    c.igual(conn.execute("SELECT comida FROM comida_servida").fetchone()[0], "DESAYUNO",
+            "anotada como lo que es: el desayuno")
     conn.close()
 
     # EL CONTROL ES DE CADA DIA. Sin la fecha en la clave, lo marcado el lunes saldria
@@ -821,6 +823,175 @@ def el_salon_marca_quien_ya_desayuno(c):
         c.cierto(False, "una reserva inexistente tenia que dar 404")
     except HTTPException as e:
         c.igual(e.status_code, 404, "una reserva inexistente da 404")
+
+
+def el_salon_marca_quien_ya_vino_a_cenar(c):
+    """LO PIDIO EL LODGE: «para los botones de cenas de ambos restaurantes colocquemos la
+    funcion de los check al igual que en los total de desayunos, para llevar el control de
+    quien ya vino a cenar y las reservas faltantes».
+
+    Es el MISMO control que el del desayuno, con la comida como etiqueta. La alternativa
+    era una segunda tabla y un segundo endpoint iguales, y entonces el dia que uno
+    aprendiera algo el otro se quedaria atras: es el fallo que este sistema ya ha pagado
+    cuatro veces, la ultima con la casilla NOTAS escrita en dos sitios.
+    """
+    conn = comun.base_limpia()
+    conn.close()
+    _dia_de_comedor()
+    import main
+    hoy = HOY.isoformat()
+
+    def cena():
+        d = main.restaurantes_dia(fecha=hoy, user=USUARIO)["cena"]
+        return {x["room_no"]: x["servido"]
+                for x in d["terra_kitchen"] + d["bar_el_bosque"] + d["comedor_staff"]}
+
+    arranque = cena()
+    c.cierto(arranque, "hay gente cenando este dia")
+    c.cierto(all(v is False for v in arranque.values()),
+             "la noche empieza en blanco")
+
+    main.restaurantes_marcar_servido(
+        {"fecha": hoy, "conf_no": "D0002", "comida": "CENA", "servido": True},
+        user=USUARIO)
+    c.igual(cena().get("08"), True, "queda marcada la que ya vino a cenar")
+    c.cierto(all(hab == "08" or not v for hab, v in cena().items()),
+             "y solo esa")
+
+    main.restaurantes_marcar_servido(
+        {"fecha": hoy, "conf_no": "D0002", "comida": "CENA", "servido": False},
+        user=USUARIO)
+    c.igual(cena().get("08"), False,
+            "se puede destildar: un check se pone sin querer con el salon lleno")
+
+    # EL DESAYUNO Y LA CENA SON MARCAS DISTINTAS. Con una sola marca por dia, llegar a
+    # desayunar daria la cena por servida y el salon dejaria sin atender a esa mesa.
+    main.restaurantes_marcar_servido(
+        {"fecha": hoy, "conf_no": "D0002", "comida": "DESAYUNO", "servido": True},
+        user=USUARIO)
+    c.igual(cena().get("08"), False, "haber desayunado NO marca la cena")
+    desayunos = {x["room_no"]: x["servido"]
+                 for x in main.restaurantes_dia(fecha=hoy, user=USUARIO)["desayunos"]}
+    c.igual(desayunos.get("08"), True, "y el desayuno si queda marcado")
+
+    conn = comun.conexion()
+    c.igual(sorted(r[0] for r in conn.execute(
+        "SELECT comida FROM comida_servida WHERE conf_no = 'D0002'")),
+        ["DESAYUNO"], "una fila por comida, en la misma tabla")
+    conn.close()
+
+    # EL CONTROL ES DE CADA NOCHE. Sin la fecha en la clave, lo marcado hoy saldria
+    # marcado mañana y el salon serviria mirando una lista que ya estaba llena.
+    manana = (HOY + datetime.timedelta(days=1)).isoformat()
+    main.restaurantes_marcar_servido(
+        {"fecha": hoy, "conf_no": "D0002", "comida": "CENA", "servido": True},
+        user=USUARIO)
+    d_manana = main.restaurantes_dia(fecha=manana, user=USUARIO)["cena"]
+    c.cierto(all(not x["servido"] for x in
+                 d_manana["terra_kitchen"] + d_manana["bar_el_bosque"]),
+             "lo de esta noche no sale marcado mañana")
+
+    # UNA COMIDA QUE NO EXISTE SE RECHAZA, no se guarda en silencio: una marca que
+    # ninguna lista lee se veria destildarse sola, sin ningun error de por medio.
+    from fastapi import HTTPException
+    try:
+        main.restaurantes_marcar_servido(
+            {"fecha": hoy, "conf_no": "D0002", "comida": "MERIENDA"}, user=USUARIO)
+        c.cierto(False, "una comida inventada tenia que dar 400")
+    except HTTPException as e:
+        c.igual(e.status_code, 400, "una comida inventada da 400")
+
+
+def la_direccion_vieja_del_check_sigue_funcionando(c):
+    """La pantalla se guarda en el telefono —hay un service worker— y un aparato con la
+    version anterior en cache seguiria llamando a /api/restaurantes/desayuno. Marcar un
+    desayuno y que no se guarde es justo la forma de fallar que este control existe para
+    evitar: el salon daria la lista por buena."""
+    conn = comun.base_limpia()
+    conn.close()
+    _dia_de_comedor()
+    import main
+    hoy = HOY.isoformat()
+
+    main.restaurantes_marcar_desayuno({"fecha": hoy, "conf_no": "D0002"}, user=USUARIO)
+    lista = main.restaurantes_dia(fecha=hoy, user=USUARIO)["desayunos"]
+    c.igual({x["room_no"]: x["servido"] for x in lista}, {"03": False, "08": True},
+            "la direccion vieja marca el desayuno igual que la nueva")
+
+    conn = comun.conexion()
+    c.igual(conn.execute("SELECT comida FROM comida_servida").fetchone()[0], "DESAYUNO",
+            "y lo guarda en la tabla nueva, no en la vieja")
+    conn.close()
+
+
+def los_desayunos_ya_marcados_no_se_pierden_al_migrar(c):
+    """La base del lodge lleva dias con la version anterior: lo que el salon marco esta
+    mañana esta en la tabla vieja. Sin la migracion se quedaria ahi mientras la pantalla
+    enseña la lista en blanco — a media mañana, con el comedor abierto."""
+    import init_db
+
+    conn = comun.base_limpia()
+    conn.close()
+    _dia_de_comedor()
+    import main
+    hoy = HOY.isoformat()
+
+    conn = comun.conexion()
+    # Como lo habria dejado la version anterior: en desayuno_servido y no en la nueva.
+    conn.execute("DELETE FROM comida_servida")
+    conn.execute(
+        """INSERT INTO desayuno_servido (fecha, conf_no, servido_en, servido_por)
+           VALUES (?,?,datetime('now'),?)""", (hoy, "D0002", "salonero"))
+    conn.commit()
+    c.igual({x["room_no"]: x["servido"]
+             for x in main.desayunos_del_dia(conn, hoy)}.get("08"), False,
+            "sin migrar, la marca vieja no se ve: por eso hace falta")
+
+    c.igual(init_db._pasar_los_desayunos_a_la_tabla_de_comidas(conn), 1,
+            "la migracion trae la marca")
+    c.igual({x["room_no"]: x["servido"]
+             for x in main.desayunos_del_dia(conn, hoy)}.get("08"), True,
+            "y la habitacion vuelve a salir servida")
+    c.igual(conn.execute(
+        "SELECT servido_por FROM comida_servida").fetchone()[0], "salonero",
+        "con quien la marco, que es para lo que se guarda")
+
+    c.igual(init_db._pasar_los_desayunos_a_la_tabla_de_comidas(conn), 0,
+            "correrla otra vez no duplica nada: se ejecuta en cada arranque")
+    conn.close()
+
+
+def el_boton_de_cada_cena_dice_cuantos_ya_vinieron(c):
+    """El pie del boton, para saberlo sin abrir la tarjeta. Es lo que se mira de paso:
+    con cuatro servicios, abrir y cerrar cada uno son cuatro aperturas para una
+    pregunta."""
+    raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+
+    c.cierto("function pieServidos(" in pantalla,
+             "el pie lo escribe UNA funcion para las tres tarjetas")
+    i = pantalla.find("function vistaRestaurantes(")
+    if i < 0:
+        i = pantalla.find("Cena · Terra Kitchen")
+        i = pantalla.rfind("function ", 0, i)
+    vista = pantalla[i:pantalla.find("\nfunction ", i + 1)]
+    for etiqueta, lista in (("Cena · Terra Kitchen", "c.terra_kitchen"),
+                            ("Cena · Bar el Bosque", "c.bar_el_bosque")):
+        j = vista.find(etiqueta)
+        c.cierto(j > 0, f"existe la tarjeta de {etiqueta}")
+        trozo = vista[j:j + 420]
+        c.cierto(f"pieServidos({lista})" in trozo,
+                 f"y dice cuantos ya vinieron ({etiqueta})")
+
+    # LA CASILLA EN LA TABLA, y solo en la cena: el almuerzo no lo pidio nadie.
+    k = pantalla.find("function detalleRest(")
+    fn = pantalla[k:pantalla.find("\nasync function ", k + 1)]
+    c.cierto("const marcaLaCena = esCena && puedeEscribir(\"restaurantes\")" in fn,
+             "la casilla sale en la cena y con permiso de escribir")
+    c.cierto("marcarServido(" in fn and "'CENA'" in fn,
+             "y marca la cena por el camino compartido")
+    c.cierto('id="cna-cuenta"' in fn, "con la cuenta de cuantos faltan")
 
 
 def el_resumen_ya_no_ensena_la_tarjeta_de_desayunos(c):
@@ -841,7 +1012,8 @@ def el_resumen_ya_no_ensena_la_tarjeta_de_desayunos(c):
 
     c.cierto("detalleRest('desayunos')" in pantalla, "la tarjeta esta en Restaurantes")
     c.cierto("function detalleDesayunos(" in pantalla, "con su lista")
-    c.cierto("marcarDesayuno(" in pantalla, "y con la casilla del salon")
+    c.cierto("'DESAYUNO'" in pantalla and "marcarServido(" in pantalla,
+             "y con la casilla del salon")
 
     with open(os.path.join(raiz, "backend", "hoja_dia.py"), encoding="utf-8") as f:
         c.cierto("pax_desayunos" in f.read(),
@@ -1498,6 +1670,10 @@ PRUEBAS = [
     la_pantalla_enseña_el_aviso_del_horario,
     el_desayuno_lo_cuenta_UNA_funcion_para_las_dos_pantallas,
     el_salon_marca_quien_ya_desayuno,
+    el_salon_marca_quien_ya_vino_a_cenar,
+    la_direccion_vieja_del_check_sigue_funcionando,
+    los_desayunos_ya_marcados_no_se_pierden_al_migrar,
+    el_boton_de_cada_cena_dice_cuantos_ya_vinieron,
     el_resumen_ya_no_ensena_la_tarjeta_de_desayunos,
     cada_boton_dice_que_habitaciones_tiene,
     la_alergia_sale_en_restaurantes_y_NO_en_amenidades,
