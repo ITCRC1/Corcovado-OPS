@@ -1027,4 +1027,131 @@ CREATE TABLE IF NOT EXISTS nota_hoja (
     UNIQUE (fecha, destino)
 );
 
+
+-- ===========================================================================
+-- PROVEEDURIA
+-- ===========================================================================
+--
+-- Reemplaza la hoja de calculo del lodge («INVENTARIO CWL», 19 pestañas). De esas 19,
+-- SOLO CUATRO tienen datos: el historial de movimientos, el catalogo de productos, los
+-- proveedores y el plan de cuentas. Las otras quince son vistas calculadas con SUMIFS
+-- sobre el historial -- las nueve «INV_<area>» son literalmente la misma formula con el
+-- departamento cambiado.
+--
+-- Por eso aqui hay CINCO tablas y no quince: el stock no es un dato, es una resta.
+--
+-- Medido sobre la hoja de verdad: 11.506 movimientos del 24/06 al 24/11/2026 en 1.161
+-- ordenes, 1.464 productos y 37 proveedores.
+
+-- A quien se le compra. 'dias_pedido' y 'dias_entrega' son texto libre («Martes y
+-- viernes») porque asi los escribe el lodge y porque de momento solo se leen.
+CREATE TABLE IF NOT EXISTS pv_proveedor (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT NOT NULL UNIQUE,
+    tipo_compra TEXT,
+    contacto TEXT,
+    correo TEXT,
+    nombre_contacto TEXT,
+    condicion TEXT,                   -- Credito / Contado
+    dias_credito INTEGER,
+    dias_pedido TEXT,
+    dias_entrega TEXT,
+    activo INTEGER NOT NULL DEFAULT 1
+);
+
+-- El catalogo. EL CODIGO ES LA LLAVE y por eso es UNIQUE, aunque en la hoja no lo sea:
+-- medido, 94 codigos repetidos de 1.464 filas. Repetido, el stock de ese producto se
+-- suma dos veces y nadie lo nota. La importacion no los inventa ni los funde en
+-- silencio: se quedan fuera y se listan para que proveeduria decida cual vale.
+--
+-- 'valor_unitario' en CENTIMOS, enteros: 395 de los 1.464 productos vienen sin precio, y
+-- con decimales en coma flotante la suma de la inversion de 1.400 productos no cuadra
+-- con la de cada uno. Es lo mismo que ya se hace con los precios de lavanderia.
+CREATE TABLE IF NOT EXISTS pv_producto (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT NOT NULL UNIQUE,
+    descripcion TEXT NOT NULL,
+    unidad TEXT,
+    departamento TEXT,                -- F&B, BAR EL BOSQUE, ROOMS, MANTENIMIENTO...
+    area TEXT,                        -- COCINA, BAR, HABITACIONES... (como lo dice la hoja)
+    valor_unitario INTEGER,           -- centimos; NULL = la hoja no trae precio
+    proveedor_id INTEGER REFERENCES pv_proveedor(id),
+    -- El minimo y el maximo del pedido sugerido. Van por PRODUCTO y no por departamento
+    -- porque es lo que la hoja tiene hoy; si mañana hacen falta por departamento, se
+    -- mueven a su propia tabla sin tocar el resto.
+    minimo REAL,
+    maximo REAL,
+    activo INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_pv_producto_depto ON pv_producto(departamento);
+
+-- El plan de cuentas (USALI): «50000 - Cost of Sale - F&B», «Room - 60000 - Salary».
+-- Se usa en las lineas de una orden de compra, que es donde el lodge lo escribe hoy.
+CREATE TABLE IF NOT EXISTS pv_cuenta (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT NOT NULL UNIQUE,      -- el texto completo, como se elige en la hoja
+    grupo TEXT,                       -- ROOMS, F&B...
+    nombre TEXT,
+    detalle TEXT
+);
+
+-- LA CABECERA DE UN MOVIMIENTO DE PROVEEDURIA: una orden de compra, una orden interna,
+-- un ajuste, una merma o una nota de credito. En la hoja esto no existe como fila: el
+-- numero de orden se repite en cada linea del historial, con su proveedor y su fecha
+-- copiados. Aqui va una vez.
+--
+-- EL ESTADO NO VIVE AQUI, vive en la linea. UNA ORDEN PUEDE LLEGAR A MEDIAS: medido en
+-- la hoja del lodge, 25 ordenes de 1.165 traen lineas en dos estados a la vez
+-- («Pendiente de Ingreso» y «Recibido»), y tocan 218 productos. Es lo normal cuando el
+-- bote trae media orden y el resto queda para el viaje siguiente.
+--
+-- Ponerlo en la cabecera parecia mas ordenado y daba 61 productos con el stock
+-- equivocado contra la propia hoja. Se descubrio comparando producto por producto; un
+-- recuento global lo habria dado por bueno, porque cuadraba el 91%.
+CREATE TABLE IF NOT EXISTS pv_documento (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    numero TEXT NOT NULL,
+    tipo TEXT NOT NULL,               -- ORDEN DE COMPRA / ORDEN INTERNA / AJUSTE INVENTARIO / MERMA / NOTA DE CREDITO
+    fecha TEXT NOT NULL,              -- ISO
+    proveedor_id INTEGER REFERENCES pv_proveedor(id),
+    departamento TEXT,
+    solicitado_por TEXT,
+    factura TEXT,
+    observaciones TEXT,
+    creado_en TEXT DEFAULT (datetime('now')),
+    creado_por TEXT,
+    UNIQUE (tipo, numero)
+);
+CREATE INDEX IF NOT EXISTS idx_pv_documento_fecha ON pv_documento(fecha);
+
+-- LAS LINEAS. Esto es el libro: todo lo demas se deriva de aqui.
+--
+-- 'signo' es +1 (entra) o -1 (sale), y no el texto «INGRESO»/«SALIDA» de la hoja. En la
+-- hoja ese texto viene escrito de dos formas -- «INGRESO» y «Ingreso», 308 filas; «SALIDA»
+-- y «Salida», 73 -- y a Excel le da igual porque SUMIFS ignora mayusculas. Portado tal
+-- cual a SQL, esas 381 filas desapareceran del stock sin dar ningun error. Con un signo
+-- numerico el problema no puede volver.
+--
+-- El DEPARTAMENTO va en la linea y no solo en la cabecera, a proposito: una orden interna
+-- saca de una bodega para un departamento, y el stock de la hoja se calcula por
+-- departamento. Es el dato que decide de que inventario sale.
+CREATE TABLE IF NOT EXISTS pv_movimiento (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    documento_id INTEGER NOT NULL REFERENCES pv_documento(id) ON DELETE CASCADE,
+    codigo TEXT NOT NULL,             -- el del producto; se guarda el texto, no el id
+    descripcion TEXT,                 -- como venia escrito, para los codigos huerfanos
+    cantidad REAL NOT NULL,
+    signo INTEGER NOT NULL,           -- +1 entra, -1 sale
+    -- El ciclo que la hoja ya usa: Solicitado -> Pendiente de Ingreso -> Recibido. Va
+    -- POR LINEA porque una orden llega a medias (ver pv_documento), y porque es lo que
+    -- decide si una entrada cuenta como existencias: lo pedido y no llegado no es
+    -- mercaderia que haya en la bodega.
+    estado TEXT NOT NULL DEFAULT 'Recibido',
+    departamento TEXT,
+    valor_unitario INTEGER,           -- centimos AL MOMENTO de la compra, si se sabe
+    cuenta_id INTEGER REFERENCES pv_cuenta(id)
+);
+CREATE INDEX IF NOT EXISTS idx_pv_movimiento_codigo ON pv_movimiento(codigo);
+CREATE INDEX IF NOT EXISTS idx_pv_movimiento_doc ON pv_movimiento(documento_id);
+
 CREATE INDEX IF NOT EXISTS idx_nota_hoja_fecha ON nota_hoja (fecha);

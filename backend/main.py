@@ -1250,6 +1250,76 @@ def buscar_reservas(q: str = "", limite: int = MAXIMO_DE_LA_BUSQUEDA,
     return filas
 
 
+# ---------------------------------------------------------------------------
+# Proveeduría
+# ---------------------------------------------------------------------------
+
+@app.get("/api/proveeduria")
+def proveeduria_existencias(departamento: str = None, q: str = None,
+                            user: dict = Depends(exige("proveeduria"))):
+    """Las existencias: el general, o el inventario de un departamento.
+
+    CADA DEPARTAMENTO LLEVA EL SUYO, además del general — es como trabaja el lodge y como
+    está armada la hoja. La diferencia entre las dos vistas no es un filtro: el general
+    es UNA fila por producto con sus bodegas sumadas, y el de un departamento es lo que
+    hay en esa bodega. Las dos salen de la misma función, ver proveeduria.existencias.
+    """
+    import proveeduria as pv
+    conn = get_connection()
+    try:
+        filas = pv.existencias(conn, departamento=departamento, buscar=q)
+        return {
+            "departamento": departamento or "",
+            "departamentos": pv.departamentos(conn),
+            "filas": filas,
+            "resumen": pv.resumen(filas),
+            # Lo que hay que revisar viaja SIEMPRE con las existencias y no en su propia
+            # llamada: son cifras que están mal y la pantalla que las enseña tiene que
+            # poder decirlo en el mismo sitio donde las enseña.
+            "revisiones": pv.revisiones(conn),
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/proveeduria/importar")
+async def proveeduria_importar(file: UploadFile = File(...),
+                               user: dict = Depends(exige("proveeduria",
+                                                          escribir=True))):
+    """Carga la hoja de proveeduría del lodge («INVENTARIO CWL.xlsx»).
+
+    ES UN BOTÓN QUE ALGUIEN APRIETA, no algo que corre solo, y reemplaza lo que hubiera.
+    Mientras la hoja siga siendo la fuente, importarla dos veces tiene que dar el mismo
+    inventario y no el doble. El día que proveeduría empiece a registrar DESDE aquí, esto
+    deja de usarse — y por eso no está automatizado.
+    """
+    import proveeduria_excel as pvx
+    datos_crudos = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp.write(datos_crudos)
+        ruta = tmp.name
+    try:
+        datos = pvx.leer(ruta)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No se pudo leer el archivo ({type(e).__name__}). "
+                   "Tiene que ser el .xlsx de la hoja de proveeduría.")
+    finally:
+        os.unlink(ruta)
+
+    conn = get_connection()
+    try:
+        cuenta = pvx.cargar(conn, datos, usuario=user.get("usuario"))
+    finally:
+        conn.close()
+    # Los rechazos se devuelven, no se cuentan y ya: una fila que se cae en silencio es
+    # stock que falta en la pantalla sin que nada lo explique.
+    return {"status": "ok", **cuenta, "detalle_rechazos": datos["rechazos"][:200]}
+
+
 @app.get("/api/entradas-sinac")
 def entradas_sinac(desde: str = None, hasta: str = None, user: dict = Depends(exige("sinac"))):
     conn = get_connection()

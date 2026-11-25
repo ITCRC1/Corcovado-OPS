@@ -694,6 +694,10 @@
            error: abre la pantalla equivocada. Como los botones sin permiso se ocultan,
            quien lava ve solo el suyo y el orden no le afecta. -->
       <button data-icono="🧺" onclick="irAPantalla(14)"><span class="largo">Housekeeping</span><span class="corto">Lavandería</span></button>
+      <!-- Proveeduría: el inventario. También al final, por lo mismo. Y mientras se
+           construye no le aparece a nadie: su permiso no se reparte solo, se enciende
+           usuario por usuario desde Usuarios (ver auth.NO_AUTOMATICAS). -->
+      <button data-icono="📦" onclick="irAPantalla(15)"><span class="largo">Proveeduría</span><span class="corto">Bodega</span></button>
       <!-- Pasaportes NO tiene botón aquí: no es una pantalla. Las fotos se toman desde
            la columna de Reservas y se enseñan desde un botón de la Agenda de tours, que
            son los dos sitios donde la gente ya está trabajando. 'pasaportes' existe solo
@@ -766,9 +770,11 @@ for (const p in DEFECTOS_FILTRO) FILTROS[p] = DEFECTOS_FILTRO[p]();
 // Nombre del filtro de cada botón del menú, en el mismo orden que los botones y que
 // cargadoresPantalla(). Las pantallas sin fechas (Importar, Usuarios, Catálogo) no
 // tienen filtro que reiniciar.
+// Proveeduría va con null: el inventario es el de HOY y no se mira por fecha — lo que
+// se pregunta es «cuánto hay», no «cuánto había el martes».
 const FILTRO_DE_PANTALLA = ["dashboard", "reservas", "agenda", "transporte", "sinac",
                             "amenidades", "restaurantes", "spa", "analitica", "resumen",
-                            null, null, null, "publicacion", "housekeeping"];
+                            null, null, null, "publicacion", "housekeeping", null];
 
 async function irAPantalla(indice) {
   // Los grupos se releen al cambiar de pantalla: una importación de PDF nueva puede
@@ -1412,7 +1418,7 @@ function cargadoresPantalla() {
   return [loadDashboard, loadReservas, loadAgenda, loadTransporte, loadEntradas,
           loadAmenidades, loadRestaurantes, loadSpa, loadAnalitica, loadResumenOperacion,
           loadImportarPDF, loadUsuarios, loadCatalogoAdmin, loadPublicacion,
-          loadHousekeeping];
+          loadHousekeeping, loadProveeduria];
 }
 
 function iniciarRefrescoAutomatico() {
@@ -1590,7 +1596,7 @@ let PERMISOS = {};
 // comprobación que lo verifica (scratchpad/ver_pantallas.cjs).
 const CLAVE_PANTALLA = ["dashboard","reservas","agenda","transporte","sinac","amenidades",
   "restaurantes","spa","analitica","resumen","importar","usuarios","catalogo","publicacion",
-  "housekeeping"];
+  "housekeeping","proveeduria"];
 // 'pasaportes' NO está en esta lista a propósito: es un permiso, no una pantalla, y no
 // tiene botón de menú. Se comprueba con puedeVer("pasaportes"), que lee los permisos que
 // manda el servidor y no depende de esta lista.
@@ -7114,6 +7120,247 @@ async function notaPedidoHk(id) {
   if (!res.ok) return avisar("No se pudo guardar la nota", true);
   avisar("Nota guardada");
   loadHousekeeping();
+}
+
+// =====================================================================
+// PROVEEDURÍA — el inventario
+// =====================================================================
+//
+// Reemplaza una hoja de cálculo de 19 pestañas. De esas 19, solo cuatro tienen datos; las
+// otras quince son la misma suma con el departamento cambiado. Por eso esto es UNA
+// pantalla con un selector de bodega y no quince pantallas.
+//
+// CADA DEPARTAMENTO LLEVA SU INVENTARIO APARTE, además del general — lo recordó el lodge.
+// Y el general no es la lista de los demás pegada: es una fila por producto con sus
+// bodegas sumadas. La diferencia la hace el servidor, no esta pantalla.
+
+window._pvData = null;
+window._pvDepto = "";
+window._pvBusca = "";
+
+async function loadProveeduria(departamento, buscar) {
+  setActive(15);
+  if (departamento !== undefined) window._pvDepto = departamento || "";
+  if (buscar !== undefined) window._pvBusca = buscar || "";
+  const p = new URLSearchParams();
+  if (window._pvDepto) p.set("departamento", window._pvDepto);
+  if (window._pvBusca) p.set("q", window._pvBusca);
+  const res = await fetchAuth(`${API}/api/proveeduria?${p}`);
+  if (!res.ok) { avisar("No se pudo cargar Proveeduría", true); return; }
+  window._pvData = await res.json();
+  pintarProveeduria();
+}
+
+// Los colones se escriben con PUNTO de millares: «₡24.386.482». Con la configuración
+// regional de Costa Rica el navegador los separa con espacios finos —«24 386 482»— y la
+// cifra principal de la pantalla se lee como tres números sueltos.
+function pvColones(centimos) {
+  if (centimos === null || centimos === undefined) return "—";
+  return "₡" + Math.round(centimos / 100).toLocaleString("es-ES");
+}
+
+function pintarProveeduria() {
+  const d = window._pvData || {};
+  const r = d.resumen || {};
+  const rev = d.revisiones || {};
+  const puede = puedeEscribir("proveeduria");
+  const esGeneral = !window._pvDepto;
+  const pendientes = (rev.negativos || []).length + (rev.huerfanos || []).length;
+
+  document.getElementById("app").innerHTML = `
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <p class="title">Proveeduría · ${esGeneral ? "Inventario general"
+            : escaparHTML(window._pvDepto)}</p>
+          <p class="subtitle">${esGeneral
+            ? "Una fila por producto, con todas las bodegas sumadas."
+            : "Lo que hay en esta bodega. El general suma todas."}</p>
+        </div>
+        <div class="filterbar">
+          <input type="search" id="pv-busca" placeholder="Buscar producto o código"
+                 value="${escaparAtributo(window._pvBusca)}"
+                 onchange="loadProveeduria(undefined, this.value)"
+                 style="min-width:210px;">
+          ${puede ? `<button class="btn" onclick="abrirImportarProveeduria()">
+            Importar la hoja</button>` : ""}
+        </div>
+      </div>
+
+      <!-- LAS BODEGAS. Cada departamento lleva la suya; el general las suma. -->
+      <div class="filterbar" style="margin-bottom:12px;flex-wrap:wrap;">
+        <button class="btn${esGeneral ? " btn-primary" : ""}"
+                onclick="loadProveeduria('')">General</button>
+        ${(d.departamentos || []).map(x => `
+          <button class="btn${window._pvDepto === x ? " btn-primary" : ""}"
+                  onclick="loadProveeduria('${escaparAtributo(x)}')">${escaparHTML(x)}</button>`).join("")}
+      </div>
+
+      <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(145px,1fr));">
+        <div class="stat"><p class="stat-label">Productos</p>
+          <p class="stat-value">${r.productos || 0}</p>
+          <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">
+            ${r.con_stock || 0} con existencia · ${r.en_cero || 0} en cero</p></div>
+        <div class="stat"><p class="stat-label">Inversión en bodega</p>
+          <p class="stat-value">${pvColones(r.inversion)}</p>
+          <!-- SE DICE CUÁNTOS QUEDAN FUERA. 395 productos de la hoja no traen precio: sin
+               esta línea, la cifra se leería como el total y está incompleta. -->
+          <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">
+            ${r.sin_precio ? `no incluye ${r.sin_precio} sin precio` : "todos con precio"}</p></div>
+        <!-- LO QUE HAY QUE REVISAR ES DE TODO EL INVENTARIO, no de la bodega elegida: un
+             codigo sin ficha o sin precio es del catalogo, y un stock negativo hay que
+             verlo aunque se este mirando otra bodega. Se DICE, porque si no, con
+             RESTAURANTE seleccionado esta cifra se lee como de RESTAURANTE. -->
+        <div class="stat"><p class="stat-label">Por revisar</p>
+          <p class="stat-value">${pendientes}</p>
+          <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">
+            ${(rev.negativos || []).length} en negativo ·
+            ${(rev.huerfanos || []).length} sin ficha${esGeneral ? ""
+              : "<br>en todo el inventario, no solo aquí"}</p></div>
+      </div>
+
+      ${pendientes ? `
+        <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);
+                    padding:10px 13px;margin:14px 0 0;font-size:12.5px;">
+          <strong>Hay ${pendientes} cosa(s) en todo el inventario que la hoja trae mal y
+          nadie puede arreglar solo.</strong> Se enseñan en vez de esconderse: con ellas
+          dentro, las cifras de arriba no son exactas.
+          <button class="btn" style="margin-left:6px;padding:2px 9px;font-size:11.5px;"
+                  onclick="verRevisionesProveeduria()">Ver cuáles</button>
+        </div>` : ""}
+      <div id="pv-revisiones"></div>
+
+      ${!(d.filas || []).length ? `
+        <p class="empty" style="padding:26px 0;">Todavía no hay inventario cargado.
+          <small>${puede ? "Usá «Importar la hoja» para traer el Excel de proveeduría."
+            : "Pedile a proveeduría que importe la hoja."}</small></p>` : `
+      <table style="margin-top:14px;">
+        <tr><th>Código</th><th>Producto</th>${esGeneral ? "<th>Depto.</th>" : ""}
+          <th>Unidad</th><th>Entró</th><th>Salió</th><th>Stock</th>
+          <th>Valor unit.</th><th>Inversión</th></tr>
+        ${d.filas.map(f => `<tr${f.stock < 0 ? ' class="fila-sale"' : ""}>
+          <td style="font-family:monospace;font-size:11.5px;">${escaparHTML(f.codigo)}</td>
+          <td>${escaparHTML(f.descripcion || "")}
+            ${f.huerfano ? '<span class="badge" style="background:#E5A93B;color:#3A2B08;">sin ficha</span>' : ""}
+            ${f.en_camino ? `<span class="badge badge-tour">${f.en_camino} en camino</span>` : ""}</td>
+          ${esGeneral ? `<td style="font-size:11.5px;color:var(--muted);">${escaparHTML(f.departamento || "—")}</td>` : ""}
+          <td style="font-size:11.5px;color:var(--muted);">${escaparHTML(f.unidad || "")}</td>
+          <td>${f.entradas || 0}</td>
+          <td>${f.salidas || 0}</td>
+          <td><strong>${f.stock}</strong></td>
+          <td>${pvColones(f.valor_unitario)}</td>
+          <td>${f.inversion === null
+                ? '<span style="font-size:11px;color:var(--muted);" title="El producto no tiene precio en la hoja">sin precio</span>'
+                : pvColones(f.inversion)}</td>
+        </tr>`).join("")}
+      </table>`}
+    </div>`;
+}
+
+// Lo que hay que revisar, con nombre y apellido: son decisiones de proveeduría, no cosas
+// que el sistema pueda resolver solo. Un stock negativo es mercadería que salió sin haber
+// entrado; un código sin ficha es un movimiento de algo que no está en el catálogo.
+function verRevisionesProveeduria() {
+  const rev = (window._pvData || {}).revisiones || {};
+  const caja = document.getElementById("pv-revisiones");
+  if (!caja) return;
+  if (caja.innerHTML) { caja.innerHTML = ""; return; }
+  const tabla = (titulo, explica, filas, cols) => !filas.length ? "" : `
+    <p style="font-weight:600;font-size:13px;margin:14px 0 2px;">${titulo} · ${filas.length}</p>
+    <p style="font-size:11.5px;color:var(--muted);margin:0 0 6px;">${explica}</p>
+    <table><tr>${cols.map(c => `<th>${c[0]}</th>`).join("")}</tr>
+      ${filas.slice(0, 60).map(f => `<tr>${cols.map(c =>
+        `<td>${escaparHTML(String(f[c[1]] ?? ""))}</td>`).join("")}</tr>`).join("")}
+    </table>
+    ${filas.length > 60 ? `<p style="font-size:11px;color:var(--muted);">… y ${filas.length - 60} más.</p>` : ""}`;
+
+  caja.innerHTML = `<div class="detail-panel" style="margin-top:12px;">
+    ${tabla("Stock negativo", "Salió más de lo que entró. O falta registrar una compra, "
+            + "o la salida está mal. Es por bodega: el general puede taparlo.",
+            rev.negativos || [],
+            [["Código", "codigo"], ["Producto", "descripcion"],
+             ["Bodega", "departamento"], ["Stock", "stock"]])}
+    ${tabla("Movimientos sin ficha de producto",
+            "Se movió un código que no está en la pestaña Productos. Hay que darle ficha "
+            + "o corregir el código del movimiento.",
+            rev.huerfanos || [],
+            [["Código", "codigo"], ["Como se escribió", "descripcion"],
+             ["Movimientos", "movimientos"]])}
+    ${tabla("Productos sin precio",
+            "No entran en la inversión: sin precio no se inventa uno, porque la cifra "
+            + "saldría más baja de lo que es y nadie vería que falta un dato.",
+            rev.sin_precio || [],
+            [["Código", "codigo"], ["Producto", "descripcion"],
+             ["Depto.", "departamento"]])}
+  </div>`;
+}
+
+function abrirImportarProveeduria() {
+  const fondo = document.createElement("div");
+  fondo.className = "modal-fondo"; fondo.id = "modal-pv-importar";
+  fondo.onclick = (e) => { if (e.target === fondo) fondo.remove(); };
+  fondo.innerHTML = `<div class="modal-caja" style="max-width:520px;">
+    <div class="modal-encabezado">
+      <div><p class="title">Importar la hoja de proveeduría</p>
+        <p class="subtitle">El archivo .xlsx, tal como se descarga de Google Sheets.</p></div>
+      <button class="btn" onclick="document.getElementById('modal-pv-importar').remove()">Cerrar</button>
+    </div>
+    <div class="modal-cuerpo">
+      <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
+        Se leen cuatro pestañas: <strong>Productos</strong>, <strong>Provedores</strong>,
+        <strong>Detalle de cuentas</strong> y <strong>HISTORIAL GENERAL</strong>. Las
+        demás son sumas que esta pantalla vuelve a hacer sola.</p>
+      <p style="font-size:12.5px;color:var(--warn-text);background:var(--warn-bg);
+                border-radius:8px;padding:9px 11px;margin:0 0 12px;">
+        <strong>Reemplaza todo el inventario cargado.</strong> La hoja manda mientras
+        siga siendo la fuente: importarla dos veces tiene que dar lo mismo, no el doble.</p>
+      <input type="file" id="pv-archivo" accept=".xlsx"
+             style="width:100%;font:inherit;font-size:13px;">
+      <p style="margin-top:12px;">
+        <button class="btn btn-primary" onclick="importarProveeduria()">Importar</button>
+      </p>
+      <div id="pv-resultado"></div>
+    </div></div>`;
+  document.body.appendChild(fondo);
+}
+
+async function importarProveeduria() {
+  const campo = document.getElementById("pv-archivo");
+  const caja = document.getElementById("pv-resultado");
+  if (!campo || !campo.files.length) { avisar("Elegí el archivo .xlsx", true); return; }
+  caja.innerHTML = `<p class="empty" style="padding:12px;">Leyendo la hoja…</p>`;
+  const cuerpo = new FormData();
+  cuerpo.append("file", campo.files[0]);
+  const res = await fetchAuth(`${API}/api/proveeduria/importar`,
+                              { method: "POST", body: cuerpo });
+  if (!res.ok) {
+    caja.innerHTML = "";
+    avisar((await res.json().catch(() => ({}))).detail || "No se pudo importar", true);
+    return;
+  }
+  const d = await res.json();
+  // LO RECHAZADO SE ENSEÑA. Un recuento de «11.506 movimientos» sin decir que 40 se
+  // quedaron fuera es una pantalla que da el trabajo por terminado cuando no lo está.
+  caja.innerHTML = `
+    <div class="detail-panel" style="margin-top:12px;">
+      <p style="font-weight:600;margin:0 0 6px;">Importado</p>
+      <p style="font-size:12.5px;margin:0 0 8px;">
+        ${d.productos} productos · ${d.proveedores} proveedores · ${d.cuentas} cuentas ·
+        ${d.documentos} documentos con ${d.movimientos} movimientos.</p>
+      ${d.rechazos ? `
+        <p style="font-size:12.5px;color:var(--warn-text);margin:0 0 6px;">
+          <strong>${d.rechazos} fila(s) no se pudieron leer</strong> y quedaron fuera:</p>
+        <table><tr><th>Pestaña</th><th>Fila</th><th>Motivo</th><th>Decía</th></tr>
+          ${(d.detalle_rechazos || []).slice(0, 40).map(x => `<tr>
+            <td style="font-size:11.5px;">${escaparHTML(x.hoja)}</td>
+            <td>${x.fila}</td>
+            <td style="font-size:11.5px;">${escaparHTML(x.motivo)}</td>
+            <td style="font-size:11.5px;color:var(--muted);">${escaparHTML(x.texto)}</td>
+          </tr>`).join("")}
+        </table>` : `<p style="font-size:12.5px;color:var(--ok-text);margin:0;">
+          Se leyó todo: ninguna fila quedó fuera.</p>`}
+    </div>`;
+  loadProveeduria();
 }
 
 // ---------- El enlace que se le manda al huésped ----------

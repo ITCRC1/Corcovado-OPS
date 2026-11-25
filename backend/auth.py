@@ -225,6 +225,9 @@ PANTALLAS = [
     # el índice de todas las de abajo, y una desalineación ahí no da error, abre la
     # pantalla equivocada.
     ("housekeeping", "Housekeeping"),
+    # Proveeduría: el inventario. Va al final por lo mismo que Housekeeping —el menú
+    # resuelve la pantalla por POSICIÓN— y además porque se está construyendo: ver POR_ROL.
+    ("proveeduria", "Proveeduría"),
     # PASAPORTES NO ES UNA PANTALLA: es solo un permiso, y por eso va al final de todo.
     #
     # Las fotos se toman desde la columna de Reservas y se enseñan desde un botón de la
@@ -241,11 +244,25 @@ PANTALLAS = [
     ("pasaportes", "Pasaportes (permiso para ver y tomar las fotos)"),
 ]
 
+# PANTALLAS QUE NO SE REPARTEN A NADIE. Un permiso nuevo metido en PANTALLAS le aparece
+# de golpe a todo el que no tenga permisos propios, porque los roles de abajo dan «todo».
+#
+# Proveeduría se está construyendo: lo pidió el lodge «como un botón aparte, que mientras
+# trabajemos en él la app pueda seguir funcionando de forma normal». Que le salga a los
+# catorce usuarios una pantalla a medio hacer es justo lo contrario de eso. Se enciende
+# usuario por usuario desde la pantalla de Usuarios, que es un acto consciente de alguien.
+#
+# OJO: esto NO es lo mismo que el trato de 'pasaportes'. Ahí lo que no se reparte es a
+# QUIEN NO LE TOCA —el staff de campo y el perfil de solo lectura— pero recepción y
+# gerencia sí lo tienen, porque son quienes toman la foto. Meter 'pasaportes' aquí se la
+# quitaba a recepción, y lo cazó probar_pasaportes.
+NO_AUTOMATICAS = ("proveeduria",)
+
 # Permisos que se aplican cuando el usuario no tiene una configuración propia.
 # Así los usuarios creados antes de esta función siguen funcionando igual.
 POR_ROL = {
-    "recepcion": {k: "escribir" for k, _ in PANTALLAS},
-    "gerencia": {k: "escribir" for k, _ in PANTALLAS},
+    "recepcion": {k: "escribir" for k, _ in PANTALLAS if k not in NO_AUTOMATICAS},
+    "gerencia": {k: "escribir" for k, _ in PANTALLAS if k not in NO_AUTOMATICAS},
     # El staff de campo mira la operación, pero Usuarios no: ahí se ven las cuentas del
     # sistema y quién puede hacer qué. Antes lo tenía en "ver" junto con todo lo demás,
     # y como los permisos no se aplicaban nadie lo notó.
@@ -254,13 +271,18 @@ POR_ROL = {
     # reparten solos. Un guía los recibe al asignarle el perfil «Guías» o marcándoselo a
     # mano, que es un acto consciente de alguien. La consecuencia es que, al desplegar
     # esto, los guías que ya existen NO lo tendrán hasta que se les dé — y es lo correcto.
-    "staff": {k: "ver" for k, _ in PANTALLAS if k not in ("usuarios", "pasaportes")},
+    "staff": {k: "ver" for k, _ in PANTALLAS
+              if k not in ("usuarios", "pasaportes") + NO_AUTOMATICAS},
 }
 
 # Perfiles sugeridos para crear usuarios rápido
 PERFILES = {
-    "Recepción": {k: "escribir" for k, _ in PANTALLAS},
-    "Gerencia": {k: "escribir" for k, _ in PANTALLAS},
+    "Recepción": {k: "escribir" for k, _ in PANTALLAS if k not in NO_AUTOMATICAS},
+    "Gerencia": {k: "escribir" for k, _ in PANTALLAS if k not in NO_AUTOMATICAS},
+    # Proveeduría tiene su propio perfil: quien lleva la bodega necesita su pantalla y
+    # poco más. Reservas y Resumen porque el pedido se decide mirando cuánta gente viene.
+    "Proveeduría": {"proveeduria": "escribir", "resumen": "ver", "reservas": "ver",
+                    "restaurantes": "ver"},
     "Restaurante": {"restaurantes": "escribir", "resumen": "ver", "reservas": "ver"},
     "Cocina": {"restaurantes": "ver", "amenidades": "escribir", "resumen": "ver"},
     # El guía lleva 'pasaportes' en escribir porque es quien TOMA la foto al recibir al
@@ -294,7 +316,8 @@ PERFILES = {
                      "reservas": "ver", "resumen": "ver"},
     # Sin 'pasaportes', por lo mismo que el staff: un perfil de conveniencia no reparte
     # documentos de identidad sin que nadie lo haya decidido.
-    "Solo lectura": {k: "ver" for k, _ in PANTALLAS if k != "pasaportes"},
+    "Solo lectura": {k: "ver" for k, _ in PANTALLAS
+                     if k not in ("pasaportes",) + NO_AUTOMATICAS},
 }
 
 
