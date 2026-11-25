@@ -449,6 +449,9 @@ def _migrar(conn):
     # le agregan a todos las pantallas nuevas. En ese orden, un usuario recién creado no
     # pasa dos veces por lo mismo.
     _pantallas_nuevas_a_las_rejillas(conn)
+    # Después de las pantallas nuevas: esta reparte UNA que aquella deja fuera a
+    # propósito, y solo a quien administra. Ver la función.
+    _sin_tumbar_el_arranque(conn, _proveeduria_para_quien_administra)
     _sembrar_perfiles(conn)
     # Después de sembrar los perfiles: estos dos CORRIGEN el de «Guías», que ya existe
     # en la base y que la siembra no toca. En este orden: primero se completa lo que le
@@ -1096,6 +1099,61 @@ def _pantallas_nuevas_a_las_rejillas(conn):
               f"{', '.join(nuevas)}")
     _meta(conn, "pantallas_conocidas", _json.dumps(actuales))
     return tocados
+
+
+def _proveeduria_para_quien_administra(conn):
+    """Le enciende Proveeduría a quien administra el sistema, y a nadie más.
+
+    LO PIDIÓ EL LODGE: «haz que el botón solo me aparezca a mí como admin y luego otorgo
+    permisos al resto». La pantalla se está construyendo, así que no puede salirle de
+    golpe a los catorce usuarios; pero tampoco tiene sentido que haya que ir a Usuarios a
+    dárselo a uno mismo antes de poder abrirla por primera vez.
+
+    QUIÉN ES «ADMIN» NO SE ADIVINA POR EL ROL. Se mira quién puede administrar usuarios,
+    que es la definición que ya usa el resto del sistema —ver `_sin_dejar_sin_
+    administrador`— y la única que no depende de cómo se llame el rol en cada instalación.
+    Medido en la base del lodge: de los tres usuarios, dos tienen 'usuarios: escribir' y
+    el staff de campo no.
+
+    POR QUÉ NO BASTABA CON PONERLA EN POR_ROL. Los tres usuarios de la base YA tienen su
+    rejilla de permisos guardada, y entonces POR_ROL no se mira: `_pantallas_nuevas_a_las_
+    rejillas` solo reparte lo que el rol daría, y Proveeduría está fuera de POR_ROL a
+    propósito (ver auth.NO_AUTOMATICAS). Sin esto, el botón no le aparecería a nadie.
+
+    CORRE UNA SOLA VEZ, y por eso lleva su marca en sistema_meta. Sin ella, el día que
+    alguien le QUITE Proveeduría a un administrador, el siguiente arranque se la
+    devolvería — que es exactamente el fallo que `pantallas_conocidas` existe para evitar
+    en la función de al lado.
+    """
+    import json as _json
+    if not {r[1] for r in conn.execute("PRAGMA table_info(sistema_meta)")}:
+        return 0
+    if _meta(conn, "proveeduria_repartida"):
+        return 0
+
+    tocados = []
+    for u in conn.execute(
+            "SELECT id, username, permisos_json FROM usuario "
+            "WHERE permisos_json IS NOT NULL AND permisos_json != ''").fetchall():
+        try:
+            rejilla = _json.loads(dict(u)["permisos_json"])
+        except ValueError:
+            continue
+        if not isinstance(rejilla, dict):
+            continue
+        # Solo quien administra, y solo si no lo tiene ya decidido de alguna forma.
+        if rejilla.get("usuarios") != "escribir" or "proveeduria" in rejilla:
+            continue
+        rejilla["proveeduria"] = "escribir"
+        conn.execute("UPDATE usuario SET permisos_json = ? WHERE id = ?",
+                     (_json.dumps(rejilla, ensure_ascii=False), u["id"]))
+        tocados.append(dict(u)["username"])
+
+    _meta(conn, "proveeduria_repartida", "1")
+    if tocados:
+        conn.commit()
+        print("Proveeduría encendida para quien administra: " + ", ".join(tocados))
+    return len(tocados)
 
 
 def _el_guia_no_reparte_la_operacion(conn):

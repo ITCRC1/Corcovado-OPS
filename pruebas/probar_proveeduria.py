@@ -497,6 +497,73 @@ def el_boton_no_le_aparece_a_nadie_hasta_que_se_enciende(c):
             {"proveeduria": "escribir"}, "el permiso se puede guardar")
 
 
+def al_arrancar_se_le_enciende_SOLO_a_quien_administra(c):
+    """LO PIDIO EL LODGE: «haz que el boton solo me aparezca a mi como admin y luego
+    otorgo permisos al resto».
+
+    QUIEN ES ADMIN NO SE ADIVINA POR EL ROL: se mira quien puede administrar usuarios,
+    que es la definicion que ya usa el resto del sistema y la unica que no depende de
+    como se llame el rol en cada instalacion.
+
+    Y NO BASTABA CON PONERLO EN POR_ROL: los usuarios de la base YA tienen su rejilla
+    guardada, asi que POR_ROL no se mira. Sin esta migracion el boton no le aparece a
+    nadie — que es justo lo contrario de lo que se pidio."""
+    import json
+
+    import init_db
+
+    import contextlib
+    import io
+
+    import auth
+
+    conn = comun.base_limpia()
+    try:
+        # Las cuentas iniciales NO las crea init_db: las siembra auth al arrancar el
+        # servidor. En una base recien hecha no hay ninguna, asi que se siembran aqui.
+        with contextlib.redirect_stdout(io.StringIO()):
+            auth.seed_default_users(conn)
+        # Se parte de las cuentas que el arranque ya creo y se les deja la rejilla como
+        # la tiene el lodge: 'usuarios: escribir' solo para quien administra. No se
+        # insertan usuarios a mano, para no depender de las columnas de esa tabla.
+        def rejilla_de(nombre, administra):
+            r = {"dashboard": "ver"}
+            if administra:
+                r["usuarios"] = "escribir"
+            conn.execute("UPDATE usuario SET permisos_json = ? WHERE username = ?",
+                         (json.dumps(r), nombre))
+
+        rejilla_de("gerencia", True)
+        rejilla_de("recepcion", True)
+        rejilla_de("staff", False)
+        conn.execute("DELETE FROM sistema_meta WHERE clave = 'proveeduria_repartida'")
+        conn.commit()
+
+        c.igual(init_db._proveeduria_para_quien_administra(conn), 2,
+                "se le enciende a los dos que administran")
+
+        def tiene(nombre):
+            fila = conn.execute(
+                "SELECT permisos_json FROM usuario WHERE username = ?",
+                (nombre,)).fetchone()
+            return json.loads(fila[0]).get("proveeduria")
+
+        c.igual(tiene("gerencia"), "escribir", "quien administra la ve, y puede escribir")
+        c.igual(tiene("recepcion"), "escribir", "el otro administrador tambien")
+        c.igual(tiene("staff"), None, "quien NO administra no la recibe")
+
+        # CORRE UNA SOLA VEZ. Sin la marca, el dia que alguien le QUITE Proveeduria a un
+        # administrador el siguiente arranque se la devolveria.
+        rejilla_de("recepcion", True)
+        conn.commit()
+        c.igual(init_db._proveeduria_para_quien_administra(conn), 0,
+                "la segunda vez no toca a nadie")
+        c.igual(tiene("recepcion"), None,
+                "lo que un administrador quita NO vuelve en el siguiente arranque")
+    finally:
+        conn.close()
+
+
 def la_pantalla_pide_las_dos_vistas_y_enseña_lo_que_hay_que_revisar(c):
     """La pantalla es UNA con selector de bodega, no quince. Y las revisiones viajan con
     las existencias: son cifras que estan mal, y quien las enseña tiene que poder decirlo
@@ -550,6 +617,7 @@ PRUEBAS = [
     ninguna_fila_se_pierde_en_silencio,
     el_documento_se_guarda_una_vez_y_no_por_linea,
     el_boton_no_le_aparece_a_nadie_hasta_que_se_enciende,
+    al_arrancar_se_le_enciende_SOLO_a_quien_administra,
     la_pantalla_pide_las_dos_vistas_y_enseña_lo_que_hay_que_revisar,
 ]
 
