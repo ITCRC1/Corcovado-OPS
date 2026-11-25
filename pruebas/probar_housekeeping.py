@@ -487,6 +487,79 @@ def cambiar_el_enlace_general_invalida_el_anterior(c):
     c.igual(hk.token_general_valido(nuevo), True, "el nuevo abre")
 
 
+def el_enlace_trae_su_QR_y_los_dos_apuntan_al_mismo_sitio(c):
+    """LO PIDIO EL LODGE: «generar un codigo QR para el link de lavanderia, y evitar
+    enviar el link y que accedan por QR, mas facil».
+
+    EL QR Y EL TEXTO SALEN DE LA MISMA RESPUESTA, a proposito. Con dos llamadas, cambiar
+    el enlace podria dejar el QR dibujando el anterior — y un QR que abre un enlace muerto
+    es PEOR que no tenerlo, porque parece que funciona: el huesped escanea, no le abre
+    nada, y lo que piensa es que el hotel no sirve, no que el codigo esta viejo.
+
+    Se comprueba QUE LLEVA DENTRO y no que el campo exista: un QR vacio, o con otra
+    direccion, pasaria cualquier prueba que solo mire la clave.
+    """
+    limpiar()
+    import base64
+
+    import main
+    import qr_huesped as qrh
+
+    usuario = {"id": 1, "usuario": "pruebas", "username": "pruebas", "rol": "ADMIN",
+               "permisos_json": None}
+    d = main.enlaces_hk(user=usuario)
+    c.cierto(d.get("ruta_general"), "sigue dando el enlace en texto")
+    c.cierto((d.get("qr") or "").startswith("data:image/png;base64,"),
+             "y ahora tambien el QR, listo para pintarlo y descargarlo")
+
+    crudo = base64.b64decode(d["qr"].split(",", 1)[1])
+    c.cierto(len(crudo) > 200, "no es una imagen vacia")
+    c.igual(crudo[:8], b"\x89PNG\r\n\x1a\n", "es un PNG de verdad")
+
+    # Se vuelve a generar desde la URL que la respuesta dice, y tiene que salir el MISMO
+    # PNG: si el QR apuntara a otra cosa —a la raiz del sitio, a un enlace viejo— los
+    # bytes no coincidirian.
+    esperado = qrh.generar_qr_png((d["base_url"] or "") + d["ruta_general"], 8).getvalue()
+    c.igual(crudo, esperado, "el QR lleva dentro exactamente el enlace que se enseña")
+
+    # Y AL CAMBIAR EL ENLACE, CAMBIA EL QR. Es la mitad que importa: el boton de «cambiar
+    # el enlace» existe para cuando se filtro fuera del hotel, y un QR impreso que
+    # siguiera abriendo el viejo dejaria la puerta abierta igual.
+    hk.rehacer_token_general()
+    d2 = main.enlaces_hk(user=usuario)
+    c.cierto(d2["ruta_general"] != d["ruta_general"], "el enlace cambio")
+    c.cierto(d2["qr"] != d["qr"], "y el QR con el")
+
+
+def la_pantalla_ensena_el_QR_y_lo_deja_imprimir(c):
+    """De poco sirve el QR en la respuesta si la pantalla no lo pinta. Y lo que el lodge
+    va a hacer con el es IMPRIMIRLO para dejarlo en el cuarto: un PNG a tamaño de
+    pantalla pegado en un papel se escanea mal, asi que la hoja fija el tamaño en
+    milimetros."""
+    raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+
+    i = pantalla.find("async function mostrarEnlacesHk(")
+    c.cierto(i > 0, "existe la ventana del enlace de lavanderia")
+    fn = pantalla[i:pantalla.find("\n// ----------", i + 1)]
+    # Se comprueba el CONDICIONAL y no solo que el texto «${d.qr}» aparezca: apagando el
+    # bloque entero —poniendo false en la condicion— la cadena seguiria estando en el
+    # archivo y la prueba pasaria con el QR sin dibujarse. Lo destapo deshaciendo el
+    # cambio a mano: nadie caia.
+    c.cierto("${d.qr ?" in fn, "el bloque del QR se dibuja cuando el servidor lo manda")
+    c.cierto('src="${d.qr}"' in fn, "y pinta la imagen que manda el servidor")
+    c.cierto('download="QR_lavanderia.png"' in fn, "y lo deja descargar")
+    c.cierto("imprimirQrHk()" in fn, "y lo deja imprimir")
+
+    j = pantalla.find("function imprimirQrHk(")
+    c.cierto(j > 0, "existe la hoja para imprimir")
+    hoja = pantalla[j:pantalla.find("\nasync function ", j + 1)]
+    c.cierto("mm" in hoja and "width: 70mm" in hoja,
+             "con el tamaño del codigo fijado en milimetros, no en pixeles")
+    c.cierto("v.print()" in hoja, "y manda a imprimir")
+
+
 def la_habitacion_escrita_se_empareja_con_la_reserva(c):
     """El huesped escribe '07' o '7' y en el PMS puede estar de las dos formas."""
     limpiar()
@@ -587,6 +660,8 @@ PRUEBAS = [
     el_enlace_general_es_uno_solo_y_estable,
     guardar_el_horario_no_borra_el_enlace_general,
     cambiar_el_enlace_general_invalida_el_anterior,
+    el_enlace_trae_su_QR_y_los_dos_apuntan_al_mismo_sitio,
+    la_pantalla_ensena_el_QR_y_lo_deja_imprimir,
     la_habitacion_escrita_se_empareja_con_la_reserva,
     la_habitacion_no_devuelve_a_quien_ya_se_fue,
     una_habitacion_que_no_existe_no_pierde_el_pedido,

@@ -1196,6 +1196,60 @@ def reservas(desde: str = None, hasta: str = None, user: dict = Depends(exige("r
     return result
 
 
+MAXIMO_DE_LA_BUSQUEDA = 20
+
+
+@app.get("/api/reservas/buscar")
+def buscar_reservas(q: str = "", limite: int = MAXIMO_DE_LA_BUSQUEDA,
+                    user: dict = Depends(exige("reservas"))):
+    """Busca reservas vivas por habitación, nombre o número, sin mirar la fecha.
+
+    PARA QUÉ. La pantalla de Reservas lista lo que llega en el rango elegido, y ligar
+    habitaciones solo ofrece eso. Lo reportó el lodge: «solo me permite ligar las
+    habitaciones de ingreso del mismo día, pero necesito ligar habitaciones con distintos
+    días de entrada —ayer ingresó una y hoy otra pero son familia y van ligadas—; el tema
+    es que tampoco quiero que aparezcan todas las reservas existentes porque se vería muy
+    cargado».
+
+    O sea: ni la lista del día sola, ni la lista entera. Se busca, y aparecen las pocas
+    que contestan a lo que se escribió.
+
+    SE PIDEN AL MENOS DOS LETRAS. Con una, «1» devuelve media base y volvemos a la lista
+    cargada que el lodge no quiere; además escribir una letra es algo que pasa de camino a
+    escribir dos, así que buscar con una sola es trabajo que nadie pidió.
+
+    EL ORDEN ES POR CERCANÍA EN EL TIEMPO, no alfabético ni por número de cuarto: el caso
+    real es «ayer y hoy», así que lo que se busca casi siempre está a un par de días. Una
+    lista ordenada por habitación pondría la reserva de marzo antes que la de ayer.
+
+    LAS CANCELADAS NO SALEN, como en el resto de la pantalla: ligar a una reserva caída
+    es crear un grupo con un fantasma dentro.
+    """
+    texto = " ".join(str(q or "").split())
+    if len(texto) < 2:
+        return []
+    limite = max(1, min(int(limite or MAXIMO_DE_LA_BUSQUEDA), 50))
+    como = f"%{texto}%"
+    # La fecha guardada es 'DD-MM-YY'; aquí se arma la ISO para poder restarla de hoy.
+    iso_llegada = ("('20'||substr(r.arr_date,7,2)||'-'||substr(r.arr_date,4,2)"
+                   "||'-'||substr(r.arr_date,1,2))")
+    conn = get_connection()
+    try:
+        filas = [dict(x) for x in conn.execute(
+            f"""SELECT r.conf_no, r.room_no, r.nombre_principal, r.arr_date, r.dep_date,
+                       r.res_status, r.grupo_id
+                  FROM reserva r
+                 WHERE r.res_status != 'CANCELADA'
+                   AND (r.room_no = ? OR r.room_no LIKE ?
+                        OR r.nombre_principal LIKE ? OR r.conf_no LIKE ?)
+                 ORDER BY ABS(julianday({iso_llegada}) - julianday('now')), r.room_no
+                 LIMIT ?""",
+            (texto, f"{texto}%", como, f"{texto}%", limite))]
+    finally:
+        conn.close()
+    return filas
+
+
 @app.get("/api/entradas-sinac")
 def entradas_sinac(desde: str = None, hasta: str = None, user: dict = Depends(exige("sinac"))):
     conn = get_connection()
@@ -4030,6 +4084,26 @@ def borrar_pedido_hk(pedido_id: int,
 
 # ---------- Los enlaces que se le mandan al huésped ----------
 
+def _qr_data_uri(url, tamano=8):
+    """El QR de una dirección, listo para meter en un <img>. '' si no se pudo.
+
+    Se dibuja con el MISMO generador que los QR de las habitaciones (qr_huesped), para
+    que un código impreso del lodge se lea igual que otro: mismo nivel de corrección de
+    errores y mismo margen. Un QR con menos margen del que toca lo lee un teléfono nuevo
+    y no lo lee uno viejo, y eso no se descubre hasta que el huésped está delante.
+
+    Si algo falla devuelve cadena vacía en vez de romper: la pantalla sigue enseñando el
+    enlace en texto, que es con lo que se venía trabajando.
+    """
+    import base64
+    try:
+        import qr_huesped as _qrh
+        return ("data:image/png;base64,"
+                + base64.b64encode(_qrh.generar_qr_png(url, tamano).getvalue()).decode())
+    except Exception:
+        return ""
+
+
 @app.get("/api/housekeeping/enlaces")
 def enlaces_hk(desde: str = None, hasta: str = None,
                user: dict = Depends(exige("housekeeping", escribir=True))):
@@ -4044,12 +4118,25 @@ def enlaces_hk(desde: str = None, hasta: str = None,
     404 sería romperle el pedido a alguien a mitad de su estadía, sin ganar nada.
     """
     base = (pub.cargar_config().get("base_url") or "").rstrip("/")
+    ruta = f"/housekeeping/general/{_hk.token_general()}"
     # 'huespedes' se deja vacía y no se quita: la pantalla vieja que siga cargada en
     # algún navegador la recorre, y sin la clave reventaría en vez de mostrar la lista
     # vacía. Cuesta una línea y evita un error en la pantalla de alguien.
-    return {"base_url": base,
-            "ruta_general": f"/housekeeping/general/{_hk.token_general()}",
-            "huespedes": []}
+    return {"base_url": base, "ruta_general": ruta, "huespedes": [],
+            # EL QR DEL MISMO ENLACE. Lo pidió el lodge: «generar un código QR para el
+            # link de lavandería, y evitar enviar el link y que accedan por QR, más
+            # fácil». Un enlace de 60 caracteres con un código dentro no se teclea: o se
+            # manda por WhatsApp o se escanea, y escanear es lo que se puede imprimir y
+            # dejar en el cuarto.
+            #
+            # VA EN LA MISMA RESPUESTA y no en su propia dirección, a propósito: así el
+            # QR y el texto del enlace salen SIEMPRE del mismo sitio. Con dos llamadas,
+            # cambiar el enlace podría dejar el QR dibujando el anterior —y un QR que
+            # abre un enlace muerto es peor que no tenerlo, porque parece que funciona.
+            #
+            # Como data URI para que la pantalla lo pinte y lo deje descargar sin una
+            # segunda petición con su token. Son ~1 KB.
+            "qr": _qr_data_uri(base + ruta) if (base or ruta) else ""}
 
 
 # ---------- La página del huésped ----------

@@ -2217,12 +2217,30 @@ async function responderSugerencia(id, esGrupo) {
   loadReservas();
 }
 
+// LIGAR HABITACIONES QUE NO LLEGAN EL MISMO DÍA.
+//
+// La ventana ofrecía solo lo que está en pantalla, que es lo que llega en el rango
+// elegido. Lo reportó el lodge: «solo me permite ligar las habitaciones de ingreso del
+// mismo día, pero necesito ligar habitaciones con distintos días de entrada —ayer ingresó
+// una y hoy otra pero son familia—; el tema es que tampoco quiero que aparezcan todas las
+// reservas existentes porque se vería muy cargado».
+//
+// Así que ni una cosa ni la otra: la lista del día sigue igual —es el caso de siempre— y
+// se agrega un buscador para traer la que falte. Lo que se marca queda arriba, en su
+// propia tira, porque si no una búsqueda nueva se llevaría por delante lo ya elegido sin
+// decir nada, que es la forma de perder trabajo que no deja rastro.
+window._ligarElegidas = {};
+window._ligarResultados = [];
+window._ligarBuscado = "";
+
 function abrirLigarHabitaciones() {
-  const rows = window._reservasEnPantalla || [];
+  window._ligarElegidas = {};
+  window._ligarResultados = [];
+  window._ligarBuscado = "";
   const fondo = document.createElement("div");
   fondo.className = "modal-fondo"; fondo.id = "modal-ligar";
   fondo.onclick = (e) => { if (e.target === fondo) fondo.remove(); };
-  fondo.innerHTML = `<div class="modal-caja" style="max-width:520px;">
+  fondo.innerHTML = `<div class="modal-caja" style="max-width:560px;">
     <div class="modal-encabezado">
       <div>
         <p class="title">Ligar habitaciones</p>
@@ -2231,25 +2249,122 @@ function abrirLigarHabitaciones() {
       <button class="btn" onclick="document.getElementById('modal-ligar').remove()">Cerrar</button>
     </div>
     <div class="modal-cuerpo">
-      ${rows.length ? rows.map(r => `
-        <label style="display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;cursor:pointer;">
-          <input type="checkbox" class="ligar-hab" value="${r.conf_no}">
-          <span><strong>Hab. ${r.room_no || "—"}</strong> ${r.nombre_principal}
-            <span style="color:var(--muted);font-size:11.5px;">${r.arr_date} – ${r.dep_date}</span></span>
-        </label>`).join("")
-      : `<p class="empty">No hay reservas en pantalla. Cambiá las fechas y volvé a intentar.</p>`}
-      <p style="margin-top:12px;">
-        <button class="btn" onclick="ligarHabitaciones()">Ligar como grupo</button>
-      </p>
-      <p style="font-size:11.5px;color:var(--muted);margin-top:6px;">
-        Solo aparecen las reservas del rango que estás viendo. Si falta una, ampliá las fechas.
+      <div id="ligar-elegidas"></div>
+
+      <label style="display:block;font-size:12px;font-weight:600;margin:0 0 4px;">
+        Buscar otra habitación
+        <span style="font-weight:400;color:var(--muted);">— por número de cuarto, nombre o
+          número de reserva. Sirve para las que entraron otro día.</span></label>
+      <input id="ligar-busca" type="search" autocomplete="off"
+             placeholder="Ej.: 10, o Kamprath"
+             oninput="buscarParaLigar(this.value)"
+             style="width:100%;font:inherit;font-size:13px;padding:7px 10px;
+                    border:1px solid var(--border);border-radius:8px;
+                    background:var(--card);color:inherit;">
+      <div id="ligar-resultados"></div>
+
+      <p style="font-size:12px;font-weight:600;margin:14px 0 2px;">En pantalla
+        <span style="font-weight:400;color:var(--muted);">— las del rango que estás
+          viendo</span></p>
+      <div id="ligar-en-pantalla"></div>
+
+      <p style="margin-top:14px;">
+        <button class="btn btn-primary" onclick="ligarHabitaciones()">Ligar como grupo</button>
       </p>
     </div></div>`;
   document.body.appendChild(fondo);
+  pintarListaDeLigar();
+}
+
+// Una fila de la ventana. Es la misma para las tres listas —lo elegido, lo buscado y lo
+// que está en pantalla— para que marcar en una y en otra no pueda comportarse distinto.
+// La reserva viaja en un atributo 'data-' y no dentro del onclick: un apellido con
+// comilla —O'Brien— cerraría el atributo antes de tiempo y lo que siguiera se leería
+// como HTML. Es el mismo motivo por el que el texto de las notas de la hoja se pone
+// desde JavaScript.
+function filaDeLigar(r) {
+  return `<label style="display:flex;align-items:center;gap:8px;padding:5px 0;
+                        font-size:13px;cursor:pointer;">
+      <input type="checkbox" ${window._ligarElegidas[r.conf_no] ? "checked" : ""}
+             data-r="${escaparAtributo(JSON.stringify(r))}"
+             onchange="elegirParaLigar(this.dataset.r, this.checked)">
+      <span><strong>Hab. ${escaparHTML(r.room_no || "—")}</strong>
+        ${escaparHTML(r.nombre_principal || "")}
+        <span style="color:var(--muted);font-size:11.5px;">${escaparHTML(r.arr_date || "")} – ${escaparHTML(r.dep_date || "")}</span>
+        ${r.grupo_id ? '<span class="badge badge-tour">ya en un grupo</span>' : ""}</span>
+    </label>`;
+}
+
+function elegirParaLigar(json, marcada) {
+  let r;
+  try { r = JSON.parse(json); } catch (e) { return; }
+  if (marcada) window._ligarElegidas[r.conf_no] = r;
+  else delete window._ligarElegidas[r.conf_no];
+  pintarListaDeLigar();
+}
+
+// Las TRES listas se dibujan juntas y desde el mismo estado. Dibujando solo la que se
+// tocó, una habitación elegida seguiría apareciendo también en los resultados de la
+// búsqueda, y la misma habitación dos veces en la misma ventana se lee como dos reservas.
+function pintarListaDeLigar() {
+  const elegidas = Object.values(window._ligarElegidas || {});
+  const yaEsta = r => !window._ligarElegidas[r.conf_no];
+
+  const caja = document.getElementById("ligar-elegidas");
+  if (caja) {
+    caja.innerHTML = elegidas.length ? `
+      <div style="background:#F7FAF5;border:1px solid var(--border);border-radius:8px;
+                  padding:8px 11px;margin-bottom:12px;">
+        <p style="font-size:12px;font-weight:600;margin:0 0 2px;">
+          Elegidas · ${elegidas.length}
+          <span style="font-weight:400;color:var(--muted);">— se quedan aquí aunque
+            cambies la búsqueda</span></p>
+        ${elegidas.map(filaDeLigar).join("")}
+      </div>` : "";
+  }
+
+  const res = document.getElementById("ligar-resultados");
+  if (res) {
+    const rows = (window._ligarResultados || []).filter(yaEsta);
+    const q = (window._ligarBuscado || "").trim();
+    res.innerHTML = !q ? ""
+      : rows.length ? `
+        <div style="border:1px solid var(--border);border-radius:8px;padding:6px 11px;
+                    margin-top:6px;max-height:210px;overflow:auto;">
+          ${rows.map(filaDeLigar).join("")}
+        </div>`
+      : `<p class="empty" style="padding:8px 0;">Ninguna reserva viva con «${escaparHTML(q)}».</p>`;
+  }
+
+  const lista = document.getElementById("ligar-en-pantalla");
+  if (lista) {
+    const enPantalla = (window._reservasEnPantalla || []).filter(yaEsta);
+    lista.innerHTML = enPantalla.length ? enPantalla.map(filaDeLigar).join("")
+      : `<p class="empty" style="padding:8px 0;">Nada más en el rango que estás viendo.
+         <small>Buscá arriba para traer una de otra fecha.</small></p>`;
+  }
+}
+
+let _ligarTimer = null;
+
+async function buscarParaLigar(texto) {
+  clearTimeout(_ligarTimer);
+  const q = (texto || "").trim();
+  window._ligarBuscado = q;
+  if (q.length < 2) { window._ligarResultados = []; pintarListaDeLigar(); return; }
+  // Se espera a que deje de teclear: sin esto son cinco consultas para escribir «Kampr»,
+  // y la del principio puede contestar la última y dejar en pantalla el resultado viejo.
+  _ligarTimer = setTimeout(async () => {
+    const res = await fetchAuth(`${API}/api/reservas/buscar?q=${encodeURIComponent(q)}`);
+    // Si mientras tanto se escribió otra cosa, esta respuesta ya no es la que se pidió.
+    if (window._ligarBuscado !== q) return;
+    window._ligarResultados = res.ok ? await res.json() : [];
+    pintarListaDeLigar();
+  }, 220);
 }
 
 async function ligarHabitaciones() {
-  const conf_nos = [...document.querySelectorAll(".ligar-hab:checked")].map(x => x.value);
+  const conf_nos = Object.keys(window._ligarElegidas || {});
   if (conf_nos.length < 2) { avisar("Marcá al menos dos habitaciones", true); return; }
   const res = await fetchAuth(`${API}/api/grupos/ligar`, {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -7021,6 +7136,28 @@ async function mostrarEnlacesHk() {
                    padding:11px 13px;font-size:13px;word-break:break-all;">${escaparHTML(window._hkGeneral)}</code>
       <button class="btn btn-primary" onclick="copiarEnlaceGeneralHk()">Copiar</button>
     </div>
+
+    <!-- EL MISMO ENLACE, PARA ESCANEAR. Lo pidió el lodge: «generar un código QR para el
+         link de lavandería, y evitar enviar el link y que accedan por QR, más fácil».
+         Se imprime y se deja en el cuarto, y entonces no hay que mandarle nada a nadie. -->
+    ${d.qr ? `
+      <div style="display:flex;gap:14px;align-items:center;background:#F7FAF5;
+                  border:1px solid var(--border);border-radius:10px;padding:12px 14px;
+                  margin-bottom:12px;">
+        <img src="${d.qr}" alt="Código QR del enlace de lavandería" width="132" height="132"
+             style="display:block;border-radius:6px;background:#fff;">
+        <div style="flex:1;min-width:0;">
+          <p style="font-weight:600;font-size:13.5px;margin:0 0 3px;color:var(--forest-dark);">
+            Para escanear</p>
+          <p style="font-size:12px;color:var(--muted);margin:0 0 9px;">
+            Imprimilo y dejalo en el cuarto o en recepción: el huésped lo escanea con la
+            cámara y le abre la misma página. Así no hay que mandarle el enlace a nadie.</p>
+          <a class="btn" download="QR_lavanderia.png" href="${d.qr}">Descargar PNG</a>
+          <button class="btn" onclick="imprimirQrHk()">Imprimir</button>
+        </div>
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin:-4px 0 12px;">
+        Si cambiás el enlace, este código deja de servir y hay que volver a imprimirlo.</p>` : ""}
     ${!d.base_url ? `<div style="background:var(--warn-bg);color:var(--warn-text);border-radius:8px;padding:11px 13px;margin-bottom:12px;font-size:12.5px;">
       Todavía no hay una dirección de internet configurada, así que el enlace se armó con
       <code>${escaparHTML(location.origin)}</code>. Si el huésped lo va a abrir desde fuera
@@ -7046,6 +7183,38 @@ async function mostrarEnlacesHk() {
       Genera uno nuevo y el anterior deja de abrir. Sirve si el enlace se filtró fuera
       del hotel. Hay que volver a mandarlo.</p>
   `);
+}
+
+// Una hoja con el QR grande y una línea que diga qué es, lista para pegar en el cuarto.
+//
+// Se arma aquí y no en el servidor porque es papel, no un dato: lo que hay que acertar es
+// el tamaño impreso —un QR de menos de 3 cm no lo lee un teléfono a un palmo— y eso se
+// fija en centímetros en el propio estilo de impresión.
+function imprimirQrHk() {
+  const qr = document.querySelector('img[alt="Código QR del enlace de lavandería"]');
+  if (!qr) return;
+  const v = window.open("", "_blank");
+  if (!v) { avisar("El navegador bloqueó la ventana de impresión", true); return; }
+  v.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8">
+    <title>QR lavanderia</title>
+    <style>
+      @page { margin: 18mm; }
+      body { font-family: Georgia, "Times New Roman", serif; text-align: center;
+             color: #1F3A2E; }
+      h1 { font-size: 22pt; margin: 0 0 2mm; letter-spacing: .5px; }
+      p  { font-size: 12pt; margin: 0 0 8mm; color: #4A5A50; }
+      img { width: 70mm; height: 70mm; }
+      small { display: block; margin-top: 7mm; font-size: 9pt; color: #7A8A80;
+              word-break: break-all; }
+    </style></head><body>
+    <h1>Laundry · Lavandería</h1>
+    <p>Scan this code to send your laundry<br>Escaneá este código para mandar tu ropa</p>
+    <img src="${qr.getAttribute("src")}" alt="QR">
+    <small>${escaparHTML(window._hkGeneral || "")}</small>
+    </body></html>`);
+  v.document.close();
+  // Se espera a que la imagen esté dibujada: imprimir antes saca la hoja con el hueco.
+  v.onload = () => { v.focus(); v.print(); };
 }
 
 // ---------- El horario y las prendas ----------

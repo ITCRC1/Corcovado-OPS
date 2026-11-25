@@ -502,6 +502,141 @@ def reservas_muestra_los_ingresos_de_la_fecha_elegida(c):
              "y el dia vacio se explica en vez de salir en blanco")
 
 
+def se_pueden_ligar_habitaciones_que_entran_dias_distintos(c):
+    """LO REPORTO EL LODGE: «al momento de ligar habitaciones solo me permite ligar las
+    habitaciones de ingreso del mismo dia, pero necesito ligar habitaciones con distintos
+    dias de entrada —ayer ingreso una y hoy otra pero son familia y van ligadas—; el tema
+    es que tampoco quiero que aparezcan todas las reservas existentes porque se veria muy
+    cargado».
+
+    Y era justo eso: la ventana ofrecia `_reservasEnPantalla`, que es lo que llega en el
+    rango elegido. El servidor nunca puso esa regla —`/api/grupos/ligar` liga lo que le
+    manden— asi que la familia de ayer y hoy no era imposible: era INALCANZABLE desde la
+    pantalla, que es la clase de limite que no deja ningun error que mirar.
+
+    LA BUSQUEDA ES EL TERMINO MEDIO que pidio el lodge: ni la lista del dia sola, ni la
+    lista entera.
+    """
+    import datetime
+
+    from comun import cargar, reserva
+
+    # La base se crea ANTES de importar main: al importarse abre una conexion de arranque,
+    # y esta suite es casi toda de leer texto, asi que puede ser la primera que la toca.
+    comun.base_limpia().close()
+    import main
+
+    hoy = datetime.date.today()
+    ayer = hoy - datetime.timedelta(days=1)
+
+    def dd(d):
+        return f"{d.day:02d}-{d.month:02d}-{str(d.year)[2:]}"
+
+    lejos = hoy + datetime.timedelta(days=120)
+    cargar([
+        reserva("L0001", "10", dd(ayer), dd(hoy + datetime.timedelta(days=3)),
+                estado="EN CASA"),
+        reserva("L0002", "11", dd(hoy), dd(hoy + datetime.timedelta(days=3))),
+        # La lejana lleva el numero de cuarto MAS BAJO a proposito: asi ordenar por
+        # habitacion y ordenar por cercania dan resultados distintos, y la prueba
+        # distingue cual de los dos hace el servidor. Con el numero mas alto las dos
+        # formas coincidian y quitar el orden por cercania no hacia caer nada.
+        reserva("L0003", "01", dd(lejos), dd(lejos + datetime.timedelta(days=2))),
+        reserva("L0004", "13", dd(hoy), dd(hoy + datetime.timedelta(days=2)),
+                estado="CANCELADA"),
+    ])
+    usuario = {"id": 1, "usuario": "pruebas", "username": "pruebas", "rol": "ADMIN",
+               "permisos_json": None}
+
+    # La de AYER se encuentra por su numero de cuarto, que es el gesto natural.
+    c.igual([x["conf_no"] for x in main.buscar_reservas(q="10", user=usuario)],
+            ["L0001"], "la habitacion que entro ayer se encuentra buscandola")
+    c.igual([x["conf_no"] for x in main.buscar_reservas(q="Huesped L0002", user=usuario)],
+            ["L0002"], "y tambien por nombre")
+
+    # CON UNA SOLA LETRA NO SE BUSCA: «1» devolveria media base y volvemos a la lista
+    # cargada que el lodge no quiere.
+    c.igual(main.buscar_reservas(q="1", user=usuario), [],
+            "con una sola letra no se busca")
+    c.igual(main.buscar_reservas(q="  ", user=usuario), [],
+            "ni con el campo vacio")
+
+    # LAS CANCELADAS NO. Ligar a una reserva caida es crear un grupo con un fantasma.
+    c.cierto(all(x["conf_no"] != "L0004"
+                 for x in main.buscar_reservas(q="13", user=usuario)),
+             "una cancelada no sale en la busqueda")
+
+    # EL ORDEN ES POR CERCANIA EN EL TIEMPO: el caso real es «ayer y hoy», asi que lo de
+    # dentro de cuatro meses no puede ir delante. Se comprueba eso y no el orden exacto
+    # entre ayer y hoy: eso depende de la hora a la que se corra, y fijarlo haria una
+    # prueba que falla sola a media tarde.
+    orden = [x["conf_no"] for x in main.buscar_reservas(q="Huesped", user=usuario)]
+    c.igual(set(orden[:2]), {"L0001", "L0002"},
+            "ayer y hoy van primero, por delante de la de dentro de cuatro meses")
+    c.igual(orden[2], "L0003", "y la lejana al final")
+
+    # Y EL TOPE, para que una busqueda ancha no devuelva la base entera.
+    c.cierto(len(main.buscar_reservas(q="Huesped", limite=2, user=usuario)) <= 2,
+             "la busqueda tiene tope")
+    c.cierto(main.MAXIMO_DE_LA_BUSQUEDA <= 50, "y el de por defecto es corto")
+
+    # DE PUNTA A PUNTA: las dos quedan en el mismo grupo aunque entren dias distintos.
+    main.ligar_habitaciones({"conf_nos": ["L0001", "L0002"]}, user=usuario)
+    conn = comun.conexion()
+    grupos = {r["conf_no"]: r["grupo_id"] for r in conn.execute(
+        "SELECT conf_no, grupo_id FROM reserva WHERE conf_no IN ('L0001','L0002')")}
+    conn.close()
+    c.cierto(grupos.get("L0001") and grupos["L0001"] == grupos["L0002"],
+             "la de ayer y la de hoy quedan en el mismo grupo")
+
+
+def la_ventana_de_ligar_no_lista_toda_la_base(c):
+    """La otra mitad de lo que pidio el lodge: «tampoco quiero que aparezcan todas las
+    reservas existentes porque se veria muy cargado».
+
+    Asi que la ventana arranca con lo de siempre —lo que esta en pantalla— y lo demas solo
+    aparece si alguien lo busca. Y lo que se marca se queda en su propia tira: sin eso,
+    escribir en el buscador redibuja la lista y se lleva por delante lo ya elegido sin
+    decir nada, que es la forma de perder trabajo que no deja rastro."""
+    html = _html()
+    i = html.find("function abrirLigarHabitaciones(")
+    c.cierto(i > 0, "existe la ventana de ligar")
+    fn = _sin_comentarios(html[i:html.find("\nfunction filaDeLigar(", i)])
+    c.cierto("ligar-busca" in fn, "tiene un buscador")
+    c.cierto("buscarParaLigar(" in fn, "que llama a la busqueda")
+    c.cierto("ligar-en-pantalla" in fn, "y sigue enseñando lo que esta en pantalla")
+
+    j = html.find("async function buscarParaLigar(")
+    c.cierto(j > 0, "existe la busqueda")
+    buscar = _sin_comentarios(html[j:html.find("\nasync function ", j + 1)])
+    c.cierto("/api/reservas/buscar" in buscar, "pide al endpoint de busqueda")
+    c.cierto("q.length < 2" in buscar, "y no busca con menos de dos letras")
+    c.cierto("setTimeout" in buscar, "espera a que dejen de teclear")
+    c.cierto("_ligarBuscado !== q" in buscar,
+             "y descarta la respuesta de una busqueda que ya no es la ultima")
+
+    # LO ELEGIDO SOBREVIVE A LA BUSQUEDA. Es lo que hace usable la ventana.
+    k = html.find("function pintarListaDeLigar(")
+    c.cierto(k > 0, "existe el dibujado de las listas")
+    pintar = _sin_comentarios(html[k:html.find("\nlet _ligarTimer", k)])
+    for caja in ("ligar-elegidas", "ligar-resultados", "ligar-en-pantalla"):
+        c.cierto(caja in pintar, f"las tres listas se dibujan juntas ({caja})")
+    c.cierto("_ligarElegidas" in pintar, "desde lo que hay elegido")
+
+    # Y SE MANDA LO ELEGIDO, no lo que quede marcado en la pantalla: tras una busqueda,
+    # las casillas de lo que ya no se enseña no existen.
+    m = html.find("async function ligarHabitaciones(")
+    ligar = _sin_comentarios(html[m:html.find("\nasync function ", m + 1)])
+    c.cierto("Object.keys(window._ligarElegidas" in ligar,
+             "se manda lo elegido, no lo que quede dibujado")
+
+    # El apellido con comilla no puede romper la fila: O'Brien cerraria el atributo.
+    fila = _sin_comentarios(
+        html[html.find("function filaDeLigar("):html.find("function elegirParaLigar(")])
+    c.cierto("escaparAtributo(JSON.stringify(r))" in fila,
+             "la reserva viaja escapada en un atributo")
+
+
 def el_bote_se_elige_en_transporte_y_el_guia_en_la_agenda(c):
     """El reparto que pidio el lodge, y la razon por la que importa.
 
@@ -1369,6 +1504,8 @@ PRUEBAS = [
     la_tarjeta_de_alergias_se_ve_desde_el_boton_de_alergias,
     el_capitan_y_el_ayudante_se_eligen_en_transporte,
     reservas_muestra_los_ingresos_de_la_fecha_elegida,
+    se_pueden_ligar_habitaciones_que_entran_dias_distintos,
+    la_ventana_de_ligar_no_lista_toda_la_base,
 ]
 
 
