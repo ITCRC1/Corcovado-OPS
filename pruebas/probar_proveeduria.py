@@ -22,6 +22,7 @@ Lo que hay que fijar, y por que cada cosa es cara si se rompe:
 """
 import datetime
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -471,6 +472,263 @@ def el_documento_se_guarda_una_vez_y_no_por_linea(c):
     conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Fase 2: registrar salidas, mermas y ajustes
+# ---------------------------------------------------------------------------
+
+def el_restaurante_registra_una_salida_de_bodega(c):
+    """Es lo que se hace a diario, y lo que la hoja hacia escribiendo una fila a mano."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+
+    antes = _stock(pv.existencias(conn, departamento="F&B")).get("ARSU")
+    doc, avisos = pv.registrar(conn, "ORDEN INTERNA", "F&B",
+                               [{"codigo": "ARSU", "cantidad": 4}],
+                               usuario="bodega", observaciones="para el almuerzo")
+    c.igual(avisos, [], "con existencia de sobra no hay nada que avisar")
+    c.igual(doc["tipo"], "ORDEN INTERNA", "queda como orden interna")
+    c.igual(doc["origen"], "APP", "y marcado como registrado aqui")
+    c.igual(doc["creado_por"], "bodega", "con quien lo registro, para poder preguntarle")
+    c.igual(doc["lineas"][0]["signo"], -1, "la linea SALE")
+
+    despues = _stock(pv.existencias(conn, departamento="F&B")).get("ARSU")
+    c.igual(despues, antes - 4, "y el stock baja justo lo que salio")
+    # La OTRA bodega no se toca: se saco de F&B.
+    c.igual(_stock(pv.existencias(conn, departamento="BAR EL BOSQUE")).get("ARSU"), None,
+            "la bodega de al lado no se entera")
+    conn.close()
+
+
+def una_salida_que_deja_la_bodega_en_negativo_avisa_pero_no_bloquea(c):
+    """EN LA HOJA DEL LODGE HAY 53 NEGATIVOS VIVOS. Si esto bloqueara, el primer dia
+    alguien no podria registrar una salida que de verdad ocurrio y volveria al Excel.
+
+    Lo que falta es el ingreso que nadie anoto, y eso se arregla con un ajuste, no
+    impidiendo trabajar. Es la misma regla que el spa y los horarios del restaurante:
+    avisar y dejar decidir."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+
+    doc, avisos = pv.registrar(conn, "ORDEN INTERNA", "F&B",
+                               [{"codigo": "ARSU", "cantidad": 999}], usuario="bodega")
+    c.cierto(doc is not None, "la salida SE REGISTRA igual")
+    c.igual(len(avisos), 1, "y se avisa")
+    c.cierto("queda en" in avisos[0], "diciendo como queda la bodega")
+    c.cierto("ARSU" in avisos[0], "y de que producto habla")
+    c.cierto(_stock(pv.existencias(conn, departamento="F&B"))["ARSU"] < 0,
+             "el negativo queda a la vista, que es el punto")
+    conn.close()
+
+
+def el_ajuste_se_escribe_como_lo_contado_y_no_como_la_diferencia(c):
+    """Quien cuenta la bodega tiene delante doce latas, no «menos tres». Pedirle la resta
+    es pedirle una cuenta que el sistema puede hacer, y una resta mal hecha en un
+    inventario no se descubre hasta el conteo siguiente.
+
+    Es ademas lo que arregla los 53 stocks negativos de la hoja."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+
+    # El chile esta en -2 en BAR: se cuenta y hay 6.
+    c.igual(_stock(pv.existencias(conn, departamento="BAR EL BOSQUE"))["111180"], -2,
+            "parte del negativo que trae la hoja")
+    doc, _ = pv.registrar(conn, "AJUSTE INVENTARIO", "BAR EL BOSQUE",
+                          [{"codigo": "111180", "contado": 6}], usuario="bodega")
+    c.igual(_stock(pv.existencias(conn, departamento="BAR EL BOSQUE"))["111180"], 6,
+            "despues del conteo, la bodega dice lo que se conto")
+    c.igual(doc["lineas"][0]["cantidad"], 8, "se anoto la diferencia (de -2 a 6 son 8)")
+    c.igual(doc["lineas"][0]["signo"], 1, "como una entrada")
+
+    # Y al reves: se cuenta menos de lo que decia.
+    pv.registrar(conn, "AJUSTE INVENTARIO", "BAR EL BOSQUE",
+                 [{"codigo": "111180", "contado": 2}], usuario="bodega")
+    c.igual(_stock(pv.existencias(conn, departamento="BAR EL BOSQUE"))["111180"], 2,
+            "tambien baja")
+
+    # LO QUE COINCIDE NO SE ANOTA: un documento vacio ensuciaria el historial y haria
+    # parecer que hubo movimiento donde no lo hubo.
+    doc, avisos = pv.registrar(conn, "AJUSTE INVENTARIO", "BAR EL BOSQUE",
+                               [{"codigo": "111180", "contado": 2}], usuario="bodega")
+    c.igual(doc, None, "contar lo mismo no crea ningun documento")
+    c.cierto(avisos and "coincide" in avisos[0], "y se dice por que")
+    conn.close()
+
+
+def no_se_mueve_un_codigo_que_no_esta_en_el_catalogo(c):
+    """Un codigo que no esta es casi siempre un codigo mal escrito. Dandole ficha
+    automaticamente se crea un producto fantasma que a partir de ahi parece legitimo —y
+    la hoja ya tiene 68 movimientos asi."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+
+    for mal in ({"codigo": "NOEXISTE", "cantidad": 1}, {"codigo": "", "cantidad": 1}):
+        try:
+            pv.registrar(conn, "ORDEN INTERNA", "F&B", [mal], usuario="bodega")
+            c.cierto(False, f"tenia que rechazar {mal}")
+        except ValueError as e:
+            c.cierto("catálogo" in str(e) or "sin código" in str(e),
+                     "y se dice por que se rechaza")
+
+    for mala in (0, -3, "muchas"):
+        try:
+            pv.registrar(conn, "ORDEN INTERNA", "F&B",
+                         [{"codigo": "ARSU", "cantidad": mala}], usuario="bodega")
+            c.cierto(False, f"tenia que rechazar la cantidad {mala!r}")
+        except ValueError:
+            c.ok += 1
+    # Y una bodega vacia tampoco: un movimiento sale o entra en alguna.
+    try:
+        pv.registrar(conn, "ORDEN INTERNA", "", [{"codigo": "ARSU", "cantidad": 1}])
+        c.cierto(False, "tenia que exigir la bodega")
+    except ValueError as e:
+        c.cierto("bodega" in str(e), "se exige la bodega")
+    conn.close()
+
+
+def reimportar_la_hoja_no_borra_lo_registrado_en_la_app(c):
+    """LA TRAMPA QUE ESTA FASE OBLIGABA A RESOLVER. Sin esto se trabaja todo el dia en la
+    aplicacion, alguien vuelve a importar la hoja «para actualizar» y el trabajo
+    desaparece sin que nada lo diga.
+
+    La hoja manda sobre LO SUYO: se borra y se recarga lo que vino de ella, y lo que
+    alguien registro aqui se queda."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+    import proveeduria_excel as pvx
+
+    pv.registrar(conn, "ORDEN INTERNA", "F&B", [{"codigo": "ARSU", "cantidad": 4}],
+                 usuario="bodega")
+    con_salida = _stock(pv.existencias(conn, departamento="F&B"))["ARSU"]
+
+    ruta = os.path.join(os.environ.get("HOTEL_DATA_DIR") or ".", "hoja_de_prueba.xlsx")
+    pvx.cargar(conn, pvx.leer(ruta), usuario="pruebas")
+
+    c.igual(_stock(pv.existencias(conn, departamento="F&B"))["ARSU"], con_salida,
+            "la salida registrada aqui SIGUE descontada tras reimportar")
+    origenes = {r[0]: r[1] for r in conn.execute(
+        "SELECT origen, COUNT(*) FROM pv_documento GROUP BY origen")}
+    c.igual(origenes.get("APP"), 1, "queda el documento de la aplicacion")
+    c.cierto(origenes.get("HOJA", 0) > 1, "y los de la hoja, recargados")
+
+    # Y LA HOJA SIGUE SIN DUPLICARSE: importar dos veces da lo mismo.
+    pvx.cargar(conn, pvx.leer(ruta), usuario="pruebas")
+    c.igual(_stock(pv.existencias(conn, departamento="F&B"))["ARSU"], con_salida,
+            "y a la tercera importacion, igual")
+    conn.close()
+
+
+def un_movimiento_mal_puesto_se_puede_borrar_y_el_de_la_hoja_no(c):
+    """Quien anota una salida de 100 donde eran 10 lo nota en el momento y lo que
+    necesita es quitarla, no dejar dos lineas falsas que se anulan entre si y que el dia
+    del conteo hay que entender.
+
+    Los de la hoja no: los manda la hoja. Borrar uno aqui haria que la siguiente
+    importacion lo trajera de vuelta."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+
+    antes = _stock(pv.existencias(conn, departamento="F&B"))["ARSU"]
+    doc, _ = pv.registrar(conn, "ORDEN INTERNA", "F&B",
+                          [{"codigo": "ARSU", "cantidad": 100}], usuario="bodega")
+    c.cierto(_stock(pv.existencias(conn, departamento="F&B"))["ARSU"] < antes,
+             "la salida equivocada baja el stock")
+
+    pv.anular(conn, doc["id"])
+    c.igual(_stock(pv.existencias(conn, departamento="F&B"))["ARSU"], antes,
+            "al borrarla, el inventario vuelve exactamente a como estaba")
+    c.igual(conn.execute("SELECT COUNT(*) FROM pv_movimiento WHERE documento_id = ?",
+                         (doc["id"],)).fetchone()[0], 0, "sin dejar lineas sueltas")
+
+    de_la_hoja = conn.execute(
+        "SELECT id FROM pv_documento WHERE origen = 'HOJA' LIMIT 1").fetchone()[0]
+    try:
+        pv.anular(conn, de_la_hoja)
+        c.cierto(False, "un documento de la hoja no se tenia que poder borrar")
+    except ValueError as e:
+        c.cierto("hoja" in str(e), "y se explica que se corrige en la hoja")
+    conn.close()
+
+
+def la_numeracion_sigue_la_que_ya_hay(c):
+    """Quien lleva la bodega lee ese numero en el papel y en la hoja. Empezar en «1»
+    haria convivir dos series y habria que preguntar de cual es cada documento."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+
+    maximo = conn.execute(
+        "SELECT MAX(CAST(numero AS INTEGER)) FROM pv_documento "
+        "WHERE numero GLOB '[0-9]*'").fetchone()[0]
+    doc, _ = pv.registrar(conn, "ORDEN INTERNA", "F&B",
+                          [{"codigo": "ARSU", "cantidad": 1}], usuario="bodega")
+    c.igual(int(doc["numero"]), maximo + 1, "el siguiente numero continua la serie")
+    doc2, _ = pv.registrar(conn, "MERMA", "F&B",
+                           [{"codigo": "ARSU", "cantidad": 1}], usuario="bodega")
+    c.igual(int(doc2["numero"]), maximo + 2, "y el siguiente tambien")
+    conn.close()
+
+
+def la_pantalla_deja_registrar_las_tres_cosas(c):
+    """Las tres con la MISMA ventana, porque son el mismo gesto con otro nombre: elegir
+    bodega, elegir productos y poner un numero. Lo que cambia es que significa el
+    numero."""
+    conn, _, _ = _importar()
+    conn.close()
+    import main
+
+    # Por el endpoint, que es por donde entra desde la pantalla.
+    r = main.proveeduria_registrar(
+        {"tipo": "ORDEN INTERNA", "departamento": "F&B",
+         "lineas": [{"codigo": "ARSU", "cantidad": 2}]}, user=USUARIO)
+    c.igual(r["status"], "ok", "el endpoint registra")
+    c.cierto(r["documento"]["numero"], "y devuelve el documento con su numero")
+
+    docs = main.proveeduria_movimientos(user=USUARIO)["documentos"]
+    c.cierto(any(d["origen"] == "APP" for d in docs), "sale en la lista de movimientos")
+    c.cierto(any(d["origen"] == "HOJA" for d in docs), "junto a los de la hoja")
+
+    # El buscador del formulario mira el CATALOGO, para llegar tambien a lo que esta en
+    # cero: un producto que se acabo sigue existiendo y es justo el que hay que ajustar.
+    hallados = main.proveeduria_buscar_productos(q="sin precio", departamento="F&B",
+                                                 user=USUARIO)["productos"]
+    c.igual([p["codigo"] for p in hallados], ["SINPRE"],
+            "encuentra un producto que no tiene ningun movimiento")
+    c.igual(hallados[0]["stock"], 0, "diciendo que hay cero en esa bodega")
+    c.igual(main.proveeduria_buscar_productos(q="a", user=USUARIO)["productos"], [],
+            "con una sola letra no busca")
+
+    from fastapi import HTTPException
+    try:
+        main.proveeduria_registrar(
+            {"tipo": "ORDEN DE COMPRA", "departamento": "F&B",
+             "lineas": [{"codigo": "ARSU", "cantidad": 1}]}, user=USUARIO)
+        c.cierto(False, "la orden de compra todavia no se registra aqui")
+    except HTTPException as e:
+        c.igual(e.status_code, 400, "y se rechaza con 400, no con un error raro")
+
+    raiz = RAIZ
+    with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+    for tipo in ("ORDEN INTERNA", "AJUSTE INVENTARIO", "MERMA"):
+        c.cierto(f"abrirMovimientoPv('{tipo}')" in pantalla, f"hay boton para {tipo}")
+    c.cierto("function guardarMovimientoPv(" in pantalla, "y la ventana guarda")
+    c.cierto("avisarDeLaBodegaPv" in pantalla,
+             "los avisos de negativo se enseñan en un cartel que no se va solo")
+
+    # CAMBIAR DE BODEGA VACIA LAS LINEAS, y se comprueba que lo HAGA, no que la funcion
+    # exista: las cantidades se escribieron mirando lo que habia en la otra bodega, y
+    # dejarlas puestas saca de una lo que se conto en la otra. Lo destape deshaciendolo
+    # a mano — con la comprobacion anterior no caia nadie.
+    i = pantalla.find("function cambiarBodegaPv(")
+    c.cierto(i > 0, "existe el cambio de bodega")
+    fn = pantalla[i:pantalla.find("\nlet _pvBuscaTimer", i)]
+    c.cierto("window._pvMov.lineas = []" in fn, "al cambiar de bodega se vacian")
+    c.cierto("avisar(" in fn, "y se dice, en vez de que desaparezcan en silencio")
+    # Y la CONDICION, no solo las dos lineas de dentro: apagando el `if` el codigo sigue
+    # ahi y la comprobacion de arriba pasa igual con las lineas sin vaciar.
+    c.cierto(re.search(r"if \(\s*window\._pvMov\.lineas\.length\s*\)", fn) is not None,
+             "y se vacian cuando hay lineas puestas, no nunca")
+
+
 def el_boton_no_le_aparece_a_nadie_hasta_que_se_enciende(c):
     """LO PIDIO EL LODGE: «que sea un boton aparte, que mientras trabajemos en el la app
     pueda seguir funcionando de forma normal».
@@ -616,6 +874,14 @@ PRUEBAS = [
     las_pestañas_calculadas_no_entran_como_un_segundo_inventario,
     ninguna_fila_se_pierde_en_silencio,
     el_documento_se_guarda_una_vez_y_no_por_linea,
+    el_restaurante_registra_una_salida_de_bodega,
+    una_salida_que_deja_la_bodega_en_negativo_avisa_pero_no_bloquea,
+    el_ajuste_se_escribe_como_lo_contado_y_no_como_la_diferencia,
+    no_se_mueve_un_codigo_que_no_esta_en_el_catalogo,
+    reimportar_la_hoja_no_borra_lo_registrado_en_la_app,
+    un_movimiento_mal_puesto_se_puede_borrar_y_el_de_la_hoja_no,
+    la_numeracion_sigue_la_que_ya_hay,
+    la_pantalla_deja_registrar_las_tres_cosas,
     el_boton_no_le_aparece_a_nadie_hasta_que_se_enciende,
     al_arrancar_se_le_enciende_SOLO_a_quien_administra,
     la_pantalla_pide_las_dos_vistas_y_enseña_lo_que_hay_que_revisar,

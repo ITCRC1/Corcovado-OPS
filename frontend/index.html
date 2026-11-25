@@ -7182,10 +7182,18 @@ function pintarProveeduria() {
                  value="${escaparAtributo(window._pvBusca)}"
                  onchange="loadProveeduria(undefined, this.value)"
                  style="min-width:210px;">
-          ${puede ? `<button class="btn" onclick="abrirImportarProveeduria()">
-            Importar la hoja</button>` : ""}
+          ${puede ? `
+            <button class="btn btn-primary" onclick="abrirMovimientoPv('ORDEN INTERNA')">
+              Registrar salida</button>
+            <button class="btn" onclick="abrirMovimientoPv('AJUSTE INVENTARIO')">
+              Ajustar por conteo</button>
+            <button class="btn" onclick="abrirMovimientoPv('MERMA')">Merma</button>
+            <button class="btn" onclick="verMovimientosPv()">Últimos movimientos</button>
+            <button class="btn" onclick="abrirImportarProveeduria()">
+              Importar la hoja</button>` : ""}
         </div>
       </div>
+      <div id="pv-movimientos"></div>
 
       <!-- LAS BODEGAS. Cada departamento lleva la suya; el general las suma. -->
       <div class="filterbar" style="margin-bottom:12px;flex-wrap:wrap;">
@@ -7293,6 +7301,289 @@ function verRevisionesProveeduria() {
             [["Código", "codigo"], ["Producto", "descripcion"],
              ["Depto.", "departamento"]])}
   </div>`;
+}
+
+// ---------- Registrar un movimiento ----------
+//
+// Tres cosas con la MISMA ventana, porque son el mismo gesto con otro nombre: elegir
+// bodega, elegir productos y poner un número. Lo que cambia es qué significa el número.
+//
+//   · Salida (orden interna) y merma: el número es lo que SALE.
+//   · Ajuste: el número es lo que se CONTÓ, y el sistema saca la diferencia. Quien
+//     cuenta la bodega tiene delante doce latas, no «menos tres»; pedirle la resta es
+//     pedirle una cuenta que el sistema puede hacer, y una resta mal hecha en un
+//     inventario no se descubre hasta el conteo siguiente.
+const TITULO_PV = {
+  "ORDEN INTERNA": ["Registrar salida", "Lo que sale de bodega para un departamento.",
+                    "Sale"],
+  "AJUSTE INVENTARIO": ["Ajustar por conteo",
+                        "Escribí lo que CONTASTE. El sistema calcula la diferencia.",
+                        "Contado"],
+  "MERMA": ["Registrar merma", "Lo que se dañó o se perdió y hay que dar de baja.",
+            "Se pierde"],
+};
+
+window._pvMov = { tipo: "", depto: "", lineas: [], buscado: "", resultados: [] };
+
+function abrirMovimientoPv(tipo) {
+  const d = window._pvData || {};
+  window._pvMov = {
+    tipo,
+    // Si se está mirando una bodega, se arranca en esa: lo normal es registrar lo de la
+    // bodega que se tiene abierta.
+    depto: window._pvDepto || (d.departamentos || [])[0] || "",
+    lineas: [], buscado: "", resultados: [],
+  };
+  const [titulo, explica] = TITULO_PV[tipo];
+  const fondo = document.createElement("div");
+  fondo.className = "modal-fondo"; fondo.id = "modal-pv-mov";
+  fondo.onclick = (e) => { if (e.target === fondo) fondo.remove(); };
+  fondo.innerHTML = `<div class="modal-caja" style="max-width:640px;">
+    <div class="modal-encabezado">
+      <div><p class="title">${titulo}</p><p class="subtitle">${explica}</p></div>
+      <button class="btn" onclick="document.getElementById('modal-pv-mov').remove()">Cerrar</button>
+    </div>
+    <div class="modal-cuerpo">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px;">
+        <label style="font-size:12px;font-weight:600;">Bodega<br>
+          <select id="pv-mov-depto" onchange="cambiarBodegaPv(this.value)"
+                  style="font:inherit;font-size:13px;padding:6px 8px;min-width:170px;">
+            ${(d.departamentos || []).map(x => `<option value="${escaparAtributo(x)}"
+              ${x === window._pvMov.depto ? "selected" : ""}>${escaparHTML(x)}</option>`).join("")}
+          </select></label>
+        <label style="font-size:12px;font-weight:600;">Fecha<br>
+          <input type="date" id="pv-mov-fecha" value="${hoyISO()}"
+                 style="font:inherit;font-size:13px;padding:5px 8px;"></label>
+      </div>
+      <label style="display:block;font-size:12px;font-weight:600;margin:0 0 4px;">
+        Buscar producto
+        <span style="font-weight:400;color:var(--muted);">— por nombre o código. Se busca
+          en el catálogo, así que también aparece lo que está en cero.</span></label>
+      <input id="pv-mov-busca" type="search" autocomplete="off"
+             placeholder="Ej.: aceite, o 108194" oninput="buscarProductoPv(this.value)"
+             style="width:100%;font:inherit;font-size:13px;padding:7px 10px;
+                    border:1px solid var(--border);border-radius:8px;
+                    background:var(--card);color:inherit;">
+      <div id="pv-mov-resultados"></div>
+      <div id="pv-mov-lineas"></div>
+      <label style="display:block;font-size:12px;font-weight:600;margin:12px 0 4px;">
+        Nota <span style="font-weight:400;color:var(--muted);">— opcional</span></label>
+      <input id="pv-mov-nota" type="text" maxlength="200"
+             style="width:100%;font:inherit;font-size:13px;padding:6px 9px;
+                    border:1px solid var(--border);border-radius:8px;
+                    background:var(--card);color:inherit;">
+      <p style="margin-top:14px;">
+        <button class="btn btn-primary" onclick="guardarMovimientoPv()">${titulo}</button>
+      </p>
+      <div id="pv-mov-resultado"></div>
+    </div></div>`;
+  document.body.appendChild(fondo);
+  pintarLineasPv();
+}
+
+function cambiarBodegaPv(depto) {
+  window._pvMov.depto = depto;
+  // Las líneas se vacían al cambiar de bodega: las cantidades se escribieron mirando lo
+  // que había en la otra, y dejarlas puestas haría sacar de una bodega lo que se contó
+  // en la otra.
+  if (window._pvMov.lineas.length) {
+    window._pvMov.lineas = [];
+    avisar("Cambiaste de bodega: las líneas se vaciaron");
+  }
+  window._pvMov.resultados = [];
+  pintarLineasPv();
+  if (window._pvMov.buscado) buscarProductoPv(window._pvMov.buscado);
+}
+
+let _pvBuscaTimer = null;
+
+async function buscarProductoPv(texto) {
+  clearTimeout(_pvBuscaTimer);
+  const q = (texto || "").trim();
+  window._pvMov.buscado = q;
+  if (q.length < 2) { window._pvMov.resultados = []; pintarLineasPv(); return; }
+  _pvBuscaTimer = setTimeout(async () => {
+    const p = new URLSearchParams({ q, departamento: window._pvMov.depto });
+    const res = await fetchAuth(`${API}/api/proveeduria/productos?${p}`);
+    if (window._pvMov.buscado !== q) return;   // llegó tarde: ya se escribió otra cosa
+    window._pvMov.resultados = res.ok ? (await res.json()).productos : [];
+    pintarLineasPv();
+  }, 220);
+}
+
+function agregarLineaPv(codigo) {
+  const m = window._pvMov;
+  const p = (m.resultados || []).find(x => x.codigo === codigo);
+  if (!p || m.lineas.some(x => x.codigo === codigo)) return;
+  m.lineas.push({ codigo: p.codigo, descripcion: p.descripcion, unidad: p.unidad,
+                  stock: p.stock || 0, valor: "" });
+  pintarLineasPv();
+}
+
+function quitarLineaPv(codigo) {
+  window._pvMov.lineas = window._pvMov.lineas.filter(x => x.codigo !== codigo);
+  pintarLineasPv();
+}
+
+function valorLineaPv(codigo, valor) {
+  const l = window._pvMov.lineas.find(x => x.codigo === codigo);
+  if (l) l.valor = valor;
+}
+
+function pintarLineasPv() {
+  const m = window._pvMov;
+  const esAjuste = m.tipo === "AJUSTE INVENTARIO";
+  const etiqueta = TITULO_PV[m.tipo][2];
+
+  const res = document.getElementById("pv-mov-resultados");
+  if (res) {
+    const rows = (m.resultados || []).filter(p => !m.lineas.some(l => l.codigo === p.codigo));
+    res.innerHTML = !m.buscado ? "" : rows.length ? `
+      <div style="border:1px solid var(--border);border-radius:8px;margin-top:6px;
+                  max-height:190px;overflow:auto;">
+        ${rows.map(p => `<div style="display:flex;gap:8px;align-items:center;
+                     padding:5px 10px;font-size:12.5px;cursor:pointer;"
+                     onclick="agregarLineaPv('${escaparAtributo(p.codigo)}')">
+          <span style="flex:1;">${escaparHTML(p.descripcion)}
+            <span style="color:var(--muted);font-family:monospace;font-size:11px;">${escaparHTML(p.codigo)}</span></span>
+          <span style="color:var(--muted);font-size:11.5px;white-space:nowrap;">
+            hay ${p.stock ?? 0} ${escaparHTML(p.unidad || "")}</span>
+          <button class="btn" style="padding:1px 8px;font-size:11px;">Agregar</button>
+        </div>`).join("")}
+      </div>`
+      : `<p class="empty" style="padding:8px 0;">Ningún producto del catálogo con
+         «${escaparHTML(m.buscado)}».</p>`;
+  }
+
+  const caja = document.getElementById("pv-mov-lineas");
+  if (!caja) return;
+  caja.innerHTML = !m.lineas.length ? `
+    <p class="empty" style="padding:12px 0;">Todavía no agregaste productos.
+      <small>Buscalos arriba y tocá «Agregar».</small></p>` : `
+    <table style="margin-top:10px;">
+      <tr><th>Producto</th><th>En bodega</th><th>${etiqueta}</th><th></th></tr>
+      ${m.lineas.map(l => `<tr>
+        <td>${escaparHTML(l.descripcion)}
+          <span style="color:var(--muted);font-family:monospace;font-size:11px;">${escaparHTML(l.codigo)}</span></td>
+        <td style="color:var(--muted);">${l.stock} ${escaparHTML(l.unidad || "")}</td>
+        <td><input inputmode="decimal" value="${escaparAtributo(l.valor)}"
+              onchange="valorLineaPv('${escaparAtributo(l.codigo)}', this.value)"
+              style="width:84px;text-align:right;font-size:13px;padding:3px 6px;"></td>
+        <td><button class="btn" style="padding:2px 8px;font-size:11px;"
+              onclick="quitarLineaPv('${escaparAtributo(l.codigo)}')">Quitar</button></td>
+      </tr>`).join("")}
+    </table>
+    ${esAjuste ? `<p style="font-size:11.5px;color:var(--muted);margin:6px 0 0;">
+      Escribí lo que contaste, no la diferencia. Lo que coincida con el sistema no se
+      anota.</p>` : ""}`;
+}
+
+async function guardarMovimientoPv() {
+  const m = window._pvMov;
+  const esAjuste = m.tipo === "AJUSTE INVENTARIO";
+  const campo = esAjuste ? "contado" : "cantidad";
+  const lineas = m.lineas
+    .filter(l => String(l.valor).trim() !== "")
+    .map(l => ({ codigo: l.codigo, [campo]: l.valor }));
+  if (!lineas.length) { avisar("Poné la cantidad de al menos un producto", true); return; }
+  const res = await fetchAuth(`${API}/api/proveeduria/movimiento`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      tipo: m.tipo, departamento: m.depto,
+      fecha: (document.getElementById("pv-mov-fecha") || {}).value || "",
+      observaciones: (document.getElementById("pv-mov-nota") || {}).value || "",
+      lineas,
+    }),
+  });
+  if (!res.ok) {
+    avisar((await res.json().catch(() => ({}))).detail || "No se pudo registrar", true);
+    return;
+  }
+  const d = await res.json();
+  // LOS AVISOS SE ENSEÑAN EN LA VENTANA, no en el cartel que se va solo: decir que una
+  // bodega quedó en negativo es justo lo que hay que poder leer dos veces.
+  const caja = document.getElementById("pv-mov-resultado");
+  if (!d.documento) {
+    if (caja) caja.innerHTML = `<p class="empty" style="padding:10px 0;">
+      ${escaparHTML((d.avisos || [])[0] || "No había nada que registrar.")}</p>`;
+    return;
+  }
+  document.getElementById("modal-pv-mov")?.remove();
+  avisar(`Registrado · ${d.documento.tipo} nº ${d.documento.numero}`);
+  loadProveeduria();
+  if ((d.avisos || []).length) avisarDeLaBodegaPv(d.avisos);
+}
+
+// Un cartel que NO se va solo, para lo que hay que mirar: una bodega en negativo es un
+// ingreso que falta por registrar, y enterarse de eso dos segundos no sirve de nada.
+function avisarDeLaBodegaPv(avisos) {
+  const caja = document.getElementById("pv-movimientos");
+  if (!caja) return;
+  caja.innerHTML = `
+    <div style="background:var(--warn-bg);color:var(--warn-text);border-radius:var(--r-sm);
+                padding:11px 13px;margin-top:12px;font-size:12.5px;">
+      <p style="margin:0 0 5px;font-weight:600;">Se registró, pero mirá esto:</p>
+      ${avisos.map(a => `<p style="margin:0 0 3px;">· ${escaparHTML(a)}</p>`).join("")}
+      <button class="btn" style="margin-top:6px;padding:2px 9px;font-size:11.5px;"
+              onclick="document.getElementById('pv-movimientos').innerHTML=''">Entendido</button>
+    </div>`;
+}
+
+async function verMovimientosPv() {
+  const caja = document.getElementById("pv-movimientos");
+  if (!caja) return;
+  if (caja.innerHTML) { caja.innerHTML = ""; return; }
+  const p = new URLSearchParams();
+  if (window._pvDepto) p.set("departamento", window._pvDepto);
+  const res = await fetchAuth(`${API}/api/proveeduria/movimientos?${p}`);
+  if (!res.ok) { avisar("No se pudieron cargar los movimientos", true); return; }
+  const docs = (await res.json()).documentos || [];
+  const puede = puedeEscribir("proveeduria");
+  caja.innerHTML = `<div class="detail-panel" style="margin-top:12px;">
+    <p style="font-weight:600;margin:0 0 2px;">Últimos movimientos
+      ${window._pvDepto ? "· " + escaparHTML(window._pvDepto) : ""}</p>
+    <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">
+      Los de la hoja y los registrados aquí, juntos: la bodega es una sola. Solo se
+      pueden borrar los registrados aquí — los de la hoja los manda la hoja.</p>
+    ${!docs.length ? `<p class="empty" style="padding:10px 0;">Sin movimientos.</p>` : `
+    <table>
+      <tr><th>Nº</th><th>Fecha</th><th>Tipo</th><th>Bodega</th><th>Líneas</th>
+        <th>Entra</th><th>Sale</th><th>Origen</th>${puede ? "<th></th>" : ""}</tr>
+      ${docs.map(x => `<tr>
+        <td style="font-family:monospace;font-size:11.5px;">${escaparHTML(x.numero)}</td>
+        <td>${escaparHTML(x.fecha || "")}</td>
+        <td style="font-size:11.5px;">${escaparHTML(x.tipo)}</td>
+        <td style="font-size:11.5px;">${escaparHTML(x.departamento || "—")}</td>
+        <td>${x.lineas}</td>
+        <td>${x.entra || 0}</td>
+        <td>${x.sale || 0}</td>
+        <td>${x.origen === "APP"
+              ? '<span class="badge badge-ok">aquí</span>'
+              : '<span class="badge badge-tour">hoja</span>'}
+          ${x.creado_por ? `<span style="font-size:10.5px;color:var(--muted);">${escaparHTML(x.creado_por)}</span>` : ""}</td>
+        ${puede ? `<td>${x.origen === "APP"
+          ? `<button class="btn" style="padding:2px 8px;font-size:11px;"
+               onclick="anularMovimientoPv(${x.id}, '${escaparAtributo(x.numero)}')">Borrar</button>`
+          : ""}</td>` : ""}
+      </tr>`).join("")}
+    </table>`}
+  </div>`;
+}
+
+async function anularMovimientoPv(id, numero) {
+  if (!confirm(`¿Borrar el movimiento nº ${numero}?\n\nEl inventario vuelve a como `
+             + "estaba antes de registrarlo. No se puede deshacer.")) return;
+  const res = await fetchAuth(`${API}/api/proveeduria/movimiento/${id}`,
+                              { method: "DELETE" });
+  if (!res.ok) {
+    avisar((await res.json().catch(() => ({}))).detail || "No se pudo borrar", true);
+    return;
+  }
+  avisar(`Borrado el movimiento nº ${numero}`);
+  const caja = document.getElementById("pv-movimientos");
+  if (caja) caja.innerHTML = "";
+  await loadProveeduria();
+  verMovimientosPv();
 }
 
 function abrirImportarProveeduria() {

@@ -1282,6 +1282,108 @@ def proveeduria_existencias(departamento: str = None, q: str = None,
         conn.close()
 
 
+@app.get("/api/proveeduria/productos")
+def proveeduria_buscar_productos(q: str = "", departamento: str = None, limite: int = 15,
+                                 user: dict = Depends(exige("proveeduria"))):
+    """Busca en el CATALOGO, diciendo cuánto hay de cada uno en esa bodega.
+
+    Se busca en el catálogo y no en las existencias porque para sacar o ajustar hace
+    falta llegar también a lo que está en cero: un producto que se acabó sigue
+    existiendo, y es justo el que hay que poder ajustar cuando aparece una caja olvidada.
+
+    Van las dos cosas juntas —qué es y cuánto hay aquí— porque quien escribe una salida
+    necesita ver lo que queda antes de poner la cantidad, y pedirlo en dos pasos haría
+    que no lo mirara.
+    """
+    import proveeduria as pv
+    texto = " ".join(str(q or "").split())
+    if len(texto) < 2:
+        return {"productos": []}
+    conn = get_connection()
+    try:
+        aguja = f"%{texto.upper()}%"
+        filas = [dict(r) for r in conn.execute(
+            """SELECT codigo, descripcion, unidad, departamento, valor_unitario
+                 FROM pv_producto
+                WHERE activo = 1 AND (UPPER(descripcion) LIKE ? OR codigo LIKE ?)
+                ORDER BY descripcion LIMIT ?""",
+            (aguja, f"{texto.upper()}%", max(1, min(limite, 50))))]
+        if departamento and filas:
+            hay = {f["codigo"]: f["stock"] for f in
+                   pv.existencias(conn, departamento=departamento)}
+            for f in filas:
+                f["stock"] = hay.get(f["codigo"], 0)
+        return {"productos": filas}
+    finally:
+        conn.close()
+
+
+@app.post("/api/proveeduria/movimiento")
+def proveeduria_registrar(payload: dict,
+                          user: dict = Depends(exige("proveeduria", escribir=True))):
+    """Registra una salida interna, una merma o un ajuste de inventario.
+
+    Es lo que se hace a diario: el restaurante saca producto de bodega, se tira algo que
+    se dañó, o se cuenta un estante y el sistema no decía eso.
+
+    EL AJUSTE SE ESCRIBE COMO LO CONTADO, no como la diferencia: quien cuenta tiene
+    delante doce latas, no «menos tres». Ver proveeduria.registrar.
+
+    LOS AVISOS SE DEVUELVEN Y NO BLOQUEAN. Una salida que deja la bodega en negativo se
+    anota igual y se señala: en la hoja del lodge hay 53 negativos vivos, y bloquear
+    haría que el primer día alguien no pudiera registrar una salida real y volviera al
+    Excel.
+    """
+    import proveeduria as pv
+    conn = get_connection()
+    try:
+        doc, avisos = pv.registrar(
+            conn,
+            tipo=payload.get("tipo"),
+            departamento=payload.get("departamento"),
+            lineas=payload.get("lineas") or [],
+            fecha=(payload.get("fecha") or "").strip() or None,
+            observaciones=payload.get("observaciones") or "",
+            solicitado_por=payload.get("solicitado_por") or "",
+            usuario=user.get("usuario"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+    return {"status": "ok", "documento": doc, "avisos": avisos}
+
+
+@app.get("/api/proveeduria/movimientos")
+def proveeduria_movimientos(departamento: str = None, limite: int = 40,
+                            user: dict = Depends(exige("proveeduria"))):
+    """Los últimos movimientos, con su origen a la vista."""
+    import proveeduria as pv
+    conn = get_connection()
+    try:
+        return {"documentos": pv.documentos(conn, limite=max(1, min(limite, 200)),
+                                            departamento=departamento)}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/proveeduria/movimiento/{doc_id}")
+def proveeduria_anular(doc_id: int,
+                       user: dict = Depends(exige("proveeduria", escribir=True))):
+    """Borra un movimiento registrado desde aquí.
+
+    Quien anota una salida de 100 donde eran 10 lo nota en el momento, y lo que necesita
+    es quitarla. Los de la hoja no se tocan: los manda la hoja.
+    """
+    import proveeduria as pv
+    conn = get_connection()
+    try:
+        return {"status": "ok", **pv.anular(conn, doc_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
 @app.post("/api/proveeduria/importar")
 async def proveeduria_importar(file: UploadFile = File(...),
                                user: dict = Depends(exige("proveeduria",

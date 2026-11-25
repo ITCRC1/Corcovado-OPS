@@ -1118,9 +1118,22 @@ CREATE TABLE IF NOT EXISTS pv_documento (
     solicitado_por TEXT,
     factura TEXT,
     observaciones TEXT,
+    -- DE DONDE SALIO: 'HOJA' lo trajo la importacion del Excel, 'APP' lo registro
+    -- alguien aqui. Es lo que permite que las dos cosas convivan mientras dure la
+    -- transicion: reimportar la hoja borra y recarga LO SUYO, y no se lleva por delante
+    -- la salida que el restaurante registro esta mañana.
+    --
+    -- Sin esto, la fase de registrar seria una trampa: se trabaja todo el dia en la
+    -- aplicacion, alguien vuelve a importar la hoja «para actualizar» y el trabajo
+    -- desaparece sin que nada lo diga. Es el mismo patron que ya usan traslado_extra y
+    -- las amenidades, por la misma razon.
+    origen TEXT NOT NULL DEFAULT 'APP',
     creado_en TEXT DEFAULT (datetime('now')),
     creado_por TEXT,
-    UNIQUE (tipo, numero)
+    -- El origen entra en la llave: la hoja numera sus ordenes por su cuenta y la
+    -- aplicacion por la suya, asi que el numero 1200 puede existir en las dos sin que
+    -- una importacion choque contra un documento registrado aqui.
+    UNIQUE (tipo, numero, origen)
 );
 CREATE INDEX IF NOT EXISTS idx_pv_documento_fecha ON pv_documento(fecha);
 

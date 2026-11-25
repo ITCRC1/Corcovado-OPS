@@ -164,17 +164,20 @@ def leer(ruta):
 def cargar(conn, datos, usuario=None):
     """Mete en la base lo que devolvió `leer`. Devuelve el recuento de cada cosa.
 
-    SE REEMPLAZA TODO, no se va sumando. La hoja es la fuente mientras dure la
-    convivencia, así que importarla dos veces tiene que dar el mismo inventario y no el
-    doble — y eso es justo lo que pasaría acumulando: nadie lo notaría hasta que alguien
-    mirara una existencia y le pareciera alta.
+    SE REEMPLAZA LO DE LA HOJA, no se va sumando. La hoja es la fuente de lo suyo
+    mientras dure la convivencia, así que importarla dos veces tiene que dar el mismo
+    inventario y no el doble — y eso es justo lo que pasaría acumulando: nadie lo
+    notaría hasta que alguien mirara una existencia y le pareciera alta.
 
-    Cuando proveeduría empiece a registrar DESDE la aplicación esto deja de valer, y por
-    eso la importación es un botón que alguien aprieta y no algo que corre solo.
+    Y SOLO LO DE LA HOJA. Lo que alguien registró desde la aplicación —una salida del
+    restaurante, un ajuste de bodega— se queda. Sin esa distinción, trabajar en la
+    aplicación sería una trampa: se registra todo el día, alguien vuelve a importar «para
+    actualizar» y el trabajo desaparece sin que nada lo diga. Ver `origen` en schema.sql.
     """
     cur = conn.cursor()
-    cur.execute("DELETE FROM pv_movimiento")
-    cur.execute("DELETE FROM pv_documento")
+    cur.execute("DELETE FROM pv_movimiento WHERE documento_id IN "
+                "(SELECT id FROM pv_documento WHERE origen = ?)", (pv.ORIGEN_HOJA,))
+    cur.execute("DELETE FROM pv_documento WHERE origen = ?", (pv.ORIGEN_HOJA,))
     cur.execute("DELETE FROM pv_producto")
     cur.execute("DELETE FROM pv_cuenta")
     cur.execute("DELETE FROM pv_proveedor")
@@ -213,10 +216,11 @@ def cargar(conn, datos, usuario=None):
         if doc is None:
             cur.execute(
                 """INSERT INTO pv_documento (numero, tipo, fecha, proveedor_id,
-                       departamento, creado_por)
-                   VALUES (?,?,?,?,?,?)""",
+                       departamento, origen, creado_por)
+                   VALUES (?,?,?,?,?,?,?)""",
                 (m["numero"], m["tipo"], m["fecha"],
-                 ids_prov.get(m["proveedor"].upper()), m["departamento"], usuario))
+                 ids_prov.get(m["proveedor"].upper()), m["departamento"],
+                 pv.ORIGEN_HOJA, usuario))
             doc = ids_doc[clave] = cur.lastrowid
         # EL ESTADO VA EN LA LINEA. Una orden llega a medias: medido en la hoja del
         # lodge, 25 órdenes traen líneas en dos estados y tocan 218 productos. Puesto en
