@@ -1073,63 +1073,13 @@ def ocupacion(desde: str, hasta: str, user: dict = Depends(exige("analitica"))):
     """Ocupación día por día: cuántas habitaciones ocupadas, pax y porcentaje.
     Útil para gerencia, y para ver de un vistazo los días fuertes del mes."""
     conn = get_connection()
-    # Se importa aquí para no depender del orden de las importaciones del archivo
-    import publicador as _pub
-    total_habitaciones = len(_pub.cargar_config().get("habitaciones") or []) or 30
-
-    reservas = [dict(r) for r in conn.execute(
-        """SELECT room_no, arr_date, dep_date, adl, chl FROM reserva
-           WHERE res_status != 'CANCELADA'""").fetchall()]
+    # LA CUENTA VIVE EN ocupacion.py, no aquí. La necesita también Proveeduría —el
+    # pedido sugerido depende de cuánta gente viene— y con una copia en cada sitio la
+    # pantalla de Analítica diría una ocupación y el pedido de bodega se calcularía con
+    # otra, sin que nada avisara. Ya pasó cuatro veces en este sistema.
+    import ocupacion as _ocu
+    dias, total_habitaciones = _ocu.por_dia(conn, desde, hasta)
     conn.close()
-
-    def a_fecha(dd):
-        try:
-            d, m, y = dd.split("-")
-            return datetime.date(2000 + int(y), int(m), int(d))
-        except (ValueError, AttributeError):
-            return None
-
-    # Las fechas de cada reserva se convierten UNA vez, no una vez por cada día del
-    # rango. Antes, un rango de tres meses sobre 780 reservas hacía 140.000 conversiones
-    # de texto a fecha, todas repetidas. Las reservas sin fecha de llegada se descartan
-    # aquí mismo, igual que antes las descartaba el 'continue'.
-    preparadas = []
-    for r in reservas:
-        llega = a_fecha(r["arr_date"])
-        if not llega:
-            continue
-        preparadas.append((llega, a_fecha(r["dep_date"]), r["room_no"],
-                           (r["adl"] or 0) + (r["chl"] or 0)))
-
-    inicio, fin = datetime.date.fromisoformat(desde), datetime.date.fromisoformat(hasta)
-    dias = []
-    dia = inicio
-    while dia <= fin:
-        habitaciones, pax, entran, salen = set(), 0, 0, 0
-        for llega, sale, room_no, personas in preparadas:
-            # Se cuenta ocupada la noche que el huésped duerme ahí: desde su llegada
-            # hasta el día antes de su salida.
-            if llega <= dia and (sale is None or dia < sale):
-                habitaciones.add(room_no)
-                pax += personas
-            if llega == dia:
-                entran += 1
-            if sale == dia:
-                salen += 1
-        # EL CUARTO DE GUÍAS NO SE VENDE, así que no cuenta para la ocupación: con 31
-        # ocupados sobre 30 vendibles el porcentaje habría pasado del 100% sin que nadie
-        # hubiera vendido de más. El guía sigue contando en el pax. Ver habitaciones.py.
-        habitaciones = _habs.solo_las_que_se_venden(habitaciones)
-        dias.append({
-            "fecha": dia.isoformat(),
-            "dia_semana": ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"][dia.weekday()],
-            "habitaciones": len(habitaciones),
-            "pax": pax,
-            "entran": entran,
-            "salen": salen,
-            "porcentaje": round(100 * len(habitaciones) / total_habitaciones),
-        })
-        dia += datetime.timedelta(days=1)
 
     con_datos = [d for d in dias if d["habitaciones"] > 0]
     return {
@@ -1380,6 +1330,27 @@ def proveeduria_anular(doc_id: int,
         return {"status": "ok", **pv.anular(conn, doc_id)}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.get("/api/proveeduria/sugerido")
+def proveeduria_sugerido(departamento: str = None, dias: int = 7,
+                         desde: str = None, hasta: str = None,
+                         user: dict = Depends(exige("proveeduria"))):
+    """Qué conviene pedir, calculado con la OCUPACIÓN REAL de esos días.
+
+    Es lo único de proveeduría que la hoja de cálculo no podía hacer: ahí la ocupación
+    es un número escrito a mano, y el día que nadie lo actualiza el pedido sale con la
+    de la semana pasada. La ocupación sale de la misma función que la pantalla de
+    Analítica — ver ocupacion.py.
+    """
+    import proveeduria as pv
+    conn = get_connection()
+    try:
+        return pv.pedido_sugerido(conn, departamento=departamento,
+                                  desde=desde, hasta=hasta,
+                                  dias=max(1, min(int(dias or 7), 60)))
     finally:
         conn.close()
 

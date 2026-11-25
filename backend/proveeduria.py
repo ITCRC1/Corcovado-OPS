@@ -456,6 +456,164 @@ def anular(conn, doc_id):
 
 
 # ---------------------------------------------------------------------------
+# El pedido sugerido
+# ---------------------------------------------------------------------------
+#
+# ES LA RAZÓN POR LA QUE ESTO MERECE DEJAR DE SER UNA HOJA DE CÁLCULO. Todo lo demás
+# —registrar, sumar, imprimir— Excel lo hacía bien. Pero el pedido sugerido depende de
+# CUÁNTA GENTE VIENE, y en la hoja la ocupación es un número escrito a mano en
+# `INVENTARIO_GENERAL!C1`: alguien tiene que acordarse de actualizarlo, y el día que no
+# lo haga el pedido sale calculado con la ocupación de la semana pasada.
+#
+# Esta aplicación ya sabe la ocupación de verdad, día por día. Ver ocupacion.py.
+#
+# LA FÓRMULA ES LA DE LA HOJA — la de INV_GUIAS, que es la única de las tres que usa la
+# ocupación:
+#
+#     objetivo  = mínimo + (máximo − mínimo) × ocupación
+#     sugerido  = objetivo − lo que hay − lo que ya viene en camino
+#
+# LAS TRES FÓRMULAS DE LA HOJA. INV_RESTAURANTE usa «si stock < mínimo, pedir hasta el
+# máximo»; INV_GUIAS la de arriba; y ABARROTES interpola entre 360 y 898 pax con
+# constantes escritas a mano. Tres respuestas a la misma pregunta, y hay que elegir una:
+# se eligió la que mira la ocupación, porque es la que el lodge quiso y la única que
+# sabe que una semana llena gasta más que una vacía.
+#
+# LO QUE SE AÑADE A LA HOJA: restar lo que YA ESTÁ PEDIDO. Sin eso, el lunes se sugiere
+# comprar 20, se pide, y el martes se vuelve a sugerir lo mismo porque todavía no ha
+# llegado — y se compra dos veces.
+
+DIAS_SEMANA = {
+    "LUNES": 0, "MARTES": 1, "MIERCOLES": 2, "MIÉRCOLES": 2, "JUEVES": 3,
+    "VIERNES": 4, "SABADO": 5, "SÁBADO": 5, "DOMINGO": 6,
+}
+
+
+def _sin_tildes(texto):
+    import unicodedata
+    base = unicodedata.normalize("NFD", str(texto or ""))
+    return "".join(ch for ch in base if unicodedata.category(ch) != "Mn").upper()
+
+
+def dias_de_pedido(texto):
+    """Los días de la semana que nombra un texto como «Martes y viernes». [] si ninguno.
+
+    El lodge los escribe en texto libre en la ficha del proveedor —«Martes y viernes»,
+    «Jueves», «No aplica»— y así se importan: convertirlos a una lista cerrada al cargar
+    habría tirado lo que no se entendiera, que es justo lo que hay que poder leer.
+    """
+    limpio = _sin_tildes(texto)
+    return sorted({n for nombre, n in DIAS_SEMANA.items()
+                   if _sin_tildes(nombre) in limpio})
+
+
+def a_quien_toca_pedirle(conn, cuando=None):
+    """Los proveedores a los que hoy toca pedirles, según sus días de pedido.
+
+    POR QUÉ IMPORTA: un proveedor que recibe pedidos los martes y entrega los miércoles
+    no acepta uno el jueves. Pedirle tarde no se nota el jueves, se nota el domingo
+    cuando no llegó. El dato ya está en su ficha y hasta ahora no lo miraba nadie.
+    """
+    hoy = cuando or datetime.date.today()
+    salida = []
+    for r in conn.execute(
+            "SELECT id, nombre, dias_pedido, dias_entrega, condicion, dias_credito "
+            "FROM pv_proveedor WHERE activo = 1 ORDER BY nombre"):
+        d = dict(r)
+        dias = dias_de_pedido(d["dias_pedido"])
+        if hoy.weekday() in dias:
+            salida.append(d)
+    return salida
+
+
+def pedido_sugerido(conn, departamento=None, desde=None, hasta=None, dias=7):
+    """Qué conviene pedir, y por qué. Devuelve {ocupacion, filas, sin_nivel, …}.
+
+    `desde`/`hasta` es el periodo que se va a cubrir; por omisión los próximos `dias`
+    días, que es lo que dura un ciclo de pedido en el lodge.
+
+    SOLO SUGIERE LO QUE TIENE NIVELES PUESTOS. Medido en la hoja: 735 productos los
+    tienen y el resto no. Inventarle un mínimo a un producto sería decidir por el lodge
+    cuánto tiene que haber de algo, y eso lo sabe quien lleva la bodega; lo que se hace
+    es DECIR cuántos quedan fuera, para que no parezca que no hace falta pedir nada.
+    """
+    import ocupacion as _ocu
+
+    hoy = datetime.date.today()
+    desde = desde or hoy.isoformat()
+    hasta = hasta or (hoy + datetime.timedelta(days=max(1, dias) - 1)).isoformat()
+    factor = _ocu.fraccion(conn, desde, hasta)
+
+    hay = {(f["codigo"], f["departamento"]): f
+           for f in existencias(conn, desglosar=True)}
+    donde, params = ("WHERE n.departamento = ?", [departamento]) if departamento \
+        else ("", [])
+    niveles = [dict(r) for r in conn.execute(f"""
+        SELECT n.codigo, n.departamento, n.minimo, n.maximo,
+               p.descripcion, p.unidad, p.valor_unitario, p.proveedor_id,
+               pr.nombre AS proveedor
+          FROM pv_nivel n
+          LEFT JOIN pv_producto p ON p.codigo = n.codigo
+          LEFT JOIN pv_proveedor pr ON pr.id = p.proveedor_id
+          {donde}
+         ORDER BY p.descripcion""", params)]
+
+    filas = []
+    for n in niveles:
+        minimo = n["minimo"] or 0
+        maximo = n["maximo"] if n["maximo"] is not None else minimo
+        objetivo = minimo + (maximo - minimo) * factor
+        actual = hay.get((n["codigo"], n["departamento"]))
+        stock = actual["stock"] if actual else 0
+        en_camino = (actual["en_camino"] or 0) if actual else 0
+        sugerido = objetivo - stock - en_camino
+        # Se redondea HACIA ARRIBA: medio tarro de algo no se compra, y quedarse corto
+        # cuesta más que el medio tarro de más.
+        import math
+        sugerido = max(0, int(math.ceil(round(sugerido, 3))))
+        if not sugerido:
+            continue
+        filas.append({
+            "codigo": n["codigo"], "departamento": n["departamento"],
+            "descripcion": n["descripcion"] or n["codigo"],
+            # UN NIVEL DE ALGO QUE NO ESTÁ EN EL CATÁLOGO. Medido en la hoja: pasa, y
+            # entonces la fila solo puede enseñar el código. No se puede comprar —la
+            # orden exige ficha— así que se marca para que la pantalla lo diga en vez de
+            # ofrecer un botón que después falla.
+            "huerfano": n["descripcion"] is None,
+            "unidad": n["unidad"], "minimo": minimo, "maximo": maximo,
+            "objetivo": round(objetivo, 2), "stock": stock, "en_camino": en_camino,
+            "sugerido": sugerido,
+            "valor_unitario": n["valor_unitario"],
+            "costo": (int(round(n["valor_unitario"] * sugerido))
+                      if n["valor_unitario"] is not None else None),
+            "proveedor_id": n["proveedor_id"], "proveedor": n["proveedor"],
+        })
+
+    # Cuántos productos de esa bodega se quedan fuera por no tener niveles puestos. Sin
+    # esta cifra, una bodega sin niveles enseñaría una lista vacía que se lee como «no
+    # hace falta pedir nada».
+    con_nivel = {(n["codigo"], n["departamento"]) for n in niveles}
+    sin_nivel = sum(1 for (cod, dep) in hay
+                    if (not departamento or dep == departamento)
+                    and (cod, dep) not in con_nivel)
+    con_costo = [f for f in filas if f["costo"] is not None]
+    return {
+        "desde": desde, "hasta": hasta,
+        "ocupacion": round(factor, 4),
+        "ocupacion_pct": round(100 * factor),
+        "filas": filas,
+        "sin_nivel": sin_nivel,
+        # Los que tienen nivel puesto pero no ficha: se sugieren, pero no se pueden
+        # comprar desde aquí hasta que alguien les dé ficha en el catálogo.
+        "sin_ficha": sum(1 for f in filas if f["huerfano"]),
+        "costo": sum(f["costo"] for f in con_costo),
+        "sin_precio": len(filas) - len(con_costo),
+        "proveedores_de_hoy": a_quien_toca_pedirle(conn),
+    }
+
+
+# ---------------------------------------------------------------------------
 # La orden de compra
 # ---------------------------------------------------------------------------
 #

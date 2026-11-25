@@ -7188,6 +7188,7 @@ function pintarProveeduria() {
             <button class="btn" onclick="abrirMovimientoPv('AJUSTE INVENTARIO')">
               Ajustar por conteo</button>
             <button class="btn" onclick="abrirMovimientoPv('MERMA')">Merma</button>
+            <button class="btn" onclick="verSugeridoPv()">Qué pedir</button>
             <button class="btn" onclick="verComprasPv()">Órdenes de compra</button>
             <button class="btn" onclick="verMovimientosPv()">Últimos movimientos</button>
             <button class="btn" onclick="abrirImportarProveeduria()">
@@ -7590,6 +7591,143 @@ async function anularMovimientoPv(id, numero) {
   if (caja) caja.innerHTML = "";
   await loadProveeduria();
   verMovimientosPv();
+}
+
+// ---------- Qué pedir ----------
+//
+// ES LA RAZÓN POR LA QUE ESTO MERECE DEJAR DE SER UNA HOJA DE CÁLCULO. Todo lo demás
+// —registrar, sumar, imprimir— Excel lo hacía bien. Pero el pedido depende de cuánta
+// gente viene, y en la hoja la ocupación es un número escrito a mano: el día que nadie
+// lo actualiza, el pedido sale calculado con la ocupación de la semana pasada.
+
+window._pvSug = null;
+
+async function verSugeridoPv(dias) {
+  const caja = document.getElementById("pv-movimientos");
+  if (!caja) return;
+  if (caja.dataset.vista === "sugerido" && dias === undefined) {
+    caja.innerHTML = ""; caja.dataset.vista = ""; return;
+  }
+  const p = new URLSearchParams({ dias: dias || 7 });
+  if (window._pvDepto) p.set("departamento", window._pvDepto);
+  const res = await fetchAuth(`${API}/api/proveeduria/sugerido?${p}`);
+  if (!res.ok) { avisar("No se pudo calcular el pedido", true); return; }
+  window._pvSug = await res.json();
+  window._pvSug.dias = dias || 7;
+  caja.dataset.vista = "sugerido";
+  pintarSugeridoPv();
+}
+
+function pintarSugeridoPv() {
+  const s = window._pvSug || {};
+  const caja = document.getElementById("pv-movimientos");
+  const puede = puedeEscribir("proveeduria");
+  const porProveedor = {};
+  (s.filas || []).forEach(f => {
+    const k = f.proveedor || "— sin proveedor en la ficha —";
+    (porProveedor[k] = porProveedor[k] || []).push(f);
+  });
+
+  caja.innerHTML = `<div class="detail-panel" style="margin-top:12px;">
+    <p style="font-weight:600;margin:0 0 2px;">Qué pedir
+      ${window._pvDepto ? "· " + escaparHTML(window._pvDepto) : "· todas las bodegas"}</p>
+
+    <!-- LA OCUPACIÓN, A LA VISTA Y CON SUS FECHAS. Es el dato del que cuelga todo lo
+         demás: si quien mira no ve con qué ocupación se calculó, el número de abajo es
+         un número que hay que creerse. -->
+    <p style="font-size:12px;color:var(--muted);margin:0 0 8px;">
+      Calculado para <strong>${escaparHTML(s.desde || "")} → ${escaparHTML(s.hasta || "")}</strong>,
+      con una ocupación real del <strong>${s.ocupacion_pct}%</strong>.
+      Se descuenta lo que ya está pedido.
+      <span style="display:inline-flex;gap:4px;margin-left:6px;">
+        ${[7, 14, 30].map(n => `<button class="btn" style="padding:1px 8px;font-size:11px;
+            ${s.dias === n ? "font-weight:700;" : ""}"
+            onclick="verSugeridoPv(${n})">${n} días</button>`).join("")}
+      </span></p>
+
+    ${s.sin_nivel || s.sin_ficha ? `<p style="font-size:11.5px;color:var(--warn-text);
+        background:var(--warn-bg);border-radius:8px;padding:8px 11px;margin:0 0 10px;">
+      ${s.sin_nivel ? `<strong>${s.sin_nivel} producto(s) de esta bodega no tienen mínimo
+        ni máximo puestos</strong> y por eso no se sugieren. No se les inventa uno:
+        cuánto tiene que haber de algo lo decide quien lleva la bodega.` : ""}
+      ${s.sin_ficha ? `${s.sin_nivel ? "<br>" : ""}<strong>${s.sin_ficha} tienen nivel
+        pero no ficha en el catálogo</strong>: se ven con su código y no se pueden
+        comprar desde aquí hasta que alguien se la dé.` : ""}</p>` : ""}
+
+    ${(s.proveedores_de_hoy || []).length ? `
+      <p style="font-size:12px;margin:0 0 10px;">
+        <strong>Hoy toca pedirle a:</strong>
+        ${s.proveedores_de_hoy.map(p => `${escaparHTML(p.nombre)}
+          <span style="color:var(--muted);font-size:11px;">(entrega ${escaparHTML(p.dias_entrega || "—")})</span>`).join(" · ")}</p>` : ""}
+
+    ${!(s.filas || []).length ? `<p class="empty" style="padding:14px 0;">
+      No hace falta pedir nada con esta ocupación.
+      <small>${s.sin_nivel ? "Ojo: los productos sin mínimo puesto no se miran."
+        : "Todo está por encima de su objetivo."}</small></p>` :
+    Object.entries(porProveedor).map(([prov, filas]) => `
+      <p style="margin:12px 0 4px;font-weight:600;font-size:13px;">
+        ${escaparHTML(prov)}
+        <span style="font-weight:400;color:var(--muted);">— ${filas.length} producto(s)</span>
+        ${puede && filas[0].proveedor_id ? `<button class="btn"
+           style="padding:2px 9px;font-size:11.5px;margin-left:6px;"
+           onclick="ordenDesdeSugeridoPv(${filas[0].proveedor_id})">
+           Crear orden con esto</button>` : ""}</p>
+      <table>
+        <tr><th>Producto</th><th>Bodega</th><th>Hay</th><th>En camino</th>
+          <th>Objetivo</th><th>Pedir</th><th>Costo</th></tr>
+        ${filas.map(f => `<tr>
+          <td>${escaparHTML(f.descripcion)}
+            <span style="color:var(--muted);font-family:monospace;font-size:11px;">${escaparHTML(f.codigo)}</span>
+            ${f.huerfano ? '<span class="badge" style="background:#E5A93B;color:#3A2B08;">sin ficha</span>' : ""}</td>
+          <td style="font-size:11.5px;color:var(--muted);">${escaparHTML(f.departamento)}</td>
+          <td>${f.stock}</td>
+          <td>${f.en_camino || 0}</td>
+          <td title="mínimo ${f.minimo} · máximo ${f.maximo}">${f.objetivo}</td>
+          <td><strong>${f.sugerido}</strong> ${escaparHTML(f.unidad || "")}</td>
+          <td>${f.costo === null
+                ? '<span style="font-size:11px;color:var(--muted);">sin precio</span>'
+                : pvColones(f.costo)}</td>
+        </tr>`).join("")}
+      </table>`).join("")}
+
+    ${(s.filas || []).length ? `<p style="text-align:right;font-weight:600;margin:10px 0 0;">
+      Costo estimado ${pvColones(s.costo)}
+      ${s.sin_precio ? `<span style="font-weight:400;color:var(--muted);font-size:11.5px;">
+        no incluye ${s.sin_precio} sin precio</span>` : ""}</p>` : ""}
+  </div>`;
+}
+
+// De la sugerencia a la orden, sin volver a escribir nada. Es el paso que hace que la
+// sugerencia sirva: una lista que hay que copiar a mano se deja de usar a la semana.
+async function ordenDesdeSugeridoPv(proveedorId) {
+  const s = window._pvSug || {};
+  const filas = (s.filas || []).filter(f => f.proveedor_id === proveedorId);
+  if (!filas.length) return;
+  const depto = filas[0].departamento;
+  const otras = filas.filter(f => f.departamento !== depto);
+  if (otras.length && !confirm(
+      `Hay productos de varias bodegas (${[...new Set(filas.map(f => f.departamento))].join(", ")}).\n\n`
+    + `La orden se va a crear para ${depto}, con los ${filas.filter(f => f.departamento === depto).length} `
+    + "de esa bodega. Para las otras, repetí el paso cambiando de bodega arriba.\n\n¿Seguir?")) return;
+  const mias = filas.filter(f => f.departamento === depto);
+  const res = await fetchAuth(`${API}/api/proveeduria/compras`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      proveedor_id: proveedorId, departamento: depto,
+      observaciones: `Pedido sugerido para ${s.desde} → ${s.hasta}`
+                   + ` · ocupación ${s.ocupacion_pct}%`,
+      lineas: mias.map(f => ({ codigo: f.codigo, cantidad: f.sugerido })),
+    }),
+  });
+  if (!res.ok) {
+    avisar((await res.json().catch(() => ({}))).detail || "No se pudo crear", true);
+    return;
+  }
+  const d = await res.json();
+  avisar(`Orden nº ${d.orden.numero} creada con ${mias.length} producto(s)`);
+  const caja = document.getElementById("pv-movimientos");
+  if (caja) caja.dataset.vista = "";
+  verComprasPv();
 }
 
 // ---------- Órdenes de compra ----------

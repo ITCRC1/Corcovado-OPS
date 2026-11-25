@@ -138,6 +138,26 @@ def _hoja(ruta):
     for f in MOVIMIENTOS:
         ws.append(f)
 
+    # LAS PESTAÑAS POR BODEGA. Todo en ellas es formula menos el minimo y el maximo,
+    # que estan escritos a mano: son lo unico que se importa de aqui.
+    #
+    # La segunda lleva el encabezado de la primera columna MAL, como la hoja de verdad:
+    # en INV_BAR dice «50000 - Cost of Sale» y en INV_STAFF_COMEDOR dice «f». Buscando
+    # las columnas por posicion, esas dos pestañas se perdian enteras.
+    def pestaña_de_bodega(nombre, titulo_primera, depto, filas):
+        ws = wb.create_sheet(nombre)
+        ws.append([titulo_primera, "Departamento", "Descripción", "Unidad",
+                   "Valor Unitario", "Ingresos", "Salidas", "Stock Actual",
+                   "Inversión", "Mínimo Base (0%)", "Máximo Base (100%)",
+                   "Pedido Sugerido"])
+        for codigo, mn, mx in filas:
+            ws.append([codigo, depto, "", "UNIDAD", 0, 0, 0, 0, 0, mn, mx, 0])
+
+    pestaña_de_bodega("INV_RESTAURANTE", "Código", "F&B",
+                      [(108194, 4, 12), ("ARSU", 10, 50), ("SINNIVEL", None, None)])
+    pestaña_de_bodega("INV_BAR", "50000 - Cost of Sale - F&B", "BAR EL BOSQUE",
+                      [(108194, 20, 60), (111180, 2, 6)])
+
     # Una pestaña de las CALCULADAS, para comprobar que NO se importa como un segundo
     # inventario: en la hoja real esas cuatro tienen codigos propios que no cruzan.
     ws = wb.create_sheet("ABARROTES")
@@ -1013,6 +1033,322 @@ def la_pantalla_tiene_el_ciclo_entero_de_la_compra(c):
              "y lo dice: una orden no suma hasta recibirla")
 
 
+# ---------------------------------------------------------------------------
+# Fase 4: el pedido sugerido, con la ocupacion de verdad
+# ---------------------------------------------------------------------------
+
+def _llenar_el_lodge(conn, cuantas, dias=7):
+    """Mete reservas de hoy a `dias` dias para mover la ocupacion."""
+    import datetime as dt
+    hoy = dt.date.today()
+    fin = hoy + dt.timedelta(days=dias)
+
+    def dd(d):
+        return f"{d.day:02d}-{d.month:02d}-{str(d.year)[2:]}"
+
+    conn.execute("DELETE FROM reserva WHERE conf_no LIKE 'OCU%'")
+    for i in range(cuantas):
+        conn.execute(
+            """INSERT INTO reserva (conf_no, room_no, nombre_principal, arr_date,
+                   dep_date, adl, chl, res_status)
+               VALUES (?,?,?,?,?,2,0,'EN CASA')""",
+            (f"OCU{i:03d}", f"{i + 1:02d}", f"Huesped {i}", dd(hoy), dd(fin)))
+    conn.commit()
+
+
+def _nivel(conn, codigo, depto, minimo, maximo):
+    conn.execute(
+        "INSERT OR REPLACE INTO pv_nivel (codigo, departamento, minimo, maximo) "
+        "VALUES (?,?,?,?)", (codigo, depto, minimo, maximo))
+    conn.commit()
+
+
+def la_ocupacion_sale_de_UNA_funcion_para_las_dos_pantallas(c):
+    """LA QUINTA VEZ QUE ESTO IBA A PASAR. La cuenta de la ocupacion vivia DENTRO del
+    endpoint de Analitica, y el pedido sugerido la necesita. Copiada, la pantalla de
+    Analitica diria una ocupacion y el pedido de bodega se calcularia con otra, sin que
+    nada avisara — como ya paso con el muelle, la hora del Claro, la casilla NOTAS y el
+    BT."""
+    import datetime as dt
+
+    import ocupacion as ocu
+
+    conn, _, _ = _importar()
+    try:
+        _llenar_el_lodge(conn, 15)
+        hoy = dt.date.today().isoformat()
+        manana = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+
+        dias, total = ocu.por_dia(conn, hoy, manana)
+        c.igual(len(dias), 2, "una fila por dia")
+        c.igual(dias[0]["habitaciones"], 15, "cuenta las habitaciones ocupadas")
+        c.cierto(total > 0, "y sabe cuantas se venden")
+    finally:
+        conn.close()
+
+    # El endpoint de Analitica usa la MISMA funcion, no una copia.
+    import main
+    d = main.ocupacion(desde=hoy, hasta=manana, user=USUARIO)
+    c.igual([x["habitaciones"] for x in d["dias"]],
+            [x["habitaciones"] for x in dias],
+            "Analitica y el modulo dicen lo mismo, porque son el mismo codigo")
+
+    raiz = RAIZ
+    with open(os.path.join(raiz, "backend", "main.py"), encoding="utf-8") as f:
+        servidor = f.read()
+    i = servidor.find("def ocupacion(")
+    fn = servidor[i:servidor.find("\n@app.", i)]
+    c.cierto("_ocu.por_dia(" in fn, "el endpoint llama a la funcion compartida")
+    c.cierto("solo_las_que_se_venden" not in fn,
+             "y ya no lleva su propia copia de la cuenta")
+
+
+def el_cuarto_de_guias_no_sube_la_ocupacion(c):
+    """Ya estaba resuelto y hay que no romperlo: con 31 ocupados sobre 30 vendibles el
+    porcentaje pasaba del 100% sin que nadie hubiera vendido de mas."""
+    import datetime as dt
+
+    import ocupacion as ocu
+
+    conn, _, _ = _importar()
+    try:
+        _llenar_el_lodge(conn, 3)
+        hoy = dt.date.today()
+        luego = hoy + dt.timedelta(days=3)
+
+        def dd(d):
+            return f"{d.day:02d}-{d.month:02d}-{str(d.year)[2:]}"
+
+        conn.execute(
+            """INSERT INTO reserva (conf_no, room_no, nombre_principal, arr_date,
+                   dep_date, adl, chl, res_status)
+               VALUES ('OCUG','G16','Guia', ?, ?, 1, 0, 'EN CASA')""",
+            (dd(hoy), dd(luego)))
+        conn.commit()
+
+        dias, _ = ocu.por_dia(conn, hoy.isoformat(), hoy.isoformat())
+        c.igual(dias[0]["habitaciones"], 3,
+                "el cuarto de guias no cuenta como habitacion")
+        c.igual(dias[0]["pax"], 3 * 2 + 1,
+                "pero el guia SI cuenta en el pax: duerme y come")
+    finally:
+        conn.close()
+
+
+def el_pedido_sugerido_se_mueve_con_la_ocupacion(c):
+    """ES LA RAZON POR LA QUE ESTO MERECE DEJAR DE SER UNA HOJA. En la hoja la ocupacion
+    es un numero escrito a mano en INVENTARIO_GENERAL!C1: el dia que nadie lo actualiza,
+    el pedido sale calculado con la ocupacion de la semana pasada.
+
+    La formula es la de la hoja (la de INV_GUIAS, la unica de las tres que mira la
+    ocupacion): objetivo = minimo + (maximo - minimo) x ocupacion."""
+    import proveeduria as pv
+
+    conn, _, _ = _importar()
+    try:
+        # El aceite: en F&B hay 8 y no tiene nada pedido. Minimo 5 con el lodge vacio,
+        # maximo 40 lleno. (Se usa este y no el arroz porque el arroz trae 50 en camino
+        # en la hoja de prueba, y entonces lo que se mide seria otra cosa.)
+        _nivel(conn, "108194", "F&B", 5, 40)
+
+        _llenar_el_lodge(conn, 0)
+        vacio = pv.pedido_sugerido(conn, departamento="F&B")
+        c.igual(vacio["ocupacion_pct"], 0, "lodge vacio: ocupacion cero")
+        c.igual([f["sugerido"] for f in vacio["filas"] if f["codigo"] == "108194"], [],
+                "con 8 en bodega y objetivo 5, no hay que pedir nada")
+
+        _llenar_el_lodge(conn, 30)
+        lleno = pv.pedido_sugerido(conn, departamento="F&B")
+        c.cierto(lleno["ocupacion_pct"] > vacio["ocupacion_pct"],
+                 "con el lodge lleno la ocupacion sube")
+        fila = [f for f in lleno["filas"] if f["codigo"] == "108194"]
+        c.igual(len(fila), 1, "y AHORA si hay que pedir aceite")
+        if fila:
+            c.cierto(fila[0]["objetivo"] > 5,
+                     "porque el objetivo subio con la ocupacion, no por nada mas")
+            c.igual(fila[0]["stock"], 8, "diciendo cuanto hay")
+            c.igual((fila[0]["minimo"], fila[0]["maximo"]), (5, 40),
+                    "y de que minimo y maximo sale")
+    finally:
+        conn.close()
+
+
+def lo_que_ya_esta_pedido_no_se_vuelve_a_pedir(c):
+    """LO QUE SE AÑADE A LA HOJA. Sin esto, el lunes se sugiere comprar 20, se pide, y
+    el martes se vuelve a sugerir lo mismo porque todavia no ha llegado — y se compra
+    dos veces."""
+    import proveeduria as pv
+
+    conn, _, _ = _importar()
+    try:
+        _nivel(conn, "108194", "F&B", 5, 40)
+        _llenar_el_lodge(conn, 30)
+
+        def sugerido_de(codigo):
+            return [f for f in pv.pedido_sugerido(conn, departamento="F&B")["filas"]
+                    if f["codigo"] == codigo]
+
+        antes = sugerido_de("108194")[0]
+        c.cierto(antes["sugerido"] > 0, "hay algo que pedir")
+
+        # Se pide justo eso, y queda en camino (no recibido).
+        pv.crear_orden_compra(conn, _proveedor(conn), "F&B",
+                              [{"codigo": "108194", "cantidad": antes["sugerido"]}],
+                              usuario="bodega")
+        c.igual(sugerido_de("108194"), [], "ya pedido, deja de sugerirse")
+
+        # Y si se pide la mitad, se sugiere la otra mitad.
+        conn.execute("DELETE FROM pv_movimiento WHERE documento_id IN "
+                     "(SELECT id FROM pv_documento WHERE origen = 'APP')")
+        conn.execute("DELETE FROM pv_documento WHERE origen = 'APP'")
+        conn.commit()
+        mitad = max(1, antes["sugerido"] // 2)
+        pv.crear_orden_compra(conn, _proveedor(conn), "F&B",
+                              [{"codigo": "108194", "cantidad": mitad}],
+                              usuario="bodega")
+        resto = sugerido_de("108194")
+        c.igual(len(resto), 1, "vuelve a sugerirse lo que falta")
+        if resto:
+            c.igual(resto[0]["en_camino"], mitad, "se ve lo que viene en camino")
+            c.igual(resto[0]["sugerido"], antes["sugerido"] - mitad,
+                    "y se sugiere solo el resto")
+    finally:
+        conn.close()
+
+
+def no_se_le_inventa_un_minimo_a_nadie(c):
+    """Cuanto tiene que haber de algo lo decide quien lleva la bodega. Inventarlo seria
+    decidir por el lodge; lo que se hace es DECIR cuantos quedan fuera, para que una
+    lista vacia no se lea como «no hace falta pedir nada»."""
+    import proveeduria as pv
+
+    conn, _, _ = _importar()
+    try:
+        # Se parte de una bodega SIN niveles: los de la hoja de prueba se quitan.
+        conn.execute("DELETE FROM pv_nivel")
+        conn.commit()
+        _llenar_el_lodge(conn, 30)
+        s = pv.pedido_sugerido(conn, departamento="F&B")
+        c.igual(s["filas"], [], "sin niveles puestos no se sugiere nada")
+        c.cierto(s["sin_nivel"] > 0, "pero se dice cuantos productos quedan fuera")
+
+        _nivel(conn, "108194", "F&B", 5, 40)
+        s2 = pv.pedido_sugerido(conn, departamento="F&B")
+        c.cierto(s2["filas"], "al poner un nivel, ese si se sugiere")
+        c.igual(s2["sin_nivel"], s["sin_nivel"] - 1, "y queda uno menos fuera")
+
+        # UN NIVEL DE ALGO QUE NO ESTA EN EL CATALOGO se sugiere, pero no se puede
+        # comprar: la orden exige ficha. Se marca para que la pantalla lo diga en vez de
+        # ofrecer un boton que despues falla. Pasa en la hoja de verdad.
+        _nivel(conn, "FANTASMA2", "F&B", 5, 40)
+        s3 = pv.pedido_sugerido(conn, departamento="F&B")
+        fila = [f for f in s3["filas"] if f["codigo"] == "FANTASMA2"]
+        c.igual(len(fila), 1, "el nivel sin ficha se sugiere igual")
+        if fila:
+            c.igual(fila[0]["huerfano"], True, "marcado como sin ficha")
+            c.igual(fila[0]["descripcion"], "FANTASMA2",
+                    "y enseñando el codigo, que es lo unico que se sabe de el")
+            c.igual(fila[0]["proveedor_id"], None,
+                    "sin proveedor, asi que no cae en ningun grupo con boton de comprar")
+        c.igual(s3["sin_ficha"], 1, "y se dice cuantos hay asi")
+    finally:
+        conn.close()
+
+
+def los_niveles_vienen_de_la_hoja_y_son_por_bodega(c):
+    """Del mismo refresco el BAR necesita 48 y el RESTAURANTE 6: el nivel es de
+    (producto, bodega), no del producto.
+
+    Y las columnas se buscan POR SU ENCABEZADO: en INV_BAR la primera columna se titula
+    «50000 - Cost of Sale» y en INV_STAFF_COMEDOR dice «f». Buscandolas por posicion se
+    perdian esas dos pestañas enteras — 362 de los 735 productos con nivel puesto."""
+    conn, cuenta, datos = _importar()
+    try:
+        c.cierto(cuenta["niveles"] >= 2, "la importacion trae los niveles")
+        filas = {(r[0], r[1]): (r[2], r[3]) for r in conn.execute(
+            "SELECT codigo, departamento, minimo, maximo FROM pv_nivel")}
+        c.igual(filas.get(("108194", "F&B")), (4.0, 12.0), "el nivel de F&B")
+        c.igual(filas.get(("108194", "BAR EL BOSQUE")), (20.0, 60.0),
+                "y el MISMO producto con otro nivel en la otra bodega, de la pestaña "
+                "cuya primera columna tiene el encabezado mal")
+        c.cierto(("SINNIVEL", "F&B") not in filas,
+                 "una fila sin minimo ni maximo no es un nivel")
+        # SE CUENTAN LOS QUE QUEDARON, no los que se leyeron: la misma (codigo, bodega)
+        # viene repetida entre pestañas. Medido en la hoja del lodge: 1.046 filas
+        # leidas, 971 niveles distintos. Decir «1.046» seria contar 75 veces lo mismo.
+        c.igual(cuenta["niveles"],
+                conn.execute("SELECT COUNT(*) FROM pv_nivel").fetchone()[0],
+                "el recuento es el de los niveles guardados")
+
+        # Reimportar no duplica ni acumula.
+        import proveeduria_excel as pvx
+        ruta = os.path.join(os.environ.get("HOTEL_DATA_DIR") or ".",
+                            "hoja_de_prueba.xlsx")
+        pvx.cargar(conn, pvx.leer(ruta), usuario="pruebas")
+        c.igual(conn.execute("SELECT COUNT(*) FROM pv_nivel").fetchone()[0], len(filas),
+                "reimportar deja los mismos niveles, no el doble")
+    finally:
+        conn.close()
+
+
+def se_dice_a_que_proveedor_toca_pedirle_hoy(c):
+    """Un proveedor que recibe pedidos los martes y entrega los miercoles no acepta uno
+    el jueves. Pedirle tarde no se nota el jueves: se nota el domingo, cuando no llego.
+    El dato ya estaba en su ficha y no lo miraba nadie."""
+    import datetime as dt
+
+    import proveeduria as pv
+
+    c.igual(pv.dias_de_pedido("Martes y viernes"), [1, 4], "se leen los dos dias")
+    c.igual(pv.dias_de_pedido("Miercoles"), [2], "sin tilde tambien")
+    c.igual(pv.dias_de_pedido("Miércoles"), [2], "y con tilde")
+    c.igual(pv.dias_de_pedido("No aplica"), [], "lo que no nombra dias no inventa ninguno")
+    c.igual(pv.dias_de_pedido(None), [], "ni el vacio")
+
+    conn, _, _ = _importar()
+    try:
+        conn.execute("UPDATE pv_proveedor SET dias_pedido = 'Martes y viernes'")
+        conn.commit()
+        martes = dt.date(2026, 11, 24)      # un martes
+        jueves = dt.date(2026, 11, 26)
+        c.cierto(pv.a_quien_toca_pedirle(conn, martes), "el martes si toca")
+        c.igual(pv.a_quien_toca_pedirle(conn, jueves), [], "el jueves no")
+    finally:
+        conn.close()
+
+
+def la_pantalla_lleva_del_sugerido_a_la_orden(c):
+    """Una lista que hay que copiar a mano a la orden se deja de usar a la semana."""
+    conn, _, _ = _importar()
+    try:
+        _nivel(conn, "108194", "F&B", 5, 40)
+        _llenar_el_lodge(conn, 30)
+    finally:
+        conn.close()
+    import main
+
+    s = main.proveeduria_sugerido(departamento="F&B", user=USUARIO)
+    c.cierto(s["filas"], "el endpoint sugiere")
+    c.cierto(s["ocupacion_pct"] > 0, "con la ocupacion a la vista")
+    c.cierto(s["desde"] and s["hasta"], "y las fechas con las que se calculo")
+
+    # El periodo se puede cambiar: no es lo mismo pedir para una semana que para un mes.
+    largo = main.proveeduria_sugerido(departamento="F&B", dias=30, user=USUARIO)
+    c.cierto(largo["hasta"] > s["hasta"], "se puede pedir para mas dias")
+
+    raiz = RAIZ
+    with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+    c.cierto("function verSugeridoPv(" in pantalla, "la pantalla tiene «Qué pedir»")
+    c.cierto("function ordenDesdeSugeridoPv(" in pantalla,
+             "y lleva de la sugerencia a la orden sin copiar nada a mano")
+    i = pantalla.find("function pintarSugeridoPv(")
+    fn = pantalla[i:pantalla.find("\n// De la sugerencia", i)]
+    c.cierto("ocupacion_pct" in fn, "enseña con que ocupacion se calculo")
+    c.cierto("s.desde" in fn and "s.hasta" in fn, "y para que fechas")
+    c.cierto("sin_nivel" in fn, "y cuantos productos quedan fuera por no tener minimo")
+
+
 def el_boton_no_le_aparece_a_nadie_hasta_que_se_enciende(c):
     """LO PIDIO EL LODGE: «que sea un boton aparte, que mientras trabajemos en el la app
     pueda seguir funcionando de forma normal».
@@ -1174,6 +1510,14 @@ PRUEBAS = [
     el_PDF_de_la_orden_lleva_la_direccion_de_ENTREGA,
     el_PDF_dice_cuando_el_total_esta_incompleto,
     la_pantalla_tiene_el_ciclo_entero_de_la_compra,
+    la_ocupacion_sale_de_UNA_funcion_para_las_dos_pantallas,
+    el_cuarto_de_guias_no_sube_la_ocupacion,
+    el_pedido_sugerido_se_mueve_con_la_ocupacion,
+    lo_que_ya_esta_pedido_no_se_vuelve_a_pedir,
+    no_se_le_inventa_un_minimo_a_nadie,
+    los_niveles_vienen_de_la_hoja_y_son_por_bodega,
+    se_dice_a_que_proveedor_toca_pedirle_hoy,
+    la_pantalla_lleva_del_sugerido_a_la_orden,
     el_boton_no_le_aparece_a_nadie_hasta_que_se_enciende,
     al_arrancar_se_le_enciende_SOLO_a_quien_administra,
     la_pantalla_pide_las_dos_vistas_y_enseña_lo_que_hay_que_revisar,

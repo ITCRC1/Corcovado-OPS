@@ -1167,4 +1167,26 @@ CREATE TABLE IF NOT EXISTS pv_movimiento (
 CREATE INDEX IF NOT EXISTS idx_pv_movimiento_codigo ON pv_movimiento(codigo);
 CREATE INDEX IF NOT EXISTS idx_pv_movimiento_doc ON pv_movimiento(documento_id);
 
+-- CUANTO TIENE QUE HABER DE CADA PRODUCTO EN CADA BODEGA.
+--
+-- VA POR (PRODUCTO, BODEGA) y no por producto, porque asi esta en la hoja y porque es lo
+-- cierto: del mismo refresco el BAR necesita 48 y el RESTAURANTE 6. En la hoja estos dos
+-- numeros estan escritos A MANO en cada pestaña «INV_<area>» -- son las unicas columnas
+-- de esas pestañas que son dato y no formula.
+--
+-- Medido en la hoja del lodge: 735 filas los tienen puestos (RESTAURANTE 298, BAR 275,
+-- STAFF COMEDOR 87, HOUSEKEEPING 75). Las otras seis bodegas no los tienen todavia, y
+-- sin ellos no hay pedido sugerido que valga: la pantalla lo dice en vez de sugerir cero.
+--
+-- 'minimo' es lo que hay que tener con el lodge VACIO y 'maximo' con el lodge LLENO. El
+-- pedido sugerido interpola entre los dos segun la ocupacion de verdad -- que es lo unico
+-- que la hoja no podia hacer, porque ahi la ocupacion es un numero escrito a mano.
+CREATE TABLE IF NOT EXISTS pv_nivel (
+    codigo TEXT NOT NULL,
+    departamento TEXT NOT NULL,
+    minimo REAL,
+    maximo REAL,
+    PRIMARY KEY (codigo, departamento)
+);
+
 CREATE INDEX IF NOT EXISTS idx_nota_hoja_fecha ON nota_hoja (fecha);

@@ -33,7 +33,18 @@ def _celdas(ws, desde=1):
 
 
 def _col(fila, n):
-    return fila[n] if n < len(fila) else None
+    return fila[n] if n is not None and n < len(fila) else None
+
+
+def _numero(valor):
+    """Un número de la hoja, o None. El cero SÍ es un número: «mínimo 0» significa que
+    de ese producto no hace falta tener nada, y tirarlo lo dejaría sin nivel."""
+    if valor is None or str(valor).strip() == "":
+        return None
+    try:
+        return float(str(valor).replace(",", ".").strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def leer(ruta):
@@ -119,6 +130,48 @@ def leer(ruta):
                             "nombre": pv.normalizar_texto(_col(f, 3)),
                             "detalle": pv.normalizar_texto(_col(f, 4))})
 
+    # --- Los mínimos y máximos de cada bodega ---
+    #
+    # SON LAS ÚNICAS COLUMNAS DE LAS PESTAÑAS «INV_<área>» QUE SON DATO. Todo lo demás de
+    # esas quince pestañas es un SUMIFS sobre el historial, pero el mínimo y el máximo
+    # están escritos a mano por quien lleva la bodega, y sin ellos no hay pedido sugerido.
+    #
+    # Las columnas se buscan POR SU ENCABEZADO y no por su posición: las pestañas tienen
+    # entre 12 y 14 columnas, y en dos de ellas la primera columna ni siquiera se titula
+    # «Código» —en INV_BAR dice «50000 - Cost of Sale» y en INV_STAFF_COMEDOR dice «f»—.
+    # Buscando por posición, esas dos se perdían enteras: 362 de los 735 productos que
+    # tienen niveles puestos.
+    niveles = []
+    for hoja in hojas:
+        if not hoja.upper().startswith("INV") or hoja == "INVENTARIO_GENERAL":
+            continue
+        ws = wb[hoja]
+        filas = list(ws.iter_rows(values_only=True))
+        cab_i = next((i for i, f in enumerate(filas[:8])
+                      if any("NIMO" in str(v or "").upper() for v in f)), None)
+        if cab_i is None:
+            rechazar(hoja, 1, "no se encontró la columna de mínimo")
+            continue
+        cab = [str(v or "").strip().upper() for v in filas[cab_i]]
+        i_min = next((i for i, t in enumerate(cab) if "NIMO" in t), None)
+        i_max = next((i for i, t in enumerate(cab) if "XIMO" in t), None)
+        i_dep = next((i for i, t in enumerate(cab) if "DEPARTAMENTO" in t), 1)
+        for n, f in enumerate(filas[cab_i + 1:], start=cab_i + 2):
+            codigo = pv.normalizar_codigo(_col(f, 0))
+            if not codigo:
+                continue
+            mn = _numero(_col(f, i_min))
+            mx = _numero(_col(f, i_max)) if i_max is not None else None
+            # Un producto sin ninguno de los dos no es una fila de niveles: es una fila
+            # de la pestaña que todavía no tiene nivel puesto.
+            if mn is None and mx is None:
+                continue
+            niveles.append({
+                "codigo": codigo,
+                "departamento": pv.normalizar_texto(_col(f, i_dep)).upper(),
+                "minimo": mn, "maximo": mx,
+            })
+
     # --- El historial, que es el libro ---
     movimientos = []
     for i, f in _celdas(wb[HOJA_HISTORIAL], desde=2):
@@ -158,7 +211,7 @@ def leer(ruta):
 
     wb.close()
     return {"productos": productos, "proveedores": proveedores, "cuentas": cuentas,
-            "movimientos": movimientos, "rechazos": rechazos}
+            "movimientos": movimientos, "niveles": niveles, "rechazos": rechazos}
 
 
 def cargar(conn, datos, usuario=None):
@@ -201,6 +254,20 @@ def cargar(conn, datos, usuario=None):
             (p["codigo"], p["descripcion"], p["unidad"], p["departamento"], p["area"],
              p["valor_unitario"], ids_prov.get(p["proveedor"].upper())))
 
+    # Los niveles se reemplazan enteros, como el resto de lo que manda la hoja. Se usa
+    # OR REPLACE porque la misma (codigo, bodega) puede venir en dos pestañas si alguien
+    # la copió: la última gana, en vez de reventar la importación entera por una fila.
+    cur.execute("DELETE FROM pv_nivel")
+    for n in datos.get("niveles") or []:
+        cur.execute(
+            "INSERT OR REPLACE INTO pv_nivel (codigo, departamento, minimo, maximo) "
+            "VALUES (?,?,?,?)",
+            (n["codigo"], n["departamento"], n["minimo"], n["maximo"]))
+    # CUÁNTOS QUEDARON, no cuántos se leyeron. La misma (código, bodega) aparece repetida
+    # entre pestañas —medido en la hoja del lodge: 1.046 filas leídas, 971 niveles
+    # distintos— y decir «1.046» sería contar 75 veces lo mismo.
+    niveles_guardados = cur.execute("SELECT COUNT(*) FROM pv_nivel").fetchone()[0]
+
     for c in datos["cuentas"]:
         cur.execute(
             "INSERT OR IGNORE INTO pv_cuenta (codigo, grupo, nombre, detalle) "
@@ -234,6 +301,8 @@ def cargar(conn, datos, usuario=None):
     conn.commit()
     return {"proveedores": len(datos["proveedores"]),
             "productos": len(datos["productos"]),
+            "niveles": niveles_guardados,
+            "niveles_repetidos": len(datos.get("niveles") or []) - niveles_guardados,
             "cuentas": len(datos["cuentas"]),
             "documentos": len(ids_doc),
             "movimientos": len(datos["movimientos"]),
