@@ -1384,6 +1384,124 @@ def proveeduria_anular(doc_id: int,
         conn.close()
 
 
+# ---------- La orden de compra ----------
+
+@app.get("/api/proveeduria/compras")
+def proveeduria_compras(estado: str = None,
+                        user: dict = Depends(exige("proveeduria"))):
+    """Las órdenes de compra, con proveedores y cuentas para poder armar una nueva."""
+    import proveeduria as pv
+    conn = get_connection()
+    try:
+        return {
+            "ordenes": pv.ordenes(conn, estado=estado),
+            "proveedores": [dict(r) for r in conn.execute(
+                "SELECT id, nombre, condicion, dias_credito, dias_pedido, dias_entrega "
+                "FROM pv_proveedor WHERE activo = 1 ORDER BY nombre")],
+            "cuentas": [dict(r) for r in conn.execute(
+                "SELECT id, codigo FROM pv_cuenta ORDER BY codigo")],
+            "config": pv.cargar_config(),
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/proveeduria/compras")
+def proveeduria_crear_compra(payload: dict,
+                             user: dict = Depends(exige("proveeduria", escribir=True))):
+    """Arma una orden de compra. Nace «Solicitado» y NO suma stock todavía.
+
+    Es lo único de proveeduría que no mueve el inventario al escribirlo: se pide, se
+    manda al proveedor, y la mercadería aparece en bodega cuando llega.
+    """
+    import proveeduria as pv
+    conn = get_connection()
+    try:
+        orden = pv.crear_orden_compra(
+            conn,
+            proveedor_id=payload.get("proveedor_id"),
+            departamento=payload.get("departamento"),
+            lineas=payload.get("lineas") or [],
+            fecha=(payload.get("fecha") or "").strip() or None,
+            solicitado_por=payload.get("solicitado_por") or "",
+            observaciones=payload.get("observaciones") or "",
+            usuario=user.get("usuario"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+    return {"status": "ok", "orden": orden}
+
+
+@app.get("/api/proveeduria/compras/{doc_id}")
+def proveeduria_ver_compra(doc_id: int, user: dict = Depends(exige("proveeduria"))):
+    import proveeduria as pv
+    conn = get_connection()
+    try:
+        orden = pv.orden(conn, doc_id)
+        if not orden:
+            raise HTTPException(status_code=404, detail="Esa orden no existe")
+        return orden
+    finally:
+        conn.close()
+
+
+@app.post("/api/proveeduria/compras/{doc_id}/pedida")
+def proveeduria_marcar_pedida(doc_id: int,
+                              user: dict = Depends(exige("proveeduria", escribir=True))):
+    """De «Solicitado» a «Pendiente de Ingreso»: ya se le mandó al proveedor."""
+    import proveeduria as pv
+    conn = get_connection()
+    try:
+        return {"status": "ok", "orden": pv.marcar_pedida(conn, doc_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/api/proveeduria/compras/{doc_id}/recibir")
+def proveeduria_recibir(doc_id: int, payload: dict = None,
+                        user: dict = Depends(exige("proveeduria", escribir=True))):
+    """Da por recibidas unas líneas. RECIBIR ES LO QUE SUMA EL STOCK.
+
+    Se puede recibir a medias, y es el caso normal: el bote trae lo que cabe y el resto
+    queda para el viaje siguiente.
+    """
+    import proveeduria as pv
+    payload = payload or {}
+    conn = get_connection()
+    try:
+        orden, avisos = pv.recibir(conn, doc_id,
+                                   lineas_ids=payload.get("lineas"),
+                                   factura=payload.get("factura"),
+                                   usuario=user.get("usuario"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+    return {"status": "ok", "orden": orden, "avisos": avisos}
+
+
+@app.get("/api/proveeduria/compras/{doc_id}/pdf")
+def proveeduria_pdf_compra(doc_id: int, user: dict = Depends(exige("proveeduria"))):
+    """El papel que recibe el proveedor."""
+    import proveeduria as pv
+    import proveeduria_pdf as pvpdf
+    conn = get_connection()
+    try:
+        orden = pv.orden(conn, doc_id)
+        if not orden:
+            raise HTTPException(status_code=404, detail="Esa orden no existe")
+        buf = pvpdf.generar(orden, pv.cargar_config())
+    finally:
+        conn.close()
+    nombre = f"Orden_de_compra_{orden['numero']}.pdf"
+    return Response(
+        content=buf.getvalue(), media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{nombre}"'})
+
+
 @app.post("/api/proveeduria/importar")
 async def proveeduria_importar(file: UploadFile = File(...),
                                user: dict = Depends(exige("proveeduria",

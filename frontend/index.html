@@ -7188,6 +7188,7 @@ function pintarProveeduria() {
             <button class="btn" onclick="abrirMovimientoPv('AJUSTE INVENTARIO')">
               Ajustar por conteo</button>
             <button class="btn" onclick="abrirMovimientoPv('MERMA')">Merma</button>
+            <button class="btn" onclick="verComprasPv()">Órdenes de compra</button>
             <button class="btn" onclick="verMovimientosPv()">Últimos movimientos</button>
             <button class="btn" onclick="abrirImportarProveeduria()">
               Importar la hoja</button>` : ""}
@@ -7530,9 +7531,14 @@ function avisarDeLaBodegaPv(avisos) {
 }
 
 async function verMovimientosPv() {
+  // Los dos listados —movimientos y compras— comparten esta caja, así que se marca
+  // cuál está puesta. Sin eso, abrir uno con el otro abierto lo dejaba a medias.
   const caja = document.getElementById("pv-movimientos");
   if (!caja) return;
-  if (caja.innerHTML) { caja.innerHTML = ""; return; }
+  if (caja.dataset.vista === "movimientos") {
+    caja.innerHTML = ""; caja.dataset.vista = ""; return;
+  }
+  caja.dataset.vista = "movimientos";
   const p = new URLSearchParams();
   if (window._pvDepto) p.set("departamento", window._pvDepto);
   const res = await fetchAuth(`${API}/api/proveeduria/movimientos?${p}`);
@@ -7584,6 +7590,384 @@ async function anularMovimientoPv(id, numero) {
   if (caja) caja.innerHTML = "";
   await loadProveeduria();
   verMovimientosPv();
+}
+
+// ---------- Órdenes de compra ----------
+//
+// Es lo único de proveeduría que NO mueve el inventario al escribirlo. Se pide, se manda
+// al proveedor, y la mercadería aparece en bodega cuando llega — a veces a medias,
+// porque el bote trae lo que cabe. Por eso el estado va por LÍNEA y no por orden.
+
+window._pvCompras = null;
+window._pvNueva = { proveedor: "", depto: "", lineas: [], buscado: "", resultados: [] };
+
+async function verComprasPv() {
+  const caja = document.getElementById("pv-movimientos");
+  if (!caja) return;
+  if (caja.dataset.vista === "compras") {
+    caja.innerHTML = ""; caja.dataset.vista = ""; return;
+  }
+  const res = await fetchAuth(`${API}/api/proveeduria/compras`);
+  if (!res.ok) { avisar("No se pudieron cargar las órdenes", true); return; }
+  window._pvCompras = await res.json();
+  caja.dataset.vista = "compras";
+  pintarComprasPv();
+}
+
+function estadoCompraPv(o) {
+  if (o.estado === "Recibido") return '<span class="badge badge-ok">recibida</span>';
+  if (o.estado === "Recibida a medias")
+    return `<span class="badge" style="background:#E5A93B;color:#3A2B08;">a medias ·
+            ${o.recibidas}/${o.lineas_total}</span>`;
+  if (o.estado === "Pendiente de Ingreso")
+    return '<span class="badge badge-tour">pedida al proveedor</span>';
+  return '<span class="badge">solicitada</span>';
+}
+
+function pintarComprasPv() {
+  const d = window._pvCompras || {};
+  const caja = document.getElementById("pv-movimientos");
+  const puede = puedeEscribir("proveeduria");
+  caja.innerHTML = `<div class="detail-panel" style="margin-top:12px;">
+    <p style="font-weight:600;margin:0 0 2px;display:flex;gap:8px;align-items:center;
+              flex-wrap:wrap;">Órdenes de compra
+      ${puede ? `<button class="btn btn-primary" style="padding:2px 10px;font-size:12px;"
+         onclick="abrirNuevaCompraPv()">Nueva orden</button>` : ""}</p>
+    <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">
+      Una orden NO suma al inventario hasta que se recibe. Se puede recibir a medias:
+      el bote trae lo que cabe y el resto queda para el viaje siguiente.</p>
+    ${!(d.ordenes || []).length ? `<p class="empty" style="padding:12px 0;">
+      Todavía no hay órdenes de compra registradas aquí.
+      <small>Las de la hoja están en «Últimos movimientos».</small></p>` : `
+    <table>
+      <tr><th>Nº</th><th>Fecha</th><th>Proveedor</th><th>Depto.</th><th>Líneas</th>
+        <th>Total</th><th>Estado</th><th></th></tr>
+      ${d.ordenes.map(o => `<tr>
+        <td style="font-family:monospace;font-size:11.5px;">${escaparHTML(o.numero)}</td>
+        <td>${escaparHTML(o.fecha || "")}</td>
+        <td>${escaparHTML(o.proveedor || "—")}</td>
+        <td style="font-size:11.5px;">${escaparHTML(o.departamento || "—")}</td>
+        <td>${o.recibidas} de ${o.lineas_total}</td>
+        <td>${pvColones(o.total)}${o.lineas_sin_precio
+              ? `<br><span style="font-size:10.5px;color:var(--muted);">faltan ${o.lineas_sin_precio} precios</span>` : ""}</td>
+        <td>${estadoCompraPv(o)}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn" style="padding:2px 8px;font-size:11px;"
+                  onclick="abrirOrdenPv(${o.id})">Ver</button>
+          <button class="btn" style="padding:2px 8px;font-size:11px;"
+                  onclick="descargarOrdenPv(${o.id}, '${escaparAtributo(o.numero)}')">PDF</button>
+        </td>
+      </tr>`).join("")}
+    </table>`}
+  </div>`;
+}
+
+async function descargarOrdenPv(id, numero) {
+  const res = await fetchAuth(`${API}/api/proveeduria/compras/${id}/pdf`);
+  if (!res.ok) { avisar("No se pudo generar el PDF", true); return; }
+  const blob = await res.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `Orden_de_compra_${numero}.pdf`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+async function abrirOrdenPv(id) {
+  const res = await fetchAuth(`${API}/api/proveeduria/compras/${id}`);
+  if (!res.ok) { avisar("No se pudo abrir la orden", true); return; }
+  const o = await res.json();
+  const puede = puedeEscribir("proveeduria");
+  const pendientes = o.lineas.filter(l => l.estado !== "Recibido");
+  const fondo = document.createElement("div");
+  fondo.className = "modal-fondo"; fondo.id = "modal-pv-orden";
+  fondo.onclick = (e) => { if (e.target === fondo) fondo.remove(); };
+  fondo.innerHTML = `<div class="modal-caja" style="max-width:700px;">
+    <div class="modal-encabezado">
+      <div><p class="title">Orden de compra nº ${escaparHTML(o.numero)}</p>
+        <p class="subtitle">${escaparHTML(o.proveedor || "—")} ·
+          ${escaparHTML(o.fecha || "")} · ${escaparHTML(o.departamento || "")}</p></div>
+      <button class="btn" onclick="document.getElementById('modal-pv-orden').remove()">Cerrar</button>
+    </div>
+    <div class="modal-cuerpo">
+      <table>
+        <tr>${puede && pendientes.length ? "<th></th>" : ""}<th>Código</th>
+          <th>Producto</th><th>Cant.</th><th>P. unit.</th><th>Total</th><th>Estado</th></tr>
+        ${o.lineas.map(l => `<tr>
+          ${puede && pendientes.length ? `<td style="text-align:center;">${
+            l.estado === "Recibido" ? "" :
+            `<input type="checkbox" class="pv-recibir" value="${l.id}" checked
+                    style="width:18px;height:18px;cursor:pointer;">`}</td>` : ""}
+          <td style="font-family:monospace;font-size:11.5px;">${escaparHTML(l.codigo)}</td>
+          <td>${escaparHTML(l.descripcion || "")}</td>
+          <td>${l.cantidad}${l.unidad ? " " + escaparHTML(l.unidad) : ""}</td>
+          <td>${pvColones(l.valor_unitario)}</td>
+          <td>${pvColones(l.total)}</td>
+          <td>${l.estado === "Recibido"
+                ? '<span class="badge badge-ok">recibido</span>'
+                : `<span class="badge badge-tour">${escaparHTML(l.estado)}</span>`}</td>
+        </tr>`).join("")}
+      </table>
+      <p style="text-align:right;font-weight:600;margin:10px 0 0;">
+        Total ${pvColones(o.total)}</p>
+      ${o.lineas_sin_precio ? `<p style="text-align:right;font-size:11.5px;
+        color:var(--muted);margin:2px 0 0;">no incluye ${o.lineas_sin_precio}
+        línea(s) sin precio</p>` : ""}
+      ${o.observaciones ? `<p style="font-size:12px;color:var(--muted);margin:10px 0 0;">
+        ${escaparHTML(o.observaciones)}</p>` : ""}
+
+      ${puede && pendientes.length ? `
+        <div style="border-top:1px solid var(--border);margin-top:14px;padding-top:12px;">
+          <p style="font-size:12px;font-weight:600;margin:0 0 6px;">Recibir
+            <span style="font-weight:400;color:var(--muted);">— destildá lo que no llegó.
+              Recibir es lo que suma al inventario.</span></p>
+          <label style="font-size:12px;">Nº de factura
+            <input id="pv-factura" value="${escaparAtributo(o.factura || "")}"
+                   style="font:inherit;font-size:12.5px;padding:4px 8px;width:160px;"></label>
+          <p style="margin:10px 0 0;display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn btn-primary" onclick="recibirOrdenPv(${o.id})">
+              Recibir lo marcado</button>
+            ${o.estado === "Solicitado" ? `<button class="btn"
+              onclick="marcarPedidaPv(${o.id})">Ya se le mandó al proveedor</button>` : ""}
+            <button class="btn" onclick="descargarOrdenPv(${o.id}, '${escaparAtributo(o.numero)}')">
+              PDF para el proveedor</button>
+          </p>
+        </div>` : ""}
+    </div></div>`;
+  document.body.appendChild(fondo);
+}
+
+async function marcarPedidaPv(id) {
+  const res = await fetchAuth(`${API}/api/proveeduria/compras/${id}/pedida`,
+                              { method: "POST" });
+  if (!res.ok) { avisar("No se pudo marcar", true); return; }
+  avisar("Queda como pedida al proveedor");
+  document.getElementById("modal-pv-orden")?.remove();
+  // Se marca la vista como cerrada para que `verComprasPv` la vuelva a pedir en vez de
+  // alternarla: llamarla dos veces seguidas la dejaba abierta por casualidad.
+  const caja = document.getElementById("pv-movimientos");
+  if (caja) caja.dataset.vista = "";
+  verComprasPv();
+}
+
+async function recibirOrdenPv(id) {
+  const marcadas = [...document.querySelectorAll(".pv-recibir:checked")]
+    .map(x => parseInt(x.value, 10));
+  if (!marcadas.length) { avisar("Marcá al menos una línea", true); return; }
+  const res = await fetchAuth(`${API}/api/proveeduria/compras/${id}/recibir`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lineas: marcadas,
+                           factura: (document.getElementById("pv-factura") || {}).value }),
+  });
+  if (!res.ok) {
+    avisar((await res.json().catch(() => ({}))).detail || "No se pudo recibir", true);
+    return;
+  }
+  const d = await res.json();
+  document.getElementById("modal-pv-orden")?.remove();
+  avisar(`Recibidas ${marcadas.length} línea(s) · la bodega ya las tiene`);
+  await loadProveeduria();
+  const caja = document.getElementById("pv-movimientos");
+  if (caja) caja.dataset.vista = "";
+  verComprasPv();
+}
+
+function abrirNuevaCompraPv() {
+  const d = window._pvCompras || {};
+  window._pvNueva = {
+    proveedor: (d.proveedores || [])[0] ? String(d.proveedores[0].id) : "",
+    depto: window._pvDepto || ((window._pvData || {}).departamentos || [])[0] || "",
+    lineas: [], buscado: "", resultados: [],
+  };
+  const fondo = document.createElement("div");
+  fondo.className = "modal-fondo"; fondo.id = "modal-pv-nueva";
+  fondo.onclick = (e) => { if (e.target === fondo) fondo.remove(); };
+  fondo.innerHTML = `<div class="modal-caja" style="max-width:700px;">
+    <div class="modal-encabezado">
+      <div><p class="title">Nueva orden de compra</p>
+        <p class="subtitle">No suma al inventario: la bodega la recibe cuando llegue.</p></div>
+      <button class="btn" onclick="document.getElementById('modal-pv-nueva').remove()">Cerrar</button>
+    </div>
+    <div class="modal-cuerpo">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px;">
+        <label style="font-size:12px;font-weight:600;">Proveedor<br>
+          <select id="pv-nc-prov" onchange="window._pvNueva.proveedor=this.value;pintarNuevaCompraPv()"
+                  style="font:inherit;font-size:13px;padding:6px 8px;min-width:230px;">
+            ${(d.proveedores || []).map(p => `<option value="${p.id}">${escaparHTML(p.nombre)}</option>`).join("")}
+          </select></label>
+        <label style="font-size:12px;font-weight:600;">Departamento<br>
+          <select id="pv-nc-depto" onchange="window._pvNueva.depto=this.value"
+                  style="font:inherit;font-size:13px;padding:6px 8px;min-width:160px;">
+            ${((window._pvData || {}).departamentos || []).map(x => `<option value="${escaparAtributo(x)}"
+              ${x === window._pvNueva.depto ? "selected" : ""}>${escaparHTML(x)}</option>`).join("")}
+          </select></label>
+        <label style="font-size:12px;font-weight:600;">Solicitado por<br>
+          <input id="pv-nc-quien" style="font:inherit;font-size:13px;padding:5px 8px;width:130px;"></label>
+      </div>
+      <p id="pv-nc-condicion" style="font-size:11.5px;color:var(--muted);margin:0 0 8px;"></p>
+      <input id="pv-nc-busca" type="search" autocomplete="off"
+             placeholder="Buscar producto por nombre o código"
+             oninput="buscarProductoCompraPv(this.value)"
+             style="width:100%;font:inherit;font-size:13px;padding:7px 10px;
+                    border:1px solid var(--border);border-radius:8px;
+                    background:var(--card);color:inherit;">
+      <div id="pv-nc-resultados"></div>
+      <div id="pv-nc-lineas"></div>
+      <label style="display:block;font-size:12px;font-weight:600;margin:12px 0 4px;">
+        Observaciones <span style="font-weight:400;color:var(--muted);">— salen en el PDF</span></label>
+      <input id="pv-nc-obs" type="text" maxlength="200"
+             style="width:100%;font:inherit;font-size:13px;padding:6px 9px;
+                    border:1px solid var(--border);border-radius:8px;
+                    background:var(--card);color:inherit;">
+      <p style="margin-top:14px;">
+        <button class="btn btn-primary" onclick="guardarNuevaCompraPv()">Crear la orden</button>
+      </p>
+    </div></div>`;
+  document.body.appendChild(fondo);
+  pintarNuevaCompraPv();
+}
+
+let _pvNcTimer = null;
+
+async function buscarProductoCompraPv(texto) {
+  clearTimeout(_pvNcTimer);
+  const q = (texto || "").trim();
+  window._pvNueva.buscado = q;
+  if (q.length < 2) { window._pvNueva.resultados = []; pintarNuevaCompraPv(); return; }
+  _pvNcTimer = setTimeout(async () => {
+    const p = new URLSearchParams({ q, departamento: window._pvNueva.depto });
+    const res = await fetchAuth(`${API}/api/proveeduria/productos?${p}`);
+    if (window._pvNueva.buscado !== q) return;
+    window._pvNueva.resultados = res.ok ? (await res.json()).productos : [];
+    pintarNuevaCompraPv();
+  }, 220);
+}
+
+function agregarLineaCompraPv(codigo) {
+  const n = window._pvNueva;
+  const p = (n.resultados || []).find(x => x.codigo === codigo);
+  if (!p || n.lineas.some(x => x.codigo === codigo)) return;
+  n.lineas.push({ codigo: p.codigo, descripcion: p.descripcion, unidad: p.unidad,
+                  stock: p.stock || 0, cantidad: "",
+                  // El precio arranca en el del catálogo y se puede cambiar: lo que se
+                  // le pidió al proveedor es lo que decía la orden ese día.
+                  precio: p.valor_unitario == null ? "" : (p.valor_unitario / 100).toFixed(2) });
+  pintarNuevaCompraPv();
+}
+
+function campoLineaCompraPv(codigo, campo, valor) {
+  const l = window._pvNueva.lineas.find(x => x.codigo === codigo);
+  if (l) l[campo] = valor;
+  if (campo === "cantidad" || campo === "precio") pintarTotalCompraPv();
+}
+
+function pintarTotalCompraPv() {
+  const caja = document.getElementById("pv-nc-total");
+  if (!caja) return;
+  const l = window._pvNueva.lineas;
+  const total = l.reduce((s, x) => s + (parseFloat(x.cantidad) || 0) *
+                                       (parseFloat(x.precio) || 0), 0);
+  const sinPrecio = l.filter(x => String(x.precio).trim() === "").length;
+  caja.innerHTML = `Total ₡${Math.round(total).toLocaleString("es-ES")}`
+    + (sinPrecio ? ` <span style="font-weight:400;color:var(--muted);font-size:11.5px;">
+        no incluye ${sinPrecio} sin precio</span>` : "");
+}
+
+function pintarNuevaCompraPv() {
+  const n = window._pvNueva;
+  const d = window._pvCompras || {};
+  const prov = (d.proveedores || []).find(p => String(p.id) === String(n.proveedor));
+  const cond = document.getElementById("pv-nc-condicion");
+  if (cond) {
+    // LOS DIAS DE PEDIDO Y DE ENTREGA DEL PROVEEDOR, aquí y no en otra pantalla: es el
+    // dato que decide si esta orden llega a tiempo, y se mira justo al armarla.
+    cond.innerHTML = !prov ? "" : [
+      prov.condicion ? `${escaparHTML(prov.condicion)}${prov.dias_credito ? ` a ${prov.dias_credito} días` : ""}` : "",
+      prov.dias_pedido ? `se le pide: ${escaparHTML(prov.dias_pedido)}` : "",
+      prov.dias_entrega ? `entrega: ${escaparHTML(prov.dias_entrega)}` : "",
+    ].filter(Boolean).join(" · ");
+  }
+
+  const res = document.getElementById("pv-nc-resultados");
+  if (res) {
+    const rows = (n.resultados || []).filter(p => !n.lineas.some(l => l.codigo === p.codigo));
+    res.innerHTML = !n.buscado ? "" : rows.length ? `
+      <div style="border:1px solid var(--border);border-radius:8px;margin-top:6px;
+                  max-height:170px;overflow:auto;">
+        ${rows.map(p => `<div style="display:flex;gap:8px;align-items:center;
+                     padding:5px 10px;font-size:12.5px;cursor:pointer;"
+                     onclick="agregarLineaCompraPv('${escaparAtributo(p.codigo)}')">
+          <span style="flex:1;">${escaparHTML(p.descripcion)}
+            <span style="color:var(--muted);font-family:monospace;font-size:11px;">${escaparHTML(p.codigo)}</span></span>
+          <span style="color:var(--muted);font-size:11.5px;">hay ${p.stock ?? 0}</span>
+          <button class="btn" style="padding:1px 8px;font-size:11px;">Agregar</button>
+        </div>`).join("")}
+      </div>` : `<p class="empty" style="padding:8px 0;">Nada con «${escaparHTML(n.buscado)}».</p>`;
+  }
+
+  const caja = document.getElementById("pv-nc-lineas");
+  if (!caja) return;
+  caja.innerHTML = !n.lineas.length ? `
+    <p class="empty" style="padding:12px 0;">Buscá productos arriba y agregalos.</p>` : `
+    <table style="margin-top:10px;">
+      <tr><th>Producto</th><th>Hay</th><th>Cantidad</th><th>Precio unit.</th>
+        <th>Cuenta</th><th></th></tr>
+      ${n.lineas.map(l => `<tr>
+        <td>${escaparHTML(l.descripcion)}
+          <span style="color:var(--muted);font-family:monospace;font-size:11px;">${escaparHTML(l.codigo)}</span></td>
+        <td style="color:var(--muted);">${l.stock}</td>
+        <td><input inputmode="decimal" value="${escaparAtributo(l.cantidad)}"
+              onchange="campoLineaCompraPv('${escaparAtributo(l.codigo)}','cantidad',this.value)"
+              style="width:74px;text-align:right;font-size:13px;padding:3px 6px;"></td>
+        <td><input inputmode="decimal" value="${escaparAtributo(l.precio)}"
+              onchange="campoLineaCompraPv('${escaparAtributo(l.codigo)}','precio',this.value)"
+              style="width:88px;text-align:right;font-size:13px;padding:3px 6px;"></td>
+        <td><select onchange="campoLineaCompraPv('${escaparAtributo(l.codigo)}','cuenta_id',this.value)"
+              style="font-size:11.5px;padding:2px 4px;max-width:150px;">
+            <option value="">—</option>
+            ${(d.cuentas || []).map(ct => `<option value="${ct.id}"
+              ${String(l.cuenta_id) === String(ct.id) ? "selected" : ""}>${escaparHTML(ct.codigo)}</option>`).join("")}
+          </select></td>
+        <td><button class="btn" style="padding:2px 8px;font-size:11px;"
+              onclick="quitarLineaCompraPv('${escaparAtributo(l.codigo)}')">Quitar</button></td>
+      </tr>`).join("")}
+    </table>
+    <p id="pv-nc-total" style="text-align:right;font-weight:600;margin:8px 0 0;"></p>`;
+  pintarTotalCompraPv();
+}
+
+function quitarLineaCompraPv(codigo) {
+  window._pvNueva.lineas = window._pvNueva.lineas.filter(x => x.codigo !== codigo);
+  pintarNuevaCompraPv();
+}
+
+async function guardarNuevaCompraPv() {
+  const n = window._pvNueva;
+  const lineas = n.lineas
+    .filter(l => String(l.cantidad).trim() !== "")
+    .map(l => ({ codigo: l.codigo, cantidad: l.cantidad, precio: l.precio,
+                 cuenta_id: l.cuenta_id || null }));
+  if (!lineas.length) { avisar("Poné la cantidad de al menos un producto", true); return; }
+  const res = await fetchAuth(`${API}/api/proveeduria/compras`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      proveedor_id: parseInt(n.proveedor, 10),
+      departamento: (document.getElementById("pv-nc-depto") || {}).value || n.depto,
+      solicitado_por: (document.getElementById("pv-nc-quien") || {}).value || "",
+      observaciones: (document.getElementById("pv-nc-obs") || {}).value || "",
+      lineas,
+    }),
+  });
+  if (!res.ok) {
+    avisar((await res.json().catch(() => ({}))).detail || "No se pudo crear", true);
+    return;
+  }
+  const d = await res.json();
+  document.getElementById("modal-pv-nueva")?.remove();
+  avisar(`Orden nº ${d.orden.numero} creada · todavía no suma al inventario`);
+  const caja = document.getElementById("pv-movimientos");
+  if (caja) caja.dataset.vista = "";
+  verComprasPv();
 }
 
 function abrirImportarProveeduria() {

@@ -25,6 +25,60 @@ por día, y además cuántos desayunan, cuántos cenan en cada restaurante y cu�
 a lavandería. Todo lo demás —registrar, sumar, imprimir— la hoja lo hacía bien.
 """
 import datetime
+import json
+import os
+
+# ---------------------------------------------------------------------------
+# Los datos del lodge que van en la orden de compra
+# ---------------------------------------------------------------------------
+#
+# Salen de la cabecera de la pestaña «Orden de compra» de la hoja, que es la que el
+# proveedor recibe hoy. Van aquí como valores por defecto y se pueden cambiar sin tocar
+# el código: si el lodge se muda o cambia el teléfono, se edita el archivo de
+# configuración y la orden siguiente ya sale bien.
+CONFIG_POR_DEFECTO = {
+    "razon_social": "Corcovado Wilderness Lodge",
+    "cedula_juridica": "3-102-865727",
+    "direccion": ("Puntarenas, Osa, Sierpe, 400 metros Este de Estación Playa "
+                  "San Pedrillo."),
+    "correo": "proveduria.cwl@gmail.com",
+    "telefono1": "+506 86756555",
+    "telefono2": "+506 84257901",
+    # A dónde se le dice al proveedor que entregue. No es la misma que la de arriba: la
+    # mercadería no llega al lodge, llega al muelle de Sierpe y de ahí sube en bote.
+    "direccion_entrega": ("Puntarenas, Osa, Sierpe, Hacienda Corcovado, 50 metros oeste "
+                          "del Hotel Oleaje Sereno (Perla del Sur), mano izquierda, "
+                          "tapia color blanco con negro."),
+}
+
+_CONFIG_PATH = os.path.join(
+    os.environ.get("HOTEL_DATA_DIR")
+    or os.path.join(os.path.dirname(__file__), "..", "data"),
+    "config_proveeduria.json")
+
+
+def cargar_config():
+    """Los datos del lodge para la orden de compra, con lo guardado encima."""
+    cfg = dict(CONFIG_POR_DEFECTO)
+    try:
+        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+            guardado = json.load(f)
+        if isinstance(guardado, dict):
+            cfg.update({k: v for k, v in guardado.items() if k in CONFIG_POR_DEFECTO})
+    except (OSError, ValueError):
+        pass
+    return cfg
+
+
+def guardar_config(cambios):
+    cfg = cargar_config()
+    cfg.update({k: normalizar_texto(v) for k, v in (cambios or {}).items()
+                if k in CONFIG_POR_DEFECTO})
+    os.makedirs(os.path.dirname(_CONFIG_PATH), exist_ok=True)
+    with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    return cfg
+
 
 # Los tipos de documento que mueven inventario, tal como los escribe la hoja.
 TIPOS = ("ORDEN DE COMPRA", "ORDEN INTERNA", "AJUSTE INVENTARIO", "MERMA",
@@ -399,6 +453,183 @@ def anular(conn, doc_id):
     conn.execute("DELETE FROM pv_documento WHERE id = ?", (doc_id,))
     conn.commit()
     return {"numero": d["numero"], "tipo": d["tipo"]}
+
+
+# ---------------------------------------------------------------------------
+# La orden de compra
+# ---------------------------------------------------------------------------
+#
+# TIENE SU PROPIO CAMINO y no entra en `registrar`, a propósito: una orden de compra es
+# lo único de proveeduría que NO mueve el inventario en el momento de escribirla. Se
+# pide, se manda al proveedor, y la mercadería aparece en bodega cuando llega — a veces
+# a medias, porque el bote trae lo que cabe.
+#
+# De ahí que el estado viva en la LÍNEA: medido en la hoja del lodge, 25 órdenes de 1.165
+# traen líneas en dos estados a la vez.
+
+TIPO_COMPRA = "ORDEN DE COMPRA"
+
+
+def crear_orden_compra(conn, proveedor_id, departamento, lineas, fecha=None,
+                       solicitado_por="", observaciones="", usuario=None):
+    """Arma una orden de compra. Nace como «Solicitado» y NO suma stock todavía.
+
+    `lineas` es [{'codigo', 'cantidad', 'precio'(opcional), 'cuenta_id'(opcional)}]. El
+    precio se guarda EN LA LÍNEA y no se lee del catálogo cada vez: lo que se le pidió al
+    proveedor es lo que decía la orden ese día, y el catálogo cambia. Si no se escribe,
+    se copia el del catálogo como punto de partida.
+    """
+    departamento = normalizar_texto(departamento).upper()
+    if not departamento:
+        raise ValueError("Falta el departamento que pide la compra.")
+    if not lineas:
+        raise ValueError("La orden no tiene ninguna línea.")
+    prov = conn.execute("SELECT id, nombre FROM pv_proveedor WHERE id = ?",
+                        (proveedor_id,)).fetchone() if proveedor_id else None
+    if not prov:
+        raise ValueError("Elegí el proveedor al que se le compra.")
+
+    preparadas = []
+    for linea in lineas:
+        codigo = normalizar_codigo(linea.get("codigo"))
+        prod = _producto(conn, codigo) if codigo else None
+        if not prod:
+            raise ValueError(
+                f"El código «{codigo}» no está en el catálogo. Revisalo, o agregá el "
+                "producto antes de comprarlo.")
+        try:
+            cantidad = float(linea.get("cantidad"))
+        except (TypeError, ValueError):
+            raise ValueError(f"«{codigo}»: la cantidad no se entiende.")
+        if cantidad <= 0:
+            raise ValueError(f"«{codigo}»: la cantidad tiene que ser mayor que cero.")
+        precio = (centimos(linea.get("precio"))
+                  if str(linea.get("precio") or "").strip() != ""
+                  else prod["valor_unitario"])
+        preparadas.append((codigo, prod["descripcion"], cantidad, precio,
+                           linea.get("cuenta_id")))
+
+    numero = siguiente_numero(conn)
+    cur = conn.execute(
+        """INSERT INTO pv_documento (numero, tipo, fecha, proveedor_id, departamento,
+               solicitado_por, observaciones, origen, creado_por)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (numero, TIPO_COMPRA, fecha or datetime.date.today().isoformat(), prov["id"],
+         departamento, normalizar_texto(solicitado_por),
+         normalizar_texto(observaciones), ORIGEN_APP, usuario))
+    doc_id = cur.lastrowid
+    for codigo, descripcion, cantidad, precio, cuenta_id in preparadas:
+        conn.execute(
+            """INSERT INTO pv_movimiento (documento_id, codigo, descripcion, cantidad,
+                   signo, estado, departamento, valor_unitario, cuenta_id)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (doc_id, codigo, descripcion, cantidad, ENTRA, "Solicitado", departamento,
+             precio, cuenta_id))
+    conn.commit()
+    return orden(conn, doc_id)
+
+
+def orden(conn, doc_id):
+    """Una orden de compra entera: cabecera, líneas, estado y total."""
+    d = conn.execute(
+        """SELECT d.*, p.nombre AS proveedor, p.correo AS proveedor_correo,
+                  p.contacto AS proveedor_telefono,
+                  p.nombre_contacto AS proveedor_contacto, p.condicion, p.dias_credito
+             FROM pv_documento d LEFT JOIN pv_proveedor p ON p.id = d.proveedor_id
+            WHERE d.id = ?""", (doc_id,)).fetchone()
+    if not d or d["tipo"] != TIPO_COMPRA:
+        return None
+    salida = dict(d)
+    salida["lineas"] = [dict(x) for x in conn.execute(
+        """SELECT m.id, m.codigo, m.descripcion, m.cantidad, m.estado,
+                  m.valor_unitario, m.cuenta_id, p.unidad, c.codigo AS cuenta
+             FROM pv_movimiento m
+             LEFT JOIN pv_producto p ON p.codigo = m.codigo
+             LEFT JOIN pv_cuenta c ON c.id = m.cuenta_id
+            WHERE m.documento_id = ? ORDER BY m.id""", (doc_id,))]
+    for l in salida["lineas"]:
+        l["total"] = (int(round(l["valor_unitario"] * l["cantidad"]))
+                      if l["valor_unitario"] is not None else None)
+    con_precio = [l for l in salida["lineas"] if l["total"] is not None]
+    salida["total"] = sum(l["total"] for l in con_precio)
+    # CUÁNTAS LÍNEAS QUEDAN SIN PRECIO. El total de una orden de compra es lo que el
+    # lodge se compromete a pagar: enseñarlo como si estuviera completo cuando falta el
+    # precio de tres renglones es la clase de cifra que se firma sin mirar.
+    salida["lineas_sin_precio"] = len(salida["lineas"]) - len(con_precio)
+    estados = {l["estado"] for l in salida["lineas"]}
+    # El estado de la ORDEN se deriva de sus líneas; no se guarda, por lo mismo de
+    # siempre: con los dos, el día que una línea cambie los dos dirían cosas distintas.
+    salida["estado"] = (estados.pop() if len(estados) == 1
+                        else "Recibida a medias")
+    salida["recibidas"] = sum(1 for l in salida["lineas"]
+                              if l["estado"] == ESTADO_EN_BODEGA)
+    # Va en la cabecera y no se cuenta en la pantalla: la lista de órdenes no trae las
+    # líneas —serían cientos— y aun así tiene que poder decir «3 de 7 recibidas».
+    salida["lineas_total"] = len(salida["lineas"])
+    return salida
+
+
+def ordenes(conn, estado=None, limite=60):
+    """Las órdenes de compra, con su estado derivado de las líneas."""
+    filas = [dict(r) for r in conn.execute(
+        f"""SELECT d.id FROM pv_documento d
+             WHERE d.tipo = ? ORDER BY d.fecha DESC, d.id DESC LIMIT ?""",
+        (TIPO_COMPRA, max(1, min(limite, 300))))]
+    salida = []
+    for f in filas:
+        o = orden(conn, f["id"])
+        if o and (not estado or o["estado"] == estado):
+            # La lista no necesita cada línea: solo cuántas y cómo van.
+            o.pop("lineas", None)
+            salida.append(o)
+    return salida
+
+
+def recibir(conn, doc_id, lineas_ids=None, factura=None, usuario=None):
+    """Da por RECIBIDAS unas líneas de una orden: a partir de ahí son stock.
+
+    SE PUEDE RECIBIR A MEDIAS, y es el caso normal, no la excepción: el bote trae lo que
+    cabe y el resto queda para el viaje siguiente. `lineas_ids` dice cuáles llegaron;
+    sin él, llegaron todas.
+
+    RECIBIR ES LO QUE SUMA EL STOCK. Hasta ese momento la orden existe, se puede imprimir
+    y se le puede mandar al proveedor, pero en la bodega no hay nada — que es la verdad.
+    """
+    o = orden(conn, doc_id)
+    if not o:
+        raise ValueError("Esa orden de compra no existe.")
+    if o["origen"] != ORIGEN_APP:
+        raise ValueError("Esa orden vino de la hoja de cálculo: se recibe en la hoja.")
+    ids = {int(x) for x in (lineas_ids or [])} or {l["id"] for l in o["lineas"]}
+    pendientes = [l for l in o["lineas"]
+                  if l["id"] in ids and l["estado"] != ESTADO_EN_BODEGA]
+    if not pendientes:
+        return o, ["Esas líneas ya estaban recibidas."]
+    for l in pendientes:
+        conn.execute("UPDATE pv_movimiento SET estado = ? WHERE id = ?",
+                     (ESTADO_EN_BODEGA, l["id"]))
+    if factura is not None:
+        conn.execute("UPDATE pv_documento SET factura = ? WHERE id = ?",
+                     (normalizar_texto(factura), doc_id))
+    conn.commit()
+    return orden(conn, doc_id), []
+
+
+def marcar_pedida(conn, doc_id):
+    """De «Solicitado» a «Pendiente de Ingreso»: ya se le mandó al proveedor.
+
+    Son dos cosas distintas y la hoja las distingue —69 solicitadas y 449 pendientes de
+    ingreso—: una está pedida dentro de la casa y la otra está en manos del proveedor. A
+    quien persigue un pedido le cambia a quién llamar.
+    """
+    o = orden(conn, doc_id)
+    if not o:
+        raise ValueError("Esa orden de compra no existe.")
+    conn.execute(
+        "UPDATE pv_movimiento SET estado = 'Pendiente de Ingreso' "
+        "WHERE documento_id = ? AND estado = 'Solicitado'", (doc_id,))
+    conn.commit()
+    return orden(conn, doc_id)
 
 
 # ---------------------------------------------------------------------------

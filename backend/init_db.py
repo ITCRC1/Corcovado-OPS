@@ -220,6 +220,17 @@ PRENDAS_HK = [
 # NO aparecen solas: hay que agregarlas explícitamente. Sin esto fallan al importar
 # el PDF, al abrir Restaurantes y al guardar permisos.
 COLUMNAS_NUEVAS = [
+    # PROVEEDURÍA. Las dos llegaron con la fase de registrar movimientos, y sin esto una
+    # base creada con la fase anterior se queda sin ellas: el esquema no las agrega
+    # porque la tabla ya existe. Lo vi en una base de pruebas —«table pv_documento has
+    # no column named origen»— y en el servidor habría sido lo mismo con la pantalla
+    # abierta.
+    #
+    # 'origen' es lo que permite que la hoja y la aplicación convivan: reimportar borra
+    # y recarga lo de la hoja y no se lleva lo registrado aquí. 'estado' va en la LÍNEA
+    # porque una orden de compra llega a medias.
+    ("pv_documento", "origen", "TEXT NOT NULL DEFAULT 'APP'"),
+    ("pv_movimiento", "estado", "TEXT NOT NULL DEFAULT 'Recibido'"),
     # Si la nota escrita a mano SUSTITUYE a la que la hoja ya decía, en vez de ir
     # delante. Lo pidió el lodge; ver el comentario de la columna en schema.sql.
     ("nota_hoja", "reemplaza", "INTEGER NOT NULL DEFAULT 0"),

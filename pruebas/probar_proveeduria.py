@@ -21,6 +21,7 @@ Lo que hay que fijar, y por que cada cosa es cara si se rompe:
     seria estrenar una pantalla que da cifras con toda seguridad y estan mal.
 """
 import datetime
+import io
 import os
 import re
 import sys
@@ -163,6 +164,15 @@ def _importar(c=None):
 
 def _stock(filas):
     return {f["codigo"]: f["stock"] for f in filas}
+
+
+def _paginas(buf):
+    """El texto de un PDF, para comprobar lo que el proveedor va a LEER y no que la
+    funcion devolvio algo."""
+    import pdfplumber
+    buf.seek(0)
+    with pdfplumber.open(buf) as pdf:
+        return len(pdf.pages), "\n".join((p.extract_text() or "") for p in pdf.pages)
 
 
 # ---------------------------------------------------------------------------
@@ -729,6 +739,280 @@ def la_pantalla_deja_registrar_las_tres_cosas(c):
              "y se vacian cuando hay lineas puestas, no nunca")
 
 
+# ---------------------------------------------------------------------------
+# Fase 3: la orden de compra
+# ---------------------------------------------------------------------------
+
+def _proveedor(conn):
+    return conn.execute("SELECT id FROM pv_proveedor LIMIT 1").fetchone()[0]
+
+
+def una_orden_de_compra_no_suma_al_inventario_hasta_que_llega(c):
+    """ES LO UNICO DE PROVEEDURIA QUE NO MUEVE EL INVENTARIO AL ESCRIBIRLO. Se pide, se
+    manda al proveedor, y la mercaderia aparece en bodega cuando llega.
+
+    Si sumara al crearla, la pantalla diria que hay arroz desde el momento en que
+    alguien escribe que lo va a pedir — y el cocinero bajaria a buscarlo."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+
+    antes = _stock(pv.existencias(conn, departamento="F&B"))["ARSU"]
+    o = pv.crear_orden_compra(conn, _proveedor(conn), "F&B",
+                              [{"codigo": "ARSU", "cantidad": 30, "precio": "3200"}],
+                              solicitado_por="Alejandro", usuario="bodega")
+    c.igual(o["estado"], "Solicitado", "nace como solicitada")
+    c.igual(o["lineas"][0]["signo"] if "signo" in o["lineas"][0] else 1, 1,
+            "la linea es una entrada")
+    fila = [f for f in pv.existencias(conn, departamento="F&B")
+            if f["codigo"] == "ARSU"][0]
+    c.igual(fila["stock"], antes, "pero el stock NO cambia todavia")
+    c.igual(fila["en_camino"], 30 + 50, "y los 30 se suman a lo que ya venia en camino")
+
+    # RECIBIR ES LO QUE SUMA.
+    o2, _ = pv.recibir(conn, o["id"], usuario="bodega")
+    c.igual(o2["estado"], "Recibido", "al recibirla queda recibida")
+    c.igual(_stock(pv.existencias(conn, departamento="F&B"))["ARSU"], antes + 30,
+            "y AHI entra a la bodega")
+    conn.close()
+
+
+def una_orden_se_puede_recibir_a_medias(c):
+    """ES EL CASO NORMAL, NO LA EXCEPCION: el bote trae lo que cabe y el resto queda para
+    el viaje siguiente. Medido en la hoja del lodge: 25 ordenes de 1.165 traen lineas en
+    dos estados a la vez."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+
+    antes = _stock(pv.existencias(conn, departamento="F&B"))
+    o = pv.crear_orden_compra(conn, _proveedor(conn), "F&B", [
+        {"codigo": "ARSU", "cantidad": 10},
+        {"codigo": "108194", "cantidad": 5},
+    ], usuario="bodega")
+    llego = o["lineas"][0]["id"]
+
+    o2, _ = pv.recibir(conn, o["id"], lineas_ids=[llego], factura="F-001",
+                       usuario="bodega")
+    c.igual(o2["estado"], "Recibida a medias", "la orden queda a medias")
+    c.igual(o2["recibidas"], 1, "con una linea recibida")
+    c.igual(o2["lineas_total"], 2, "de dos")
+    c.igual(o2["factura"], "F-001", "y queda el numero de factura")
+
+    ahora = _stock(pv.existencias(conn, departamento="F&B"))
+    c.igual(ahora["ARSU"], antes["ARSU"] + 10, "entra lo que llego")
+    c.igual(ahora["108194"], antes["108194"], "y lo que no llego NO entra")
+
+    # Lo que falta sigue en camino, que es lo que hay que perseguir.
+    pendiente = [f for f in pv.existencias(conn, departamento="F&B")
+                 if f["codigo"] == "108194"][0]
+    c.igual(pendiente["en_camino"], 5, "lo que falta sigue contando como en camino")
+
+    # Y al recibir el resto, se cierra.
+    o3, _ = pv.recibir(conn, o["id"], usuario="bodega")
+    c.igual(o3["estado"], "Recibido", "al llegar el resto, queda recibida entera")
+    c.igual(_stock(pv.existencias(conn, departamento="F&B"))["108194"],
+            antes["108194"] + 5, "y entra el resto")
+
+    # Recibir dos veces no duplica: ya estaban recibidas.
+    o4, avisos = pv.recibir(conn, o["id"], usuario="bodega")
+    c.cierto(avisos and "ya estaban" in avisos[0], "se avisa en vez de duplicar")
+    c.igual(_stock(pv.existencias(conn, departamento="F&B"))["108194"],
+            antes["108194"] + 5, "y el stock no se mueve otra vez")
+    conn.close()
+
+
+def solicitada_y_pedida_al_proveedor_son_dos_cosas(c):
+    """La hoja las distingue —69 solicitadas y 449 pendientes de ingreso— y es util: una
+    esta pedida dentro de la casa y la otra esta en manos del proveedor. A quien
+    persigue un pedido le cambia a quien llamar."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+
+    o = pv.crear_orden_compra(conn, _proveedor(conn), "F&B",
+                              [{"codigo": "ARSU", "cantidad": 3}], usuario="bodega")
+    c.igual(o["estado"], "Solicitado", "nace solicitada")
+    o2 = pv.marcar_pedida(conn, o["id"])
+    c.igual(o2["estado"], "Pendiente de Ingreso", "y pasa a pedida al proveedor")
+    # Ninguno de los dos estados es stock.
+    c.igual(_stock(pv.existencias(conn, departamento="F&B"))["ARSU"], 15,
+            "ni solicitada ni pedida suman al inventario")
+    conn.close()
+
+
+def la_orden_guarda_el_precio_que_se_pidio(c):
+    """Lo que se le pidio al proveedor es lo que decia la orden ESE dia. El catalogo
+    cambia, y una orden que recalculara su total con el precio de hoy diria otra cosa
+    que el papel que firmo alguien."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+
+    o = pv.crear_orden_compra(conn, _proveedor(conn), "F&B", [
+        {"codigo": "ARSU", "cantidad": 2, "precio": "1000"},
+        {"codigo": "108194", "cantidad": 3},            # sin precio: toma el del catalogo
+        {"codigo": "SINPRE", "cantidad": 1},            # el catalogo tampoco lo tiene
+    ], usuario="bodega")
+    por_codigo = {l["codigo"]: l for l in o["lineas"]}
+    c.igual(por_codigo["ARSU"]["valor_unitario"], 100000, "el precio escrito, en centimos")
+    c.igual(por_codigo["ARSU"]["total"], 200000, "y su total")
+    c.igual(por_codigo["108194"]["valor_unitario"], 527900,
+            "sin escribirlo, se copia el del catalogo")
+    c.igual(por_codigo["SINPRE"]["valor_unitario"], None,
+            "y si el catalogo no lo tiene, se queda sin precio: no se inventa un cero")
+    c.igual(o["total"], 200000 + 527900 * 3, "el total suma solo lo que tiene precio")
+    c.igual(o["lineas_sin_precio"], 1, "y se dice cuantas lineas quedan fuera")
+
+    # El catalogo cambia y la orden NO se mueve.
+    conn.execute("UPDATE pv_producto SET valor_unitario = 999999 WHERE codigo = 'ARSU'")
+    conn.commit()
+    c.igual(pv.orden(conn, o["id"])["lineas"][0]["valor_unitario"], 100000,
+            "la orden sigue diciendo lo que se pidio")
+    conn.close()
+
+
+def una_orden_de_compra_no_se_arma_con_cualquier_cosa(c):
+    """Sin proveedor no hay a quien comprarle, y un codigo que no esta en el catalogo es
+    casi siempre un codigo mal escrito."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+
+    casos = [
+        ((None, "F&B", [{"codigo": "ARSU", "cantidad": 1}]), "proveedor"),
+        ((_proveedor(conn), "", [{"codigo": "ARSU", "cantidad": 1}]), "departamento"),
+        ((_proveedor(conn), "F&B", []), "línea"),
+        ((_proveedor(conn), "F&B", [{"codigo": "NOEXISTE", "cantidad": 1}]), "catálogo"),
+        ((_proveedor(conn), "F&B", [{"codigo": "ARSU", "cantidad": 0}]), "mayor que cero"),
+    ]
+    for (prov, depto, lineas), pedazo in casos:
+        try:
+            pv.crear_orden_compra(conn, prov, depto, lineas, usuario="bodega")
+            c.cierto(False, f"tenia que rechazar: {pedazo}")
+        except ValueError as e:
+            c.cierto(pedazo in str(e), f"se explica el motivo ({pedazo})")
+    conn.close()
+
+
+def el_PDF_de_la_orden_lleva_la_direccion_de_ENTREGA(c):
+    """EL DATO QUE UN PROVEEDOR NUEVO SE EQUIVOCA. La mercaderia no llega al lodge: llega
+    al muelle de Sierpe y de ahi sube en bote. Un proveedor que lee la direccion del
+    lodge intenta entregar en un sitio al que no se llega por carretera.
+
+    Tambien tiene que llevar la cedula juridica —con eso factura— y el numero de orden,
+    que es con lo que despues se cruza la factura."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+    import proveeduria_pdf as pvpdf
+
+    o = pv.crear_orden_compra(conn, _proveedor(conn), "F&B",
+                              [{"codigo": "ARSU", "cantidad": 7, "precio": "3200"}],
+                              solicitado_por="Alejandro",
+                              observaciones="Mandar con el bote del jueves",
+                              usuario="bodega")
+    conn.close()
+
+    cfg = pv.cargar_config()
+    _, texto = _paginas(pvpdf.generar(o, cfg))
+
+    c.cierto(cfg["cedula_juridica"] in texto, "lleva la cedula juridica")
+    # La direccion se parte en renglones para que quepa, asi que se busca un trozo
+    # inconfundible en vez de la frase entera.
+    c.cierto("Hacienda Corcovado" in texto.replace("\n", " "),
+             "lleva la direccion de ENTREGA, no solo la del lodge")
+    c.cierto("ENTREGAR EN" in texto, "y dice claramente que es donde se entrega")
+    c.cierto(o["numero"] in texto, "lleva el numero de orden")
+    c.cierto("Arroz Sushi" in texto, "y la linea que se pidio")
+    c.cierto("Alejandro" in texto, "con quien la pidio, que es a quien se le reclama")
+    c.cierto("Mandar con el bote" in texto.replace("\n", " "),
+             "y las observaciones")
+    c.cierto("TOTAL" in texto, "con su total")
+    # EN «CRC» Y NO EN «₡»: Helvetica no trae el simbolo del colon y reportlab lo dibuja
+    # como un cuadro negro. Se vio en el papel, no en el codigo.
+    c.cierto("CRC" in texto, "la moneda escrita con letras, que el PDF si puede dibujar")
+    c.cierto("₡" not in texto, "y no el simbolo, que sale como un cuadro")
+
+    # EL NOMBRE LARGO NO SE METE ENCIMA DE LA COLUMNA DE AL LADO. El proveedor real se
+    # llama «CENTRO INTERNACIONAL DE INVERSIONES, S.A (BELCA)»: cabe en 48 caracteres y
+    # NO cabe en media pagina, y se dibujaba sobre «SOLICITADO POR». Se recorta por
+    # ancho medido.
+    import proveeduria_pdf as _pdf
+    from reportlab.pdfgen import canvas as _canvas
+    lienzo = _canvas.Canvas(io.BytesIO())
+    largo = "CENTRO INTERNACIONAL DE INVERSIONES, S.A (BELCA)"
+    recortado = _pdf._cabe(lienzo, largo, 120, "Helvetica-Bold", 8.5)
+    c.cierto(lienzo.stringWidth(recortado, "Helvetica-Bold", 8.5) <= 120,
+             "lo que no cabe se recorta al ancho de verdad")
+    c.cierto(recortado.endswith("…"), "y se dice que esta recortado")
+    c.igual(_pdf._cabe(lienzo, "corto", 120, "Helvetica-Bold", 8.5), "corto",
+            "lo que cabe no se toca")
+
+
+def el_PDF_dice_cuando_el_total_esta_incompleto(c):
+    """El total de una orden es lo que el lodge se compromete a pagar. Enseñarlo como si
+    estuviera completo cuando falta el precio de tres renglones es la clase de cifra que
+    se firma sin mirar."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+    import proveeduria_pdf as pvpdf
+
+    o = pv.crear_orden_compra(conn, _proveedor(conn), "F&B", [
+        {"codigo": "ARSU", "cantidad": 1, "precio": "1000"},
+        {"codigo": "SINPRE", "cantidad": 1},
+    ], usuario="bodega")
+    conn.close()
+    _, texto = _paginas(pvpdf.generar(o, pv.cargar_config()))
+    plano = " ".join(texto.split())
+    # Se busca «no incluye», que SOLO esta en el renglon del total. Buscar «sin precio»
+    # pasaba sola: el producto de prueba se llama «Producto sin precio» y su nombre sale
+    # en la tabla. Lo destape al deshacer el renglon a mano — no caia nadie.
+    c.cierto("no incluye" in plano,
+             "el papel dice que el total no las incluye a todas")
+    c.cierto("1 línea" in plano or "1 linea" in plano, "y cuantas quedan fuera")
+
+
+def la_pantalla_tiene_el_ciclo_entero_de_la_compra(c):
+    """De punta a punta por los endpoints, que es por donde entra desde la pantalla."""
+    conn, _, _ = _importar()
+    prov = _proveedor(conn)
+    conn.close()
+    import main
+
+    d = main.proveeduria_compras(user=USUARIO)
+    c.cierto(d["proveedores"], "la pantalla recibe los proveedores para elegir")
+    c.cierto(d["config"]["cedula_juridica"], "y los datos del lodge para el papel")
+
+    r = main.proveeduria_crear_compra(
+        {"proveedor_id": prov, "departamento": "F&B",
+         "lineas": [{"codigo": "ARSU", "cantidad": 5, "precio": "3200"}]}, user=USUARIO)
+    doc_id = r["orden"]["id"]
+    c.igual(r["orden"]["estado"], "Solicitado", "se crea solicitada")
+
+    c.igual(main.proveeduria_marcar_pedida(doc_id, user=USUARIO)["orden"]["estado"],
+            "Pendiente de Ingreso", "se marca como pedida")
+    rec = main.proveeduria_recibir(doc_id, {"factura": "F-99"}, user=USUARIO)
+    c.igual(rec["orden"]["estado"], "Recibido", "y se recibe")
+    c.igual(rec["orden"]["factura"], "F-99", "con su factura")
+
+    pdf = main.proveeduria_pdf_compra(doc_id, user=USUARIO)
+    c.igual(pdf.media_type, "application/pdf", "el PDF se descarga")
+    c.cierto(len(pdf.body) > 1000, "y no viene vacio")
+    c.cierto(r["orden"]["numero"] in pdf.headers.get("content-disposition", ""),
+             "con el numero en el nombre del archivo")
+
+    ordenes = main.proveeduria_compras(user=USUARIO)["ordenes"]
+    c.cierto(any(o["id"] == doc_id for o in ordenes), "sale en la lista")
+    c.cierto(all("lineas" not in o for o in ordenes),
+             "la lista no arrastra las lineas de cada orden")
+
+    raiz = RAIZ
+    with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+    for pieza in ("function verComprasPv(", "function abrirNuevaCompraPv(",
+                  "function recibirOrdenPv(", "function descargarOrdenPv(",
+                  "function marcarPedidaPv("):
+        c.cierto(pieza in pantalla, f"la pantalla tiene {pieza}")
+    c.cierto("no suma al inventario" in pantalla.lower().replace("í", "i")
+             or "NO suma al inventario" in pantalla,
+             "y lo dice: una orden no suma hasta recibirla")
+
+
 def el_boton_no_le_aparece_a_nadie_hasta_que_se_enciende(c):
     """LO PIDIO EL LODGE: «que sea un boton aparte, que mientras trabajemos en el la app
     pueda seguir funcionando de forma normal».
@@ -882,6 +1166,14 @@ PRUEBAS = [
     un_movimiento_mal_puesto_se_puede_borrar_y_el_de_la_hoja_no,
     la_numeracion_sigue_la_que_ya_hay,
     la_pantalla_deja_registrar_las_tres_cosas,
+    una_orden_de_compra_no_suma_al_inventario_hasta_que_llega,
+    una_orden_se_puede_recibir_a_medias,
+    solicitada_y_pedida_al_proveedor_son_dos_cosas,
+    la_orden_guarda_el_precio_que_se_pidio,
+    una_orden_de_compra_no_se_arma_con_cualquier_cosa,
+    el_PDF_de_la_orden_lleva_la_direccion_de_ENTREGA,
+    el_PDF_dice_cuando_el_total_esta_incompleto,
+    la_pantalla_tiene_el_ciclo_entero_de_la_compra,
     el_boton_no_le_aparece_a_nadie_hasta_que_se_enciende,
     al_arrancar_se_le_enciende_SOLO_a_quien_administra,
     la_pantalla_pide_las_dos_vistas_y_enseña_lo_que_hay_que_revisar,
