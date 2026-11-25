@@ -7189,6 +7189,7 @@ function pintarProveeduria() {
               Ajustar por conteo</button>
             <button class="btn" onclick="abrirMovimientoPv('MERMA')">Merma</button>
             <button class="btn" onclick="verSugeridoPv()">Qué pedir</button>
+            <button class="btn" onclick="verConsumoPv()">Consumo</button>
             <button class="btn" onclick="verComprasPv()">Órdenes de compra</button>
             <button class="btn" onclick="verMovimientosPv()">Últimos movimientos</button>
             <button class="btn" onclick="abrirImportarProveeduria()">
@@ -7591,6 +7592,121 @@ async function anularMovimientoPv(id, numero) {
   if (caja) caja.innerHTML = "";
   await loadProveeduria();
   verMovimientosPv();
+}
+
+// ---------- Consumo ----------
+//
+// CIERRA EL CÍRCULO QUE ABRIÓ «QUÉ PEDIR». Aquella pantalla predice con la gente que
+// viene; esta mira hacia atrás y dice cuánto costó de verdad cada huésped-noche.
+//
+// LA CIFRA QUE IMPORTA NO ES EL TOTAL, ES EL TOTAL POR PERSONA. Una semana llena gasta
+// más que una vacía y eso no dice nada; lo que dice algo es que el costo por huésped
+// suba con la misma ocupación.
+
+window._pvCons = null;
+
+async function verConsumoPv(dias) {
+  const caja = document.getElementById("pv-movimientos");
+  if (!caja) return;
+  if (caja.dataset.vista === "consumo" && dias === undefined) {
+    caja.innerHTML = ""; caja.dataset.vista = ""; return;
+  }
+  const p = new URLSearchParams({ dias: dias || 7 });
+  if (window._pvDepto) p.set("departamento", window._pvDepto);
+  const res = await fetchAuth(`${API}/api/proveeduria/consumo?${p}`);
+  if (!res.ok) { avisar("No se pudo calcular el consumo", true); return; }
+  window._pvCons = await res.json();
+  window._pvCons.dias_elegidos = dias || 7;
+  caja.dataset.vista = "consumo";
+  pintarConsumoPv();
+}
+
+function pintarConsumoPv() {
+  const d = window._pvCons || {};
+  const caja = document.getElementById("pv-movimientos");
+  const v = d.variacion_pct;
+  // El color dice qué mirar: subir el gasto por persona es lo que hay que explicar.
+  const colorVar = v === null || v === undefined ? "var(--muted)"
+    : v > 10 ? "var(--warn-text)" : v < -10 ? "var(--ok-text)" : "var(--muted)";
+
+  caja.innerHTML = `<div class="detail-panel" style="margin-top:12px;">
+    <p style="font-weight:600;margin:0 0 2px;">Consumo
+      ${window._pvDepto ? "· " + escaparHTML(window._pvDepto) : "· todas las bodegas"}</p>
+    <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">
+      <strong>${escaparHTML(d.desde || "")} → ${escaparHTML(d.hasta || "")}</strong>
+      (${d.dias} días) · ${d.pax_noche} huésped-noche · ${d.habitacion_noche} habitación-noche.
+      Es lo que SALIÓ de bodega; los ajustes de inventario no cuentan como consumo.
+      <span style="display:inline-flex;gap:4px;margin-left:6px;">
+        ${[7, 14, 30].map(n => `<button class="btn" style="padding:1px 8px;font-size:11px;
+            ${d.dias_elegidos === n ? "font-weight:700;" : ""}"
+            onclick="verConsumoPv(${n})">${n} días</button>`).join("")}
+      </span></p>
+
+    <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">
+      <div class="stat"><p class="stat-label">Costo por huésped-noche</p>
+        <p class="stat-value">${d.costo_por_pax === null ? "—" : pvColones(d.costo_por_pax)}</p>
+        <p style="font-size:11px;color:${colorVar};margin:2px 0 0;">
+          ${v === null || v === undefined ? "sin periodo anterior que comparar"
+            : `${v > 0 ? "▲" : v < 0 ? "▼" : ""} ${Math.abs(v)}% vs los ${d.dias} días
+               anteriores (${pvColones(d.costo_por_pax_antes)})`}</p></div>
+      <div class="stat"><p class="stat-label">Salió de bodega</p>
+        <p class="stat-value">${pvColones(d.costo)}</p>
+        <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">
+          antes ${pvColones((d.anterior || {}).costo)}</p></div>
+      <div class="stat"><p class="stat-label">Merma</p>
+        <p class="stat-value">${pvColones(d.merma)}</p>
+        <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">
+          lo que se dañó o se perdió</p></div>
+      <div class="stat"><p class="stat-label">Ajustes de inventario</p>
+        <p class="stat-value">${pvColones(d.ajustes_costo)}</p>
+        <!-- NO ES CONSUMO y por eso va aparte: un ajuste es una corrección de conteo, y
+             meterlo en el gasto le echa a la cocina la culpa de un error de inventario.
+             Pero tampoco se esconde: muchos ajustes dicen que el inventario no cuadra. -->
+        <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">
+          no es consumo · si es alto, el inventario no cuadra</p></div>
+    </div>
+
+    ${!(d.bodegas || []).length ? `<p class="empty" style="padding:16px 0;">
+      No se registró ninguna salida de bodega en este periodo.
+      <small>El consumo sale de las salidas y las mermas registradas aquí.</small></p>` : `
+    <p style="font-weight:600;font-size:13px;margin:14px 0 4px;">Por bodega</p>
+    <table>
+      <tr><th>Bodega</th><th>Productos</th><th>Costo</th><th>Por unidad</th>
+        <th>Merma</th></tr>
+      ${d.bodegas.map(b => `<tr>
+        <td><strong>${escaparHTML(b.departamento)}</strong></td>
+        <td>${b.productos}</td>
+        <td>${pvColones(b.costo)}${b.sin_precio
+              ? `<br><span style="font-size:10.5px;color:var(--muted);">${b.sin_precio} sin precio</span>` : ""}</td>
+        <td>${b.por_unidad === null
+              ? `<span style="font-size:11px;color:var(--muted);"
+                   title="No hay con qué dividirlo: el comedor del staff se divide entre el personal, y cuánta gente trabaja ese día no está en este sistema">—</span>`
+              : `${pvColones(b.por_unidad)} <span style="font-size:11px;color:var(--muted);">
+                 por ${b.base === "pax" ? "huésped-noche" : "habitación-noche"}</span>`}</td>
+        <td>${b.merma_costo ? pvColones(b.merma_costo) : "—"}</td>
+      </tr>`).join("")}
+    </table>`}
+
+    ${(d.productos || []).length ? `
+      <p style="font-weight:600;font-size:13px;margin:16px 0 4px;">Lo que más pesa
+        <span style="font-weight:400;color:var(--muted);">— donde mirar primero si la
+          cifra se disparó</span></p>
+      <table>
+        <tr><th>Producto</th><th>Bodega</th><th>Salió</th><th>Costo</th></tr>
+        ${d.productos.map(p => `<tr>
+          <td>${escaparHTML(p.descripcion || p.codigo)}
+            <span style="color:var(--muted);font-family:monospace;font-size:11px;">${escaparHTML(p.codigo)}</span></td>
+          <td style="font-size:11.5px;color:var(--muted);">${escaparHTML(p.departamento || "—")}</td>
+          <td>${p.unidades} ${escaparHTML(p.unidad || "")}</td>
+          <td>${pvColones(p.costo)}</td>
+        </tr>`).join("")}
+      </table>` : ""}
+
+    <p style="font-size:11px;color:var(--muted);margin-top:10px;">
+      Todo se valora con el precio del catálogo, igual que la inversión en bodega. No es
+      el precio que se pagó cada vez, pero es el mismo con el que se calcula todo lo
+      demás de esta pantalla: dos cifras con bases distintas no se pueden comparar.</p>
+  </div>`;
 }
 
 // ---------- Qué pedir ----------

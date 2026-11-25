@@ -1038,9 +1038,15 @@ def la_pantalla_tiene_el_ciclo_entero_de_la_compra(c):
 # ---------------------------------------------------------------------------
 
 def _llenar_el_lodge(conn, cuantas, dias=7):
-    """Mete reservas de hoy a `dias` dias para mover la ocupacion."""
+    """Mete reservas que cubren `dias` ANTES y DESPUES de hoy, para mover la ocupacion.
+
+    Hacia los dos lados a proposito: «que pedir» mira hacia adelante y «consumo» mira
+    hacia atras (termina ayer, porque hoy todavia no acabo). Llenando solo el futuro, el
+    consumo se calculaba con cero huespedes y dividia entre cero.
+    """
     import datetime as dt
     hoy = dt.date.today()
+    inicio = hoy - dt.timedelta(days=dias)
     fin = hoy + dt.timedelta(days=dias)
 
     def dd(d):
@@ -1052,7 +1058,7 @@ def _llenar_el_lodge(conn, cuantas, dias=7):
             """INSERT INTO reserva (conf_no, room_no, nombre_principal, arr_date,
                    dep_date, adl, chl, res_status)
                VALUES (?,?,?,?,?,2,0,'EN CASA')""",
-            (f"OCU{i:03d}", f"{i + 1:02d}", f"Huesped {i}", dd(hoy), dd(fin)))
+            (f"OCU{i:03d}", f"{i + 1:02d}", f"Huesped {i}", dd(inicio), dd(fin)))
     conn.commit()
 
 
@@ -1349,6 +1355,226 @@ def la_pantalla_lleva_del_sugerido_a_la_orden(c):
     c.cierto("sin_nivel" in fn, "y cuantos productos quedan fuera por no tener minimo")
 
 
+# ---------------------------------------------------------------------------
+# Fase 5: el consumo, enlazado con la operacion
+# ---------------------------------------------------------------------------
+
+def _salida_el_dia(conn, dia, codigo, cantidad, depto="F&B", tipo="ORDEN INTERNA"):
+    """Una salida de bodega CON FECHA, que es lo que el consumo mira."""
+    import proveeduria as pv
+    doc, _ = pv.registrar(conn, tipo, depto, [{"codigo": codigo, "cantidad": cantidad}],
+                          fecha=dia.isoformat(), usuario="bodega")
+    return doc
+
+
+def el_consumo_se_mide_POR_PERSONA_y_no_en_total(c):
+    """LA CIFRA QUE IMPORTA NO ES EL TOTAL. Una semana llena gasta mas que una vacia y
+    eso no dice nada; lo que dice algo es que el costo por huesped-noche suba con la
+    misma ocupacion.
+
+    Esa pregunta no se podia hacer en la hoja: habria que cruzar a mano el historial con
+    una ocupacion que esta escrita en otra celda y que nadie actualiza."""
+    import datetime as dt
+
+    import proveeduria as pv
+
+    conn, _, _ = _importar()
+    try:
+        ayer = dt.date.today() - dt.timedelta(days=1)
+        _llenar_el_lodge(conn, 10, dias=10)
+        # El aceite vale 5279 colones. Salen 4.
+        _salida_el_dia(conn, ayer, "108194", 4)
+
+        d = pv.consumo(conn, dias=3)
+        c.cierto(d["pax_noche"] > 0, "sabe cuanta gente hubo")
+        c.igual(d["costo"], 527900 * 4, "valora lo que salio con el precio del catalogo")
+        c.igual(d["costo_por_pax"], int(round(d["costo"] / d["pax_noche"])),
+                "y lo divide entre los huesped-noche")
+
+        # CON EL DOBLE DE GENTE Y EL MISMO GASTO, el costo por persona BAJA. Es lo que
+        # el total no puede decir.
+        por_pax_antes = d["costo_por_pax"]
+        _llenar_el_lodge(conn, 20, dias=10)
+        d2 = pv.consumo(conn, dias=3)
+        c.igual(d2["costo"], d["costo"], "el total es el mismo")
+        c.cierto(d2["costo_por_pax"] < por_pax_antes,
+                 "pero el costo por persona baja, que es lo que se compara")
+    finally:
+        conn.close()
+
+
+def el_ajuste_de_inventario_no_es_consumo(c):
+    """UN AJUSTE ES UNA CORRECCION DE CONTEO: aparece una caja olvidada, o faltaba
+    registrar una compra. Meterlo en el consumo le echa a la cocina la culpa de un error
+    de inventario.
+
+    Pero tampoco se esconde: un periodo con muchos ajustes dice que el inventario no
+    esta cuadrando, y eso tambien hay que verlo."""
+    import datetime as dt
+
+    import proveeduria as pv
+
+    conn, _, _ = _importar()
+    try:
+        ayer = dt.date.today() - dt.timedelta(days=1)
+        _llenar_el_lodge(conn, 10, dias=10)
+        _salida_el_dia(conn, ayer, "108194", 2)
+        solo_salida = pv.consumo(conn, dias=3)
+
+        # Un ajuste hacia abajo: habia 6 y se cuentan 1.
+        pv.registrar(conn, "AJUSTE INVENTARIO", "F&B",
+                     [{"codigo": "108194", "contado": 1}],
+                     fecha=ayer.isoformat(), usuario="bodega")
+        con_ajuste = pv.consumo(conn, dias=3)
+
+        c.igual(con_ajuste["costo"], solo_salida["costo"],
+                "el ajuste NO sube el consumo")
+        c.cierto(con_ajuste["ajustes_costo"] > 0,
+                 "pero se enseña aparte, para que no desaparezca")
+    finally:
+        conn.close()
+
+
+def la_merma_se_cuenta_aparte_del_consumo(c):
+    """Tirar producto es gasto, pero no es lo mismo que haberlo servido. Juntarlos
+    esconde justo lo que hay que mirar."""
+    import datetime as dt
+
+    import proveeduria as pv
+
+    conn, _, _ = _importar()
+    try:
+        ayer = dt.date.today() - dt.timedelta(days=1)
+        _llenar_el_lodge(conn, 10, dias=10)
+        _salida_el_dia(conn, ayer, "108194", 2)
+        _salida_el_dia(conn, ayer, "108194", 1, tipo="MERMA")
+
+        d = pv.consumo(conn, dias=3)
+        c.igual(d["costo"], 527900 * 2, "el consumo es solo lo que salio para servir")
+        c.igual(d["merma"], 527900 * 1, "y la merma va en su propia cifra")
+        fnb = [b for b in d["bodegas"] if b["departamento"] == "F&B"][0]
+        c.igual(fnb["merma_costo"], 527900, "tambien por bodega")
+    finally:
+        conn.close()
+
+
+def cada_bodega_se_divide_entre_lo_que_le_toca(c):
+    """La cocina se divide entre huespedes; housekeeping entre habitaciones. Y el
+    comedor del STAFF no se divide entre nada: se reparte entre el personal, y cuanta
+    gente trabaja ese dia no esta en este sistema.
+
+    Inventar que se divide entre los huespedes daria un numero que parece bueno y no
+    significa nada — el comedor del staff no come mas porque el hotel este lleno."""
+    import datetime as dt
+
+    import proveeduria as pv
+
+    conn, _, _ = _importar()
+    try:
+        ayer = dt.date.today() - dt.timedelta(days=1)
+        _llenar_el_lodge(conn, 10, dias=10)
+        # Se le da ficha a un producto en cada bodega para poder sacarlo.
+        conn.execute("UPDATE pv_producto SET departamento = 'HOUSEKEEPING' "
+                     "WHERE codigo = 'SINPRE'")
+        conn.execute("UPDATE pv_producto SET valor_unitario = 100000 "
+                     "WHERE codigo = 'SINPRE'")
+        conn.commit()
+        _salida_el_dia(conn, ayer, "108194", 2, depto="F&B")
+        _salida_el_dia(conn, ayer, "SINPRE", 2, depto="HOUSEKEEPING")
+        _salida_el_dia(conn, ayer, "ARSU", 2, depto="STAFF COMEDOR")
+
+        d = pv.consumo(conn, dias=3)
+        por_depto = {b["departamento"]: b for b in d["bodegas"]}
+        c.igual(por_depto["F&B"]["base"], "pax", "la cocina se divide entre huespedes")
+        c.igual(por_depto["HOUSEKEEPING"]["base"], "habitacion",
+                "housekeeping entre habitaciones")
+        c.igual(por_depto["STAFF COMEDOR"]["base"], None,
+                "y el comedor del staff entre nada")
+        c.igual(por_depto["STAFF COMEDOR"]["por_unidad"], None,
+                "asi que no se le inventa una cifra por persona")
+        c.cierto(por_depto["F&B"]["por_unidad"] > 0, "las otras si la tienen")
+        c.cierto(por_depto["HOUSEKEEPING"]["por_unidad"] > 0, "")
+        c.cierto(por_depto["HOUSEKEEPING"]["cuantos"] != por_depto["F&B"]["cuantos"],
+                 "y cada una con su propio denominador, no el mismo")
+    finally:
+        conn.close()
+
+
+def el_consumo_se_compara_con_el_periodo_anterior(c):
+    """Un numero suelto no se puede juzgar. Lo que hace util la cifra es «subio un 40%
+    por huesped contra los siete dias anteriores»."""
+    import datetime as dt
+
+    import proveeduria as pv
+
+    conn, _, _ = _importar()
+    try:
+        hoy = dt.date.today()
+        _llenar_el_lodge(conn, 10, dias=20)
+        # Mismo gasto en los dos periodos de 3 dias: la variacion tiene que ser 0.
+        _salida_el_dia(conn, hoy - dt.timedelta(days=1), "108194", 3)
+        _salida_el_dia(conn, hoy - dt.timedelta(days=5), "108194", 3)
+        igual = pv.consumo(conn, dias=3)
+        c.igual(igual["anterior"]["desde"],
+                (dt.date.fromisoformat(igual["desde"]) - dt.timedelta(days=3)).isoformat(),
+                "el periodo anterior es igual de largo y pegado al de ahora")
+        c.igual(igual["variacion_pct"], 0, "mismo gasto por persona: 0%")
+
+        # Se duplica el gasto del periodo de ahora.
+        _salida_el_dia(conn, hoy - dt.timedelta(days=1), "108194", 3)
+        doble = pv.consumo(conn, dias=3)
+        c.igual(doble["variacion_pct"], 100, "el doble por persona: +100%")
+    finally:
+        conn.close()
+
+
+def el_consumo_del_dia_de_hoy_no_entra(c):
+    """Hoy todavia no termino. Metiendolo, la cifra de la mañana pareceria siempre
+    buenisima y la de la noche siempre mala, sin que nada hubiera cambiado."""
+    import datetime as dt
+
+    import proveeduria as pv
+
+    conn, _, _ = _importar()
+    try:
+        hoy = dt.date.today()
+        _llenar_el_lodge(conn, 10, dias=10)
+        _salida_el_dia(conn, hoy, "108194", 9)       # hoy: no cuenta
+        d = pv.consumo(conn, dias=3)
+        c.igual(d["hasta"], (hoy - dt.timedelta(days=1)).isoformat(),
+                "el periodo termina ayer")
+        c.igual(d["costo"], 0, "lo de hoy todavia no cuenta")
+    finally:
+        conn.close()
+
+
+def la_pantalla_de_consumo_dice_con_que_lo_calculo(c):
+    """Una cifra de bodega que no dice de donde sale no se usa para decidir: se mira una
+    vez y se deja de mirar."""
+    conn, _, _ = _importar()
+    conn.close()
+    import main
+
+    d = main.proveeduria_consumo(user=USUARIO)
+    for clave in ("desde", "hasta", "pax_noche", "habitacion_noche", "costo",
+                  "merma", "ajustes_costo", "anterior", "variacion_pct"):
+        c.cierto(clave in d, f"el endpoint devuelve «{clave}»")
+
+    raiz = RAIZ
+    with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+    c.cierto("function verConsumoPv(" in pantalla, "la pantalla tiene «Consumo»")
+    i = pantalla.find("function pintarConsumoPv(")
+    fn = pantalla[i:pantalla.find("\n// ---------- Qué pedir", i)]
+    c.cierto("costo_por_pax" in fn, "enseña el costo por huesped-noche")
+    c.cierto("variacion_pct" in fn, "y como va contra el periodo anterior")
+    c.cierto("pax_noche" in fn and "habitacion_noche" in fn,
+             "diciendo entre cuanta gente lo dividio")
+    c.cierto("ajustes_costo" in fn, "los ajustes se enseñan aparte")
+    c.cierto("precio del catálogo" in fn,
+             "y se dice con que precio esta valorado todo")
+
+
 def el_boton_no_le_aparece_a_nadie_hasta_que_se_enciende(c):
     """LO PIDIO EL LODGE: «que sea un boton aparte, que mientras trabajemos en el la app
     pueda seguir funcionando de forma normal».
@@ -1518,6 +1744,13 @@ PRUEBAS = [
     los_niveles_vienen_de_la_hoja_y_son_por_bodega,
     se_dice_a_que_proveedor_toca_pedirle_hoy,
     la_pantalla_lleva_del_sugerido_a_la_orden,
+    el_consumo_se_mide_POR_PERSONA_y_no_en_total,
+    el_ajuste_de_inventario_no_es_consumo,
+    la_merma_se_cuenta_aparte_del_consumo,
+    cada_bodega_se_divide_entre_lo_que_le_toca,
+    el_consumo_se_compara_con_el_periodo_anterior,
+    el_consumo_del_dia_de_hoy_no_entra,
+    la_pantalla_de_consumo_dice_con_que_lo_calculo,
     el_boton_no_le_aparece_a_nadie_hasta_que_se_enciende,
     al_arrancar_se_le_enciende_SOLO_a_quien_administra,
     la_pantalla_pide_las_dos_vistas_y_enseña_lo_que_hay_que_revisar,

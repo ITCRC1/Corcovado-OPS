@@ -1334,6 +1334,27 @@ def proveeduria_anular(doc_id: int,
         conn.close()
 
 
+@app.get("/api/proveeduria/consumo")
+def proveeduria_consumo(departamento: str = None, dias: int = 7,
+                        desde: str = None, hasta: str = None,
+                        user: dict = Depends(exige("proveeduria"))):
+    """Qué se gastó, por cuánta gente, y cómo va contra el periodo anterior.
+
+    Cierra el círculo que abrió el pedido sugerido: aquella cuenta predice con la gente
+    que viene, y esta mira hacia atrás y dice cuánto costó de verdad cada huésped-noche.
+    La cifra que importa no es el total —una semana llena gasta más y eso no dice nada—
+    sino el total POR PERSONA, que es lo que se puede comparar entre semanas.
+    """
+    import proveeduria as pv
+    conn = get_connection()
+    try:
+        return pv.consumo(conn, desde=desde, hasta=hasta,
+                          dias=max(1, min(int(dias or 7), 180)),
+                          departamento=departamento)
+    finally:
+        conn.close()
+
+
 @app.get("/api/proveeduria/sugerido")
 def proveeduria_sugerido(departamento: str = None, dias: int = 7,
                          desde: str = None, hasta: str = None,

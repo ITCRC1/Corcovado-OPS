@@ -456,6 +456,172 @@ def anular(conn, doc_id):
 
 
 # ---------------------------------------------------------------------------
+# El consumo: qué se gastó y por cuánta gente
+# ---------------------------------------------------------------------------
+#
+# CIERRA EL CÍRCULO QUE ABRIÓ EL PEDIDO SUGERIDO. La fase anterior predice cuánto hará
+# falta según la gente que viene; esta mira hacia atrás y dice cuánto se gastó de verdad
+# por cada huésped. Sin eso, el pedido sugerido es una cuenta que nadie puede contrastar.
+#
+# LA CIFRA QUE IMPORTA NO ES EL TOTAL, ES EL TOTAL POR PERSONA. Una semana llena gasta
+# más que una vacía y eso no dice nada; lo que dice algo es que el costo por
+# huésped-noche suba un 40% con la misma ocupación. Esa pregunta no se podía hacer en la
+# hoja: habría que cruzar a mano el historial con una ocupación que está escrita en otra
+# celda y que nadie actualiza.
+
+# De qué se compone el consumo. El AJUSTE NO ENTRA, y es la decisión que hace que la
+# cifra sirva: un ajuste es una corrección de conteo —aparece una caja olvidada, o
+# faltaba registrar una compra— y meterlo en el consumo le echa a la cocina la culpa de
+# un error de inventario. Se cuenta aparte, para que no desaparezca.
+TIPOS_DE_CONSUMO = ("ORDEN INTERNA",)
+TIPOS_DE_MERMA = ("MERMA",)
+
+# Con qué se divide el gasto de cada bodega. Es lo que convierte un total en una cifra
+# que se puede comparar entre semanas.
+#
+# STAFF COMEDOR NO TIENE DENOMINADOR y se deja sin él a propósito: se divide entre el
+# personal, y cuánto personal hay ese día no está en este sistema. Inventar que se
+# divide entre los huéspedes daría un número que parece bueno y no significa nada —el
+# comedor del staff no se come más porque el hotel esté lleno.
+DENOMINADOR = {
+    "F&B": "pax", "RESTAURANTE": "pax", "BAR": "pax", "BAR EL BOSQUE": "pax",
+    "COCINA": "pax", "COMEDOR": "pax",
+    "HOUSEKEEPING": "habitacion", "ROOMS": "habitacion", "LAUNDRY": "habitacion",
+}
+
+
+def _gasto_de(conn, desde, hasta, tipos, departamento=None):
+    """Lo que salió de bodega en ese periodo, por departamento y por producto.
+
+    SE VALORA CON EL PRECIO DEL CATÁLOGO, que es el mismo con el que esta pantalla
+    calcula la inversión. No es el precio que se pagó cada vez —para eso haría falta
+    llevar un costo promedio— pero es coherente con el resto: dos cifras de la misma
+    pantalla calculadas con bases distintas no se pueden ni sumar ni comparar.
+    """
+    marcas = ",".join("?" * len(tipos))
+    donde, params = "", [desde, hasta] + list(tipos)
+    if departamento:
+        donde = " AND m.departamento = ?"
+        params.append(normalizar_texto(departamento).upper())
+    return [dict(r) for r in conn.execute(f"""
+        SELECT m.departamento, m.codigo,
+               COALESCE(p.descripcion, m.descripcion) AS descripcion,
+               p.unidad, p.valor_unitario,
+               SUM(m.cantidad) AS unidades
+          FROM pv_movimiento m
+          JOIN pv_documento d ON d.id = m.documento_id
+          LEFT JOIN pv_producto p ON p.codigo = m.codigo
+         WHERE m.signo = -1 AND d.fecha BETWEEN ? AND ?
+           AND d.tipo IN ({marcas}){donde}
+         GROUP BY m.departamento, m.codigo""", params)]
+
+
+def _resumir(filas):
+    """Agrupa las filas de gasto por departamento, sumando lo que tiene precio."""
+    por_depto = {}
+    for f in filas:
+        d = por_depto.setdefault(f["departamento"] or "—",
+                                 {"departamento": f["departamento"] or "—",
+                                  "unidades": 0.0, "costo": 0, "sin_precio": 0,
+                                  "productos": 0})
+        d["productos"] += 1
+        d["unidades"] += f["unidades"] or 0
+        if f["valor_unitario"] is None:
+            d["sin_precio"] += 1
+        else:
+            d["costo"] += int(round(f["valor_unitario"] * (f["unidades"] or 0)))
+    for d in por_depto.values():
+        d["unidades"] = round(d["unidades"], 2)
+    return por_depto
+
+
+def consumo(conn, desde=None, hasta=None, dias=7, departamento=None):
+    """Qué se gastó, por cuánta gente, y cómo va contra el periodo anterior.
+
+    `desde`/`hasta` por omisión los últimos `dias` días terminando ayer: hoy todavía no
+    terminó, y meterlo haría que la cifra de la mañana pareciera siempre buenísima.
+    """
+    import datetime as _dt
+
+    import ocupacion as _ocu
+
+    hoy = _dt.date.today()
+    if not hasta:
+        hasta = (hoy - _dt.timedelta(days=1)).isoformat()
+    if not desde:
+        desde = (_dt.date.fromisoformat(hasta)
+                 - _dt.timedelta(days=max(1, dias) - 1)).isoformat()
+    largo = (_dt.date.fromisoformat(hasta) - _dt.date.fromisoformat(desde)).days + 1
+
+    def medir(d1, d2):
+        dias_ocu, _total = _ocu.por_dia(conn, d1, d2)
+        pax = sum(x["pax"] for x in dias_ocu)
+        hab = sum(x["habitaciones"] for x in dias_ocu)
+        gasto = _resumir(_gasto_de(conn, d1, d2, TIPOS_DE_CONSUMO, departamento))
+        merma = _resumir(_gasto_de(conn, d1, d2, TIPOS_DE_MERMA, departamento))
+        for nombre, d in gasto.items():
+            d["merma_costo"] = merma.get(nombre, {}).get("costo", 0)
+            base = DENOMINADOR.get(nombre)
+            cuantos = pax if base == "pax" else hab if base == "habitacion" else 0
+            d["base"] = base
+            d["cuantos"] = cuantos
+            # SIN DENOMINADOR NO SE INVENTA UNO: se deja en None y la pantalla enseña
+            # solo el total. Un número que parece comparable y no lo es es peor que no
+            # tenerlo, porque se usa para decidir.
+            d["por_unidad"] = (int(round(d["costo"] / cuantos))
+                               if base and cuantos else None)
+        # Las bodegas que SOLO tuvieron merma también se enseñan: tirar producto es
+        # gasto aunque no haya salido nada por la puerta de la cocina.
+        for nombre, m in merma.items():
+            if nombre not in gasto:
+                gasto[nombre] = {**m, "merma_costo": m["costo"], "costo": 0,
+                                 "unidades": 0.0, "base": DENOMINADOR.get(nombre),
+                                 "cuantos": 0, "por_unidad": None}
+        return {
+            "desde": d1, "hasta": d2, "pax_noche": pax, "habitacion_noche": hab,
+            "bodegas": sorted(gasto.values(), key=lambda x: -x["costo"]),
+            "costo": sum(x["costo"] for x in gasto.values()),
+            "merma": sum(x["merma_costo"] for x in gasto.values()),
+        }
+
+    ahora = medir(desde, hasta)
+    fin_antes = (_dt.date.fromisoformat(desde) - _dt.timedelta(days=1))
+    antes = medir((fin_antes - _dt.timedelta(days=largo - 1)).isoformat(),
+                  fin_antes.isoformat())
+
+    # LA COMPARACIÓN SE HACE POR PERSONA, no por total: dos semanas con ocupación
+    # distinta tienen totales distintos y eso no dice nada. Lo que dice algo es que el
+    # costo por huésped suba con la misma gente.
+    def por_pax(m):
+        return (m["costo"] / m["pax_noche"]) if m["pax_noche"] else None
+
+    a, b = por_pax(ahora), por_pax(antes)
+    variacion = round(100 * (a - b) / b) if (a is not None and b) else None
+
+    # Los productos que más pesan: es donde mirar primero si la cifra se disparó.
+    productos = []
+    for f in _gasto_de(conn, desde, hasta, TIPOS_DE_CONSUMO, departamento):
+        if f["valor_unitario"] is None:
+            continue
+        productos.append({**f, "costo": int(round(f["valor_unitario"] * f["unidades"]))})
+    productos.sort(key=lambda x: -x["costo"])
+
+    # Los ajustes, aparte y a la vista: no son consumo, pero un periodo con muchos
+    # ajustes dice que el inventario no está cuadrando, y eso también hay que verlo.
+    ajustes = _resumir(_gasto_de(conn, desde, hasta, ("AJUSTE INVENTARIO",),
+                                 departamento))
+    return {
+        **ahora, "dias": largo, "departamento": departamento or "",
+        "anterior": antes,
+        "costo_por_pax": int(round(a)) if a is not None else None,
+        "costo_por_pax_antes": int(round(b)) if b is not None else None,
+        "variacion_pct": variacion,
+        "productos": productos[:20],
+        "ajustes_costo": sum(x["costo"] for x in ajustes.values()),
+    }
+
+
+# ---------------------------------------------------------------------------
 # El pedido sugerido
 # ---------------------------------------------------------------------------
 #
