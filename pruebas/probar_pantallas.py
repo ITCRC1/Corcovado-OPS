@@ -1462,7 +1462,50 @@ def el_resumen_se_puede_ver_por_rango_de_fechas(c):
                  f"{vista} usa la misma barra de fechas")
 
 
+def _node():
+    """Donde esta node, si esta. Devuelve None si no se encuentra."""
+    import shutil
+    return shutil.which("node") or next(
+        (r for r in (r"C:\Program Files\nodejs\node.exe",
+                     r"C:\Program Files (x86)\nodejs\node.exe")
+         if os.path.exists(r)), None)
+
+
+def la_pantalla_entera_se_tiene_que_poder_leer(c):
+    """TODA LA INTERFAZ ES UN SOLO <script> DE MEDIO MILLON DE CARACTERES. Un error de
+    sintaxis en cualquier rincon no rompe una pantalla: deja la aplicacion ENTERA en
+    blanco, sin mensaje, y el resto de las pruebas de esta suite no se entera porque
+    todas leen el archivo como TEXTO.
+
+    Me paso escribiendo la pantalla de ordenes de compra: una comilla invertida dentro de
+    un comentario HTML que vivia dentro de una plantilla de texto cerro la plantilla. Las
+    pruebas pasaban --las 383 de proveeduria incluidas-- y la aplicacion no arrancaba. Lo
+    vio el navegador, en la unica comprobacion que no se puede hacer leyendo.
+    """
+    import subprocess
+    import tempfile
+
+    html = _html()
+    bloques = re.findall(r"<script>(.*?)</script>", html, re.S)
+    c.igual(len(bloques), 1, "la interfaz es un solo bloque de script")
+
+    node = _node()
+    if not node:
+        # Se dice en vez de pasar en silencio: una comprobacion que no corrio no es una
+        # comprobacion que paso.
+        print("   (sin node a mano: no se pudo comprobar la sintaxis de la pantalla)")
+        return
+    ruta = os.path.join(tempfile.mkdtemp(prefix="sintaxis_"), "pantalla.js")
+    with open(ruta, "w", encoding="utf-8") as f:
+        f.write("\n".join(bloques))
+    p = subprocess.run([node, "--check", ruta], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    c.igual(p.returncode, 0,
+            "la pantalla es JavaScript valido\n" + (p.stderr or "")[:600])
+
+
 PRUEBAS = [
+    la_pantalla_entera_se_tiene_que_poder_leer,
     el_estado_del_dia_tiene_un_solo_color_en_toda_la_app,
     ni_una_alergia_ni_un_plazo_se_pintan_como_un_movimiento,
     la_cifra_de_cada_tarjeta_se_lee_de_golpe,

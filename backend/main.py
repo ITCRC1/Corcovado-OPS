@@ -1438,14 +1438,33 @@ def proveeduria_sugerido(departamento: str = None, dias: int = 7,
 # ---------- La orden de compra ----------
 
 @app.get("/api/proveeduria/compras")
-def proveeduria_compras(estado: str = None,
+def proveeduria_compras(estado: str = None, desde: str = None, hasta: str = None,
+                        pendientes: bool = False, limite: int = 60,
                         user: dict = Depends(exige("proveeduria"))):
-    """Las órdenes de compra, con proveedores y cuentas para poder armar una nueva."""
+    """Las órdenes de compra, con proveedores y cuentas para poder armar una nueva.
+
+    `desde`/`hasta` acotan por la fecha de la orden y `pendientes` deja solo las que
+    esperan mercadería. La pantalla abre en el día; sin filtro son 493 órdenes, una lista
+    que nadie lee.
+
+    Va también `conteo`, que es lo que hay FUERA del filtro: un día sin órdenes se lee
+    igual que «no hay órdenes» si la pantalla no puede decir cuántas hay en otras fechas.
+    """
     import proveeduria as pv
     conn = get_connection()
     try:
+        ordenes = pv.ordenes(conn, estado=estado, desde=desde, hasta=hasta,
+                             pendientes=pendientes, limite=limite)
+        # Si el corte dejó órdenes fuera DE ESTE MISMO filtro. Sin esto la lista se corta
+        # en silencio y parece completa. Con `estado` no se puede contar en SQL —se
+        # deriva de las líneas— así que lo único cierto es si se llegó al tope.
+        cuantas = pv.cuantas_ordenes(conn, desde=desde, hasta=hasta,
+                                     pendientes=pendientes)
         return {
-            "ordenes": pv.ordenes(conn, estado=estado),
+            "ordenes": ordenes,
+            "filtro": {"desde": desde, "hasta": hasta, "pendientes": pendientes},
+            "conteo": pv.conteo_de_ordenes(conn),
+            "hay_mas": (len(ordenes) >= limite if estado else cuantas > len(ordenes)),
             "proveedores": [dict(r) for r in conn.execute(
                 "SELECT id, nombre, condicion, dias_credito, dias_pedido, dias_entrega "
                 "FROM pv_proveedor WHERE activo = 1 ORDER BY nombre")],

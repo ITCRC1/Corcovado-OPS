@@ -1164,7 +1164,21 @@ CREATE TABLE IF NOT EXISTS pv_movimiento (
     estado TEXT NOT NULL DEFAULT 'Recibido',
     departamento TEXT,
     valor_unitario INTEGER,           -- centimos AL MOMENTO de la compra, si se sabe
-    cuenta_id INTEGER REFERENCES pv_cuenta(id)
+    cuenta_id INTEGER REFERENCES pv_cuenta(id),
+    -- CUANDO Y QUIEN DIO POR RECIBIDA ESTA LINEA DESDE LA APLICACION. Vacio quiere decir
+    -- que el estado lo trajo la hoja, no que no se haya recibido.
+    --
+    -- Hace dos cosas. La primera es que reimportar la hoja NO borre el recibo: la hoja no
+    -- sabe de el --se marco aqui despues de la ultima exportacion-- y al recargarla la
+    -- linea volveria a estar «en camino» y el stock de la bodega bajaria solo, sin que
+    -- nada lo diga. La importacion lee estas marcas antes de borrar y las vuelve a poner.
+    -- Es la misma regla que pv_nivel.origen.
+    --
+    -- La segunda es que la fecha de recibido no existe en ningun otro lado: la hoja
+    -- guarda la de la orden y nada mas, asi que cuanto tarda un proveedor en entregar hoy
+    -- no se puede saber. Desde aqui si.
+    recibido_en TEXT,
+    recibido_por TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pv_movimiento_codigo ON pv_movimiento(codigo);
 CREATE INDEX IF NOT EXISTS idx_pv_movimiento_doc ON pv_movimiento(documento_id);

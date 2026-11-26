@@ -287,6 +287,28 @@ def cargar(conn, datos, usuario=None):
     actualizar» y el trabajo desaparece sin que nada lo diga. Ver `origen` en schema.sql.
     """
     cur = conn.cursor()
+
+    # LO QUE SE RECIBIÓ DESDE LA APLICACIÓN SOBRE ÓRDENES DE LA HOJA, antes de borrar
+    # nada. La hoja no sabe de esos recibos —se marcaron aquí después de la última
+    # exportación— así que al recargarla esas líneas volverían a estar «en camino»: la
+    # mercadería que está en la bodega desaparecería del inventario y nadie lo vería
+    # hasta mirar una existencia y encontrarla baja. Es la misma trampa que ya tenían los
+    # movimientos y los niveles, y se tapa igual.
+    #
+    # Se guarda CUÁNTAS líneas de cada (orden, código, bodega) se recibieron y no solo
+    # que se recibió alguna: en la hoja del lodge hay 20 órdenes que repiten el mismo
+    # producto en dos renglones, y marcar los dos porque uno llegó sería inventar
+    # mercadería.
+    recibos = {}
+    for r in cur.execute(
+            """SELECT d.numero, d.tipo, m.codigo, IFNULL(m.departamento, '') AS dep,
+                      m.recibido_en, m.recibido_por
+                 FROM pv_movimiento m JOIN pv_documento d ON d.id = m.documento_id
+                WHERE d.origen = ? AND m.recibido_en IS NOT NULL""",
+            (pv.ORIGEN_HOJA,)).fetchall():
+        recibos.setdefault((r["tipo"], r["numero"], r["codigo"], r["dep"]), []).append(
+            (r["recibido_en"], r["recibido_por"]))
+
     cur.execute("DELETE FROM pv_movimiento WHERE documento_id IN "
                 "(SELECT id FROM pv_documento WHERE origen = ?)", (pv.ORIGEN_HOJA,))
     cur.execute("DELETE FROM pv_documento WHERE origen = ?", (pv.ORIGEN_HOJA,))
@@ -362,8 +384,40 @@ def cargar(conn, datos, usuario=None):
                VALUES (?,?,?,?,?,?,?)""",
             (doc, m["codigo"], m["descripcion"], m["cantidad"], m["signo"],
              m["estado"], m["departamento"]))
+
+    # Y SE VUELVEN A PONER LOS RECIBOS. La hoja manda en lo suyo, pero no puede mandar
+    # sobre algo que no sabe: lo que entró a la bodega después de exportarla, entró.
+    conservados = 0
+    for (tipo, numero, codigo, dep), marcas in recibos.items():
+        lineas = cur.execute(
+            """SELECT m.id, m.estado
+                 FROM pv_movimiento m JOIN pv_documento d ON d.id = m.documento_id
+                WHERE d.origen = ? AND d.tipo = ? AND d.numero = ? AND m.codigo = ?
+                  AND IFNULL(m.departamento, '') = ?
+                ORDER BY m.id""",
+            (pv.ORIGEN_HOJA, tipo, numero, codigo, dep)).fetchall()
+        # SE MARCAN LAS QUE LA HOJA TRAE SIN RECIBIR, y no las primeras. Cuando el mismo
+        # producto va en dos renglones de la misma orden —20 órdenes así en la hoja del
+        # lodge— coger la primera marcaría la que la hoja ya daba por recibida y dejaría
+        # la otra en camino: la mercadería entró y el inventario seguiría sin verla.
+        esperando = [l for l in lineas if l["estado"] != pv.ESTADO_EN_BODEGA]
+        for fila, (cuando, quien) in zip(esperando, marcas):
+            cur.execute(
+                """UPDATE pv_movimiento SET estado = ?, recibido_en = ?, recibido_por = ?
+                    WHERE id = ?""",
+                (pv.ESTADO_EN_BODEGA, cuando, quien, fila["id"]))
+        # Cuenta como conservado también lo que la hoja ya trae recibido: el recibo se
+        # respetó igual, y avisar de una pérdida que no hubo enseña a ignorar el aviso.
+        recibidas_ahora = (len(lineas) - len(esperando)) + min(len(esperando), len(marcas))
+        conservados += min(len(marcas), recibidas_ahora)
+
     conn.commit()
     return {"proveedores": len(datos["proveedores"]),
+            # Cuántos recibos hechos aquí sobrevivieron a la recarga. Se dice en la
+            # pantalla: si alguna vez sale menos de lo que se recibió —porque la hoja ya
+            # no trae esa orden—, quien importa tiene que enterarse en el momento.
+            "recibos_conservados": conservados,
+            "recibos_previos": sum(len(v) for v in recibos.values()),
             "productos": len(datos["productos"]),
             "niveles": niveles_guardados,
             "niveles_repetidos": len(datos.get("niveles") or []) - niveles_guardados,

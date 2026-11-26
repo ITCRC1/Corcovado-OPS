@@ -238,6 +238,11 @@ COLUMNAS_NUEVAS = [
     ("pv_nivel", "origen", "TEXT NOT NULL DEFAULT 'HOJA'"),
     ("pv_nivel", "actualizado_en", "TEXT"),
     ("pv_nivel", "actualizado_por", "TEXT"),
+    # Quién y cuándo dio por recibida la línea DESDE LA APLICACIÓN. Vacío en todo lo que
+    # ya existe, y es lo correcto: ese estado lo trajo la hoja. Es lo que hace que
+    # reimportar no borre un recibo hecho aquí; ver la columna en schema.sql.
+    ("pv_movimiento", "recibido_en", "TEXT"),
+    ("pv_movimiento", "recibido_por", "TEXT"),
     # Si la nota escrita a mano SUSTITUYE a la que la hoja ya decía, en vez de ir
     # delante. Lo pidió el lodge; ver el comentario de la columna en schema.sql.
     ("nota_hoja", "reemplaza", "INTEGER NOT NULL DEFAULT 0"),

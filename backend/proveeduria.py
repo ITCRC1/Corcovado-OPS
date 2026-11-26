@@ -931,14 +931,22 @@ def orden(conn, doc_id):
     salida = dict(d)
     salida["lineas"] = [dict(x) for x in conn.execute(
         """SELECT m.id, m.codigo, m.descripcion, m.cantidad, m.estado,
+                  m.departamento, m.recibido_en, m.recibido_por,
                   m.valor_unitario, m.cuenta_id, p.unidad, c.codigo AS cuenta
              FROM pv_movimiento m
              LEFT JOIN pv_producto p ON p.codigo = m.codigo
              LEFT JOIN pv_cuenta c ON c.id = m.cuenta_id
             WHERE m.documento_id = ? ORDER BY m.id""", (doc_id,))]
+    cabecera = normalizar_texto(d["departamento"])
     for l in salida["lineas"]:
         l["total"] = (int(round(l["valor_unitario"] * l["cantidad"]))
                       if l["valor_unitario"] is not None else None)
+        # A QUÉ BODEGA ENTRA LA LÍNEA cuando se reciba. Casi siempre la de la cabecera,
+        # pero no siempre: medido en la hoja del lodge, 27 líneas traen una bodega
+        # distinta de la de su orden y 19 no traen ninguna. Se resuelve AQUÍ y en un solo
+        # sitio —la pantalla lo enseña y `recibir` lo aplica— porque con la cuenta hecha
+        # dos veces llegaría el día en que lo que se vio y lo que entró no coincidieran.
+        l["destino"] = normalizar_texto(l["departamento"]) or cabecera
     con_precio = [l for l in salida["lineas"] if l["total"] is not None]
     salida["total"] = sum(l["total"] for l in con_precio)
     # CUÁNTAS LÍNEAS QUEDAN SIN PRECIO. El total de una orden de compra es lo que el
@@ -958,12 +966,43 @@ def orden(conn, doc_id):
     return salida
 
 
-def ordenes(conn, estado=None, limite=60):
-    """Las órdenes de compra, con su estado derivado de las líneas."""
+def _filtro_de_ordenes(desde=None, hasta=None, pendientes=False):
+    """El WHERE que comparten la lista y su recuento.
+
+    EN UN SOLO SITIO a propósito. Con la condición escrita dos veces, el día que cambie
+    una la lista enseñaría unas órdenes y el «hay N más» contaría otras — que es el
+    mismo error que este módulo lleva evitando desde la primera fase.
+    """
+    donde, params = ["d.tipo = ?"], [TIPO_COMPRA]
+    if desde:
+        donde.append("d.fecha >= ?")
+        params.append(desde)
+    if hasta:
+        donde.append("d.fecha <= ?")
+        params.append(hasta)
+    if pendientes:
+        donde.append("EXISTS (SELECT 1 FROM pv_movimiento m "
+                     "WHERE m.documento_id = d.id AND m.estado != ?)")
+        params.append(ESTADO_EN_BODEGA)
+    return " AND ".join(donde), params
+
+
+def ordenes(conn, estado=None, limite=60, desde=None, hasta=None, pendientes=False):
+    """Las órdenes de compra que pida el filtro, con su estado derivado de las líneas.
+
+    `desde`/`hasta` acotan por la FECHA DE LA ORDEN, y `pendientes` deja solo las que
+    tienen alguna línea sin recibir — que son dos preguntas distintas y las dos se hacen
+    a diario: «qué pedí hoy» y «qué estoy esperando».
+
+    Sin filtro se enseñan las últimas `limite`, y eso es un corte, no la lista entera:
+    el lodge tiene 493 órdenes. De ahí que `cuantas_ordenes` exista, para que la pantalla
+    pueda decir cuántas se quedaron fuera en vez de hacerlas desaparecer en silencio.
+    """
+    donde, params = _filtro_de_ordenes(desde, hasta, pendientes)
     filas = [dict(r) for r in conn.execute(
         f"""SELECT d.id FROM pv_documento d
-             WHERE d.tipo = ? ORDER BY d.fecha DESC, d.id DESC LIMIT ?""",
-        (TIPO_COMPRA, max(1, min(limite, 300))))]
+             WHERE {donde} ORDER BY d.fecha DESC, d.id DESC LIMIT ?""",
+        params + [max(1, min(int(limite or 60), 500))])]
     salida = []
     for f in filas:
         o = orden(conn, f["id"])
@@ -972,6 +1011,35 @@ def ordenes(conn, estado=None, limite=60):
             o.pop("lineas", None)
             salida.append(o)
     return salida
+
+
+def cuantas_ordenes(conn, desde=None, hasta=None, pendientes=False):
+    """Cuántas órdenes cumplen ese filtro, sin traerlas."""
+    donde, params = _filtro_de_ordenes(desde, hasta, pendientes)
+    return conn.execute(
+        f"SELECT COUNT(*) FROM pv_documento d WHERE {donde}", params).fetchone()[0]
+
+
+def conteo_de_ordenes(conn):
+    """Lo que hay FUERA de lo que la pantalla está enseñando.
+
+    Es lo que permite filtrar por día sin mentir. Un filtro que deja la lista vacía se
+    lee igual que «no hay órdenes», y las dos cosas son muy distintas: el lodge tiene 493
+    órdenes y 73 esperando mercadería, la más vieja de agosto. Con estas cifras la
+    pantalla puede decir «hoy ninguna; la última es del 24 y hay 73 sin recibir» y
+    llevar a quien mira hasta ellas.
+    """
+    ultima = conn.execute(
+        "SELECT MAX(fecha) FROM pv_documento WHERE tipo = ?", (TIPO_COMPRA,)).fetchone()[0]
+    donde, params = _filtro_de_ordenes(pendientes=True)
+    ultima_pendiente = conn.execute(
+        f"SELECT MAX(d.fecha) FROM pv_documento d WHERE {donde}", params).fetchone()[0]
+    return {
+        "total": cuantas_ordenes(conn),
+        "pendientes": cuantas_ordenes(conn, pendientes=True),
+        "ultima_fecha": ultima,
+        "ultima_pendiente": ultima_pendiente,
+    }
 
 
 def recibir(conn, doc_id, lineas_ids=None, factura=None, usuario=None):
@@ -983,20 +1051,45 @@ def recibir(conn, doc_id, lineas_ids=None, factura=None, usuario=None):
 
     RECIBIR ES LO QUE SUMA EL STOCK. Hasta ese momento la orden existe, se puede imprimir
     y se le puede mandar al proveedor, pero en la bodega no hay nada — que es la verdad.
+
+    SE RECIBEN TAMBIÉN LAS ÓRDENES DE LA HOJA, que hoy son todas: las 493 órdenes de
+    compra del lodge vinieron de la importación y 73 esperan mercadería, la más vieja de
+    agosto. Negarse a recibirlas dejaba el botón puesto y muerto, y obligaba a seguir
+    abriendo el Excel justo para lo único que se hace a diario con una orden.
+
+    Lo que hace que eso sea seguro es la marca de recibido: queda escrito quién y cuándo
+    en la línea, y al reimportar la hoja se vuelve a poner. Sin ella, recargar la hoja
+    devolvería la mercadería a «en camino» y el stock de la bodega bajaría solo, sin que
+    nada lo diga. Ver `recibido_en` en schema.sql.
+
+    LA MERCADERÍA ENTRA A LA BODEGA DE LA LÍNEA, que no siempre es la de la cabecera (27
+    líneas de la hoja traen otra) y a veces no está escrita (19). Cuando falta se usa la
+    de la orden, y es la misma cuenta que la pantalla enseñó antes de tocar nada: la hace
+    `orden()` en `destino`.
     """
     o = orden(conn, doc_id)
     if not o:
         raise ValueError("Esa orden de compra no existe.")
-    if o["origen"] != ORIGEN_APP:
-        raise ValueError("Esa orden vino de la hoja de cálculo: se recibe en la hoja.")
     ids = {int(x) for x in (lineas_ids or [])} or {l["id"] for l in o["lineas"]}
     pendientes = [l for l in o["lineas"]
                   if l["id"] in ids and l["estado"] != ESTADO_EN_BODEGA]
     if not pendientes:
         return o, ["Esas líneas ya estaban recibidas."]
+    # SIN BODEGA NO SE RECIBE. Un ingreso sin departamento no entra en ninguna bodega:
+    # queda en una columna vacía que ninguna pantalla enseña, así que la mercadería
+    # estaría «recibida» y no aparecería en ningún inventario.
+    huerfanas = [l for l in pendientes if not l["destino"]]
+    if huerfanas:
+        raise ValueError(
+            f"{len(huerfanas)} línea(s) no dicen a qué bodega entran, y la orden tampoco. "
+            "Ponele departamento a la orden antes de recibirla.")
     for l in pendientes:
-        conn.execute("UPDATE pv_movimiento SET estado = ? WHERE id = ?",
-                     (ESTADO_EN_BODEGA, l["id"]))
+        conn.execute(
+            """UPDATE pv_movimiento
+                  SET estado = ?, departamento = ?,
+                      recibido_en = datetime('now'), recibido_por = ?
+                WHERE id = ?""",
+            (ESTADO_EN_BODEGA, l["destino"], usuario, l["id"]))
     if factura is not None:
         conn.execute("UPDATE pv_documento SET factura = ? WHERE id = ?",
                      (normalizar_texto(factura), doc_id))

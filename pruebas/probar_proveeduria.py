@@ -1880,6 +1880,275 @@ def la_pantalla_pide_las_dos_vistas_y_enseña_lo_que_hay_que_revisar(c):
              "la inversion dice cuando un producto no tiene precio")
 
 
+# ---------------------------------------------------------------------------
+# Fase 6: recibir la orden del proveedor, y la lista por fecha
+# ---------------------------------------------------------------------------
+
+def _orden_de_la_hoja(conn, codigo="MIXTO"):
+    """El id de una orden de compra de las que trajo la importacion."""
+    return conn.execute(
+        """SELECT d.id FROM pv_documento d JOIN pv_movimiento m ON m.documento_id = d.id
+            WHERE d.tipo = 'ORDEN DE COMPRA' AND d.origen = 'HOJA' AND m.codigo = ?
+            LIMIT 1""", (codigo,)).fetchone()[0]
+
+
+def una_orden_de_la_hoja_se_recibe_desde_la_app(c):
+    """ERA UN BOTON PUESTO Y MUERTO. Las 493 ordenes de compra del lodge vinieron de la
+    hoja --no hay ni una nacida en la aplicacion-- y 73 esperan mercaderia, la mas vieja
+    de agosto. Recibir solo las de la aplicacion dejaba fuera el 100% de lo que hay que
+    recibir: el boton estaba en la pantalla y contestaba «se recibe en la hoja», o sea,
+    seguir abriendo el Excel para lo unico que se hace a diario con una orden."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+
+    doc = _orden_de_la_hoja(conn)
+    o = pv.orden(conn, doc)
+    c.igual(o["origen"], "HOJA", "la orden viene de la hoja")
+    c.igual(o["estado"], "Recibida a medias", "y le falta una linea por llegar")
+    antes = _stock(pv.existencias(conn, departamento="F&B"))["MIXTO"]
+
+    pendiente = [l for l in o["lineas"] if l["estado"] != "Recibido"][0]
+    o2, _ = pv.recibir(conn, doc, lineas_ids=[pendiente["id"]], usuario="bodega")
+    c.igual(o2["estado"], "Recibido", "se recibe desde aqui")
+    c.igual(_stock(pv.existencias(conn, departamento="F&B"))["MIXTO"], antes + 7,
+            "y la mercaderia entra de verdad a la bodega")
+
+    linea = [l for l in o2["lineas"] if l["id"] == pendiente["id"]][0]
+    c.igual(linea["recibido_por"], "bodega", "queda escrito quien la recibio")
+    # La fecha de recibido no existe en ningun otro sitio: la hoja guarda la de la orden
+    # y nada mas, asi que cuanto tarda un proveedor en entregar no se puede saber.
+    c.cierto(linea["recibido_en"], "y cuando")
+    conn.close()
+
+
+def reimportar_la_hoja_no_borra_lo_recibido_aqui(c):
+    """LA MISMA TRAMPA QUE YA TENIAN LOS MOVIMIENTOS Y LOS NIVELES, por tercera vez. La
+    hoja no sabe de un recibo hecho aqui --se marco despues de exportarla--, asi que al
+    recargarla la linea volveria a estar «en camino»: la mercaderia que ESTA en la bodega
+    desaparece del inventario y nadie lo ve hasta que alguien mire esa existencia y le
+    parezca baja."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+    import proveeduria_excel as pvx
+
+    doc = _orden_de_la_hoja(conn)
+    pendiente = [l for l in pv.orden(conn, doc)["lineas"]
+                 if l["estado"] != "Recibido"][0]
+    pv.recibir(conn, doc, lineas_ids=[pendiente["id"]], usuario="bodega")
+    con_mercaderia = _stock(pv.existencias(conn, departamento="F&B"))["MIXTO"]
+
+    carpeta = os.environ.get("HOTEL_DATA_DIR") or "."
+    datos = pvx.leer(os.path.join(carpeta, "hoja_de_prueba.xlsx"))
+    cuenta = pvx.cargar(conn, datos, usuario="pruebas")
+
+    c.igual(cuenta["recibos_previos"], 1, "se vio el recibo ANTES de borrar")
+    c.igual(cuenta["recibos_conservados"], 1, "y se volvio a poner")
+    c.igual(_stock(pv.existencias(conn, departamento="F&B"))["MIXTO"], con_mercaderia,
+            "la mercaderia recibida aqui sigue en la bodega")
+
+    o = pv.orden(conn, _orden_de_la_hoja(conn))
+    c.igual(o["estado"], "Recibido", "y la orden sigue recibida entera")
+    # LA LINEA BUENA, no la primera. Las dos lineas son del mismo producto y la misma
+    # bodega: marcando la primera se marcaria la que la hoja YA daba por recibida y la
+    # otra volveria a estar en camino, con el stock a medias y sin que nada lo diga.
+    marcadas = [l for l in o["lineas"] if l["recibido_en"]]
+    c.igual(len(marcadas), 1, "se marco una sola linea")
+    c.igual(marcadas[0]["cantidad"], 7, "y es la que estaba esperando, no la otra")
+    conn.close()
+
+
+def la_mercaderia_entra_a_la_bodega_de_la_linea(c):
+    """AL DEPARTAMENTO QUE CORRESPONDE. La orden tiene una bodega en la cabecera, pero la
+    linea puede traer otra --27 asi en la hoja del lodge-- o no traer ninguna --19--.
+    Recibiendo todo contra la cabecera, el jabon que pidio housekeeping aparece en el
+    restaurante: el inventario cuadra en total y esta mal en las dos bodegas, que es el
+    error que solo se descubre cuando alguien baja a buscar algo y no esta."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+
+    # Una orden como las que trae la hoja: cabecera F&B y tres lineas distintas.
+    doc = conn.execute(
+        "INSERT INTO pv_documento (numero, tipo, fecha, departamento, origen) "
+        "VALUES ('900', 'ORDEN DE COMPRA', ?, 'F&B', 'HOJA')",
+        (HOY.isoformat(),)).lastrowid
+    for codigo, cantidad, depto in (("ARSU", 2, "F&B"),
+                                    ("108194", 3, "BAR EL BOSQUE"),
+                                    ("KALE", 4, None)):
+        conn.execute(
+            """INSERT INTO pv_movimiento (documento_id, codigo, descripcion, cantidad,
+                   signo, estado, departamento)
+               VALUES (?,?,?,?,1,'Pendiente de Ingreso',?)""",
+            (doc, codigo, codigo, cantidad, depto))
+    conn.commit()
+
+    destinos = {l["codigo"]: l["destino"] for l in pv.orden(conn, doc)["lineas"]}
+    c.igual(destinos["108194"], "BAR EL BOSQUE", "la bodega de la linea manda")
+    c.igual(destinos["KALE"], "F&B", "y sin bodega en la linea, la de la orden")
+
+    antes_fb = _stock(pv.existencias(conn, departamento="F&B"))
+    antes_bar = _stock(pv.existencias(conn, departamento="BAR EL BOSQUE"))
+    pv.recibir(conn, doc, usuario="bodega")
+    ahora_fb = _stock(pv.existencias(conn, departamento="F&B"))
+    ahora_bar = _stock(pv.existencias(conn, departamento="BAR EL BOSQUE"))
+
+    c.igual(ahora_bar["108194"], antes_bar["108194"] + 3, "el aceite entra AL BAR")
+    c.igual(ahora_fb["108194"], antes_fb["108194"], "y no al restaurante")
+    c.igual(ahora_fb["ARSU"], antes_fb["ARSU"] + 2, "lo del restaurante, al restaurante")
+    c.igual(ahora_fb["KALE"], antes_fb["KALE"] + 4,
+            "y lo que no decia bodega, a la de la orden")
+    conn.close()
+
+
+def una_linea_sin_bodega_ninguna_no_se_recibe(c):
+    """Un ingreso sin departamento no entra en ninguna bodega: quedaria «recibido» y no
+    aparecria en ningun inventario, asi que la mercaderia estaria dada por llegada y no se
+    podria encontrar. Mejor negarse y decir por que."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+
+    doc = conn.execute(
+        "INSERT INTO pv_documento (numero, tipo, fecha, departamento, origen) "
+        "VALUES ('901', 'ORDEN DE COMPRA', ?, NULL, 'HOJA')",
+        (HOY.isoformat(),)).lastrowid
+    conn.execute(
+        """INSERT INTO pv_movimiento (documento_id, codigo, descripcion, cantidad,
+               signo, estado, departamento)
+           VALUES (?, 'ARSU', 'Arroz', 5, 1, 'Pendiente de Ingreso', NULL)""", (doc,))
+    conn.commit()
+
+    try:
+        pv.recibir(conn, doc, usuario="bodega")
+        c.cierto(False, "tenia que negarse a recibir sin bodega")
+    except ValueError as e:
+        c.cierto("bodega" in str(e), "y decir que no se sabe a que bodega entra")
+    c.igual(pv.orden(conn, doc)["estado"], "Pendiente de Ingreso",
+            "la orden se queda como estaba")
+    conn.close()
+
+
+def las_ordenes_se_piden_por_fecha_y_por_lo_que_falta(c):
+    """CON 493 ORDENES LA LISTA NO SE LEE. Y la que habia se cortaba en las 60 ultimas sin
+    decirlo: de las 73 que esperan mercaderia, 27 no cabian --y son justo las viejas, las
+    que hay que perseguir--.
+
+    Las dos preguntas son distintas y las dos se hacen a diario: «que pedi hoy» y «que
+    estoy esperando». La segunda no se puede contestar con un filtro de fecha, porque una
+    orden se pide un dia y llega otro."""
+    conn, _, _ = _importar()
+    import proveeduria as pv
+    prov = _proveedor(conn)
+    ayer = (HOY - datetime.timedelta(days=1)).isoformat()
+
+    vieja = pv.crear_orden_compra(conn, prov, "F&B",
+                                  [{"codigo": "ARSU", "cantidad": 1}],
+                                  fecha=ayer, usuario="bodega")
+    de_hoy = pv.crear_orden_compra(conn, prov, "F&B",
+                                   [{"codigo": "ARSU", "cantidad": 2}], usuario="bodega")
+
+    hoy_iso = HOY.isoformat()
+    del_dia = pv.ordenes(conn, desde=hoy_iso, hasta=hoy_iso)
+    c.cierto(any(o["id"] == de_hoy["id"] for o in del_dia), "la del dia sale")
+    c.cierto(not any(o["id"] == vieja["id"] for o in del_dia), "la de ayer no")
+    de_ayer = pv.ordenes(conn, desde=ayer, hasta=ayer)
+    c.igual([o["id"] for o in de_ayer], [vieja["id"]], "y eligiendo el dia, aparece")
+
+    pv.recibir(conn, de_hoy["id"], usuario="bodega")
+    esperando = pv.ordenes(conn, pendientes=True, limite=300)
+    c.cierto(any(o["id"] == vieja["id"] for o in esperando),
+             "la de ayer sigue esperando mercaderia")
+    c.cierto(not any(o["id"] == de_hoy["id"] for o in esperando),
+             "y la que ya llego no")
+    # ESTE ES EL MOTIVO DE QUE LA VISTA EXISTA: por fecha de hoy, la orden que hay que
+    # recibir no esta en ningun sitio al que se llegue sin acordarse de cuando se pidio.
+    c.cierto(not any(o["id"] == vieja["id"]
+                     for o in pv.ordenes(conn, desde=hoy_iso, hasta=hoy_iso)),
+             "con solo el filtro de fecha, lo pendiente de otro dia no se encuentra")
+
+    cont = pv.conteo_de_ordenes(conn)
+    c.igual(cont["total"], pv.cuantas_ordenes(conn), "el recuento cuenta todas")
+    c.igual(cont["pendientes"], pv.cuantas_ordenes(conn, pendientes=True),
+            "y las que esperan mercaderia")
+    c.igual(cont["ultima_fecha"], hoy_iso, "con la fecha de la ultima orden")
+    c.cierto(cont["ultima_pendiente"], "y la de la ultima que espera algo")
+    c.igual(pv.cuantas_ordenes(conn, desde=ayer, hasta=ayer), 1,
+            "el recuento usa el MISMO filtro que la lista")
+    conn.close()
+
+
+def la_lista_de_ordenes_dice_lo_que_deja_fuera(c):
+    """UN FILTRO QUE VACIA LA LISTA SE LEE COMO «NO HAY ORDENES», y son dos cosas muy
+    distintas. Con 493 ordenes y 73 esperando mercaderia, una pantalla que abre en el dia
+    y no dice nada mas convierte en invisible todo lo demas."""
+    conn, _, _ = _importar()
+    conn.close()
+    import main
+
+    manana = (HOY + datetime.timedelta(days=1)).isoformat()
+    d = main.proveeduria_compras(desde=manana, hasta=manana, user=USUARIO)
+    c.igual(d["ordenes"], [], "manana todavia no hay ninguna")
+    c.cierto(d["conteo"]["total"] > 0, "pero la pantalla sabe cuantas hay en total")
+    c.igual(d["conteo"]["ultima_fecha"], HOY.isoformat(), "y de cuando es la ultima")
+    c.cierto(d["conteo"]["pendientes"] > 0, "y cuantas esperan mercaderia")
+    c.igual(d["filtro"]["desde"], manana, "la respuesta dice con que filtro se armo")
+
+    d2 = main.proveeduria_compras(limite=1, user=USUARIO)
+    c.igual(len(d2["ordenes"]), 1, "se puede pedir un tope")
+    c.cierto(d2["hay_mas"], "y se avisa de que hay mas, en vez de parecer completa")
+    c.cierto(not main.proveeduria_compras(limite=300, user=USUARIO)["hay_mas"],
+             "sin corte, no se avisa de nada")
+
+    pendientes = main.proveeduria_compras(pendientes=True, limite=300,
+                                          user=USUARIO)["ordenes"]
+    c.cierto(pendientes, "se pueden pedir solo las que esperan mercaderia")
+    c.cierto(all(o["recibidas"] < o["lineas_total"] for o in pendientes),
+             "y todas tienen algo sin recibir")
+
+
+def la_pantalla_abre_en_el_dia_y_deja_llegar_a_lo_pendiente(c):
+    """Lo que la pantalla tiene que hacer con todo esto: abrir en el dia, dejar elegir
+    otra fecha, llegar a lo que espera mercaderia, y decir a que bodega va a entrar lo
+    que se tilde ANTES de tocar el boton -- despues ya no sirve de nada."""
+    with open(os.path.join(RAIZ, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+
+    c.cierto('window._pvFiltroCompras = { vista: "dia"' in pantalla,
+             "la lista abre en el dia")
+    i = pantalla.find("function pintarComprasPv(")
+    lista = pantalla[i:pantalla.find("async function descargarOrdenPv(", i)]
+    c.cierto(i > 0 and "verComprasPv({vista:'dia', fecha:this.value})" in lista,
+             "cambiar la fecha recarga la lista")
+    c.cierto("boton(\"pendientes\"" in lista,
+             "y hay por donde llegar a lo que espera mercaderia")
+    c.cierto("c.ultima_fecha" in lista,
+             "un dia sin ordenes dice de cuando es la ultima, en vez de parecer vacio")
+    c.cierto("d.hay_mas" in lista, "y avisa cuando la lista se corta")
+    # Las 493 ordenes de la hoja no traen precio en ninguna linea. Un «₡0» al lado de
+    # «faltan 14 precios» se lee como que esa compra no cuesta nada.
+    c.cierto("o.lineas_sin_precio >= o.lineas_total" in lista,
+             "una orden sin ningun precio dice «sin precios», no cero")
+
+    j = pantalla.find("async function abrirOrdenPv(")
+    modal = pantalla[j:pantalla.find("async function marcarPedidaPv(", j)]
+    # Que la IMPRIMA, no que la nombre. La misma celda usa `l.destino` en el estilo para
+    # resaltar cuando no coincide con la cabecera, asi que buscar «l.destino» a secas
+    # pasaba igual con la celda enseñando la bodega de la orden. Lo destape deshaciendolo.
+    c.cierto(j > 0 and "escaparHTML(l.destino" in modal,
+             "cada linea dice a que bodega entra")
+    c.cierto('onchange="resumirRecibirPv()"' in modal,
+             "y el recuento se rehace al tildar y destildar")
+    c.cierto("function resumirRecibirPv(" in pantalla, "ese recuento existe")
+    c.cierto("marcadas.bodegas.join" in pantalla,
+             "y al recibir se dice a que bodega entro la mercaderia")
+
+    # Y una orden recien creada tiene que SALIR en la lista. Con el filtro puesto en otro
+    # dia, crearla dejaba un aviso de «orden creada» y una lista donde no estaba.
+    for crear in ("guardarNuevaCompraPv", "ordenDesdeSugeridoPv"):
+        i = pantalla.find(f"function {crear}(")
+        cuerpo = pantalla[i:pantalla.find("\n}", pantalla.find("verComprasPv(", i))]
+        c.cierto(i > 0 and 'verComprasPv({ vista: "dia"' in cuerpo,
+                 f"{crear} deja la lista en el dia de la orden nueva")
+
+
 PRUEBAS = [
     el_stock_es_una_resta_y_no_una_columna,
     una_orden_pedida_no_es_mercaderia_en_bodega,
@@ -1934,6 +2203,13 @@ PRUEBAS = [
     el_boton_no_le_aparece_a_nadie_hasta_que_se_enciende,
     al_arrancar_se_le_enciende_SOLO_a_quien_administra,
     la_pantalla_pide_las_dos_vistas_y_enseña_lo_que_hay_que_revisar,
+    una_orden_de_la_hoja_se_recibe_desde_la_app,
+    reimportar_la_hoja_no_borra_lo_recibido_aqui,
+    la_mercaderia_entra_a_la_bodega_de_la_linea,
+    una_linea_sin_bodega_ninguna_no_se_recibe,
+    las_ordenes_se_piden_por_fecha_y_por_lo_que_falta,
+    la_lista_de_ordenes_dice_lo_que_deja_fuera,
+    la_pantalla_abre_en_el_dia_y_deja_llegar_a_lo_pendiente,
 ]
 
 
