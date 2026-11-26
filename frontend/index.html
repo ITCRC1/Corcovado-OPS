@@ -7238,6 +7238,10 @@ function pintarProveeduria() {
           dentro, las cifras de arriba no son exactas.
           <button class="btn" style="margin-left:6px;padding:2px 9px;font-size:11.5px;"
                   onclick="verRevisionesProveeduria()">Ver cuáles</button>
+          <!-- Y para trabajarlo: esto no lo arregla el sistema, son decisiones de
+               proveeduría, y se resuelven en una lista al lado de la bodega. -->
+          <button class="btn" style="padding:2px 9px;font-size:11.5px;"
+                  onclick="descargarRevisionesPv()">Bajar la lista</button>
         </div>` : ""}
       <div id="pv-revisiones"></div>
 
@@ -7248,6 +7252,7 @@ function pintarProveeduria() {
       <table style="margin-top:14px;">
         <tr><th>Código</th><th>Producto</th>${esGeneral ? "<th>Depto.</th>" : ""}
           <th>Unidad</th><th>Entró</th><th>Salió</th><th>Stock</th>
+          ${!esGeneral ? "<th>Mín.</th><th>Máx.</th>" : ""}
           <th>Valor unit.</th><th>Inversión</th></tr>
         ${d.filas.map(f => `<tr${f.stock < 0 ? ' class="fila-sale"' : ""}>
           <td style="font-family:monospace;font-size:11.5px;">${escaparHTML(f.codigo)}</td>
@@ -7259,6 +7264,18 @@ function pintarProveeduria() {
           <td>${f.entradas || 0}</td>
           <td>${f.salidas || 0}</td>
           <td><strong>${f.stock}</strong></td>
+          <!-- EL MINIMO Y EL MAXIMO SE PONEN AQUI, donde alguien mira «cuánto hay» y
+               piensa «y cuánto debería haber». En otra pantalla no se pondrían nunca, y
+               seis de las once bodegas no los tienen todavía. -->
+          ${!esGeneral ? `
+            <td><input inputmode="decimal" value="${f.minimo ?? ""}" ${puede ? "" : "disabled"}
+                  title="Cuánto tiene que haber con el lodge vacío"
+                  onchange="guardarNivelPv('${escaparAtributo(f.codigo)}', this.value, null, this)"
+                  style="width:62px;text-align:right;font-size:12.5px;padding:2px 5px;"></td>
+            <td><input inputmode="decimal" value="${f.maximo ?? ""}" ${puede ? "" : "disabled"}
+                  title="Cuánto tiene que haber con el lodge lleno"
+                  onchange="guardarNivelPv('${escaparAtributo(f.codigo)}', null, this.value, this)"
+                  style="width:62px;text-align:right;font-size:12.5px;padding:2px 5px;"></td>` : ""}
           <td>${pvColones(f.valor_unitario)}</td>
           <td>${f.inversion === null
                 ? '<span style="font-size:11px;color:var(--muted);" title="El producto no tiene precio en la hoja">sin precio</span>'
@@ -7266,6 +7283,52 @@ function pintarProveeduria() {
         </tr>`).join("")}
       </table>`}
     </div>`;
+}
+
+// EL MÍNIMO Y EL MÁXIMO DE UNA BODEGA, puestos desde la propia lista de existencias.
+//
+// Se guarda al salir del campo, uno a uno, SIN REDIBUJAR la pantalla: poner niveles es
+// teclear veinte números seguidos, y recargar entre uno y otro perdería el scroll cada
+// vez. Es lo mismo que ya se hace con los precios de lavandería y con los checks del
+// comedor.
+//
+// Se manda solo el campo que se tocó; el otro va en null y el servidor conserva el que
+// ya había. Mandando los dos desde la pantalla, el que no se tocó viajaría con lo que
+// estuviera dibujado, y una fila recién cargada lo pisaría con un valor viejo.
+async function guardarNivelPv(codigo, minimo, maximo, campo) {
+  const d = window._pvData || {};
+  const fila = (d.filas || []).find(x => x.codigo === codigo) || {};
+  const res = await fetchAuth(`${API}/api/proveeduria/nivel`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      codigo, departamento: window._pvDepto,
+      minimo: minimo === null ? (fila.minimo ?? "") : minimo,
+      maximo: maximo === null ? (fila.maximo ?? "") : maximo,
+    }),
+  });
+  if (!res.ok) {
+    // Se devuelve el campo a lo que había: dejarlo escrito sin que el servidor lo sepa
+    // es peor, porque el pedido sugerido se calcularía con el valor viejo mientras la
+    // pantalla enseña el nuevo.
+    if (campo) campo.value = (minimo === null ? fila.maximo : fila.minimo) ?? "";
+    avisar((await res.json().catch(() => ({}))).detail || "No se pudo guardar", true);
+    return;
+  }
+  const n = (await res.json()).nivel;
+  fila.minimo = n ? n.minimo : null;
+  fila.maximo = n ? n.maximo : null;
+  if (campo) campo.style.borderColor = "var(--ok-text)";
+  setTimeout(() => { if (campo) campo.style.borderColor = ""; }, 900);
+}
+
+async function descargarRevisionesPv() {
+  const res = await fetchAuth(`${API}/api/proveeduria/revisiones.xlsx`);
+  if (!res.ok) { avisar("No se pudo generar el archivo", true); return; }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(await res.blob());
+  a.download = "Proveeduria_por_revisar.xlsx";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 
 // Lo que hay que revisar, con nombre y apellido: son decisiones de proveeduría, no cosas

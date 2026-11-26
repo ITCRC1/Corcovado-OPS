@@ -206,7 +206,6 @@ def existencias(conn, departamento=None, buscar=None, solo_con_stock=False,
                COALESCE(p.descripcion, MAX(m.descripcion)) AS descripcion,
                p.unidad,
                p.valor_unitario,
-               p.minimo, p.maximo,
                p.id AS producto_id,
                COUNT(DISTINCT m.departamento) AS bodegas,
                SUM(CASE WHEN m.signo = 1 AND m.estado = '{ESTADO_EN_BODEGA}'
@@ -690,6 +689,72 @@ def a_quien_toca_pedirle(conn, cuando=None):
         if hoy.weekday() in dias:
             salida.append(d)
     return salida
+
+
+def guardar_nivel(conn, codigo, departamento, minimo, maximo, usuario=None):
+    """Pone (o quita) el mínimo y el máximo de un producto en una bodega.
+
+    HACE FALTA PORQUE LA HOJA NO LOS TIENE TODOS. Medido: de las once bodegas, solo
+    cuatro traen niveles —RESTAURANTE, BAR, STAFF COMEDOR y HOUSEKEEPING—; las otras
+    seis no tienen ninguno, y sin niveles el pedido sugerido no puede decir nada de
+    ellas. Hasta ahora la única forma de ponerlos era editar el Excel y reimportar.
+
+    Lo que se escriba aquí queda marcado como de la aplicación y la importación ya no se
+    lo lleva por delante. Ver `origen` en schema.sql.
+
+    LOS DOS VACÍOS BORRAN EL NIVEL, igual que una nota vacía borra la nota: «sin nivel»
+    y «nivel cero» no son lo mismo —el primero quiere decir que nadie lo ha decidido— y
+    con un cero el pedido sugerido diría que de ese producto no hace falta tener nada.
+    """
+    codigo = normalizar_codigo(codigo)
+    departamento = normalizar_texto(departamento).upper()
+    if not codigo or not departamento:
+        raise ValueError("Falta el producto o la bodega.")
+    if not _producto(conn, codigo):
+        raise ValueError(f"El código «{codigo}» no está en el catálogo.")
+
+    def numero(v):
+        if v is None or str(v).strip() == "":
+            return None
+        try:
+            n = float(str(v).replace(",", ".").strip())
+        except (TypeError, ValueError):
+            raise ValueError("El mínimo y el máximo tienen que ser números.")
+        if n < 0:
+            raise ValueError("El mínimo y el máximo no pueden ser negativos.")
+        return n
+
+    mn, mx = numero(minimo), numero(maximo)
+    if mn is None and mx is None:
+        conn.execute("DELETE FROM pv_nivel WHERE codigo = ? AND departamento = ?",
+                     (codigo, departamento))
+        conn.commit()
+        return None
+    # EL MÁXIMO NO PUEDE SER MENOR QUE EL MÍNIMO: el objetivo interpola entre los dos, y
+    # al revés el pedido BAJA cuanto más lleno esté el lodge, que es lo contrario de lo
+    # que nadie espera y no da ningún error.
+    if mn is not None and mx is not None and mx < mn:
+        raise ValueError(
+            f"El máximo ({mx:g}) no puede ser menor que el mínimo ({mn:g}): el pedido "
+            "bajaría cuanto más lleno estuviera el lodge.")
+    conn.execute(
+        """INSERT INTO pv_nivel (codigo, departamento, minimo, maximo, origen,
+               actualizado_en, actualizado_por)
+           VALUES (?,?,?,?,?,datetime('now'),?)
+           ON CONFLICT(codigo, departamento) DO UPDATE SET
+             minimo = excluded.minimo, maximo = excluded.maximo,
+             origen = excluded.origen, actualizado_en = excluded.actualizado_en,
+             actualizado_por = excluded.actualizado_por""",
+        (codigo, departamento, mn, mx, ORIGEN_APP, usuario))
+    conn.commit()
+    return {"codigo": codigo, "departamento": departamento, "minimo": mn, "maximo": mx}
+
+
+def niveles_de(conn, departamento):
+    """{codigo: {minimo, maximo, origen}} de esa bodega, para pintarlos en la lista."""
+    return {r["codigo"]: dict(r) for r in conn.execute(
+        "SELECT codigo, minimo, maximo, origen FROM pv_nivel WHERE departamento = ?",
+        (normalizar_texto(departamento).upper(),))}
 
 
 def pedido_sugerido(conn, departamento=None, desde=None, hasta=None, dias=7):

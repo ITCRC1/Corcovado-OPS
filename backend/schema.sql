@@ -1076,11 +1076,13 @@ CREATE TABLE IF NOT EXISTS pv_producto (
     area TEXT,                        -- COCINA, BAR, HABITACIONES... (como lo dice la hoja)
     valor_unitario INTEGER,           -- centimos; NULL = la hoja no trae precio
     proveedor_id INTEGER REFERENCES pv_proveedor(id),
-    -- El minimo y el maximo del pedido sugerido. Van por PRODUCTO y no por departamento
-    -- porque es lo que la hoja tiene hoy; si mañana hacen falta por departamento, se
-    -- mueven a su propia tabla sin tocar el resto.
-    minimo REAL,
-    maximo REAL,
+    -- EL MINIMO Y EL MAXIMO NO ESTAN AQUI: estan en pv_nivel, por (producto, bodega).
+    -- Estuvieron en esta tabla y fue un error: del mismo refresco el BAR necesita 48 y
+    -- el RESTAURANTE 6, asi que un solo par de numeros por producto no puede ser cierto.
+    --
+    -- En una base creada antes de ese cambio las dos columnas siguen existiendo, vacias.
+    -- Nadie las lee ni las escribe; se dejan en vez de reconstruir la tabla, que es una
+    -- operacion con mas riesgo que provecho. Si alguien las ve, lo que vale es pv_nivel.
     activo INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_pv_producto_depto ON pv_producto(departamento);
@@ -1186,6 +1188,17 @@ CREATE TABLE IF NOT EXISTS pv_nivel (
     departamento TEXT NOT NULL,
     minimo REAL,
     maximo REAL,
+    -- DE DONDE SALIO, igual que en pv_documento y por lo mismo: 'HOJA' lo trajo la
+    -- importacion, 'APP' lo escribio alguien aqui. Reimportar borra y recarga LO DE LA
+    -- HOJA y deja lo que alguien puso en la pantalla.
+    --
+    -- Sin esto, poner un minimo desde la aplicacion era trabajo que desaparecia la
+    -- siguiente vez que alguien importara «para actualizar», sin que nada lo dijera.
+    -- Seis de las bodegas del lodge no tienen ningun nivel en la hoja, asi que son
+    -- justo las que se pondrian a mano aqui — y las que lo perderian.
+    origen TEXT NOT NULL DEFAULT 'APP',
+    actualizado_en TEXT,
+    actualizado_por TEXT,
     PRIMARY KEY (codigo, departamento)
 );
 

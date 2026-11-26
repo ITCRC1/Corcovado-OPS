@@ -186,6 +186,15 @@ def _stock(filas):
     return {f["codigo"]: f["stock"] for f in filas}
 
 
+def _celdas_excel(buf):
+    """Todo el texto de un Excel, para buscar dentro sin saber en que fila cayo."""
+    from openpyxl import load_workbook
+    buf.seek(0)
+    wb = load_workbook(buf)
+    return [str(c.value) for ws in wb for fila in ws.iter_rows()
+            for c in fila if c.value is not None]
+
+
 def _paginas(buf):
     """El texto de un PDF, para comprobar lo que el proveedor va a LEER y no que la
     funcion devolvio algo."""
@@ -1575,6 +1584,172 @@ def la_pantalla_de_consumo_dice_con_que_lo_calculo(c):
              "y se dice con que precio esta valorado todo")
 
 
+# ---------------------------------------------------------------------------
+# Los niveles puestos a mano, y la lista para trabajar fuera
+# ---------------------------------------------------------------------------
+
+def el_minimo_se_puede_poner_desde_la_pantalla(c):
+    """LA HOJA NO LOS TIENE TODOS: de las once bodegas del lodge, solo cuatro traen
+    niveles. Sin ellos el pedido sugerido no puede decir nada de las otras seis, y hasta
+    ahora la unica forma de ponerlos era editar el Excel y reimportar."""
+    import proveeduria as pv
+
+    conn, _, _ = _importar()
+    try:
+        conn.execute("DELETE FROM pv_nivel")
+        conn.commit()
+        _llenar_el_lodge(conn, 30)
+        c.igual(pv.pedido_sugerido(conn, departamento="F&B")["filas"], [],
+                "sin niveles no hay nada que sugerir")
+
+        pv.guardar_nivel(conn, "108194", "F&B", 5, 40, usuario="bodega")
+        s = pv.pedido_sugerido(conn, departamento="F&B")
+        c.cierto([f for f in s["filas"] if f["codigo"] == "108194"],
+                 "puesto desde la pantalla, el pedido ya lo sugiere")
+
+        guardado = conn.execute(
+            "SELECT minimo, maximo, origen, actualizado_por FROM pv_nivel "
+            "WHERE codigo = '108194' AND departamento = 'F&B'").fetchone()
+        c.igual((guardado["minimo"], guardado["maximo"]), (5.0, 40.0), "con sus numeros")
+        c.igual(guardado["origen"], "APP", "marcado como puesto aqui")
+        c.igual(guardado["actualizado_por"], "bodega", "y por quien")
+
+        # LOS DOS VACIOS BORRAN EL NIVEL: «sin nivel» y «nivel cero» no son lo mismo. Con
+        # un cero, el pedido diria que de ese producto no hace falta tener nada.
+        c.igual(pv.guardar_nivel(conn, "108194", "F&B", "", "", usuario="bodega"), None,
+                "los dos vacios borran el nivel")
+        c.igual(conn.execute(
+            "SELECT COUNT(*) FROM pv_nivel WHERE codigo = '108194'").fetchone()[0], 0,
+            "y no queda un cero en su lugar")
+    finally:
+        conn.close()
+
+
+def el_maximo_no_puede_ser_menor_que_el_minimo(c):
+    """El objetivo interpola entre los dos. Al reves, el pedido BAJA cuanto mas lleno
+    este el lodge — lo contrario de lo que nadie espera, y sin ningun error."""
+    import proveeduria as pv
+
+    conn, _, _ = _importar()
+    try:
+        for mn, mx, pedazo in ((10, 5, "menor que el mínimo"),
+                               (-1, 5, "negativos"),
+                               ("mucho", 5, "números")):
+            try:
+                pv.guardar_nivel(conn, "108194", "F&B", mn, mx, usuario="bodega")
+                c.cierto(False, f"tenia que rechazar {mn}/{mx}")
+            except ValueError as e:
+                c.cierto(pedazo in str(e), f"y decir por que ({pedazo})")
+        try:
+            pv.guardar_nivel(conn, "NOEXISTE", "F&B", 1, 2, usuario="bodega")
+            c.cierto(False, "un codigo que no esta en el catalogo tenia que rechazarse")
+        except ValueError as e:
+            c.cierto("catálogo" in str(e), "y se dice por que")
+        # Iguales SI se puede: hay productos de los que siempre se tiene la misma
+        # cantidad, llene o vacio. En la hoja del lodge los hay.
+        c.cierto(pv.guardar_nivel(conn, "108194", "F&B", 6, 6, usuario="bodega"),
+                 "minimo y maximo iguales se aceptan")
+    finally:
+        conn.close()
+
+
+def reimportar_la_hoja_no_borra_los_niveles_puestos_a_mano(c):
+    """EL MISMO FALLO QUE YA ESTABA ARREGLADO PARA LOS MOVIMIENTOS, y que estaba otra vez
+    aqui: la importacion borraba pv_nivel ENTERA. Seis bodegas no tienen ningun nivel en
+    la hoja, asi que son justo las que se ponen a mano — y las que lo perderian la
+    siguiente vez que alguien importara «para actualizar»."""
+    import proveeduria as pv
+    import proveeduria_excel as pvx
+
+    conn, _, _ = _importar()
+    try:
+        # Uno en una bodega que la hoja no trae, y otro PISANDO uno que si trae.
+        pv.guardar_nivel(conn, "108194", "RECEPCION", 3, 9, usuario="bodega")
+        pv.guardar_nivel(conn, "108194", "F&B", 99, 199, usuario="bodega")
+
+        ruta = os.path.join(os.environ.get("HOTEL_DATA_DIR") or ".",
+                            "hoja_de_prueba.xlsx")
+        pvx.cargar(conn, pvx.leer(ruta), usuario="pruebas")
+
+        puestos = {(r[0], r[1]): (r[2], r[3], r[4]) for r in conn.execute(
+            "SELECT codigo, departamento, minimo, maximo, origen FROM pv_nivel")}
+        c.igual(puestos.get(("108194", "RECEPCION")), (3.0, 9.0, "APP"),
+                "el de la bodega que la hoja no trae SOBREVIVE")
+        c.igual(puestos.get(("108194", "F&B")), (99.0, 199.0, "APP"),
+                "y el puesto a mano manda sobre el de la hoja, que no sabe del cambio")
+        c.cierto(puestos.get(("111180", "BAR EL BOSQUE")),
+                 "los de la hoja se recargan igual")
+    finally:
+        conn.close()
+
+
+def la_lista_de_lo_que_hay_que_revisar_se_puede_bajar(c):
+    """NO LO ARREGLA EL SISTEMA: cual de los dos productos con el mismo codigo vale, o si
+    un stock negativo es una compra sin registrar, lo decide proveeduria. Y eso se
+    trabaja en una lista, tachando, al lado de la bodega. Dejarlo solo en pantalla es
+    pedirle a alguien que lo copie a mano, y entonces no se hace."""
+    import proveeduria as pv
+    import proveeduria_excel as pvx
+
+    conn, _, _ = _importar()
+    try:
+        rev = pv.revisiones(conn)
+        buf = pvx.excel_de_revisiones(rev)
+    finally:
+        conn.close()
+
+    celdas = _celdas_excel(buf)
+    texto = " | ".join(celdas)
+    c.cierto("Stock negativo" in texto or "111180" in texto,
+             "lleva los stocks negativos")
+    c.cierto("FANTASMA" in texto, "y los movimientos sin ficha")
+    c.cierto("SINPRE" in texto, "y los productos sin precio")
+    # CADA PROBLEMA EN SU PESTAÑA: son tres trabajos distintos y los hace gente distinta.
+    from openpyxl import load_workbook
+    buf.seek(0)
+    wb = load_workbook(buf)
+    c.igual(len(wb.sheetnames), 3, "una pestaña por problema")
+    for ws in wb:
+        c.cierto(len(str(ws["A1"].value or "")) > 30,
+                 f"«{ws.title}» explica arriba que hay que hacer con esa lista")
+
+    import main
+    r = main.proveeduria_revisiones_excel(user=USUARIO)
+    c.cierto("spreadsheetml" in r.media_type, "se descarga como Excel")
+    c.cierto("por_revisar" in r.headers.get("content-disposition", ""),
+             "con un nombre que dice lo que es")
+
+
+def la_pantalla_deja_poner_el_nivel_donde_se_mira_el_stock(c):
+    """En otra pantalla no se pondrian nunca. Se mira «cuanto hay» y se piensa «y cuanto
+    deberia haber»: es el mismo momento."""
+    conn, _, _ = _importar()
+    conn.close()
+    import main
+
+    d = main.proveeduria_existencias(departamento="F&B", user=USUARIO)
+    c.cierto(all("minimo" in f for f in d["filas"]),
+             "pidiendo una bodega, cada fila trae su minimo")
+    c.cierto(all("maximo" in f for f in d["filas"]), "y su maximo")
+    general = main.proveeduria_existencias(user=USUARIO)
+    c.cierto(all("minimo" not in f for f in general["filas"]),
+             "en el general no, porque el nivel es de una bodega y no del producto")
+
+    raiz = RAIZ
+    with open(os.path.join(raiz, "frontend", "index.html"), encoding="utf-8") as f:
+        pantalla = f.read()
+    c.cierto("function guardarNivelPv(" in pantalla, "la pantalla guarda el nivel")
+    c.cierto("function descargarRevisionesPv(" in pantalla,
+             "y deja bajar la lista de lo que hay que revisar")
+    i = pantalla.find("async function guardarNivelPv(")
+    fn = pantalla[i:pantalla.find("\nasync function descargarRevisionesPv(", i)]
+    # SE GUARDA SIN REDIBUJAR: poner niveles es teclear veinte numeros seguidos.
+    c.cierto("loadProveeduria(" not in fn,
+             "sin recargar la pantalla entre un numero y el siguiente")
+    c.cierto("campo.value" in fn,
+             "y si el servidor dice que no, el campo vuelve a lo que habia")
+
+
 def el_boton_no_le_aparece_a_nadie_hasta_que_se_enciende(c):
     """LO PIDIO EL LODGE: «que sea un boton aparte, que mientras trabajemos en el la app
     pueda seguir funcionando de forma normal».
@@ -1751,6 +1926,11 @@ PRUEBAS = [
     el_consumo_se_compara_con_el_periodo_anterior,
     el_consumo_del_dia_de_hoy_no_entra,
     la_pantalla_de_consumo_dice_con_que_lo_calculo,
+    el_minimo_se_puede_poner_desde_la_pantalla,
+    el_maximo_no_puede_ser_menor_que_el_minimo,
+    reimportar_la_hoja_no_borra_los_niveles_puestos_a_mano,
+    la_lista_de_lo_que_hay_que_revisar_se_puede_bajar,
+    la_pantalla_deja_poner_el_nivel_donde_se_mira_el_stock,
     el_boton_no_le_aparece_a_nadie_hasta_que_se_enciende,
     al_arrancar_se_le_enciende_SOLO_a_quien_administra,
     la_pantalla_pide_las_dos_vistas_y_enseña_lo_que_hay_que_revisar,

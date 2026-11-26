@@ -1218,6 +1218,16 @@ def proveeduria_existencias(departamento: str = None, q: str = None,
     conn = get_connection()
     try:
         filas = pv.existencias(conn, departamento=departamento, buscar=q)
+        # El mínimo y el máximo de ESA bodega, pegados a cada fila: es donde alguien
+        # mira «cuánto hay» y piensa «y cuánto debería haber». Pedirlo en otra pantalla
+        # haría que no se pusieran nunca — y seis de las once bodegas no los tienen.
+        if departamento:
+            niveles = pv.niveles_de(conn, departamento)
+            for f in filas:
+                n = niveles.get(f["codigo"]) or {}
+                f["minimo"] = n.get("minimo")
+                f["maximo"] = n.get("maximo")
+                f["nivel_origen"] = n.get("origen")
         return {
             "departamento": departamento or "",
             "departamentos": pv.departamentos(conn),
@@ -1332,6 +1342,55 @@ def proveeduria_anular(doc_id: int,
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         conn.close()
+
+
+@app.get("/api/proveeduria/revisiones.xlsx")
+def proveeduria_revisiones_excel(user: dict = Depends(exige("proveeduria"))):
+    """Lo que hay que revisar, en Excel, para trabajarlo al lado de la bodega.
+
+    No lo arregla el sistema: son decisiones de proveeduría. Dejarlo solo en pantalla es
+    pedirle a alguien que lo copie a mano, y entonces no se hace.
+    """
+    import proveeduria as pv
+    import proveeduria_excel as pvx
+    conn = get_connection()
+    try:
+        buf = pvx.excel_de_revisiones(pv.revisiones(conn))
+    finally:
+        conn.close()
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition":
+                 'attachment; filename="Proveeduria_por_revisar.xlsx"'})
+
+
+@app.post("/api/proveeduria/nivel")
+def proveeduria_guardar_nivel(payload: dict,
+                              user: dict = Depends(exige("proveeduria",
+                                                         escribir=True))):
+    """Pone el mínimo y el máximo de un producto en una bodega.
+
+    Hace falta porque la hoja no los tiene todos: de las once bodegas, solo cuatro traen
+    niveles, y sin ellos el pedido sugerido no puede decir nada de las otras seis. Hasta
+    ahora la única forma de ponerlos era editar el Excel y reimportar.
+
+    Los dos vacíos BORRAN el nivel: «sin nivel» y «nivel cero» no son lo mismo.
+    """
+    import proveeduria as pv
+    conn = get_connection()
+    try:
+        nivel = pv.guardar_nivel(conn,
+                                 codigo=payload.get("codigo"),
+                                 departamento=payload.get("departamento"),
+                                 minimo=payload.get("minimo"),
+                                 maximo=payload.get("maximo"),
+                                 usuario=user.get("usuario"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+    return {"status": "ok", "nivel": nivel}
 
 
 @app.get("/api/proveeduria/consumo")

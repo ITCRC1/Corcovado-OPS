@@ -14,6 +14,8 @@ cambia.
 NO SE INVENTA NADA Y NO SE PIERDE NADA. Lo que no se entiende no se descarta en silencio:
 cada fila rechazada vuelve en el informe, con su motivo, para que proveeduría la vea.
 """
+import io
+
 import proveeduria as pv
 
 # Las pestañas que SÍ son datos.
@@ -214,6 +216,63 @@ def leer(ruta):
             "movimientos": movimientos, "niveles": niveles, "rechazos": rechazos}
 
 
+def excel_de_revisiones(revisiones):
+    """Lo que hay que revisar, en un .xlsx para trabajarlo.
+
+    POR QUÉ UN ARCHIVO Y NO SOLO LA PANTALLA. Lo que sale aquí no lo arregla el sistema:
+    son decisiones de proveeduría —cuál de los dos productos con el mismo código vale,
+    si un stock negativo es una compra sin registrar o una salida de más— y eso se
+    trabaja en una lista, tachando, al lado de la bodega. Dejarlo solo en pantalla es
+    pedirle a alguien que lo copie a mano, y entonces no se hace.
+
+    Una pestaña por problema, porque son tres trabajos distintos y los hace gente
+    distinta.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    negrita = Font(bold=True)
+
+    hojas = [
+        ("Stock negativo", ["Código", "Producto", "Bodega", "Stock", "Qué pasó"],
+         [(f["codigo"], f["descripcion"], f["departamento"], f["stock"], "")
+          for f in revisiones.get("negativos") or []],
+         "Salió más de lo que entró. O falta registrar una compra, o la salida está "
+         "mal. Se arregla con un ajuste por conteo."),
+        ("Sin ficha", ["Código", "Como se escribió", "Movimientos", "Qué producto es"],
+         [(f["codigo"], f["descripcion"], f["movimientos"], "")
+          for f in revisiones.get("huerfanos") or []],
+         "Se movió un código que no está en la pestaña Productos. Hay que darle ficha "
+         "o corregir el código del movimiento."),
+        ("Sin precio", ["Código", "Producto", "Bodega", "Precio"],
+         [(f["codigo"], f["descripcion"], f["departamento"], "")
+          for f in revisiones.get("sin_precio") or []],
+         "No entran en la inversión ni en el costo del consumo. Sin precio no se "
+         "inventa uno: la cifra saldría más baja de lo que es."),
+    ]
+    for nombre, cabecera, filas, explica in hojas:
+        ws = wb.create_sheet(nombre[:31])
+        ws.append([explica])
+        ws.append([])
+        ws.append(cabecera)
+        for celda in ws[3]:
+            celda.font = negrita
+        for f in filas:
+            ws.append(list(f))
+        # Anchos a ojo pero suficientes: una columna de 8 con un nombre de producto
+        # dentro obliga a ensancharla a mano antes de poder leer nada.
+        for i, ancho in enumerate((16, 46, 20, 12, 30), start=1):
+            if i <= len(cabecera):
+                ws.column_dimensions[ws.cell(row=3, column=i).column_letter].width = ancho
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
 def cargar(conn, datos, usuario=None):
     """Mete en la base lo que devolvió `leer`. Devuelve el recuento de cada cosa.
 
@@ -257,12 +316,17 @@ def cargar(conn, datos, usuario=None):
     # Los niveles se reemplazan enteros, como el resto de lo que manda la hoja. Se usa
     # OR REPLACE porque la misma (codigo, bodega) puede venir en dos pestañas si alguien
     # la copió: la última gana, en vez de reventar la importación entera por una fila.
-    cur.execute("DELETE FROM pv_nivel")
+    # SOLO LOS DE LA HOJA. Lo que alguien puso desde la pantalla se queda: seis de las
+    # bodegas del lodge no tienen ningún nivel en la hoja, así que son justo las que se
+    # ponen a mano aquí — y las que lo perderían al reimportar.
+    cur.execute("DELETE FROM pv_nivel WHERE origen = ?", (pv.ORIGEN_HOJA,))
     for n in datos.get("niveles") or []:
+        # INSERT OR IGNORE y no REPLACE: si alguien ya lo puso a mano en la pantalla,
+        # manda lo que puso. La hoja no sabe de ese cambio y lo pisaría cada vez.
         cur.execute(
-            "INSERT OR REPLACE INTO pv_nivel (codigo, departamento, minimo, maximo) "
-            "VALUES (?,?,?,?)",
-            (n["codigo"], n["departamento"], n["minimo"], n["maximo"]))
+            "INSERT OR IGNORE INTO pv_nivel "
+            "(codigo, departamento, minimo, maximo, origen) VALUES (?,?,?,?,?)",
+            (n["codigo"], n["departamento"], n["minimo"], n["maximo"], pv.ORIGEN_HOJA))
     # CUÁNTOS QUEDARON, no cuántos se leyeron. La misma (código, bodega) aparece repetida
     # entre pestañas —medido en la hoja del lodge: 1.046 filas leídas, 971 niveles
     # distintos— y decir «1.046» sería contar 75 veces lo mismo.

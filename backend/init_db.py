@@ -231,6 +231,13 @@ COLUMNAS_NUEVAS = [
     # porque una orden de compra llega a medias.
     ("pv_documento", "origen", "TEXT NOT NULL DEFAULT 'APP'"),
     ("pv_movimiento", "estado", "TEXT NOT NULL DEFAULT 'Recibido'"),
+    # El nivel (mínimo y máximo) también lleva su origen, y por lo mismo: sin él,
+    # reimportar la hoja borraba los que alguien hubiera puesto desde la pantalla.
+    # 'HOJA' por defecto aquí y NO 'APP': los que ya existan en una base vinieron todos
+    # de la importación, que es lo único que los escribía hasta ahora.
+    ("pv_nivel", "origen", "TEXT NOT NULL DEFAULT 'HOJA'"),
+    ("pv_nivel", "actualizado_en", "TEXT"),
+    ("pv_nivel", "actualizado_por", "TEXT"),
     # Si la nota escrita a mano SUSTITUYE a la que la hoja ya decía, en vez de ir
     # delante. Lo pidió el lodge; ver el comentario de la columna en schema.sql.
     ("nota_hoja", "reemplaza", "INTEGER NOT NULL DEFAULT 0"),
