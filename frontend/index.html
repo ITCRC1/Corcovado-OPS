@@ -7927,7 +7927,11 @@ window._pvNueva = { proveedor: "", depto: "", lineas: [], buscado: "", resultado
 // «Esperando mercadería» no es un adorno al lado del día: una orden se pide un día y
 // llega otro, así que el día de hoy casi nunca contiene la orden que hay que recibir. Con
 // solo el filtro de fecha, recibir obligaría a adivinar la fecha del pedido.
-window._pvFiltroCompras = { vista: "dia", fecha: "" };
+// LOS MISMOS CONTROLES QUE EL RESTO DE LA APP. Día, flechas, «Hoy» y rango, con las
+// mismas palabras que Reservas, Agenda y el Resumen: quien los usa todos los días no
+// tiene por qué aprender un control nuevo porque cambió de pantalla. El rango por
+// defecto es el mes en curso, como allá.
+window._pvFiltroCompras = { vista: "dia", fecha: "", desde: "", hasta: "" };
 
 async function verComprasPv(cambio) {
   const caja = document.getElementById("pv-movimientos");
@@ -7939,9 +7943,12 @@ async function verComprasPv(cambio) {
   const f = window._pvFiltroCompras;
   Object.assign(f, cambio || {});
   if (!f.fecha) f.fecha = hoyISO();
+  if (!f.desde) f.desde = inicioMesISO();
+  if (!f.hasta) f.hasta = finMesISO();
   const p = new URLSearchParams();
   if (f.vista === "dia") { p.set("desde", f.fecha); p.set("hasta", f.fecha); }
   else { p.set("limite", "300"); }
+  if (f.vista === "rango") { p.set("desde", f.desde); p.set("hasta", f.hasta); }
   if (f.vista === "pendientes") p.set("pendientes", "true");
   const res = await fetchAuth(`${API}/api/proveeduria/compras?${p}`);
   if (!res.ok) { avisar("No se pudieron cargar las órdenes", true); return; }
@@ -7967,9 +7974,15 @@ function pintarComprasPv() {
   const caja = document.getElementById("pv-movimientos");
   const puede = puedeEscribir("proveeduria");
   const boton = (vista, texto, extra) => `<button class="btn${
-      f.vista === vista ? " btn-primary" : ""}" style="padding:2px 10px;font-size:11.5px;"
+      f.vista === vista ? " btn-primary" : ""}"
       onclick="verComprasPv({vista:'${vista}'})">${texto}${
       extra ? ` <span style="opacity:.75;">· ${extra}</span>` : ""}</button>`;
+  // El rango se lee de los dos campos EN EL MOMENTO de apretar «Ver rango», no de lo
+  // guardado: es como lo hacen Reservas y la Agenda, y es lo que permite escribir las dos
+  // fechas y después mirar, en vez de que la lista salte al cambiar la primera.
+  const verRango = "verComprasPv({vista:'rango',"
+                 + " desde: document.getElementById('pv-oc-desde').value,"
+                 + " hasta: document.getElementById('pv-oc-hasta').value})";
   caja.innerHTML = `<div class="detail-panel" style="margin-top:12px;">
     <p style="font-weight:600;margin:0 0 2px;display:flex;gap:8px;align-items:center;
               flex-wrap:wrap;">Órdenes de compra
@@ -7979,17 +7992,29 @@ function pintarComprasPv() {
       Una orden NO suma al inventario hasta que se recibe. Se puede recibir a medias:
       el bote trae lo que cabe y el resto queda para el viaje siguiente.</p>
 
-    <!-- EL FILTRO. El día es lo normal; «esperando mercadería» existe porque una orden
-         se pide un día y llega otro, y si no se pudiera llegar a ella sin acordarse de
-         la fecha del pedido, recibir sería un juego de adivinanzas. -->
-    <p style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px;">
+    <!-- EL FILTRO, con la barra de siempre. Arriba CUÁNDO —día, flechas, hoy o rango—,
+         abajo QUÉ. «Esperando mercadería» no es un adorno al lado del día: una orden se
+         pide un día y llega otro, así que el día de hoy casi nunca contiene la orden que
+         hay que recibir, y sin esa vista recibir sería adivinar la fecha del pedido. -->
+    <div class="filterbar">
+      <button class="btn" onclick="verComprasPv({vista:'dia',
+        fecha: shiftDate('${escaparAtributo(f.fecha)}', -1)})">‹ Día ant.</button>
       <input type="date" value="${escaparAtributo(f.fecha)}"
-             onchange="verComprasPv({vista:'dia', fecha:this.value})"
-             style="font:inherit;font-size:12.5px;padding:3px 7px;">
+             onchange="verComprasPv({vista:'dia', fecha:this.value})">
+      <button class="btn" onclick="verComprasPv({vista:'dia',
+        fecha: shiftDate('${escaparAtributo(f.fecha)}', 1)})">Día sig. ›</button>
+      <button class="btn" onclick="verComprasPv({vista:'dia', fecha: hoyISO()})">Hoy</button>
+      <span style="color:var(--muted);">o rango:</span>
+      <input type="date" id="pv-oc-desde" value="${escaparAtributo(f.desde)}">
+      <input type="date" id="pv-oc-hasta" value="${escaparAtributo(f.hasta)}">
+      <button class="btn${f.vista === "rango" ? " btn-primary" : ""}"
+        onclick="${verRango}">Ver rango</button>
+    </div>
+    <div class="filterbar" style="margin:6px 0 10px;">
       ${boton("dia", "Del día")}
       ${boton("pendientes", "Esperando mercadería", c.pendientes || 0)}
       ${boton("todas", "Todas", c.total || 0)}
-    </p>
+    </div>
 
     ${d.hay_mas ? `<p style="font-size:11.5px;color:var(--warn-text);
         background:var(--warn-bg);border-radius:8px;padding:7px 10px;margin:0 0 10px;">
@@ -7999,10 +8024,12 @@ function pintarComprasPv() {
     ${!(d.ordenes || []).length ? `<p class="empty" style="padding:12px 0;">
       ${f.vista === "dia"
         ? `No hay órdenes del ${escaparHTML(f.fecha)}.`
+        : f.vista === "rango"
+        ? `No hay órdenes entre el ${escaparHTML(f.desde)} y el ${escaparHTML(f.hasta)}.`
         : f.vista === "pendientes"
         ? "Ninguna orden está esperando mercadería: todo lo pedido está recibido."
         : "Todavía no hay órdenes de compra."}
-      <small>${f.vista === "dia" && c.ultima_fecha
+      <small>${(f.vista === "dia" || f.vista === "rango") && c.ultima_fecha
         ? `La última orden es del <a href="#" onclick="event.preventDefault();
              verComprasPv({vista:'dia', fecha:'${escaparAtributo(c.ultima_fecha)}'})"
              >${escaparHTML(c.ultima_fecha)}</a>.

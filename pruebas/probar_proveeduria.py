@@ -2052,6 +2052,15 @@ def las_ordenes_se_piden_por_fecha_y_por_lo_que_falta(c):
     de_ayer = pv.ordenes(conn, desde=ayer, hasta=ayer)
     c.igual([o["id"] for o in de_ayer], [vieja["id"]], "y eligiendo el dia, aparece")
 
+    # Y UN RANGO, que es la otra pregunta de siempre: «que se pidio esta semana». Es el
+    # mismo control que Reservas y la Agenda ya tienen.
+    semana = [o["id"] for o in pv.ordenes(conn, desde=ayer, hasta=hoy_iso, limite=300)]
+    c.cierto(vieja["id"] in semana and de_hoy["id"] in semana,
+             "un rango trae los dos dias")
+    c.cierto(vieja["id"] not in [o["id"] for o in
+                                 pv.ordenes(conn, desde=hoy_iso, hasta=hoy_iso)],
+             "y el rango acota de verdad: fuera de el no aparece")
+
     pv.recibir(conn, de_hoy["id"], usuario="bodega")
     esperando = pv.ordenes(conn, pendientes=True, limite=300)
     c.cierto(any(o["id"] == vieja["id"] for o in esperando),
@@ -2119,6 +2128,25 @@ def la_pantalla_abre_en_el_dia_y_deja_llegar_a_lo_pendiente(c):
              "cambiar la fecha recarga la lista")
     c.cierto("boton(\"pendientes\"" in lista,
              "y hay por donde llegar a lo que espera mercaderia")
+
+    # LOS MISMOS CONTROLES QUE EL RESTO DE LA APP, y con las mismas palabras. Esta
+    # pantalla tenia un filtro inventado aparte: quien usa Reservas y la Agenda todos los
+    # dias no tiene por que aprender un control nuevo porque cambio de pantalla.
+    c.cierto('class="filterbar"' in lista, "usa la barra de filtros de siempre")
+    for pieza in ("‹ Día ant.", "Día sig. ›", ">Hoy</button>", "o rango:", "Ver rango"):
+        c.cierto(pieza in lista, f"con «{pieza}», igual que Reservas y la Agenda")
+    c.cierto("shiftDate(" in lista, "las flechas mueven un dia, como alla")
+    c.cierto("vista:'rango'" in lista, "y se puede pedir un periodo entero")
+    # El rango se lee al apretar, no al escribir: si no, la lista salta al cambiar la
+    # primera fecha, cuando la segunda todavia dice otra cosa.
+    c.cierto("document.getElementById('pv-oc-desde').value" in lista,
+             "el rango se lee de los campos al apretar «Ver rango»")
+    # Y que el cargador PIDA ese periodo. El boton puede estar y no servir de nada.
+    cargador = pantalla[pantalla.find("async function verComprasPv("):
+                        pantalla.find("function estadoCompraPv(")]
+    c.cierto('f.vista === "rango"' in cargador
+             and 'p.set("desde", f.desde)' in cargador,
+             "y el cargador le pide al servidor ese periodo")
     c.cierto("c.ultima_fecha" in lista,
              "un dia sin ordenes dice de cuando es la ultima, en vez de parecer vacio")
     c.cierto("d.hay_mas" in lista, "y avisa cuando la lista se corta")
